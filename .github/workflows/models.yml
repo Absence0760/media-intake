@@ -4,7 +4,7 @@
 # wheels install exactly as they do for a user. Fails if any of those tests skips.
 #
 # Not a required check: nothing runs it on pull requests, and its job is not named
-# `CI gate` (README-ci-gate.md). The real Ollama call (VLM_REAL=1 in
+# `CI gate` (.github/workflows/README-ci-gate.md). The real Ollama call (VLM_REAL=1 in
 # tests/test_vlm_trash.py) stays local: it needs a GPU and the pulled model;
 # the stubbed vlm_trash tests do run here.
 name: models
