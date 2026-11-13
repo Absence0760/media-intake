@@ -780,32 +780,89 @@ def prune_app_traces(uris, prefixes):
     return n
 
 
-def phone_thumbnails(root):
-    """Delete DCIM/.thumbnails and Pictures/.thumbnails on the phone, and nothing else.
+# ---------------------------------------------------------------- device deletes
+# Every delete on a phone, camera or source drive goes through device_targets, then
+# device_remove; nothing else in media-intake writes to a device. It never renames or
+# moves a file there: on case-insensitive storage a case-only rename is what makes one
+# file show up under two names.
+def device_targets(root, items, known, check=sources.check, skip_denied=True):
+    """The device files a command may delete, checked before anything is deleted.
+
+    items: (path, size) pairs the command wants gone from the device at root (size None:
+    no size check, for the thumbnail folders); known: every path the device listed (the
+    batch manifests' src), so a target is compared with names that are not targets too.
+    Skipped, a line each: a path outside root or outside the allowlist (check; with
+    skip_denied False that refuses the whole command instead). Skipped quietly: a file
+    already gone or no longer the staged size. Refused, nothing deleted: any target whose
+    path differs only by letter case from another known path or target
+    (sources.check_case). Returns the paths for device_remove.
+    """
+    out = []
+    for path, size in items:
+        if not path.startswith(root + os.sep):
+            print(f"skip phone delete, path outside --phone root: {path}")
+            continue
+        try:
+            check(root, path)  # never delete outside the allowlist
+        except sources.Denied as e:
+            if not skip_denied:
+                sys.exit(f"refused: {e}; nothing deleted from the device")
+            print(f"skip phone delete, {e}")
+            continue
+        if os.path.lexists(path) and (size is None or os.path.getsize(path) == size) and path not in out:
+            out.append(path)
+    try:
+        sources.check_case(out, known)
+    except sources.CaseCollision as e:
+        sys.exit("refused: nothing deleted from the device. These paths on it differ only by letter "
+                 "case; its storage ignores case, so each group may be one file, and deleting the "
+                 "\"duplicate\" would delete the real one:\n"
+                 + "\n".join("  " + "  =  ".join(os.path.relpath(p, root) for p in g) for g in e.groups)
+                 + f"\n(under {root}). Look on the device itself, rename or delete by hand, then stage "
+                   "the batch again.")
+    return out
+
+
+def device_remove(paths, tolerate=False):
+    """gio remove each path from device_targets. A refused delete is fatal unless tolerate
+    (Android's media service holds thumbnails open). Returns the paths it removed."""
+    done = []
+    for p in paths:
+        r = subprocess.run(["gio", "remove", p], capture_output=tolerate)
+        if r.returncode == 0:
+            done.append(p)
+        elif not tolerate:
+            sys.exit(f"gio remove failed ({r.returncode}): {p}")
+    return done
+
+
+def phone_thumbnail_items(root):
+    """(path, None) for DCIM/.thumbnails and Pictures/.thumbnails and everything in them, contents
+    before their folder, for device_targets with phone_thumbnail_check."""
+    items = []
+    for d in sources.thumbnail_dirs(root):
+        for r, dirs, fs in os.walk(d, topdown=False, followlinks=False):
+            items += [(os.path.join(r, x), None) for x in fs + dirs]
+        items.append((d, None))
+    return items
+
+
+def phone_thumbnail_check(root, path):
+    """sources.check_thumbnail, plus the two thumbnail folders themselves (thumbnail_dirs checked them)."""
+    if os.path.relpath(path, root) not in sources.PHONE_THUMBNAIL_DIRS:
+        sources.check_thumbnail(root, path)
+
+
+def phone_thumbnails(targets):
+    """Delete the checked thumbnail targets (device_targets of phone_thumbnail_items), and nothing else.
 
     Android's media service holds some thumbnails open and MTP then refuses the
     delete ("could not delete object"); those are counted and skipped, never
-    fatal, so the rest of erase still runs. Returns (deleted, refused).
+    fatal, so the rest of erase still runs. Returns (files deleted, refused).
     """
-    n = refused = 0
-    def rm(p):
-        nonlocal refused
-        if subprocess.run(["gio", "remove", p], capture_output=True).returncode:
-            refused += 1
-            return False
-        return True
-    for d in sources.thumbnail_dirs(root):
-        for r, dirs, fs in os.walk(d, topdown=False, followlinks=False):
-            for f in fs:
-                p = os.path.join(r, f)
-                sources.check_thumbnail(root, p)
-                n += rm(p)
-            for x in dirs:
-                p = os.path.join(r, x)
-                sources.check_thumbnail(root, p)
-                rm(p)
-        rm(d)
-    return n, refused
+    files = {p for p in targets if not os.path.isdir(p)}
+    done = device_remove(targets, tolerate=True)
+    return len(files.intersection(done)), len(targets) - len(done)
 
 
 def wipe_free(mount):
@@ -949,6 +1006,15 @@ def cmd_erase(a):
     # phone originals (e.g. DCIM/Restored copies) are just as sensitive.
     phone_rels = [rel for rel in q if q[rel]["sha"] in shas]
     phone_rels += [p["rel"] for p in plan if p["sha"] in shas and p["rel"] not in q]
+    # Every device delete is checked before anything is erased: a refusal leaves it all as it was.
+    root = os.path.abspath(a.phone) if a.phone else None
+    phone_items = [(man["files"][rel]["src"], man["files"][rel].get("size"))
+                   for rel in phone_rels if man["files"].get(rel, {}).get("src")]
+    do_pthumbs = bool(root) and not getattr(a, "keep_phone_thumbnails", False)
+    pthumb_items = phone_thumbnail_items(root) if do_pthumbs else []
+    known = [m["src"] for m in man["files"].values() if m.get("src")] + [p for p, _ in pthumb_items]
+    phone_todo = device_targets(root, phone_items, known) if root else []
+    pthumb_todo = device_targets(root, pthumb_items, known, phone_thumbnail_check) if do_pthumbs else []
     thumbs = phone = 0
     for rel in list(q):
         p = os.path.join(quar, rel)
@@ -960,27 +1026,12 @@ def cmd_erase(a):
         thumbs += thumb_forget(p) + thumb_forget(os.path.join(bdir(a.batch), "raw", rel))
         if q[rel]["sha"] in shas:
             thumbs += gallery_thumb_forget(q[rel]["sha"])
-    root = os.path.abspath(a.phone) if a.phone else None
-    for rel in phone_rels:
-        src = man["files"].get(rel, {}).get("src")
-        size = man["files"].get(rel, {}).get("size")
-        if not (root and src):
-            continue
-        thumbs += thumb_forget(src)
-        gone.add(src)
-        if not src.startswith(root + os.sep):
-            print(f"skip phone delete, path outside --phone root: {rel}")
-            continue
-        try:
-            sources.check(root, src)  # never delete outside the allowlist
-        except sources.Denied as e:
-            print(f"skip phone delete, {e}")
-            continue
-        if os.path.exists(src) and os.path.getsize(src) == size:
-            subprocess.run(["gio", "remove", src], check=True)
-            phone += 1
-    do_pthumbs = bool(root) and not getattr(a, "keep_phone_thumbnails", False)
-    pthumbs, prefused = phone_thumbnails(root) if do_pthumbs else (0, 0)
+    if root:
+        for src, _ in phone_items:
+            thumbs += thumb_forget(src)
+            gone.add(src)
+    phone = len(device_remove(phone_todo))
+    pthumbs, prefused = phone_thumbnails(pthumb_todo)
     # Identical copies already in the library (filed by an earlier batch) are the
     # same picture: erase them too.
     lib = 0
@@ -1093,22 +1144,20 @@ def cmd_offload(a):
         if not man.get("uuid") or sources.drive_uuid(root) != man["uuid"]:
             sys.exit("refused: this is not the drive the batch was staged from (filesystem UUID differs)")
         check = sources.check_drive
-    todo = []
+    items = []
     for rel, m in man["files"].items():
         p = plan.get(rel)
         ok = p and (p["action"] == "delete" or (p["action"] == "file" and os.path.exists(p["dst"])
                                                  and os.path.getsize(p["dst"]) == m["size"]))
-        if ok and m["src"].startswith(root + os.sep) and os.path.exists(m["src"]) \
-                and os.path.getsize(m["src"]) == m["size"]:
-            todo.append(m["src"])
+        if ok and m["src"].startswith(root + os.sep):
+            items.append((m["src"], m["size"]))
+    todo = device_targets(root, items, [m["src"] for m in man["files"].values()], check, skip_denied=False)
     print(f"{len(todo)} of {len(man['files'])} phone files have a verified copy here")
     if not a.yes:
         if input("Delete them from the phone? Type DELETE: ").strip() != "DELETE":
             sys.exit("nothing deleted")
-    for src in todo:
-        check(root, src)
-        subprocess.run(["gio", "remove", src], check=True)
-    print(f"deleted {len(todo)} files from the phone; quarantined and review files stay until erase/purge")
+    done = device_remove(todo)
+    print(f"deleted {len(done)} files from the phone; quarantined and review files stay until erase/purge")
 
 
 def cmd_purge_review(a):
@@ -1164,24 +1213,26 @@ def trash_files(files, batch=None, phone=None):
     trashed = load(TRASHED, {})
     root = os.path.abspath(phone) if phone else None
     batches = [batch] if batch else sorted(os.path.basename(d) for d in glob.glob(os.path.join(STATE, "batches", "*")))
-    n = sc = th = ph = 0
-    refused = []
-    for f in files:
+    mans = {b: load(os.path.join(bdir(b), "manifest.json"), {"files": {}}) or {"files": {}} for b in batches} \
+        if root else {}
+    refused, todo = [], []
+    for f in files:  # every phone delete is checked before anything is trashed
         p = os.path.abspath(f)
+        if any(p == x for x, _ in todo):
+            continue
         if not trash_allowed(p):
             refused.append(f)
             continue
+        srcs = [(m["src"], m.get("size")) for b, man in mans.items() for rel in phone_rels(b, p)
+                for m in [man["files"].get(rel) or {}] if m.get("src")]
+        todo.append((p, srcs))
+    known = [m["src"] for man in mans.values() for m in man["files"].values() if m.get("src")]
+    phone_ok = set(device_targets(root, [x for _, srcs in todo for x in srcs], known)) if root else set()
+    n = sc = th = ph = 0
+    for p, srcs in todo:
         s, size = sha256(p), os.path.getsize(p)
         trashed[s] = size
         save(TRASHED, trashed)  # first, so a crash mid-way still keeps it from coming back
-        srcs = []
-        if root:
-            for b in batches:
-                man = load(os.path.join(bdir(b), "manifest.json"), {"files": {}}) or {"files": {}}
-                for rel in phone_rels(b, p):
-                    m = man["files"].get(rel) or {}
-                    if m.get("src"):
-                        srcs.append((m["src"], m.get("size")))
         os.remove(p)
         n += 1
         sc += drop_sidecar(p)
@@ -1193,19 +1244,11 @@ def trash_files(files, batch=None, phone=None):
             q = load(qj, {})
             if q.pop(os.path.join(*rel[2:]), None) is not None:
                 save(qj, q)
-        for src, ssize in srcs:
+        for src, _ in srcs:
             th += thumb_forget(src)
-            if not src.startswith(root + os.sep):
-                print(f"skip phone delete, path outside --phone root")
-                continue
-            try:
-                sources.check(root, src)
-            except sources.Denied as e:
-                print(f"skip phone delete, {e}")
-                continue
-            if os.path.exists(src) and os.path.getsize(src) == ssize:
-                subprocess.run(["gio", "remove", src], check=True)
-                ph += 1
+            if src in phone_ok:
+                phone_ok.discard(src)
+                ph += len(device_remove([src]))
     save(os.path.join(STATE, "index.json"), index)
     print(f"trashed {n} files; sidecars {sc}; thumbnails {th}; phone {ph}"
           + (f"; refused {len(refused)} (not a library, review or quarantine file)" if refused else ""))
