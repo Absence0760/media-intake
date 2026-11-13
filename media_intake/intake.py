@@ -374,8 +374,8 @@ def cmd_plan(a):
     print("dates from", dict(collections.Counter(p["date_src"] for p in plan)))
     for label, sel in (("camera dates replaced by GPS", lambda p: p["date_src"] == "gps" and p["date_note"]),
                        ("dates shifted by --clock-offset", lambda p: p["date_src"] == "offset"),
-                       ("dates to check (clock-reset default or nothing plausible; --clock-offset fixes a wrong "
-                        "clock)", lambda p: p["date_suspect"])):
+                       ("dates to check (clock-reset default, camera and GPS disagree, or nothing plausible; "
+                        "--clock-offset fixes a wrong clock)", lambda p: p["date_suspect"])):
         hit = sorted(p["rel"] for p in plan if sel(p))
         if hit:
             print(f"  {len(hit)} {label}: " + ", ".join(hit[:5]) + (" ..." if len(hit) > 5 else ""))

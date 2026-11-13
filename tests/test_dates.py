@@ -132,6 +132,52 @@ class Plausibility(unittest.TestCase):
     def test_any_wrong_day_is_caught_not_only_reset_defaults(self):
         d = res({"DateTimeOriginal": "2024:03:02 10:00:00", "GPSDateTime": "2026:11:08 15:00:00Z"})
         self.assertEqual(d.src, "gps")
+        self.assertTrue(d.suspect, "GPS overruling a working-looking clock must be listed to check")
+        self.assertIn("disagrees with GPS", d.note)
+
+    def test_stale_phone_gps_does_not_beat_a_backed_camera_date(self):
+        # A phone's GPS stamp is its last fix, here two days old; the name and the offset both back the camera.
+        d = res({"DateTimeOriginal": "2026:11:08 07:15:02", "OffsetTimeOriginal": "+01:00",
+                 "GPSDateTime": "2026:11:06 10:00:00Z"}, "/x/IMG_20261108_071502.jpg")
+        self.assertEqual((d.src, d.dt, d.tz, d.suspect), ("exif", D(2026, 11, 8, 7, 15, 2), "+01:00", False))
+        self.assertIn("stale", d.note)
+
+    def test_file_name_alone_backs_the_camera(self):
+        stale = "2026:11:06 10:00:00Z"
+        for name in ("IMG_20261108_071502.jpg", "PXL_20261108_121502123.jpg", "Screenshot_20261108.jpg"):
+            d = res({"DateTimeOriginal": "2026:11:08 07:15:02", "GPSDateTime": stale}, "/x/" + name)
+            self.assertEqual((d.src, d.suspect), ("exif", False), name)  # local, UTC and date-only names agree
+            self.assertIn("file name agrees", d.note)
+        d = res({"DateTimeOriginal": "2026:11:08 07:15:02", "GPSDateTime": stale}, "/x/IMG_20261107_071502.jpg")
+        self.assertEqual((d.src, d.suspect), ("gps", True), "a name a day off backs nothing")
+
+    def test_recorded_offset_alone_backs_the_camera_but_is_flagged(self):
+        d = res({"DateTimeOriginal": "2026:11:08 07:15:02", "OffsetTimeOriginal": "+01:00",
+                 "GPSDateTime": "2026:11:06 10:00:00Z"})
+        self.assertEqual((d.src, d.dt, d.suspect), ("exif", D(2026, 11, 8, 7, 15, 2), True))
+        self.assertIn("UTC offset", d.note)
+
+    def test_unbacked_camera_loses_to_gps_flagged(self):
+        d = res({"DateTimeOriginal": "2026:11:08 07:15:02", "GPSDateTime": "2026:11:06 10:00:00Z"})
+        self.assertEqual((d.src, d.dt, d.suspect), ("gps", D(2026, 11, 6, 5, 0), True))
+
+    def test_impossible_camera_date_takes_gps_unflagged(self):
+        d = res({"DateTimeOriginal": "1970:01:01 00:00:00", "GPSDateTime": "2026:11:08 15:00:00Z"},
+                "/x/IMG_19700101_000000.jpg")
+        self.assertEqual((d.src, d.suspect), ("gps", False))
+        self.assertIn("impossible", d.note)
+
+    def test_reset_default_ignores_name_and_offset_backing(self):
+        d = res({"DateTimeOriginal": "2016:01:01 00:00:12", "OffsetTimeOriginal": "+00:00",
+                 "GPSDateTime": "2026:11:08 15:04:05Z"}, "/x/20160101_000012.jpg")
+        self.assertEqual((d.src, d.suspect), ("gps", False))
+
+    def test_video_gps_against_apple_and_quicktime_clocks(self):
+        stale = {"GPSDateTimes": ["2026:11:06 10:00:00"]}
+        d = res(dict(stale, CreateDate="2026:11:08 15:00:00", CreationDate="2026:11:08 07:00:00-08:00"), "/x/v.mov")
+        self.assertEqual((d.src, d.suspect), ("video", True))  # Apple's offset is recorded
+        d = res(dict(stale, CreateDate="2026:11:08 15:00:00"), "/x/v.mp4")
+        self.assertEqual((d.src, d.suspect), ("gps", True))  # QuickTime UTC is no recorded offset
 
     def test_gps_uses_exif_offset_for_local_time(self):
         d = res({"DateTimeOriginal": "2016:01:01 00:00:00", "OffsetTimeOriginal": "+09:00",
@@ -151,7 +197,7 @@ class Plausibility(unittest.TestCase):
         self.assertEqual(d.tz, "-05:00")
         d = res({"DateTimeOriginal": "2026:11:08 07:00:00", "OffsetTimeOriginal": "-05:00",
                  "GPSDateTime": "2026:11:09 12:00:01Z"})
-        self.assertEqual(d.src, "gps")
+        self.assertEqual((d.src, d.suspect), ("exif", True))  # past 24 h; the recorded offset keeps it, flagged
 
     def test_reset_default_without_gps_is_kept_and_flagged(self):
         d = res({"DateTimeOriginal": "2015:12:31 19:00:03", "mtime": mtime(D(2026, 11, 8))},
@@ -181,7 +227,18 @@ class Plausibility(unittest.TestCase):
         meta = {"CreateDate": "2016:01:01 00:00:00",
                 "GPSDateTimes": ["2026:11:08 15:00:09.5", "2026:11:08 15:00:01.1", "1970:01:01 00:00:00"]}
         d = res(meta, "/x/DCIM/100GOPRO/GX010001.MP4")
-        self.assertEqual((d.src, d.dt), ("gps", D(2026, 11, 8, 10, 0, 1)))
+        self.assertEqual((d.src, d.dt, d.suspect), ("gps", D(2026, 11, 8, 10, 0, 1), False))
+
+    def test_gpmf_stale_pre_lock_samples_are_skipped(self):
+        # Two samples before lock carry an old fix; the locked run starts at 15:00:00.
+        run = [f"2026:11:08 15:{m:02d}:{s:02d}" for m in range(3) for s in range(0, 60, 15)]
+        meta = {"CreateDate": "2016:01:01 00:00:00", "GPSDateTimes": ["2026:11:05 09:00:00", "2026:11:05 09:00:01", *run]}
+        d = res(meta, "/x/DCIM/100GOPRO/GX010002.MP4")
+        self.assertEqual((d.src, d.dt), ("gps", D(2026, 11, 8, 10, 0)))
+        # A gap of more than GPS_GAP ends the run; 2 minutes does not.
+        self.assertEqual(dates._locked_start([datetime.datetime(2026, 11, 8, 15, m, tzinfo=dates.UTC)
+                                              for m in (0, 2, 4, 30, 32, 34, 36)]),
+                         datetime.datetime(2026, 11, 8, 15, 30, tzinfo=dates.UTC))
 
     def test_nothing_plausible_falls_back_to_mtime_flagged(self):
         d = res({"DateTimeOriginal": "1970:01:01 00:00:00", "mtime": mtime(D(1999, 1, 1))})
@@ -383,6 +440,19 @@ class PlanAndTag(unittest.TestCase):
         self.assertFalse(p[g + "GOPR0002.JPG"]["date_suspect"])
         self.assertEqual(p[g + "GOPR0001.JPG"]["date_src"], "gps")
         self.assertIn("1 dates shifted by --clock-offset", out)
+
+    def test_gps_overruling_a_camera_is_listed_to_check(self):
+        jpg(os.path.join(self.card, "DCIM/100GOPRO/GOPR0004.JPG"), "2024:03:02 10:00:00", "2026:11:08", (15, 0, 0))
+        jpg(os.path.join(self.card, "DCIM/100GOPRO/GOPR0005.JPG"), "2026:11:08 07:15:02", "2026:11:06", (10, 0, 0),
+            offset="+01:00")
+        self.run_intake("stage", self.card, "--kind", "gopro", "--batch", "b4")
+        out = self.run_intake("plan", "b4").stdout
+        p = self.plan("b4")
+        self.assertEqual((p["DCIM/100GOPRO/GOPR0004.JPG"]["date_src"], p["DCIM/100GOPRO/GOPR0004.JPG"]["date_suspect"]),
+                         ("gps", True))
+        self.assertEqual(p["DCIM/100GOPRO/GOPR0005.JPG"]["date_src"], "exif")
+        self.assertIn("1 camera dates replaced by GPS: DCIM/100GOPRO/GOPR0004.JPG", out)
+        self.assertIn("2 dates to check", out)
 
     def test_bad_clock_offsets_are_refused(self):
         jpg(os.path.join(self.card, "DCIM/100GOPRO/GOPR0001.JPG"), "2026:11:08 04:15:00", make="GoPro")
