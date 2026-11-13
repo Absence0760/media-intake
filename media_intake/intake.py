@@ -170,12 +170,6 @@ def orphan_sidecar(p):
             and not os.path.lexists(base))
 
 
-def media_date(path):
-    """(datetime, source) for one file; the rules live in dates.py (docs/intake.md, Dates)."""
-    d = dates.resolve_all([path])[path]
-    return d.dt, d.src
-
-
 def has_gps(path):
     if shutil.which("exiftool"):
         r = subprocess.run(["exiftool", "-q", "-n", "-ee", "-GPSLatitude", "-GPSCoordinates", "-s3", path],
