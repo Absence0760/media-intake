@@ -6,9 +6,9 @@
 #   bash setup.sh --build-labels  also fetch the text model + tokenizer (semantic search, and
 #                                 regenerating media_intake/labels.npz when labels.yaml changes)
 #   bash setup.sh --no-launcher   don't write ~/.local/bin/media-intake
-# System packages need sudo, so install them yourself first (README, Install):
-#   sudo dnf install perl-Image-ExifTool tesseract tesseract-langpack-eng python3-zxing-cpp \
-#     python3-pillow python3-numpy python3-pyyaml ffmpeg-free gstreamer1-plugins-bad-free
+# System packages need sudo, so install them yourself first (README, Install). The last
+# step runs `media-intake doctor`, which prints the exact `sudo dnf install` line for
+# anything still missing.
 set -euo pipefail
 here=$(cd "$(dirname "$0")" && pwd)
 pkg=$here/media_intake
@@ -47,12 +47,23 @@ fetch() {
   echo "ok  $(basename "$dest")  sha256:$want"
 }
 
+# Model pins live only in media_intake/pins.json (scripts/update-pins.py regenerates it).
+# pin KEY...: the value under those keys, e.g. `pin siglip revision`.
+pin() {
+  python3 -I -c 'import functools, json, sys
+print(functools.reduce(lambda v, k: v[k], sys.argv[2:], json.load(open(sys.argv[1]))))' "$pkg/pins.json" "$@"
+}
+
 # SigLIP vision encoder (label.py). Apache-2.0, google/siglip-base-patch16-224 via Xenova's ONNX export.
-rev=4649052661e53c7000355844105f8a1792088239
-hf=https://huggingface.co/Xenova/siglip-base-patch16-224/resolve/$rev
+# Assignments, so a broken pins.json stops the script (set -e) before fetch() compares anything.
+rev=$(pin siglip revision)
+repo=$(pin siglip repo)
+sha_vision=$(pin siglip files onnx/vision_model_quantized.onnx)
+sha_text=$(pin siglip files onnx/text_model.onnx)
+sha_tokenizer=$(pin siglip files tokenizer.json)
+hf=https://huggingface.co/$repo/resolve/$rev
 models=$state/models/siglip-base-patch16-224-${rev:0:7}
-fetch "$hf/onnx/vision_model_quantized.onnx" "$models/vision_model_quantized.onnx" \
-  ef14a954f3d57e1806666432bd9785004c1dc27100aa260eee0cb0f10a5de058
+fetch "$hf/onnx/vision_model_quantized.onnx" "$models/vision_model_quantized.onnx" "$sha_vision"
 
 # GeoNames (geocode.py), CC-BY 4.0. GeoNames publishes no checksums and updates the
 # files daily, so your first download is recorded in <state>/geo-pins.txt (trust on first
@@ -83,10 +94,8 @@ if [ "$build_labels" = 1 ]; then
   build=${MEDIA_INTAKE_BUILD:-$HOME/.cache/media-intake-build}
   "$state/venv/bin/pip" install -q --disable-pip-version-check --require-hashes --no-deps \
     --target "$build/site" --upgrade -r "$here/requirements-labels.txt"
-  fetch "$hf/onnx/text_model.onnx" "$build/text_model.onnx" \
-    3aa7fdbd20eaa8740cce17bf82913de641fcb632a768fed59f661cdcd0c32553
-  fetch "$hf/tokenizer.json" "$build/tokenizer.json" \
-    4a17c975210be5ab4c36b47d8dae4eefb866dbfb1e676e394aad85dc30a3ae08
+  fetch "$hf/onnx/text_model.onnx" "$build/text_model.onnx" "$sha_text"
+  fetch "$hf/tokenizer.json" "$build/tokenizer.json" "$sha_tokenizer"
   "$state/venv/bin/python" -I "$pkg/build_label_embeddings.py" "$build"
 fi
 
@@ -104,7 +113,5 @@ if [ "$launcher" = 1 ]; then
   fi
 fi
 
-for t in exiftool tesseract ffmpeg ffprobe gio; do
-  command -v "$t" >/dev/null && echo "ok  $t" || echo "MISSING $t  (README, Install)"
-done
-python3 -c "import zxingcpp" 2>/dev/null && echo "ok  zxing-cpp" || echo "MISSING python3-zxing-cpp (README, Install)"
+# The full check (system packages, model checksums, Ollama digest), with a dnf line for gaps.
+python3 -I "$pkg/cli.py" doctor || echo "setup.sh finished; doctor lists what is still missing (above)" >&2

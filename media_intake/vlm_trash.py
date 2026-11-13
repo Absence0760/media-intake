@@ -50,8 +50,8 @@ VID = label.VID
 # qwen3-vl:2b = Qwen3-VL-2B-Thinking Q4_K_M, Apache-2.0. Not qwen2.5vl:7b (too big for an 8 GB GPU),
 # not qwen2.5vl:3b (Qwen Research License: non-commercial). Ollama 0.21.2 can't pull the newer
 # qwen3-vl:*-instruct / gemma3 manifests (registry answers 412). docs/search.md.
-MODEL = "qwen3-vl:2b"
-DIGEST = "0635d9d857d497aeadba3d7d27485746c50554446f9f6ec01ef39788221adbe8"  # ollama list ID 0635d9d857d4
+MODEL = label.PINS["ollama"]["model"]    # media_intake/pins.json
+DIGEST = label.PINS["ollama"]["digest"]  # `ollama list` shows its first 12 hex digits as the ID
 HOST = "http://127.0.0.1:11434"
 NUM_CTX = 8192          # Ollama's 4096 default truncates silently
 KEEP_ALIVE = "2m"       # between requests; the last one sends 0
@@ -107,7 +107,7 @@ def check_digest(host):
         if m.get("name") == MODEL or m.get("model") == MODEL:
             if m.get("digest") != DIGEST:
                 raise Refused(f"{MODEL} digest is {str(m.get('digest'))[:12]}, pinned {DIGEST[:12]}; "
-                              "re-check the model and update DIGEST deliberately")
+                              "re-check the model and update media_intake/pins.json with scripts/update-pins.py")
             return
     raise Refused(f"{MODEL} not installed in the local Ollama")
 

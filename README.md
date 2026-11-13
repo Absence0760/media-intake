@@ -38,7 +38,7 @@ sudo dnf install perl-Image-ExifTool tesseract tesseract-langpack-eng python3-zx
 git clone https://github.com/Absence0760/media-intake.git
 cd media-intake
 bash setup.sh            # venv, SigLIP vision model, GeoNames, ~/.local/bin/media-intake
-media-intake doctor      # what's installed, what's missing
+media-intake doctor      # what's installed, checksums, and the dnf line for what's missing
 ```
 
 `setup.sh` is safe to re-run (it only re-verifies checksums). Options:
@@ -47,7 +47,10 @@ media-intake doctor      # what's installed, what's missing
 GeoNames snapshot), `--no-launcher`. For HEVC video (most phones) Fedora's
 `ffmpeg-free` has no decoder; the tool uses GStreamer's VA-API (`vah265dec`)
 or Vulkan decoder when one is installed. The optional trash second opinion
-needs [Ollama](https://ollama.com/) and `ollama pull qwen3-vl:2b`.
+needs [Ollama](https://ollama.com/) and `ollama pull qwen3-vl:2b`. Every model
+pin (SigLIP file sha256s, the Ollama model digest) lives in
+`media_intake/pins.json`; `doctor` checks the files on disk and the local
+Ollama (on `127.0.0.1` only) against it.
 
 Configuration is optional: copy [`config.example.toml`](config.example.toml) to
 `~/.config/media-intake/config.toml` to change folders, allow a messaging

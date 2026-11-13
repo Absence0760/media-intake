@@ -19,17 +19,18 @@ The goal: someone else can install it on Fedora, import a phone, and trust it.
 - [x] `pyproject.toml` entry point `media-intake` with every subcommand (`media_intake/cli.py`).
 - [x] `media-intake doctor`: system tools, tesseract `eng`, zxing-cpp, GStreamer HEVC decoder,
       venv, model files, GeoNames, Ollama version.
-- [ ] `media-intake doctor`: also verify model checksums and the pinned Ollama model digest,
-      and print the exact `dnf install` line for what's missing.
+- [x] `media-intake doctor`: also verify model checksums and the pinned Ollama model digest,
+      and print the exact `dnf install` line for what's missing (pins in `media_intake/pins.json`).
 - [x] `config.toml` schema with validation and documented defaults (library, videos,
       project folders, state dir, phone allowlist extras); env vars still override
       (`media_intake/config.py`, `docs/configuration.md`).
-- [ ] One script that regenerates hash-pinned requirements and model pins (7-day minimum
-      age), so pins are bumped, not hand-edited.
+- [x] One script that regenerates hash-pinned requirements and model pins (7-day minimum
+      age), so pins are bumped, not hand-edited (`scripts/update-pins.py`).
 - [x] GitHub Actions: unit tests on synthetic data with model-dependent tests skipped
       (`.github/workflows/ci.yml`, `CI gate`).
-- [ ] A nightly or manual job that runs the model tests (needs the venv and model cache).
-- [ ] Release process: tagged releases; consumers pin by tag + commit SHA.
+- [x] A nightly or manual job that runs the model tests (needs the venv and model cache)
+      (`.github/workflows/models.yml`, Fedora 43 container; not a required check).
+- [x] Release process: tagged releases; consumers pin by tag + commit SHA ([docs/release.md](docs/release.md)).
 
 ### Safety gaps found on real devices
 - [x] **Case-insensitive device storage:** Android's emulated storage ignores case, so a
@@ -43,8 +44,9 @@ The goal: someone else can install it on Fedora, import a phone, and trust it.
 - [ ] **Near-duplicate chains:** each erase can surface near-copies of the erased item,
       then near-copies of those (`near-`, `near-near-`, ...). Bound the depth, merge them
       into one review, and show the matched original whenever it still exists.
-- [ ] **Kill by PID, never `pkill -f`/`pgrep -f`:** they match their own shell's command
-      line. Audit scripts and docs.
+- [x] **Kill by PID, never `pkill -f`/`pgrep -f`:** they match their own shell's command
+      line. Audit scripts and docs (none found;
+      `tests/test_cli.py` guards it).
 - [ ] Don't move library files while a scan/tag/apply job runs: take a lock per library.
 
 ### Dates and devices
