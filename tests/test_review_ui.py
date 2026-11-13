@@ -45,7 +45,7 @@ if cmd == "release":
         if q.get(rel, {}).get("dst"):
             os.remove(p)
             del q[rel]
-            print("released -> library")
+            print(f"released {p} -> library")  # names the file, as real output can: scrubbed at the end
     json.dump(q, open(man, "w"))
 elif cmd == "erase":
     print(f"erased {len(json.load(open(man)))} files; library copies 0; phone 0; drive 0")
@@ -245,6 +245,16 @@ class ReviewUITest(unittest.TestCase):
         r, b = s.req("GET", f"/api/progress?since={since}")
         return json.loads(b)
 
+    def names_left(self, names):
+        """(file, name) for every file under <state>/jobs/ whose name or content holds one of names."""
+        d = os.path.join(self.state, "jobs")
+        hits = []
+        for f in os.listdir(d):
+            with open(os.path.join(d, f), "rb") as fh:
+                data = fh.read()
+            hits += [(f, n) for n in names if n.encode() in data or n in f]
+        return hits
+
     def originals(self):
         """Review items that are near-duplicates: of a filed batch item, of a library video, and of
         originals that must never be served (outside the roots, another batch's quarantine, a symlink out)."""
@@ -349,6 +359,11 @@ class ReviewUITest(unittest.TestCase):
         self.assertEqual(r.status, 403)
         r, _ = s.req("GET", "/m/0", token=False)
         self.assertEqual(r.status, 403)
+        for path in ("/api/job", "/api/progress", "/api/progress?since=0"):  # the run's routes too
+            r, _ = s.req("GET", path, token=False)
+            self.assertEqual(r.status, 403, path)
+            r, _ = s.req("GET", path, token=False, headers={"X-Token": "wrong"})
+            self.assertEqual(r.status, 403, path)
         # host (DNS rebinding)
         for host in ("evil.example:%d" % s.port, "127.0.0.1:1", "127.0.0.1", "localhost.evil.example:%d" % s.port):
             r, _ = s.req("GET", "/api/items", host=host)
@@ -462,6 +477,17 @@ class ReviewUITest(unittest.TestCase):
         self.assertTrue(os.path.exists(os.path.join(rv, "Pictures/Screenshots/r2.png")))
         self.assertTrue(any("no command to file them yet" in x for x in out))
         self.assertTrue(any("verify-gone: no copies remain" in x for x in out))
+        self.assertIn(f"  released {os.path.join(quar, 'DCIM/Camera/a.jpg')} -> library", out)  # the page saw it all
+        # ...but once the run ended, no name of any file it acted on is left in <state>/jobs/.
+        self.assertEqual(self.names_left(["a.jpg", "b.png", "c.mp4", "n.jpg", "r1.jpg", "r2.png", "DCIM",
+                                          self.state, self.home]), [])
+        st = self.job()
+        self.assertEqual((st["state"], st["ok"], st["spec"]), ("done", True, {"batch": BATCH, "items": 6}))
+        self.assertEqual(st["label"], f"verify-gone {BATCH}")
+        with open(os.path.join(self.state, "jobs", f"review-{BATCH}.log")) as f:
+            log = f.read().splitlines()
+        self.assertIn(f"$ intake.py release {BATCH} [1 file]", log)
+        self.assertIn(f"$ intake.py erase {BATCH} --yes --phone [path] --drive [path]", log)
         # decisions file: 0600, rel paths + decision only
         dp = os.path.join(self.state, "batches", BATCH, "review-decisions.json")
         self.assertEqual(stat.S_IMODE(os.stat(dp).st_mode), 0o600)
@@ -696,6 +722,26 @@ class ReviewUITest(unittest.TestCase):
         self.assertEqual(s2.p.wait(timeout=30), 0)
         self.assertFalse(os.path.exists(g))
 
+    def test_page_older_than_the_last_run_cannot_submit(self):
+        """Two pages of one batch: run 1 ends (and can write a fresh near-<batch>); page 2, loaded before,
+        must not submit decisions for a list it read before that run."""
+        self.quarantine()
+        s1, s2 = self.start(), self.start()
+        dec = {str(i["id"]): "erase" for i in self.items(s1)}
+        csrf2 = s2.csrf()
+        r, b = s1.req("POST", "/api/submit", headers={"X-CSRF": s1.csrf()}, body={"decisions": dec, "confirm": "ERASE"})
+        self.assertEqual(r.status, 202, b)
+        j, out = self.wait_done(s1)
+        self.assertTrue(j["ok"], out)
+        n = len(self.calls())
+        r, b = s2.req("POST", "/api/submit", headers={"X-CSRF": csrf2}, body={"decisions": dec, "confirm": "ERASE"})
+        self.assertEqual(r.status, 409, b)
+        k = json.loads(b)
+        self.assertEqual(k["error"], "a run finished since this page loaded; open the review again")
+        self.assertFalse(k["watching"])
+        self.assertEqual(len(self.calls()), n)  # nothing ran
+        self.assertEqual(self.job()["id"], j["job"]["id"])  # and no new job was started
+
     def test_crashed_run_is_reported(self):
         quar, _ = self.quarantine()
         g = self.gate()
@@ -711,6 +757,7 @@ class ReviewUITest(unittest.TestCase):
         self.assertEqual(j["job"]["label"], f"erase near-{BATCH}")
         self.assertTrue(j["job"]["step_running"])  # the erase it started is still going
         self.assertEqual(self.job()["state"], "crashed")
+        self.assertEqual(self.names_left(["a.jpg", "b.png", "c.mp4", "n.jpg", "DCIM", self.state, self.home]), [])
         self.assertEqual(s.p.wait(timeout=30), 1)
         # A new page sees the crash, not a run that goes on forever; submit waits for the orphaned step.
         s2 = self.start()

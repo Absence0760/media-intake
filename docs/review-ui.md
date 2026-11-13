@@ -65,7 +65,13 @@ of its steps:
   `<state>/jobs/review-BATCH.lock` (`maybe-trash` without a batch), taken
   before `review-decisions.json` is written, so a second submit from any page
   or server gets 409 and the page shows the running job instead. Each
-  `intake.py` step holds the lock too.
+  `intake.py` step holds the lock too. A page checking the lock (a crashed
+  run's step) never makes a submit at that instant fail: both go through a
+  short mutex, `<key>.mutex`.
+- **A page older than the last run can't submit:** the server records the
+  batch's last run when it reads the list. If another page's run has ended
+  since (it can have written a fresh `near-BATCH`), submit gets 409 "a run
+  finished since this page loaded; open the review again", and nothing runs.
 - **Crashes are reported:** a job whose worker PID is gone (checked by PID and
   its `/proc` start time, never by command line) is marked `crashed` in its
   status file and the page says at which step. It is never re-run by itself:
@@ -74,9 +80,20 @@ of its steps:
   refused until that step ends.
 
 Files, all in the private state dir: `<state>/jobs/` (0700), and in it
-`<key>.json` (status: state, step, pid, the run's plan), `<key>.log` (the
-output) and `<key>.lock`, each 0600. The next run of the same batch
-replaces them.
+`<key>.json` (status), `<key>.log` (the output), `<key>.lock` and
+`<key>.mutex`, each 0600. The next run of the same batch replaces them.
+
+**No file name stays there.** The run is an erase, so the paths and decisions
+go to the worker on a pipe and are never written (the decisions are in
+`review-decisions.json`, by relative path). The status keeps the batch, the
+item count, state, step and its label (`erase BATCH`), ok, PIDs and an opaque
+id. Command lines are logged without paths (`release BATCH [2 files]`,
+`--phone [path]`). The steps' own output can name files, so it streams while
+the run goes, and once the run ends (done, or crashed: the next page to look,
+or the start-up sweep of any review or gallery, notices) each of those lines is
+replaced in place by `[output removed when the run ended: it may name a
+file]`. A page that was watching still shows every line (it reads through its
+open file); a page opened afterwards sees the scrubbed log.
 
 ## Why it is local
 
