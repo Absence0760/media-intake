@@ -39,7 +39,12 @@ Tests are stdlib `unittest` in `tests/`, one `test_<area>.py` per area, every on
 | `media_intake/gallery.py`, `plugins.py` | `tests/test_gallery.py` |
 | `media_intake/semantic.py`, `build_label_embeddings.py`, `labels.yaml` | `tests/test_semantic.py` |
 | `media_intake/vlm_trash.py` | `tests/test_vlm_trash.py` (Ollama faked, never real) |
-| `media_intake/cli.py` | the area test for the subcommand it wires |
+| `media_intake/jobs.py` (detached review / gallery jobs) | `tests/test_jobs.py` |
+| `media_intake/dates.py` (capture dates, `--clock-offset`) | `tests/test_dates.py` |
+| The device-delete gate (`intake.py` `device_targets`, `sources.py` `check_case`) | `tests/test_device_case.py` |
+| `media_intake/cli.py` `doctor` | `tests/test_cli.py` |
+| `media_intake/cli.py`, other subcommands | the area test for the subcommand it wires |
+| `scripts/update-pins.py`, `media_intake/pins.json` | `tests/test_update_pins.py` and `tests/test_cli.py` (the `Pins` guard) |
 | `tests/support.py` | every test file that imports it (it's shared) |
 
 What each surface warrants:
