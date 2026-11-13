@@ -33,13 +33,17 @@ A change can hit several rows. Report only the rows that match.
 |---|---|
 | A subcommand or option added, removed or renamed (`media_intake/cli.py`, any `argparse` change) | `README.md` § Commands (the table and the walkthrough), the feature page in `docs/` |
 | Stage, plan, scan, apply, quarantine, release, dedupe, erase, trash, offload, tagging | `docs/intake.md` (the matching section: Commands, Duplicates, Trash vs erase, Erasing, Tagging) |
+| Capture dates, `--clock-offset` (`media_intake/dates.py`) | `docs/intake.md` § Dates |
 | Review page | `docs/review-ui.md` |
+| Detached jobs (`media_intake/jobs.py`) | `docs/review-ui.md` and `docs/gallery.md` (the pages that start them) |
 | Gallery | `docs/gallery.md` |
 | Index, search, similar, labels, the VLM check | `docs/search.md` |
 | Drive queue | `docs/queue.md` |
 | A config key or env var added, default changed, removed | `docs/configuration.md`, `config.example.toml` |
 | The plugin interface | `docs/plugins.md` |
 | A system package, download, model or pin in `setup.sh` / `requirements*.txt` | `README.md` § Install, `THIRD_PARTY_NOTICES.md` for a new third-party component |
+| A pin in `media_intake/pins.json` or `requirements*.txt`, or `scripts/update-pins.py` | `CONTRIBUTING.md` § Pins |
+| The release process or versioning | `docs/release.md` |
 | A device or source newly supported | `README.md` § Tested devices, `docs/intake.md` |
 | A privacy guarantee changed (network, deletes, sidecars, `0700` state, `127.0.0.1` bind) | `README.md` § Privacy guarantees, `SECURITY.md`, `CLAUDE.md` § Hard rules |
 | A detector's reach or a known limit changed | `README.md` § Limits, `ROADMAP.md` § Known limitations |

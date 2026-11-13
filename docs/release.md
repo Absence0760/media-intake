@@ -1,14 +1,15 @@
 # Releases
 
 media-intake is released as annotated git tags `vX.Y.Z` on `main`, with a
-GitHub release per tag. Nothing is published to PyPI; a release is the
+GitHub release per tag. No release has been cut yet; the commands below use
+`vX.Y.Z` for the tag you pin. Nothing is published to PyPI; a release is the
 source tree at that commit, including its pins (`requirements*.txt`,
 `media_intake/pins.json`), so a tagged checkout runs `setup.sh` against
 exactly the wheels and models it was tested with.
 
 Versions follow [Semantic Versioning](https://semver.org/). While the major
-version is 0, a minor bump (`0.2.0`) may change commands, config or on-disk
-state; a patch bump (`0.1.1`) only fixes bugs. A release that changes the
+version is 0, a minor bump (`0.Y.0`) may change commands, config or on-disk
+state; a patch bump (`0.Y.Z`) only fixes bugs. A release that changes the
 state folder's layout says how to migrate in its notes.
 
 ## Using a release (consumers)
@@ -17,19 +18,19 @@ Pin a release by **tag and commit SHA**, not by tag alone: a tag is a
 movable name, the SHA is what you reviewed. Each release's notes give both.
 
 ```sh
-git clone --branch v0.1.0 https://github.com/Absence0760/media-intake.git
+git clone --branch vX.Y.Z https://github.com/Absence0760/media-intake.git
 cd media-intake
 git rev-parse 'HEAD^{commit}'     # must equal the SHA in the release notes
 bash setup.sh
 ```
 
 To check a tag without cloning, `git ls-remote
-https://github.com/Absence0760/media-intake.git 'refs/tags/v0.1.0^{}'` prints
+https://github.com/Absence0760/media-intake.git 'refs/tags/vX.Y.Z^{}'` prints
 the commit an annotated tag points at. If the tag and the SHA you recorded
 ever disagree, stop: a published tag is never moved (see below), so a
 mismatch means something is wrong. Anything that installs it for you (a
 script, a dotfiles repo) records both, for example
-`MEDIA_INTAKE_TAG=v0.1.0 MEDIA_INTAKE_SHA=<40 hex>`, and checks out the SHA.
+`MEDIA_INTAKE_TAG=vX.Y.Z MEDIA_INTAKE_SHA=<40 hex>`, and checks out the SHA.
 
 ## Cutting a release (maintainers)
 

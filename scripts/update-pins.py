@@ -198,6 +198,14 @@ def update_siglip(pin, cutoff, get=fetch, log=print):
     if newest["id"] == pin["revision"]:
         log(f"siglip   {repo} at {pin['revision'][:12]}: current")
         return pin
+    # Never move the pin backwards: a pin taken with a later cutoff can be newer than this run's
+    # cutoff. The API lists main newest first; a pin missing from the list is judged by its date.
+    ids = [c["id"] for c in commits]
+    if (ids.index(pin["revision"]) < ids.index(newest["id"]) if pin["revision"] in ids
+            else pin["revision_date"] > newest["date"][:10]):
+        log(f"siglip   {repo}: pinned {pin['revision'][:12]} ({pin['revision_date']}) is newer than "
+            f"{newest['id'][:12]}, the newest commit before {iso(cutoff)}; kept")
+        return pin
     tree = {e["path"]: e for e in json.loads(get(f"https://huggingface.co/api/models/{repo}/tree/{newest['id']}?recursive=true"))}
     files = {}
     for path in pin["files"]:

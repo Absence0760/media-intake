@@ -51,7 +51,8 @@ bash setup.sh && media-intake doctor        # fetch and verify what moved
 
 Nothing newer than 7 days is taken: wheels go through `uv pip compile
 --exclude-newer <cutoff>`, SigLIP moves to the newest commit older than the
-cutoff (and only if a pinned file changed), and a new Ollama digest is first
+cutoff (only if a pinned file changed, and never back to a commit older than
+the pinned one), and a new Ollama digest is first
 recorded as `ollama.candidate` and pinned only by a run 7 or more days later
 (the registry publishes no dates). `--cutoff` takes an earlier RFC 3339 time.
 System packages the venv reuses (numpy, packaging) are resolved against the
@@ -63,7 +64,8 @@ the tests run it against fakes.
 A SigLIP move also needs `bash setup.sh --build-labels` (labels.npz) and a
 check of `label.py`'s logit scale, bias and preprocessing; an Ollama move
 needs `ollama pull` and makes `vlm-trash` judge files again. Put the
-script's output in the PR body.
+script's output in the PR body. A pin bump is its own PR, model-tested
+(below) before a release; cutting one: [docs/release.md](docs/release.md).
 
 ## Tests
 
@@ -73,5 +75,12 @@ script's output in the PR body.
 - Run what you touched: `python3 -I -m unittest discover -s tests -p "test_<area>.py"`; the full
   suite is `python3 -I -m unittest discover -s tests`. Tests that need the
   venv, the models or Ollama skip themselves when those are missing.
+- Those model tests skip in `ci.yml` (no venv or models there).
+  `.github/workflows/models.yml` runs them nightly and on demand ("Run
+  workflow" in the Actions tab) in a Fedora 43 container, after `setup.sh`,
+  and fails if any test skips except the real-Ollama one (`VLM_REAL`, which
+  needs a GPU; run it locally). It is not a required check and doesn't run on
+  pull requests: run it on your branch to model-test a pin bump, and on
+  `main` before a release.
 - When a test fails, fix the test if it is wrong, or the code if it is; never
   loosen an assertion or add a sleep to make it pass.

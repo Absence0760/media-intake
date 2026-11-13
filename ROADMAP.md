@@ -45,8 +45,9 @@ The goal: someone else can install it on Fedora, import a phone, and trust it.
       then near-copies of those (`near-`, `near-near-`, ...). Bound the depth, merge them
       into one review, and show the matched original whenever it still exists.
 - [x] **Kill by PID, never `pkill -f`/`pgrep -f`:** they match their own shell's command
-      line. Audit scripts and docs (none found;
-      `tests/test_cli.py` guards it).
+      line. Audited scripts and docs: none found. `tests/test_cli.py` guards every `.py`,
+      `.sh`, workflow, `.claude/` file and the Markdown at the repo root and in `docs/`
+      (code comments and Markdown lines that say "never" state the rule, so they pass).
 - [ ] Don't move library files while a scan/tag/apply job runs: take a lock per library.
 
 ### Dates and devices

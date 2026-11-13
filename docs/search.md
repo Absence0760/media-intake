@@ -90,9 +90,11 @@ Other options: `--redo` (judge again), `--host http://127.0.0.1:PORT`,
 `--allow-cpu` (see below).
 
 - Model `qwen3-vl:2b` (Qwen3-VL-2B-Thinking, Q4_K_M, 1.9 GB on disk), pinned
-  by its local digest `0635d9d857d497ae...` (`ollama list` ID
-  `0635d9d857d4`, read from `/api/tags`); a different digest refuses to run.
-  Install with `ollama pull qwen3-vl:2b` and check the ID matches. Licence
+  by its local digest (read from `/api/tags`; `ollama list` shows its first
+  12 characters as the ID). The digest is written only in
+  `media_intake/pins.json` (`ollama.digest`); a different one refuses to run.
+  Install with `ollama pull qwen3-vl:2b`, then `media-intake doctor` checks
+  the pulled digest against the pin. Licence
   Apache-2.0 (commercial use allowed): `ollama show qwen3-vl:2b` and
   <https://huggingface.co/Qwen/Qwen3-VL-2B-Thinking>.
 - Sent with `"think": false`. It is a thinking model, and under a `format`
@@ -158,8 +160,8 @@ Start it in the background (the log has counts only):
 nohup media-intake vlm-trash --all --inhibit > ~/.local/share/media-intake/vlm-all.log 2>&1 &
 ```
 
-Check first that `ollama list` shows `qwen3-vl:2b` with ID `0635d9d857d4`,
-and that `--all --dry-run` gives a sensible count. At about 0.6 s a synthetic
+Check first that `media-intake doctor` reports the `qwen3-vl:2b` digest as
+`ok` (it matches the pin in `media_intake/pins.json`), and that `--all --dry-run` gives a sensible count. At about 0.6 s a synthetic
 photo, 10,000 photos is under 2 hours of model time; real photos decode
 slower.
 
@@ -187,7 +189,7 @@ Checked November 2026.
 
 | Model (Ollama tag, size) | Licence | Result |
 |---|---|---|
-| **qwen3-vl:2b** (1.9 GB, ID 0635d9d857d4) | Apache-2.0 | **Chosen.** 100% GPU, 0.6 s/photo |
+| **qwen3-vl:2b** (1.9 GB, digest pinned in `media_intake/pins.json`) | Apache-2.0 | **Chosen.** 100% GPU, 0.6 s/photo |
 | qwen2.5vl:7b (6.0 GB) | Apache-2.0 | 7.35 GB vision buffer; CPU fallback, 54 s/photo, about 12.5 GB RAM (below) |
 | qwen2.5vl:3b (3.2 GB) | Qwen Research License, non-commercial | Blocked by the licence |
 | qwen3-vl:4b-instruct / 2b-instruct (3.3 / 1.9 GB) | Apache-2.0 | The Ollama registry refuses 0.21.2 (HTTP 412 "requires a newer version of Ollama") |
