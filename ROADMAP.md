@@ -30,7 +30,7 @@ The goal: someone else can install it on Fedora, import a phone, and trust it.
       (`.github/workflows/ci.yml`, `CI gate`).
 - [x] A nightly or manual job that runs the model tests (needs the venv and model cache)
       (`.github/workflows/models.yml`, Fedora 43 container; not a required check).
-- [ ] Release process: tagged releases; consumers pin by tag + commit SHA.
+- [x] Release process: tagged releases; consumers pin by tag + commit SHA ([docs/release.md](docs/release.md)).
 
 ### Safety gaps found on real devices
 - [ ] **Case-insensitive device storage:** Android's emulated storage ignores case, so a

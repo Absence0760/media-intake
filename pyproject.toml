@@ -4,7 +4,8 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "media-intake"
-version = "0.1.0"
+# The version lives only in media_intake/__init__.py (docs/release.md).
+dynamic = ["version"]
 description = "Local-only photo and video intake: phone, camera and drive imports, dedupe, a sensitive-content quarantine, tags, search and a gallery."
 readme = "README.md"
 license = "AGPL-3.0-only"
@@ -28,6 +29,9 @@ media-intake = "media_intake.cli:main"
 
 [tool.setuptools]
 packages = ["media_intake"]
+
+[tool.setuptools.dynamic]
+version = { attr = "media_intake.__version__" }
 
 [tool.setuptools.package-data]
 media_intake = ["labels.yaml", "labels.npz", "pins.json"]

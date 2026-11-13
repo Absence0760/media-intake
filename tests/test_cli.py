@@ -194,5 +194,21 @@ class Pins(unittest.TestCase):
             self.assertFalse(found, f"{os.path.relpath(p, support.ROOT)} repeats a pin from pins.json")
 
 
+class Version(unittest.TestCase):
+    """docs/release.md: the version lives only in media_intake/__init__.py."""
+
+    def test_pyproject_reads_the_version_from_init(self):
+        import tomllib
+        with open(os.path.join(support.ROOT, "pyproject.toml"), "rb") as f:
+            project = tomllib.load(f)
+        self.assertNotIn("version", project["project"])
+        self.assertIn("version", project["project"]["dynamic"])
+        self.assertEqual(project["tool"]["setuptools"]["dynamic"]["version"], {"attr": "media_intake.__version__"})
+        with open(os.path.join(support.PKG, "__init__.py")) as f:
+            versions = re.findall(r'^__version__ = "([^"]+)"$', f.read(), re.M)
+        self.assertEqual(len(versions), 1)
+        self.assertRegex(versions[0], r"^\d+\.\d+\.\d+$")
+
+
 if __name__ == "__main__":
     unittest.main()
