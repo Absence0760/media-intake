@@ -209,7 +209,10 @@ class KillByPid(unittest.TestCase):
             if not os.path.isfile(p) or os.path.abspath(p) == os.path.abspath(__file__):
                 continue
             with open(p, errors="replace") as f:
-                hits += [f"{os.path.relpath(p, root)}:{n}" for n, ln in enumerate(f, 1) if pattern.search(ln)]
+                code = p.endswith((".py", ".sh", ".yml"))
+                # In code, a comment saying "never pgrep -f" is the rule, not a use: check only what precedes `#`.
+                hits += [f"{os.path.relpath(p, root)}:{n}" for n, ln in enumerate(f, 1)
+                         if pattern.search(ln.split("#", 1)[0] if code else ln)]
         self.assertEqual(hits, [])
 
 
