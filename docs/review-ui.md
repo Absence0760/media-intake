@@ -43,9 +43,40 @@ review files it prints `nothing to review for BATCH` and exits 0.
   command to file them yet); then for `near-BATCH`, `xcheck-BATCH`, then
   `BATCH`: `release` for kept files, `erase --yes` with the devices given,
   `verify-gone`. A kept file with no library place (it was quarantined from
-  review) stays put and that batch's erase is skipped. Output streams to the
-  page; the server then exits. Closing the tab without submitting changes
-  nothing (Ctrl-C the server).
+  review) stays put and that batch's erase is skipped. Closing the tab
+  without submitting changes nothing (Ctrl-C the server).
+
+## The run is a detached job
+
+Submit starts the steps above as a detached job (`media_intake/jobs.py`), not
+inside the page server, so an erase that has started always runs to the end
+of its steps:
+
+- **Closing the tab or stopping the server never stops it.** The job runs in
+  its own process session; Ctrl-C on the server says the run keeps going.
+- **Progress:** the page polls the job and shows the current step ("Step 3:
+  erase BATCH") and its output from the first line. The server exits once the
+  page has read the end.
+- **Picked up again:** `media-intake review BATCH` while a run of that batch
+  is going (even with nothing left to decide) serves a page that shows the
+  run, not stale items; a page already open for the batch switches to it
+  within a few seconds, and media are no longer served.
+- **One run per batch:** the job lock is an `flock` on
+  `<state>/jobs/review-BATCH.lock` (`maybe-trash` without a batch), taken
+  before `review-decisions.json` is written, so a second submit from any page
+  or server gets 409 and the page shows the running job instead. Each
+  `intake.py` step holds the lock too.
+- **Crashes are reported:** a job whose worker PID is gone (checked by PID and
+  its `/proc` start time, never by command line) is marked `crashed` in its
+  status file and the page says at which step. It is never re-run by itself:
+  open the review again and it shows what is left on disk. If the step the
+  dead worker started is still running, the page says so and submit stays
+  refused until that step ends.
+
+Files, all in the private state dir: `<state>/jobs/` (0700), and in it
+`<key>.json` (status: state, step, pid, the run's plan), `<key>.log` (the
+output) and `<key>.lock`, each 0600. The next run of the same batch
+replaces them.
 
 ## Why it is local
 
@@ -64,4 +95,10 @@ its media.
 
 `python3 -I -m unittest discover -s tests -p test_review_ui.py` (synthetic media; a fake
 `intake.py` via `MEDIA_REVIEW_INTAKE` records its argv, so a real erase never
-runs).
+runs; its erase can wait on a FIFO so the tests kill the server or the worker
+mid-run). The job module itself: `python3 -I -m unittest discover -s tests -p
+test_jobs.py`.
+
+Not verified: the page's progress, attach and crash messages in a real
+browser (the tests drive the HTTP API; the inline script is checked with
+`node --check`).

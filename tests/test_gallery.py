@@ -6,9 +6,12 @@
 Images are drawn with Pillow, videos are ffmpeg test patterns. Trash and Erase run
 the real intake.py (trash / forget) against the throwaway HOME only; nothing points
 at the real ~/.local/share/media-intake, ~/Pictures or ~/Videos. A toy plugin
-checks the gallery_views() seam (plugins.py).
+checks the gallery_views() seam (plugins.py). The job tests swap in a fake intake.py
+(MEDIA_REVIEW_INTAKE) whose trash waits on a FIFO the test opens, so a job is held
+mid-step without a sleep while servers are killed and restarted.
 """
-import datetime, hashlib, http.client, json, os, re, shutil, subprocess, sys, tempfile, time, unittest, urllib.parse
+import datetime, errno, hashlib, http.client, json, os, re, shutil, signal, stat, subprocess, sys, tempfile, time
+import unittest, urllib.parse
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import support  # noqa: E402,F401  (hermetic config)
@@ -62,6 +65,32 @@ def write_tags(p, hier, extra=()):
     for h in hier:
         args += [f"-XMP-lr:HierarchicalSubject+={h}", f"-XMP-dc:Subject+={h.split('|')[-1]}"]
     subprocess.run(["exiftool", "-q", "-m", "-overwrite_original", *args, *extra, x], check=True)
+
+
+GATED = r'''
+import os, sys
+gate = os.environ["FAKE_GATE"]
+if os.path.exists(gate):
+    print("trash: waiting at the gate", flush=True)
+    with open(gate) as f:
+        f.read()
+    os.remove(gate)
+for p in sys.argv[2:]:
+    if os.path.isabs(p) and os.path.lexists(p):
+        os.remove(p)
+        print("trashed 1")
+'''
+
+
+def until(pred, what, timeout=60):
+    """Poll a real condition (the job API) until it holds."""
+    end = time.monotonic() + timeout
+    while time.monotonic() < end:
+        v = pred()
+        if v:
+            return v
+        time.sleep(0.05)
+    raise AssertionError(f"timed out waiting for {what}")
 
 
 TOY_PLUGIN = """
@@ -413,6 +442,87 @@ class GalleryTest(unittest.TestCase):
         self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
         self.assertFalse(os.path.exists(tk))
         self.assertTrue(os.path.exists(other))  # only those shas
+
+    def test_job_survives_restart_and_refuses_a_second_action(self):
+        fake, gate = os.path.join(self.tmp, "gated_intake.py"), os.path.join(self.tmp, "gate")
+        with open(fake, "w") as f:
+            f.write(GATED)
+        os.mkfifo(gate)
+        self.env.update(MEDIA_REVIEW_INTAKE=fake, FAKE_GATE=gate)
+        s1 = self.start()
+        ida, idb = self.id_of(s1, "a.jpg"), self.id_of(s1, "b.jpg")
+        code, j = s1.post("/api/trash", {"ids": [ida], "confirm": True})
+        self.assertEqual(code, 200, j)
+        until(lambda: any("waiting at the gate" in x for x in s1.get("/api/job")["lines"]), "the trash to start")
+        j = s1.get("/api/job")
+        self.assertEqual((j["done"], j["state"], j["ids"], j["step"], j["total"]), (False, "running", [ida], 1, 1))
+        self.assertNotIn("spec", j)
+        self.assertEqual(s1.req("GET", f"/t/{ida}")[0].status, 404)  # busy while it runs
+        code, j = s1.post("/api/erase", {"ids": [idb], "confirm": "ERASE"})
+        self.assertEqual(code, 409, j)  # one action at a time
+        jd = os.path.join(self.state, "jobs")
+        for f in ("gallery.json", "gallery.log", "gallery.lock"):
+            self.assertEqual(stat.S_IMODE(os.stat(os.path.join(jd, f)).st_mode), 0o600, f)
+        self.assertEqual(stat.S_IMODE(os.stat(jd).st_mode), 0o700)
+        # The server dies; a new one (and its page) picks the job up from the status file.
+        s1.p.send_signal(signal.SIGKILL)
+        s1.p.wait()
+        s2 = self.start()
+        self.assertIn("still running", s2.p.stdout.readline())
+        ida2, idb2 = self.id_of(s2, "a.jpg"), self.id_of(s2, "b.jpg")
+        j = s2.get("/api/job")
+        self.assertEqual((j["done"], j["ids"]), (False, [ida2]))
+        self.assertEqual(j["lines"][0], "$ intake.py trash 'a.jpg'")
+        self.assertEqual(s2.req("GET", f"/m/{ida2}")[0].status, 404)
+        code, j = s2.post("/api/trash", {"ids": [idb2], "confirm": True})
+        self.assertEqual(code, 409, j)
+        def w():
+            try:
+                fd = os.open(gate, os.O_WRONLY | os.O_NONBLOCK)
+            except OSError as e:
+                if e.errno == errno.ENXIO:
+                    return False
+                raise
+            os.write(fd, b"go")
+            os.close(fd)
+            return True
+        until(w, "the fake to wait at the gate")
+        j = self.wait_job(s2)
+        self.assertTrue(j["ok"], j)
+        self.assertEqual(j["lines"][-1], "done: 1 of 1 gone from the library")
+        self.assertFalse(os.path.exists(self.a))
+        self.assertNotIn("a.jpg", self.names(s2)[0])
+        self.assertEqual(s2.req("GET", f"/m/{ida2}")[0].status, 404)
+        # finished: the next action starts at once
+        code, j = s2.post("/api/trash", {"ids": [idb2], "confirm": True})
+        self.assertEqual(code, 200, j)
+        self.assertTrue(self.wait_job(s2)["ok"])
+        self.assertFalse(os.path.exists(self.b))
+
+    def test_crashed_job_is_reported(self):
+        fake, gate = os.path.join(self.tmp, "gated_intake.py"), os.path.join(self.tmp, "gate")
+        with open(fake, "w") as f:
+            f.write(GATED)
+        os.mkfifo(gate)
+        self.env.update(MEDIA_REVIEW_INTAKE=fake, FAKE_GATE=gate)
+        s = self.start()
+        ida = self.id_of(s, "a.jpg")
+        code, j = s.post("/api/trash", {"ids": [ida], "confirm": True})
+        self.assertEqual(code, 200, j)
+        until(lambda: any("waiting at the gate" in x for x in s.get("/api/job")["lines"]), "the trash to start")
+        with open(os.path.join(self.state, "jobs", "gallery.json")) as f:
+            os.kill(json.load(f)["pid"], signal.SIGKILL)
+        j = self.wait_job(s)
+        self.assertEqual((j["state"], j["ok"], j["step_running"]), ("crashed", False, True))
+        code, _ = s.post("/api/trash", {"ids": [self.id_of(s, "b.jpg")], "confirm": True})
+        self.assertEqual(code, 409)  # the step the dead worker started still holds the lock
+        self.assertEqual(s.req("GET", f"/t/{ida}")[0].status, 404)  # and its files stay busy meanwhile
+        fd = os.open(gate, os.O_WRONLY)  # the fake is waiting on it: this returns at once
+        os.write(fd, b"go")
+        os.close(fd)
+        until(lambda: not s.get("/api/job")["step_running"], "the orphaned step to end")
+        self.assertEqual(s.get("/api/job")["state"], "crashed")
+        self.assertNotIn("a.jpg", self.names(s)[0])  # the orphaned step did finish; the listing follows the disk
 
     # ------------------------------------------------------------ plugin views
     def test_plugin_view(self):

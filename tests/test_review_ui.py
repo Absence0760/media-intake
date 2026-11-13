@@ -7,9 +7,12 @@ Images are drawn with Pillow and the video is an ffmpeg test pattern: no real
 photo is read. intake.py is replaced (MEDIA_REVIEW_INTAKE) by a fake that
 records its argv and mimics release/erase/purge-review on the fake state, so
 the real erase never runs. Nothing points at the real ~/.local/share/media-intake,
-~/Pictures, ~/Videos or /run/user/*/gvfs.
+~/Pictures, ~/Videos or /run/user/*/gvfs. With FAKE_GATE (a FIFO) the fake's first
+erase waits until the test opens the FIFO, so a run can be held mid-step without
+a sleep: the tests then kill servers or the job's worker and check what the next
+page shows.
 """
-import http.client, json, os, re, shutil, stat, subprocess, sys, tempfile, time, unittest
+import errno, http.client, json, os, re, shutil, signal, stat, subprocess, sys, tempfile, time, unittest
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import support  # noqa: E402,F401  (hermetic config)
@@ -27,6 +30,12 @@ state = os.environ["MEDIA_INTAKE_STATE"]
 with open(os.environ["FAKE_LOG"], "a") as f:
     f.write(json.dumps(sys.argv[1:]) + "\n")
 cmd, batch = sys.argv[1], sys.argv[2]
+gate = os.environ.get("FAKE_GATE")
+if gate and cmd == "erase" and os.path.exists(gate):  # hold the first erase until the test opens the FIFO
+    print("erase: waiting at the gate", flush=True)
+    with open(gate) as f:
+        f.read()
+    os.remove(gate)
 quar = os.path.join(state, "quarantine", batch)
 man = os.path.join(quar, "quarantine.json")
 if cmd == "release":
@@ -64,6 +73,17 @@ def write_json(p, obj):
     os.makedirs(os.path.dirname(p), exist_ok=True)
     with open(p, "w") as f:
         json.dump(obj, f)
+
+
+def until(pred, what, timeout=30):
+    """Poll a real condition (the status file, the progress API) until it holds."""
+    end = time.monotonic() + timeout
+    while time.monotonic() < end:
+        v = pred()
+        if v:
+            return v
+        time.sleep(0.05)
+    raise AssertionError(f"timed out waiting for {what}")
 
 
 def img(p, color, size=(64, 48)):
@@ -197,6 +217,33 @@ class ReviewUITest(unittest.TestCase):
                 return j, out
             time.sleep(0.1)
         self.fail("run never finished")
+
+    def gate(self):
+        g = os.path.join(self.tmp, "gate")
+        os.mkfifo(g)
+        self.env["FAKE_GATE"] = g
+        return g
+
+    def open_gate(self, g):
+        def w():
+            try:
+                fd = os.open(g, os.O_WRONLY | os.O_NONBLOCK)
+            except OSError as e:
+                if e.errno == errno.ENXIO:  # the fake has not opened it yet
+                    return False
+                raise
+            os.write(fd, b"go")
+            os.close(fd)
+            return True
+        until(w, "the fake erase to wait at the gate")
+
+    def job(self):
+        with open(os.path.join(self.state, "jobs", f"review-{BATCH}.json")) as f:
+            return json.load(f)
+
+    def progress(self, s, since=0):
+        r, b = s.req("GET", f"/api/progress?since={since}")
+        return json.loads(b)
 
     def originals(self):
         """Review items that are near-duplicates: of a filed batch item, of a library video, and of
@@ -598,6 +645,87 @@ class ReviewUITest(unittest.TestCase):
         self.assertNotIn(["erase", BATCH, "--yes"], self.calls())
         self.assertTrue(os.path.exists(os.path.join(quar, "DCIM/Camera/a.jpg")))
         self.assertEqual(s.p.wait(timeout=30), 1)
+
+    # ------------------------------------------------------------ the run is a detached job (jobs.py)
+    def test_run_survives_the_server_and_is_picked_up(self):
+        self.quarantine()
+        g = self.gate()
+        s1 = self.start()
+        items = self.items(s1)
+        dec = {str(i["id"]): "erase" for i in items}
+        r, b = s1.req("POST", "/api/submit", headers={"X-CSRF": s1.csrf()}, body={"decisions": dec, "confirm": "ERASE"})
+        self.assertEqual(r.status, 202, b)
+        until(lambda: any("waiting at the gate" in x for x in self.progress(s1)["lines"]), "the first erase")
+        st = self.job()
+        self.assertEqual(st["state"], "running")
+        jd = os.path.join(self.state, "jobs")
+        self.assertEqual(stat.S_IMODE(os.stat(jd).st_mode), 0o700)
+        for f in os.listdir(jd):
+            self.assertEqual(stat.S_IMODE(os.stat(os.path.join(jd, f)).st_mode), 0o600, f)
+        # The page server dies (closing the tab is the same: nothing in the page holds the run).
+        s1.p.send_signal(signal.SIGKILL)
+        s1.p.wait()
+        os.kill(st["pid"], 0)  # by PID: raises if the worker died with its server
+        # A restarted server shows the running job from the status file, from its first line.
+        s2 = self.start()
+        self.assertIn("still going", s2.note)
+        r, b = s2.req("GET", "/api/items")
+        j = json.loads(b)
+        self.assertTrue(j["watching"])
+        self.assertEqual(j["job"]["state"], "running")
+        self.assertNotIn("spec", j["job"])
+        self.assertEqual(s2.req("GET", f"/m/{items[0]['id']}")[0].status, 404)  # nothing served mid-run
+        p = self.progress(s2)
+        self.assertFalse(p["done"])
+        self.assertEqual(p["lines"][:2], [f"near-{BATCH}: keep 0, erase 1, trash 0", f"$ intake.py erase near-{BATCH} --yes"])
+        self.assertEqual((p["job"]["step"], p["job"]["label"]), (1, f"erase near-{BATCH}"))
+        # A second submit for the batch is refused, on this server and on another one started now.
+        r, b = s2.req("POST", "/api/submit", headers={"X-CSRF": s2.csrf()}, body={"decisions": dec, "confirm": "ERASE"})
+        self.assertEqual(r.status, 409, b)
+        s3 = self.start()
+        r, b = s3.req("POST", "/api/submit", headers={"X-CSRF": s3.csrf()}, body={"decisions": dec, "confirm": "ERASE"})
+        self.assertEqual(r.status, 409, b)
+        self.assertTrue(json.loads(b)["watching"])  # the page switches to the running job's progress
+        self.open_gate(self.env["FAKE_GATE"])
+        j, out = self.wait_done(s2)
+        self.assertTrue(j["ok"], out)
+        self.assertEqual(j["job"]["state"], "done")
+        self.assertIn("done: all steps succeeded", out)
+        self.assertEqual([c[:2] for c in self.calls()], [["erase", f"near-{BATCH}"], ["verify-gone", f"near-{BATCH}"],
+                                                        ["erase", BATCH], ["verify-gone", BATCH]])  # each once
+        self.assertEqual(s2.p.wait(timeout=30), 0)
+        self.assertFalse(os.path.exists(g))
+
+    def test_crashed_run_is_reported(self):
+        quar, _ = self.quarantine()
+        g = self.gate()
+        s = self.start()
+        dec = {str(i["id"]): "erase" for i in self.items(s)}
+        r, _ = s.req("POST", "/api/submit", headers={"X-CSRF": s.csrf()}, body={"decisions": dec, "confirm": "ERASE"})
+        self.assertEqual(r.status, 202)
+        until(lambda: any("waiting at the gate" in x for x in self.progress(s)["lines"]), "the first erase")
+        os.kill(self.job()["pid"], signal.SIGKILL)  # the worker dies mid-run
+        j, out = self.wait_done(s)
+        self.assertFalse(j["ok"])
+        self.assertEqual(j["job"]["state"], "crashed")
+        self.assertEqual(j["job"]["label"], f"erase near-{BATCH}")
+        self.assertTrue(j["job"]["step_running"])  # the erase it started is still going
+        self.assertEqual(self.job()["state"], "crashed")
+        self.assertEqual(s.p.wait(timeout=30), 1)
+        # A new page sees the crash, not a run that goes on forever; submit waits for the orphaned step.
+        s2 = self.start()
+        r, b = s2.req("GET", "/api/items")
+        k = json.loads(b)
+        self.assertFalse(k["watching"])
+        self.assertEqual((k["job"]["state"], k["job"]["done"]), ("crashed", True))
+        r, b = s2.req("POST", "/api/submit", headers={"X-CSRF": s2.csrf()}, body={"decisions": dec, "confirm": "ERASE"})
+        self.assertEqual(r.status, 409, b)
+        self.open_gate(g)
+        until(lambda: not json.loads(s2.req("GET", "/api/job")[1])["job"]["step_running"], "the orphaned step to end")
+        self.assertEqual(json.loads(s2.req("GET", "/api/job")[1])["job"]["state"], "crashed")  # never re-run by itself
+        self.assertEqual([c[0] for c in self.calls()], ["erase"])
+        r, page = s2.req("GET", "/")
+        self.assertIn(b"crashed", page)
 
 
 if __name__ == "__main__":

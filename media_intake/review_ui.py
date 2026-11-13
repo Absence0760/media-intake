@@ -10,7 +10,8 @@ to 127.0.0.1 on a random port, a random token on every request, a Host check
 against DNS rebinding, a CSRF value on every POST, no-store on every response.
 Media are served as-is from the quarantine/review files by an opaque id (an
 index into the list built at start-up), never by path; nothing is written to
-disk except batches/<batch>/review-decisions.json (0600).
+disk except batches/<batch>/review-decisions.json (0600) and the run's job
+files in <state>/jobs/ (jobs.py: dir 0700, files 0600).
 
 A near-duplicate is shown beside its original (display only, its own opaque id
 under /o/): the plan's `why` names it, and it is served only if it resolves to
@@ -23,11 +24,15 @@ Every item can also be trashed (`intake.py trash`: plain delete for junk that
 isn't private, remembered so it never comes back). --maybe-trash adds a tab of
 library files `suggest-trash` listed (maybe-trash.json): Keep runs `not-trash`.
 
-On submit (every item decided, ERASE typed) it runs, as subprocesses of the
-same Python: deletions of review items, then for quarantine/near-<batch> and
-quarantine/<batch>: `release` for kept files, `erase --yes` for the rest,
-`verify-gone`. Their output is streamed to the page, then the server exits.
-An assistant may start this; only you open the page.
+On submit (every item decided, ERASE typed) it starts a detached job
+(jobs.py, key review-<batch>; one at a time per batch, taken with flock) that
+runs, as subprocesses of the same Python: deletions of review items, then for
+quarantine/near-<batch> and quarantine/<batch>: `release` for kept files,
+`erase --yes` for the rest, `verify-gone`. Closing the page or stopping the
+server never stops it; the page polls the job's status and log, a restarted
+server (or a second one) shows it again, and a worker that died is reported as
+crashed. The server exits once the page has read the end. An assistant may
+start this; only you open the page.
 """
 import argparse, datetime, hashlib, html, http.server, json, mimetypes, os, re, secrets, shutil, struct
 import subprocess, sys, threading, time, urllib.parse
@@ -35,11 +40,10 @@ import subprocess, sys, threading, time, urllib.parse
 HERE = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, HERE)
 import config  # noqa: E402
+import jobs  # noqa: E402  (detached, re-attachable runs: <state>/jobs/)
 
 HOME = os.path.expanduser("~")
 STATE = config.get()["state"]
-# Tests point this at a fake that records its argv, so a real erase never runs there.
-INTAKE = os.environ.get("MEDIA_REVIEW_INTAKE", os.path.join(HERE, "intake.py"))
 BATCH_RE = re.compile(r"^[A-Za-z0-9_][A-Za-z0-9._-]*$")
 # What a browser can show; anything else (HEIC, DNG, GPR) gets a "no preview" card.
 SHOW_IMG = {".jpg": "image/jpeg", ".jpeg": "image/jpeg", ".png": "image/png", ".gif": "image/gif",
@@ -298,37 +302,28 @@ def collect_maybe():
     return items
 
 
-class App:
-    def __init__(self, batch, items, phone, drive, keep_phone_thumbnails=False, no_wipe_free=False, origs=()):
-        self.batch, self.items = batch, items
-        self.origs = list(origs)  # display-only originals, served by id under /o/
-        self.phone, self.drive = phone, drive
-        self.keep_phone_thumbnails, self.no_wipe_free = keep_phone_thumbnails, no_wipe_free
-        self.token = secrets.token_urlsafe(24)
-        self.csrf = secrets.token_urlsafe(24)
-        self.lock = threading.Lock()
-        self.submitted = False
-        self.lines, self.done, self.ok = [], False, None
-        self.done_seen = threading.Event()
-        self.finished = threading.Event()
-        self.port = None
+def job_key(batch):
+    """One job per batch (its quarantine, near- and xcheck- batches, review folder); one for maybe-trash alone."""
+    return f"review-{batch}" if batch else "maybe-trash"
 
-    # ------------------------------------------------------------ run
+
+class Runner:
+    """Runs the decisions inside the detached job worker (jobs.py run -> run_job)."""
+
+    def __init__(self, job, spec):
+        self.job = job
+        self.batch = spec["batch"]
+        self.items = spec["items"]  # [{tab, qbatch, rel, path}], the server's list, same order
+        self.dec = {int(k): v for k, v in spec["decisions"].items()}
+        self.phone, self.drive = spec.get("phone"), spec.get("drive")
+        self.keep_phone_thumbnails, self.no_wipe_free = spec.get("keep_phone_thumbnails"), spec.get("no_wipe_free")
+
     def log(self, s):
-        with self.lock:
-            self.lines.append(s)
-        print(s, flush=True)
+        self.job.log(s)
 
     def run(self, args, label):
-        cmd = [sys.executable, "-I", "-u", INTAKE] + args
-        self.log(f"$ intake.py {' '.join(a if not a.startswith(STATE) else '<state>' + a[len(STATE):] for a in args)}")
-        p = subprocess.Popen(cmd, stdin=subprocess.DEVNULL, stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
-                             text=True, cwd=HERE)
-        for line in p.stdout:
-            self.log("  " + line.rstrip("\n"))
-        rc = p.wait()
-        self.log(f"  [{label}: exit {rc}]")
-        return rc
+        shown = " ".join(a if not a.startswith(STATE) else "<state>" + a[len(STATE):] for a in args)
+        return self.job.run(args, label, shown)
 
     def device_args(self, verify=False, phone=True):
         a = []
@@ -342,18 +337,16 @@ class App:
                 a.append("--no-wipe-free")
         return a
 
-    def execute(self, dec):
+    def execute(self):
         ok = True
         try:
-            ok = self._execute(dec)
+            ok = self._execute(self.dec)
         except Exception as e:  # report, never leave the page hanging
             self.log(f"error: {type(e).__name__}: {e}")
             ok = False
-        with self.lock:
-            self.done, self.ok = True, ok
         where = f"batches/{self.batch}/review-decisions.json" if self.batch else "maybe-trash-decisions.json"
         self.log("done: " + ("all steps succeeded" if ok else f"something failed, see above; decisions are in {where}"))
-        self.finished.set()
+        return ok
 
     def phone_args(self, qb=None):
         return ["--phone", self.phone] if self.phone and not (qb or "").startswith("xcheck-") else []
@@ -428,6 +421,63 @@ class App:
                 self.log(f"{len(q)} near-duplicates now in quarantine/{qb}: run the review again for {again}")
         return ok
 
+
+
+def run_job(job):
+    """jobs.py's entry point for runner "review_ui"."""
+    return Runner(job, job.spec).execute()
+
+
+class App:
+    def __init__(self, batch, items, phone, drive, keep_phone_thumbnails=False, no_wipe_free=False, origs=()):
+        self.batch, self.items = batch, items
+        self.origs = list(origs)  # display-only originals, served by id under /o/
+        self.phone, self.drive = phone, drive
+        self.keep_phone_thumbnails, self.no_wipe_free = keep_phone_thumbnails, no_wipe_free
+        self.token = secrets.token_urlsafe(24)
+        self.csrf = secrets.token_urlsafe(24)
+        self.lock = threading.Lock()
+        self.key = job_key(batch)
+        self.job_id = None  # the job this server shows (started here, or found running)
+        self.ok = None
+        self.done_seen = threading.Event()
+        self.finished = threading.Event()
+        self.port = None
+        self.current()
+
+    @property
+    def submitted(self):
+        return self.job_id is not None
+
+    # ------------------------------------------------------------ the job (jobs.py)
+    def current(self):
+        """The key's job status; a live job started elsewhere (another page or server) is adopted."""
+        st = jobs.status(self.key)
+        with self.lock:
+            if st and not st["done"] and self.job_id is None:
+                self._watch(st["id"])
+        return st
+
+    def _watch(self, jid):
+        self.job_id = jid
+        threading.Thread(target=self._wait, args=(jid,), daemon=True).start()
+
+    def _wait(self, jid):
+        st = jobs.wait(self.key, jid)
+        self.ok = bool(st and st.get("id") == jid and st.get("ok"))
+        self.finished.set()
+
+    def progress(self, since):
+        st = jobs.status(self.key) if self.job_id else None
+        if not st or st.get("id") != self.job_id:
+            gone = self.job_id is not None
+            return dict(lines=[], next=since, done=gone, ok=None if not gone else False,
+                        job=jobs.public(st), replaced=gone)
+        ls, nxt = jobs.lines(self.key, since)  # after the status: a done job has written every line
+        if st["done"] and nxt <= since + len(ls):
+            self.done_seen.set()
+        return dict(lines=ls, next=nxt, done=st["done"], ok=st.get("ok"), job=jobs.public(st))
+
     # ------------------------------------------------------------ submit
     def submit(self, body):
         """Validate and start. Returns (http code, message)."""
@@ -446,10 +496,20 @@ class App:
             dec[i] = d
         if set(raw) - {str(i) for i in range(len(self.items))}:
             return 400, "unknown item"
+        if self.current() and self.submitted:
+            return 409, "already submitted"
         with self.lock:
             if self.submitted:
                 return 409, "already submitted"
-            self.submitted = True
+            try:
+                claim = jobs.claim(self.key)  # atomic: a second submit for this batch is refused here
+            except jobs.Busy:
+                return 409, "a run for this batch is already in progress"
+            with claim:
+                self._start(claim, dec)
+        return 202, "started"
+
+    def _start(self, claim, dec):
         bd = os.path.join(STATE, "batches", self.batch) if self.batch else STATE
         os.makedirs(bd, mode=0o700, exist_ok=True)
         rec = {"batch": self.batch, "submitted": f"{datetime.datetime.now():%Y-%m-%d %H:%M:%S}",
@@ -462,8 +522,12 @@ class App:
             else:
                 rec["review"][it["rel"]] = dec[i]
         write_private(os.path.join(bd, "review-decisions.json" if self.batch else "maybe-trash-decisions.json"), rec)
-        threading.Thread(target=self.execute, args=(dec,), daemon=True).start()
-        return 202, "started"
+        spec = dict(batch=self.batch, decisions={str(i): d for i, d in dec.items()},
+                    items=[dict(tab=it["tab"], qbatch=it["qbatch"], rel=it["rel"], path=it["path"]) for it in self.items],
+                    phone=self.phone, drive=self.drive, keep_phone_thumbnails=self.keep_phone_thumbnails,
+                    no_wipe_free=self.no_wipe_free)
+        st = claim.spawn("review_ui", spec)
+        self._watch(st["id"])
 
     def public_items(self):
         return [dict(id=i, tab=it["tab"], batch=it["qbatch"] or self.batch, rel=it["rel"], reasons=it["reasons"],
@@ -551,17 +615,18 @@ class Handler(http.server.BaseHTTPRequestHandler):
             self.reply(200, PAGE.replace("__CSRF__", html.escape(app.csrf)), "text/html; charset=utf-8")
         elif path == "/api/items":
             dev = {"phone": app.phone, "drive": app.drive}
-            self.json(200, {"batch": app.batch, "items": app.public_items(), "devices": dev})
+            st = app.current()
+            self.json(200, {"batch": app.batch, "items": app.public_items(), "devices": dev,
+                            "job": jobs.public(st), "watching": app.submitted})
+        elif path == "/api/job":  # cheap check the page makes while you decide: did a run start elsewhere?
+            st = app.current()
+            self.json(200, {"job": jobs.public(st), "watching": app.submitted})
         elif path == "/api/progress":
             try:
                 since = max(0, int(q.get("since", ["0"])[0]))
             except ValueError:
                 since = 0
-            with app.lock:
-                lines, done, ok = app.lines[since:], app.done, app.ok
-            if done and since + len(lines) >= len(app.lines):
-                app.done_seen.set()
-            self.json(200, {"lines": lines, "next": since + len(lines), "done": done, "ok": ok})
+            self.json(200, app.progress(since))
         elif m := re.fullmatch(r"/m/([0-9]{1,9})", path):
             i = int(m.group(1))
             if i >= len(app.items) or app.submitted:
@@ -651,7 +716,7 @@ class Handler(http.server.BaseHTTPRequestHandler):
         if not isinstance(body, dict):
             return self.json(400, {"error": "bad json"})
         code, msg = app.submit(body)
-        self.json(code, {"result" if code == 202 else "error": msg})
+        self.json(code, {"result" if code == 202 else "error": msg, "watching": app.submitted})
 
 
 def serve(app, port=0):
@@ -692,22 +757,29 @@ def main(argv=None):
     origs = attach_originals(a.batch, items) if a.batch else []
     if a.maybe_trash:
         items += collect_maybe()
-    if not items:
-        print(f"nothing to review for {a.batch or 'maybe-trash'}")
-        return 0
     app = App(a.batch, items, os.path.abspath(a.phone) if a.phone else None,
               os.path.abspath(a.drive) if a.drive else None, a.keep_phone_thumbnails, a.no_wipe_free, origs)
+    if not items and not app.submitted:  # a run still going is shown even when nothing is left to decide
+        print(f"nothing to review for {a.batch or 'maybe-trash'}")
+        return 0
     httpd, url = serve(app, a.port)
     nq = sum(it["tab"] == "quarantine" for it in items)
     print(f"xdg-open '{url}'", flush=True)
     nm = sum(it["tab"] == "maybe" for it in items)
-    print(f"({nq} quarantined, {len(items) - nq - nm} in review, {nm} maybe trash. A private browser window keeps it out of history. "
-          "Ctrl-C quits without changing anything.)", flush=True)
+    if app.submitted:
+        print(f"(a run for {a.batch or 'maybe-trash'} is still going; the page shows its progress. "
+              "A private browser window keeps it out of history. Ctrl-C stops only the page server.)", flush=True)
+    else:
+        print(f"({nq} quarantined, {len(items) - nq - nm} in review, {nm} maybe trash. A private browser window "
+              "keeps it out of history. Ctrl-C quits without changing anything.)", flush=True)
     try:
         httpd.serve_forever(poll_interval=0.2)
     except KeyboardInterrupt:
         if not app.submitted:
             print("stopped; nothing was changed")
+        elif not app.finished.is_set():
+            print(f"page server stopped; the run keeps going on its own (<state>/jobs/{app.key}.json). "
+                  "Run the same review command again to watch it.")
         return 130
     finally:
         httpd.server_close()
@@ -777,8 +849,9 @@ pre{white-space:pre-wrap;word-break:break-all;font-size:15px;background:var(--bg
   <input id="typed" autocomplete="off" spellcheck="false" aria-label="Type ERASE">
   <div><button id="go" disabled>Run</button><button id="back">Back</button></div>
  </section>
- <section id="run" class="panel"><h2 id="runh">Running…</h2><pre id="out"></pre></section>
+ <section id="run" class="panel"><h2 id="runh">Running…</h2><p id="runs" class="help"></p><pre id="out"></pre></section>
  <div id="lists">
+  <p class="note" id="last" hidden></p>
   <p class="help" id="helpq">K = keep (back to the library), E = erase everywhere, T = trash (plain delete for junk that isn't private). ← → or ↑ ↓ move between items.</p>
   <p class="help" id="helpr" hidden>K = keep, E or D = delete (near-duplicates and junk), T = trash (delete, and never take it in again). ← → or ↑ ↓ move between items.</p>
   <p class="help" id="helpm" hidden>Suggested junk from your library. K = keep (never suggested again), T = trash. Nothing is deleted until you submit. ← → or ↑ ↓ move between items.</p>
@@ -866,17 +939,35 @@ $("#typed").oninput=()=>{$("#go").disabled=$("#typed").value!=="ERASE"};
 $("#go").onclick=async()=>{
  $("#go").disabled=true;const d={};data.items.forEach(i=>d[i.id]=dec[i.id]);
  const r=await fetch("/api/submit",{method:"POST",credentials:"same-origin",headers:{"Content-Type":"application/json","X-CSRF":CSRF},body:JSON.stringify({decisions:d,confirm:$("#typed").value})});
- if(r.status!==202){const j=await r.json().catch(()=>({}));alert("Refused: "+(j.error||r.status));$("#go").disabled=false;return}
- $("#confirm").style.display="none";$("#run").style.display="block";document.querySelectorAll("header button").forEach(b=>b.disabled=true);
- $("#list").replaceChildren();poll(0);
+ if(r.status!==202){const j=await r.json().catch(()=>({}));if(j.watching){attach();return}alert("Refused: "+(j.error||r.status));$("#go").disabled=false;return}
+ attach();
 };
+/* The run is a detached job (jobs.py): closing this tab or stopping the server never stops it, and any
+   page of this batch (a reload, a second tab, a restarted server) shows it from the status file. */
+let attached=false;
+function attach(){if(attached)return;attached=true;$("#confirm").style.display="none";$("#lists").hidden=true;$("#run").style.display="block";
+ document.querySelectorAll("header button").forEach(b=>b.disabled=true);$("#list").replaceChildren();$("#out").textContent="";poll(0)}
+function stepText(jb){return jb&&jb.step?`Step ${jb.step}${jb.total?" of "+jb.total:""}: ${jb.label}`:""}
 async function poll(since){
- let j;try{j=await (await fetch("/api/progress?since="+since,{credentials:"same-origin"})).json()}catch(e){$("#runh").textContent="Server stopped";return}
+ let j;try{j=await (await fetch("/api/progress?since="+since,{credentials:"same-origin"})).json()}
+ catch(e){$("#runh").textContent="Page server stopped";$("#runs").textContent="If the run had not finished it keeps going on its own; run the same review command again to watch it.";return}
  if(j.lines.length)$("#out").textContent+=j.lines.join("\n")+"\n";$("#out").scrollTop=1e9;
- if(j.done){$("#runh").textContent=j.ok?"Done. You can close this tab.":"Finished with problems (see below). You can close this tab.";return}
+ const jb=j.job||{};$("#runs").textContent=stepText(jb)+(jb.started?` (started ${jb.started})`:"");
+ if(j.done){
+  if(j.replaced)$("#runh").textContent="Another page started a newer run of this batch; open the review again to see it.";
+  else if(jb.state==="crashed"){$("#runh").textContent="The run stopped unexpectedly (crashed)";
+   $("#runs").textContent=`It died at ${stepText(jb)||"start-up"}. Nothing more will run by itself`+(jb.step_running?"; the step it had started is still running, so a new submit is refused until it ends.":". Open the review again: it shows what is left.")}
+  else $("#runh").textContent=j.ok?"Done. You can close this tab.":"Finished with problems (see below). You can close this tab.";return}
+ $("#runh").textContent="Running… (closing this tab does not stop it)";
  setTimeout(()=>poll(j.next),700);
 }
-fetch("/api/items",{credentials:"same-origin"}).then(r=>r.json()).then(j=>{data=j;tab=TABS.find(t=>itemsOf(t).length)||"quarantine";render()});
+function lastRun(jb){if(!jb||!jb.done)return;const L=$("#last");L.hidden=false;
+ L.textContent=`Last run of this batch (started ${jb.started}): `+(jb.state==="crashed"?`crashed at ${stepText(jb)||"start-up"}`+(jb.step_running?"; the step it started is still running, so submit is refused until it ends.":"."):jb.ok?"finished OK.":"finished with problems.")}
+fetch("/api/items",{credentials:"same-origin"}).then(r=>r.json()).then(j=>{data=j;tab=TABS.find(t=>itemsOf(t).length)||"quarantine";
+ if(j.watching){attach();return}render();lastRun(j.job);
+ /* a run started from another page or server of this batch: show it instead of stale items */
+ const watch=async()=>{if(attached)return;try{const k=await (await fetch("/api/job",{credentials:"same-origin"})).json();if(k.watching){attach();return}}catch(e){return}setTimeout(watch,4000)};
+ setTimeout(watch,4000)});
 </script></body></html>
 """
 
