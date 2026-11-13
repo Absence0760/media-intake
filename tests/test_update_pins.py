@@ -141,6 +141,15 @@ class Siglip(unittest.TestCase):
                                "files": {"onnx/model.onnx": B, "tokenizer.json": SIGLIP["files"]["tokenizer.json"]}})
         self.assertIn("setup.sh --build-labels", log[0])
 
+    def test_pin_newer_than_cutoff_never_moves_back(self):
+        newer_pin = {**SIGLIP, "revision": NEWER, "revision_date": "2026-11-10"}
+        for listed in ((NEWER, NEW, OLD), (NEW, OLD)):  # in main's listing, or past the page it returns
+            with self.subTest(listed=len(listed)):
+                log = []
+                get = fake_get({COMMITS: self.commits(*listed), **self.tree(B)})
+                self.assertIs(up.update_siglip(newer_pin, CUTOFF, get, log.append), newer_pin)
+                self.assertIn("is newer than", log[0])
+
     def test_file_gone_is_an_error(self):
         get = fake_get({COMMITS: self.commits(NEW, OLD),
                         f"https://huggingface.co/api/models/{REPO}/tree/{NEW}?recursive=true": []})

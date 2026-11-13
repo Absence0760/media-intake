@@ -51,7 +51,8 @@ bash setup.sh && media-intake doctor        # fetch and verify what moved
 
 Nothing newer than 7 days is taken: wheels go through `uv pip compile
 --exclude-newer <cutoff>`, SigLIP moves to the newest commit older than the
-cutoff (and only if a pinned file changed), and a new Ollama digest is first
+cutoff (only if a pinned file changed, and never back to a commit older than
+the pinned one), and a new Ollama digest is first
 recorded as `ollama.candidate` and pinned only by a run 7 or more days later
 (the registry publishes no dates). `--cutoff` takes an earlier RFC 3339 time.
 System packages the venv reuses (numpy, packaging) are resolved against the
