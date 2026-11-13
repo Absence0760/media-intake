@@ -96,34 +96,57 @@ order (`date_src` in `plan.json`; `plan` prints a count per source):
 |---|---|
 | `exif` | `DateTimeOriginal`, else EXIF `CreateDate`, else `ModifyDate`; local time, with `OffsetTimeOriginal` (else `OffsetTime`) as its offset |
 | `video` | Apple's `Keys:CreationDate` (local time with its own offset), else QuickTime `CreateDate` / ffprobe `creation_time`, which is UTC: converted to local time with `OffsetTimeOriginal` when the file has one, else this machine's time zone for that date |
-| `gps` | `GPSDateTime` (EXIF, or a GoPro's GPMF track read with `exiftool -ee`; the earliest fix), else `GPSDateStamp` alone (noon UTC of that day). UTC, converted like `video` |
+| `gps` | `GPSDateTime` (EXIF, or a GoPro's GPMF track read with `exiftool -ee`; the start of the locked run, below), else `GPSDateStamp` alone (noon UTC of that day). UTC, converted like `video` |
 | `filename` | a date in the name (`20261108_071502`, `2026-11-08 07.15.02`, `20261108`) |
 | `folder` | an iPhone export's `DCIM/YYYYMM__/` folder: the 1st of that month (day unknown, so `--event` days don't match it) |
 | `mtime` | the file's modification time, last resort |
 | `offset` | any of the above except `gps`, shifted by `--clock-offset`; `date_from` keeps which |
 
-A camera date (`exif`, `video`) is used only when it is **plausible**;
-otherwise the GPS date wins, and only without one do `filename`, `folder` and
-`mtime` get a turn. Implausible means:
+A camera date (`exif`, `video`) is used unless it is **impossible** or **GPS
+overrules it**; then the GPS date wins, and only without one do `filename`,
+`folder` and `mtime` get a turn.
 
-- **impossible**: before 2000-01-02 (the QuickTime 1904, Unix 1970 and DOS
+- **Impossible**: before 2000-01-02 (the QuickTime 1904, Unix 1970 and DOS
   1980 epochs, and the 2000-01-01 many cameras reset to), or more than a day
-  in the future. Applies to every source.
-- **contradicted by GPS**: the file has a GPS date and the camera date is more
+  in the future. Applies to every source. The clock was never set, so a GPS
+  date replaces it without a flag.
+- **Contradicted by GPS**: the file has a GPS date and the camera date is more
   than a day away from it once time zones are allowed for: 24 h between the
   two instants when the camera's offset is known, else 24 h + 14 h (the widest
-  UTC offset), plus 12 h for a date-only GPS stamp. GPS time comes from the
-  satellites; a camera clock a day or more out is wrong. This catches a GoPro
-  with an unset clock (2015-12-31 / 2016-01-01) and any other wrong day, not
-  just those two. Smaller errors (a wrong time zone, DST) are left to
-  `--clock-offset`.
+  UTC offset), plus 12 h for a date-only GPS stamp. Smaller errors (a wrong
+  time zone, DST) are left to `--clock-offset`.
 
-A plausible camera date on a known clock-reset default (2015-12-31 or
-2016-01-01) with no GPS date to check it is kept but flagged
-(`date_suspect`), as is a file where nothing was plausible (it falls back to
-`mtime`). `plan` lists the files whose camera date GPS replaced, the files
-`--clock-offset` shifted and the files to check (first five names each);
-`date_note` in `plan.json` says why.
+A contradiction alone doesn't prove the camera wrong: a GPS stamp is the time
+of the receiver's *last fix*, and a phone's can be days old. So GPS replaces a
+contradicted camera date only when:
+
+- the camera date is a **clock-reset default** (2015-12-31 or 2016-01-01, a
+  GoPro with an unset clock) and no `--clock-offset` applies: the clock was
+  never set, so the GPS date is used without a flag; or
+- **nothing backs the camera date**: the file name carries no date agreeing
+  with it (within 14 h, so a name in UTC agrees; a date-only name agrees over
+  its whole day) and the camera recorded no UTC offset (`OffsetTimeOriginal`
+  / `OffsetTime`, or Apple's `CreationDate` offset; QuickTime's UTC
+  `CreateDate` doesn't count). A camera that records its offset has a
+  network-synced clock. The GPS date is used and the file is **flagged**.
+
+Otherwise the camera date is kept and `date_note` says GPS disagreed: not
+flagged when the file name agrees (two sources against one), flagged when only
+the recorded offset backed it (a camera can record the offset of a clock set
+by hand).
+
+A camera date on a clock-reset default with no GPS date to check it is kept
+but flagged, as is a file where nothing was plausible (it falls back to
+`mtime`). Flagged files have `date_suspect` set in `plan.json`. `plan` lists
+the files whose camera date GPS replaced, the files `--clock-offset` shifted
+and the files to check (first five names each); `date_note` says why.
+
+A GoPro video's GPMF track holds many GPS samples, and those before the
+receiver locks can carry a stale time, so the earliest sample is the one most
+likely to be wrong. The date is the first sample of the unbroken run (no gap
+over 10 minutes) that holds the median sample: the locked run covers nearly
+all of a clip, so the median falls inside it, and its first sample is the
+start of recording. A plain median would land mid-clip.
 
 **`--clock-offset DEVICE=±Nh`** (repeatable) is for a camera whose clock was
 simply wrong: it shifts every date read from that device's own clock (never a
@@ -244,8 +267,12 @@ back from another device or a backup. Anything private goes through `erase`
   spare blocks, so an overwrite is no guarantee there. The robust fix is a
   LUKS-encrypted backup drive, or a drive wiped whole.
 - **Phone.** `erase --phone` deletes the originals over MTP and, by default,
-  `DCIM/.thumbnails` and `Pictures/.thumbnails` (exactly those two paths, no
-  symlinks; Android rebuilds them; `--keep-phone-thumbnails` skips).
+  `DCIM/.thumbnails` and `Pictures/.thumbnails` (Android rebuilds them;
+  `--keep-phone-thumbnails` leaves them alone). Exactly those two paths: a
+  symlink inside either, or anything in them that isn't a plain thumbnail
+  path, **refuses the whole erase** before anything is deleted, naming the
+  path. Your yes covered folders of thumbnails, so one that holds something
+  else is for you to look at on the phone, not for erase to work around.
 
 ## Device deletes and case-insensitive storage
 
@@ -258,6 +285,16 @@ never renames or moves a file there. `release`, `forget` and the HOME/drive
 sweep never touch a phone; the sweep and `erase --drive` delete only files
 they have just hashed as an erased item, so the name they delete is the
 content they matched.
+
+Before any delete, the gate checks each target: inside the `--phone` root,
+inside the allowlist (`sources.check`: `erase` and `trash` skip a phone
+original outside it with a line; `offload`, and anything amiss in the phone
+thumbnail folders, refuse the whole command), and the same size as the staged copy
+(a file whose size changed is skipped quietly). A phone original whose
+manifest row records no size refuses the whole command, listing the paths:
+its copy can't be checked, so it is never deleted unchecked; stage the batch
+again. Only the phone thumbnail folders, which have no staged copy, skip the
+size check, and they say so with an explicit marker (`NO_SIZE_CHECK`).
 
 Android's emulated storage, and the FAT/exFAT of cameras and drives, ignore
 letter case. After a case-only rename (`IMG_0001.JPG` to `img_0001.jpg`) a

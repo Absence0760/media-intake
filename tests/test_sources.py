@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Guard tests: the intake never lists or copies anything outside the media allowlist.
 
-  python3 -I tools/media/test_sources.py
+  python3 -I -m unittest discover -s tests -p test_sources.py
 """
 import os, sys, tempfile, unittest
 

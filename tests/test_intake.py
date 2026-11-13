@@ -464,6 +464,83 @@ class EraseEverywhere(unittest.TestCase):
         self.assertEqual(list(nq), ["Pictures/library/2025/2025-06/IMG_1-edit.jpg"])
         self.assertFalse(os.path.exists(other))
 
+    # ---- device-delete guards: each refusal leaves every device file (and the quarantine) as it was
+    def refused(self, *args):
+        r = subprocess.run([PY, "-I", INTAKE, *args], env=self.env, capture_output=True, text=True,
+                           stdin=subprocess.DEVNULL)
+        self.assertEqual(r.returncode, 1, f"{args}\n{r.stdout}\n{r.stderr}")
+        self.assertIn("nothing deleted from the device", r.stderr)
+        return r.stderr
+
+    def phone_files(self):
+        return {os.path.join(r, f): os.path.realpath(os.path.join(r, f))
+                for r, _, fs in os.walk(self.phone) for f in fs}
+
+    def edit_manifest(self, batch, fn):
+        mp = os.path.join(self.state, "batches", batch, "manifest.json")
+        man = jload(mp)
+        fn(man["files"])
+        with open(mp, "w") as f:
+            json.dump(man, f)
+
+    def filed(self, batch):
+        self.intake("stage", self.phone, "--kind", "phone", "--batch", batch)
+        self.intake("plan", batch)
+        self.intake("apply", batch, "--no-scan")
+
+    def test_erase_refuses_a_phone_original_with_no_recorded_size(self):
+        batch = "2026-11-13-nosize"
+        qpath = self.quarantine(batch)
+        self.edit_manifest(batch, lambda fs: fs["DCIM/Camera/20261023_100000.jpg"].pop("size"))
+        before = self.phone_files()
+        err = self.refused("erase", batch, "--phone", self.phone, "--yes")
+        self.assertIn("records no size", err)
+        self.assertIn("DCIM/Camera/20261023_100000.jpg", err)
+        self.assertEqual(self.phone_files(), before, "no phone file (thumbnails included) was deleted")
+        self.assertTrue(os.path.isfile(qpath), "nothing was erased")
+        self.assertFalse(os.path.exists(os.path.join(self.state, "erase-log.txt")))
+
+    def test_offload_refuses_a_phone_original_with_no_recorded_size(self):
+        batch = "2026-11-13-nosize-off"
+        self.filed(batch)
+        self.edit_manifest(batch, lambda fs: fs["DCIM/Camera/20261024_100000.jpg"].pop("size"))
+        before = self.phone_files()
+        self.assertIn("records no size", self.refused("offload", batch, "--phone", self.phone, "--yes"))
+        self.assertEqual(self.phone_files(), before)
+
+    def test_offload_refuses_everything_for_one_target_off_the_allowlist(self):
+        batch = "2026-11-13-allow"
+        self.filed(batch)
+        off = os.path.join(self.phone, "Download/20261024_100000.jpg")
+        os.makedirs(os.path.dirname(off))
+        shutil.copyfile(os.path.join(self.phone, "DCIM/Camera/20261024_100000.jpg"), off)
+
+        def redirect(fs):
+            fs["DCIM/Camera/20261024_100000.jpg"]["src"] = off
+        self.edit_manifest(batch, redirect)
+        before = self.phone_files()
+        err = self.refused("offload", batch, "--phone", self.phone, "--yes")
+        self.assertIn("refused: denied folder: Download/20261024_100000.jpg", err)
+        self.assertEqual(self.phone_files(), before, "the allowed files are not offloaded either")
+
+    def test_erase_refuses_a_symlink_in_phone_thumbnails(self):
+        batch = "2026-11-13-link"
+        qpath = self.quarantine(batch)
+        target = os.path.join(self.phone, "DCIM/Camera/20261024_100000.jpg")
+        link = os.path.join(self.phone, "DCIM/.thumbnails/link.jpg")
+        os.symlink(target, link)
+        before = self.phone_files()
+        err = self.refused("erase", batch, "--phone", self.phone, "--yes")
+        self.assertIn("refused: symlink: DCIM/.thumbnails/link.jpg", err)
+        self.assertIn("--keep-phone-thumbnails", err)
+        self.assertEqual(self.phone_files(), before, "neither the link, its target nor any thumbnail went")
+        self.assertTrue(os.path.isfile(qpath), "nothing was erased")
+        # Leaving the thumbnail folders alone, erase goes ahead; the link's target is untouched.
+        self.intake("erase", batch, "--phone", self.phone, "--yes", "--keep-phone-thumbnails",
+                    "--drive", self.drive, "--no-wipe-free")
+        self.assertFalse(os.path.exists(self.sens))
+        self.assertTrue(os.path.isfile(target) and os.path.islink(link))
+
     def test_wipe_free(self):
         out = self.intake("wipe-free", self.drive)
         self.assertIn("3 MB of zeros", out)

@@ -33,34 +33,61 @@ def mtime(d):
     return d.replace(tzinfo=NY).timestamp()
 
 
-def jpg(path, dt=None, gps_day=None, gps_hms=None, offset=None, make=None, model=None):
-    """A small JPEG with the given EXIF, written by Pillow; GPS re-written by exiftool if Pillow dropped it."""
+def jpg(path, dt=None, gps_day=None, gps_hms=None, offset=None, make=None, model=None, writer="pillow"):
+    """A small JPEG with the given EXIF, written by Pillow or (writer="exiftool") by exiftool.
+
+    The IFDs are assigned as whole dicts: on Pillow < 11, Exif.get_ifd() on a fresh Exif returns a
+    dict that is never saved, so tags set through it were silently dropped. Every tag asked for is
+    read back with exiftool when installed (else Pillow), and a missing one fails the test loudly."""
     os.makedirs(os.path.dirname(path), exist_ok=True)
-    ex = Image.Exif()
-    if make:
-        ex[271] = make
-    if model:
-        ex[272] = model
-    e = ex.get_ifd(0x8769)
-    if dt:
-        e[36867] = dt
-    if offset:
-        e[36881] = offset
-    if gps_day:
-        g = ex.get_ifd(0x8825)
-        g[1], g[2], g[3], g[4] = "N", (37.0, 32.0, 10.0), "W", (77.0, 26.0, 5.0)
-        g[29] = gps_day
-        if gps_hms:
-            g[7] = tuple(float(x) for x in gps_hms)
-    Image.new("RGB", (400, 300), (40, 90, 160)).save(path, exif=ex)
-    with Image.open(path) as im:
-        kept = 29 in im.getexif().get_ifd(0x8825)
-    if gps_day and not kept:
+    want = {k: v for k, v in (("Make", make), ("Model", model), ("DateTimeOriginal", dt),
+                              ("OffsetTimeOriginal", offset), ("GPSDateStamp", gps_day)) if v}
+    if gps_hms:
+        want["GPSTimeStamp"] = "%02d:%02d:%02d" % tuple(int(x) for x in gps_hms)
+    if writer == "exiftool":
         if not HAVE_EXIFTOOL:
-            raise unittest.SkipTest("this Pillow drops the GPS IFD and exiftool is missing")
-        args = [f"-GPSDateStamp={gps_day}"] + ([f"-GPSTimeStamp={':'.join(map(str, gps_hms))}"] if gps_hms else [])
-        subprocess.run(["exiftool", "-q", "-overwrite_original", *args, path], check=True)
+            raise unittest.SkipTest("exiftool missing")
+        Image.new("RGB", (400, 300), (40, 90, 160)).save(path)
+        args = [f"-{k}={v}" for k, v in want.items()]
+        if gps_day:
+            args += ["-GPSLatitude=37.536", "-GPSLatitudeRef=N", "-GPSLongitude=77.435", "-GPSLongitudeRef=W"]
+        if args:  # with no assignments exiftool would print every tag instead
+            subprocess.run(["exiftool", "-q", "-overwrite_original", *args, path], check=True)
+    else:
+        ex = Image.Exif()
+        if make:
+            ex[271] = make
+        if model:
+            ex[272] = model
+        e = {k: v for k, v in ((36867, dt), (36881, offset)) if v}
+        if e:
+            ex[0x8769] = e
+        if gps_day:
+            g = {1: "N", 2: (37.0, 32.0, 10.0), 3: "W", 4: (77.0, 26.0, 5.0), 29: gps_day}
+            if gps_hms:
+                g[7] = tuple(float(x) for x in gps_hms)
+            ex[0x8825] = g
+        Image.new("RGB", (400, 300), (40, 90, 160)).save(path, exif=ex)
+    got = _written(path)
+    missing = {k: v for k, v in want.items() if str(got.get(k)) != v}
+    assert not missing, f"{writer} did not write {missing} to {path} (read back: {got})"
     return path
+
+
+def _written(path):
+    """The tags jpg() writes, as read back (exiftool when installed, else Pillow)."""
+    if HAVE_EXIFTOOL:
+        r = subprocess.run(["exiftool", "-j", "-Make", "-Model", "-DateTimeOriginal", "-OffsetTimeOriginal",
+                            "-GPSDateStamp", "-GPSTimeStamp", path], capture_output=True, text=True, check=True)
+        return json.loads(r.stdout)[0]
+    with Image.open(path) as im:
+        ex = im.getexif()
+    e, g = ex.get_ifd(0x8769), ex.get_ifd(0x8825)
+    out = {"Make": ex.get(271), "Model": ex.get(272), "DateTimeOriginal": e.get(36867),
+           "OffsetTimeOriginal": e.get(36881), "GPSDateStamp": g.get(29)}
+    if 7 in g:
+        out["GPSTimeStamp"] = "%02d:%02d:%02d" % tuple(int(float(x)) for x in g[7])
+    return out
 
 
 def mov(path, created, apple=None, model=None):
@@ -105,6 +132,52 @@ class Plausibility(unittest.TestCase):
     def test_any_wrong_day_is_caught_not_only_reset_defaults(self):
         d = res({"DateTimeOriginal": "2024:03:02 10:00:00", "GPSDateTime": "2026:11:08 15:00:00Z"})
         self.assertEqual(d.src, "gps")
+        self.assertTrue(d.suspect, "GPS overruling a working-looking clock must be listed to check")
+        self.assertIn("disagrees with GPS", d.note)
+
+    def test_stale_phone_gps_does_not_beat_a_backed_camera_date(self):
+        # A phone's GPS stamp is its last fix, here two days old; the name and the offset both back the camera.
+        d = res({"DateTimeOriginal": "2026:11:08 07:15:02", "OffsetTimeOriginal": "+01:00",
+                 "GPSDateTime": "2026:11:06 10:00:00Z"}, "/x/IMG_20261108_071502.jpg")
+        self.assertEqual((d.src, d.dt, d.tz, d.suspect), ("exif", D(2026, 11, 8, 7, 15, 2), "+01:00", False))
+        self.assertIn("stale", d.note)
+
+    def test_file_name_alone_backs_the_camera(self):
+        stale = "2026:11:06 10:00:00Z"
+        for name in ("IMG_20261108_071502.jpg", "PXL_20261108_121502123.jpg", "Screenshot_20261108.jpg"):
+            d = res({"DateTimeOriginal": "2026:11:08 07:15:02", "GPSDateTime": stale}, "/x/" + name)
+            self.assertEqual((d.src, d.suspect), ("exif", False), name)  # local, UTC and date-only names agree
+            self.assertIn("file name agrees", d.note)
+        d = res({"DateTimeOriginal": "2026:11:08 07:15:02", "GPSDateTime": stale}, "/x/IMG_20261107_071502.jpg")
+        self.assertEqual((d.src, d.suspect), ("gps", True), "a name a day off backs nothing")
+
+    def test_recorded_offset_alone_backs_the_camera_but_is_flagged(self):
+        d = res({"DateTimeOriginal": "2026:11:08 07:15:02", "OffsetTimeOriginal": "+01:00",
+                 "GPSDateTime": "2026:11:06 10:00:00Z"})
+        self.assertEqual((d.src, d.dt, d.suspect), ("exif", D(2026, 11, 8, 7, 15, 2), True))
+        self.assertIn("UTC offset", d.note)
+
+    def test_unbacked_camera_loses_to_gps_flagged(self):
+        d = res({"DateTimeOriginal": "2026:11:08 07:15:02", "GPSDateTime": "2026:11:06 10:00:00Z"})
+        self.assertEqual((d.src, d.dt, d.suspect), ("gps", D(2026, 11, 6, 5, 0), True))
+
+    def test_impossible_camera_date_takes_gps_unflagged(self):
+        d = res({"DateTimeOriginal": "1970:01:01 00:00:00", "GPSDateTime": "2026:11:08 15:00:00Z"},
+                "/x/IMG_19700101_000000.jpg")
+        self.assertEqual((d.src, d.suspect), ("gps", False))
+        self.assertIn("impossible", d.note)
+
+    def test_reset_default_ignores_name_and_offset_backing(self):
+        d = res({"DateTimeOriginal": "2016:01:01 00:00:12", "OffsetTimeOriginal": "+00:00",
+                 "GPSDateTime": "2026:11:08 15:04:05Z"}, "/x/20160101_000012.jpg")
+        self.assertEqual((d.src, d.suspect), ("gps", False))
+
+    def test_video_gps_against_apple_and_quicktime_clocks(self):
+        stale = {"GPSDateTimes": ["2026:11:06 10:00:00"]}
+        d = res(dict(stale, CreateDate="2026:11:08 15:00:00", CreationDate="2026:11:08 07:00:00-08:00"), "/x/v.mov")
+        self.assertEqual((d.src, d.suspect), ("video", True))  # Apple's offset is recorded
+        d = res(dict(stale, CreateDate="2026:11:08 15:00:00"), "/x/v.mp4")
+        self.assertEqual((d.src, d.suspect), ("gps", True))  # QuickTime UTC is no recorded offset
 
     def test_gps_uses_exif_offset_for_local_time(self):
         d = res({"DateTimeOriginal": "2016:01:01 00:00:00", "OffsetTimeOriginal": "+09:00",
@@ -124,7 +197,7 @@ class Plausibility(unittest.TestCase):
         self.assertEqual(d.tz, "-05:00")
         d = res({"DateTimeOriginal": "2026:11:08 07:00:00", "OffsetTimeOriginal": "-05:00",
                  "GPSDateTime": "2026:11:09 12:00:01Z"})
-        self.assertEqual(d.src, "gps")
+        self.assertEqual((d.src, d.suspect), ("exif", True))  # past 24 h; the recorded offset keeps it, flagged
 
     def test_reset_default_without_gps_is_kept_and_flagged(self):
         d = res({"DateTimeOriginal": "2015:12:31 19:00:03", "mtime": mtime(D(2026, 11, 8))},
@@ -154,7 +227,18 @@ class Plausibility(unittest.TestCase):
         meta = {"CreateDate": "2016:01:01 00:00:00",
                 "GPSDateTimes": ["2026:11:08 15:00:09.5", "2026:11:08 15:00:01.1", "1970:01:01 00:00:00"]}
         d = res(meta, "/x/DCIM/100GOPRO/GX010001.MP4")
-        self.assertEqual((d.src, d.dt), ("gps", D(2026, 11, 8, 10, 0, 1)))
+        self.assertEqual((d.src, d.dt, d.suspect), ("gps", D(2026, 11, 8, 10, 0, 1), False))
+
+    def test_gpmf_stale_pre_lock_samples_are_skipped(self):
+        # Two samples before lock carry an old fix; the locked run starts at 15:00:00.
+        run = [f"2026:11:08 15:{m:02d}:{s:02d}" for m in range(3) for s in range(0, 60, 15)]
+        meta = {"CreateDate": "2016:01:01 00:00:00", "GPSDateTimes": ["2026:11:05 09:00:00", "2026:11:05 09:00:01", *run]}
+        d = res(meta, "/x/DCIM/100GOPRO/GX010002.MP4")
+        self.assertEqual((d.src, d.dt), ("gps", D(2026, 11, 8, 10, 0)))
+        # A gap of more than GPS_GAP ends the run; 2 minutes does not.
+        self.assertEqual(dates._locked_start([datetime.datetime(2026, 11, 8, 15, m, tzinfo=dates.UTC)
+                                              for m in (0, 2, 4, 30, 32, 34, 36)]),
+                         datetime.datetime(2026, 11, 8, 15, 30, tzinfo=dates.UTC))
 
     def test_nothing_plausible_falls_back_to_mtime_flagged(self):
         d = res({"DateTimeOriginal": "1970:01:01 00:00:00", "mtime": mtime(D(1999, 1, 1))})
@@ -257,24 +341,34 @@ class Readers(unittest.TestCase):
     def readers(self):
         return [False] + ([True] if HAVE_EXIFTOOL else [])
 
+    def writers(self):
+        """Pillow and exiftool both write the test files, so neither reader is only ever fed one
+        writer's layout (CI's older Pillow once left the exiftool-written layout untested here)."""
+        return ["pillow"] + (["exiftool"] if HAVE_EXIFTOOL else [])
+
     def test_gopro_photo_with_gps(self):
-        p = jpg(os.path.join(self.t, "DCIM/100GOPRO/GOPR0001.JPG"), "2016:01:01 00:00:12", "2026:11:08", (15, 4, 5),
-                make="GoPro", model="HERO11 Black")
-        for use in self.readers():
-            d = dates.resolve_all([p], now=NOW, local_tz=NY, use_exiftool=use)[p]
-            self.assertEqual((d.src, d.dt), ("gps", D(2026, 11, 8, 10, 4, 5)), f"exiftool={use}")
+        for w in self.writers():
+            p = jpg(os.path.join(self.t, w, "DCIM/100GOPRO/GOPR0001.JPG"), "2016:01:01 00:00:12", "2026:11:08",
+                    (15, 4, 5), make="GoPro", model="HERO11 Black", writer=w)
+            for use in self.readers():
+                d = dates.resolve_all([p], now=NOW, local_tz=NY, use_exiftool=use)[p]
+                self.assertEqual((d.src, d.dt), ("gps", D(2026, 11, 8, 10, 4, 5)), f"writer={w} exiftool={use}")
 
     def test_offset_time_original_read(self):
-        p = jpg(os.path.join(self.t, "a.jpg"), "2026:11:08 07:00:00", offset="+01:00")
-        for use in self.readers():
-            self.assertEqual(dates.resolve_all([p], now=NOW, local_tz=NY, use_exiftool=use)[p].tz, "+01:00")
+        for w in self.writers():
+            p = jpg(os.path.join(self.t, w, "a.jpg"), "2026:11:08 07:00:00", offset="+01:00", writer=w)
+            for use in self.readers():
+                d = dates.resolve_all([p], now=NOW, local_tz=NY, use_exiftool=use)[p]
+                self.assertEqual((d.src, d.dt, d.tz), ("exif", D(2026, 11, 8, 7, 0), "+01:00"),
+                                 f"writer={w} exiftool={use}")
 
     def test_iphone_folder_without_exif(self):
-        p = jpg(os.path.join(self.t, "DCIM/202403__/IMG_0001.JPG"))
-        os.utime(p, (mtime(D(2026, 11, 13)),) * 2)
-        for use in self.readers():
-            d = dates.resolve_all([p], now=NOW, local_tz=NY, use_exiftool=use)[p]
-            self.assertEqual((d.src, d.dt), ("folder", D(2024, 3, 1)), f"exiftool={use}")
+        for w in self.writers():
+            p = jpg(os.path.join(self.t, w, "DCIM/202403__/IMG_0001.JPG"), writer=w)
+            os.utime(p, (mtime(D(2026, 11, 13)),) * 2)
+            for use in self.readers():
+                d = dates.resolve_all([p], now=NOW, local_tz=NY, use_exiftool=use)[p]
+                self.assertEqual((d.src, d.dt), ("folder", D(2024, 3, 1)), f"writer={w} exiftool={use}")
 
     @unittest.skipUnless(HAVE_FFMPEG, "ffmpeg/ffprobe missing")
     def test_videos(self):
@@ -346,6 +440,19 @@ class PlanAndTag(unittest.TestCase):
         self.assertFalse(p[g + "GOPR0002.JPG"]["date_suspect"])
         self.assertEqual(p[g + "GOPR0001.JPG"]["date_src"], "gps")
         self.assertIn("1 dates shifted by --clock-offset", out)
+
+    def test_gps_overruling_a_camera_is_listed_to_check(self):
+        jpg(os.path.join(self.card, "DCIM/100GOPRO/GOPR0004.JPG"), "2024:03:02 10:00:00", "2026:11:08", (15, 0, 0))
+        jpg(os.path.join(self.card, "DCIM/100GOPRO/GOPR0005.JPG"), "2026:11:08 07:15:02", "2026:11:06", (10, 0, 0),
+            offset="+01:00")
+        self.run_intake("stage", self.card, "--kind", "gopro", "--batch", "b4")
+        out = self.run_intake("plan", "b4").stdout
+        p = self.plan("b4")
+        self.assertEqual((p["DCIM/100GOPRO/GOPR0004.JPG"]["date_src"], p["DCIM/100GOPRO/GOPR0004.JPG"]["date_suspect"]),
+                         ("gps", True))
+        self.assertEqual(p["DCIM/100GOPRO/GOPR0005.JPG"]["date_src"], "exif")
+        self.assertIn("1 camera dates replaced by GPS: DCIM/100GOPRO/GOPR0004.JPG", out)
+        self.assertIn("2 dates to check", out)
 
     def test_bad_clock_offsets_are_refused(self):
         jpg(os.path.join(self.card, "DCIM/100GOPRO/GOPR0001.JPG"), "2026:11:08 04:15:00", make="GoPro")
