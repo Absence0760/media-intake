@@ -19,7 +19,7 @@ FAKE = r'''
 import os, sys
 cmd = sys.argv[1]
 if cmd == "block":
-    print("started", flush=True)
+    print("started", *sys.argv[3:], flush=True)
     with open(sys.argv[2]) as f:
         f.read()
     print("released", flush=True)
@@ -89,6 +89,26 @@ class JobsTest(unittest.TestCase):
         with jobs.claim(key) as c:
             return c.spawn("commands", dict(argsets=argsets, paths=[]), total=len(argsets))
 
+    def start_erase(self, key, argsets, paths):
+        """A redact job, as the gallery and the review page start an erase: paths only in private."""
+        if any(a[0] == "block" for a in argsets):
+            self.gates += 1
+        c = jobs.claim(key)
+        st = c.spawn("commands", dict(count=len(paths)), total=len(argsets),
+                     private=dict(argsets=argsets, paths=paths), redact=True)
+        c.release()
+        return st, c.tail
+
+    def names_left(self, names):
+        """Every file under <state>/jobs/ (names and contents) that still holds one of names."""
+        d = os.path.join(self.state, "jobs")
+        hits = []
+        for f in os.listdir(d):
+            with open(os.path.join(d, f), "rb") as fh:
+                data = fh.read()
+            hits += [(f, n) for n in names if n.encode() in data or n in f]
+        return hits
+
     def log_has(self, key, text):
         return any(text in ln for ln in jobs.lines(key)[0])
 
@@ -113,6 +133,103 @@ class JobsTest(unittest.TestCase):
         self.assertNotIn("pid", pub)
         # the lock was released with the worker: the next job may start
         jobs.claim("t1").release()
+
+    def test_erase_leaves_no_names(self):
+        """A redact job: paths only on the worker's pipe, command lines without them, and once it ends every
+        line of the steps' output (which names files) is replaced in place; counts, labels and ok stay."""
+        lib = os.path.join(self.tmp, "Pictures")
+        paths = [os.path.join(lib, "secret-one.jpg"), os.path.join(lib, "secret-two.jpg")]
+        st, tail = self.start_erase("e1", [["ok", *paths], ["fail", "--drive", lib]], paths)
+        end = jobs.wait("e1", st["id"], interval=0.02)
+        self.assertEqual((end["state"], end["ok"], end["step"], end["total"]), ("done", False, 2, 2))
+        self.assertEqual(end["label"], "fail")
+        self.assertEqual(end["spec"], {"count": 2})
+        self.assertNotIn("safe", end)
+        ls, n = jobs.lines("e1")
+        self.assertEqual(ls, ["$ intake.py ok [2 files]", jobs.REDACTED, "  [exit 0]", "$ intake.py fail --drive [path]",
+                              jobs.REDACTED, "  [exit 3]",
+                              "done: 2 of 2 gone from the library; something failed, see above"])
+        self.assertEqual(self.names_left(["secret-one", "secret-two", lib, self.tmp]), [])
+        # A page that followed from the start still has every line, the steps' output included.
+        full, m = tail.lines(0, done=True)
+        self.assertEqual(m, n)
+        self.assertEqual(full[1], "  hi " + " ".join(paths))
+        self.assertEqual(full[4], "  failing")
+        # A page that starts following after the end gets only the scrubbed log.
+        self.assertEqual(jobs.Tail("e1", st["id"]).lines(0, done=True), (ls, n))
+
+    def test_crashed_erase_is_scrubbed(self):
+        """A worker killed mid-erase cannot scrub its own output: the next status() (or sweep()) does."""
+        secret = os.path.join(self.tmp, "Pictures", "secret-three.jpg")
+        st, tail = self.start_erase("e2", [["block", self.fifo, secret], ["ok", secret]], [secret])
+        until(lambda: self.log_has("e2", "started"), "the step to start")
+        with open(os.path.join(self.state, "jobs", "e2.json")) as f:
+            self.assertNotIn("secret-three", f.read())  # never written to the status, even mid-run
+        self.assertTrue(self.log_has("e2", "secret-three"))  # the step's output streams while it runs
+        pid = jobs.status("e2")["pid"]
+        os.kill(pid, signal.SIGKILL)  # by PID, never pkill -f
+        until(lambda: jobs.proc_start(pid) is None, "the worker to go")
+        jobs.sweep()  # nothing watched it die: the start-up sweep of a page finds it
+        cr = jobs.status("e2")
+        self.assertEqual((cr["state"], cr["step"], cr["label"], cr["step_running"]), ("crashed", 1, "block", True))
+        self.assertEqual(self.names_left(["secret-three", self.tmp]), [])
+        self.assertEqual(jobs.lines("e2")[0], ["$ intake.py block [2 files]", jobs.REDACTED])
+        self.open_gate()
+        until(lambda: not jobs.status("e2")["step_running"], "the orphaned step to end")
+        self.assertEqual(self.names_left(["secret-three", self.tmp]), [])
+        tail.close()
+
+    def test_status_probe_never_refuses_a_claim(self):
+        """status() tests the job lock by taking it for an instant (a crashed job's orphaned step, a job not yet
+        started). A claim at that instant waits for the probe instead of getting Busy (a spurious 409)."""
+        if not os.path.exists("/proc/locks"):
+            self.skipTest("needs /proc/locks to see the claim wait")
+        os.makedirs(os.path.join(self.state, "jobs"))
+        jobs._write_private(os.path.join(self.state, "jobs", "p1.json"), dict(id="x", state="crashed", ok=False))
+        P = jobs._paths("p1")
+        real, holding, go = jobs._try_lock, threading.Event(), threading.Event()
+        prober = []
+
+        def held_probe(fd):
+            got = real(fd)
+            if threading.current_thread() in prober:
+                holding.set()
+                go.wait(30)  # the probe holds the job lock right now
+            return got
+
+        res = []
+        jobs._try_lock = held_probe
+        try:
+            t1 = threading.Thread(target=jobs.status, args=("p1",))
+            prober.append(t1)
+            t1.start()
+            self.assertTrue(holding.wait(30))
+
+            def claim():
+                try:
+                    res.append(jobs.claim("p1"))
+                except jobs.Busy as e:
+                    res.append(e)
+            t2 = threading.Thread(target=claim)
+            t2.start()
+            mutex_ino = str(os.stat(P["mutex"]).st_ino)
+
+            def claim_waits():  # a blocked flock on the mutex: the claim is queued behind the probe
+                if res:
+                    return True
+                with open("/proc/locks") as f:
+                    return any("->" in ln and ln.split()[6].split(":")[-1] == mutex_ino for ln in f)
+            until(claim_waits, "the claim to wait for the probe")
+            self.assertEqual(res, [])  # not refused while the probe held the lock
+            go.set()
+            t1.join(30)
+            t2.join(30)
+        finally:
+            go.set()
+            jobs._try_lock = real
+        self.assertEqual(len(res), 1)
+        self.assertIsInstance(res[0], jobs.Claim)
+        res[0].release()
 
     def test_claim_is_atomic(self):
         """Many concurrent submits for one key: exactly one gets the lock (flock, no check-then-create)."""
