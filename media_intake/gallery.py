@@ -16,6 +16,8 @@ only). Views: Library, Trash suggestions, plus any tab a plugin adds
 (plugins.py gallery_views(), docs/plugins.md). Trash and Erase run as a detached
 job (jobs.py, key "gallery", one at a time): closing the page or stopping the
 server never stops one, and a restarted server or another page shows it again.
+The paths go to the worker on a pipe; the status file names the files only by
+(device, inode), and an Erase's output is scrubbed of names when it ends.
 
 Server security is review_ui.py's: stdlib only, everything inline, 127.0.0.1 on a
 random port, random token swapped for an HttpOnly SameSite=Strict cookie, Host
@@ -202,7 +204,8 @@ def scan_library():
                         continue
                 k, mime = R.kind_of(p)
                 items.append(dict(path=p, root=root, ext=ext, media="video" if ext in VID else "photo",
-                                  show=k, mime=mime, size=st.st_size, mtime=st.st_mtime, sha=sha, gone=False))
+                                  show=k, mime=mime, size=st.st_size, mtime=st.st_mtime, sha=sha, gone=False,
+                                  fid=(st.st_dev, st.st_ino)))
     for it in items:
         load_sidecar(it)
     items.sort(key=lambda it: (it["date"], it["path"]), reverse=True)
@@ -331,6 +334,8 @@ class App:
     def __init__(self, items, drive=None, views=()):
         self.items = items
         self.by_path = {it["path"]: i for i, it in enumerate(items)}
+        # (device, inode): how a job's status file names its files, so no path is written (see start_job)
+        self.by_fid = {tuple(it["fid"]): i for i, it in enumerate(items) if it.get("fid")}
         self.drive = drive
         self.views = {v["id"]: v for v in views}  # plugin tabs (plugins.py)
         self.token, self.csrf = secrets.token_urlsafe(24), secrets.token_urlsafe(24)
@@ -338,6 +343,7 @@ class App:
         self.thumb_sem = threading.BoundedSemaphore(3)
         self.port = None
         self.reconciled = None  # id of the last finished job whose results are applied to items
+        self.tail = None  # the shown job's log, through an open descriptor (jobs.Tail)
         self.search_cache = {}
         self.text_why = None
         self.text_checked = threading.Event()
@@ -681,24 +687,45 @@ class App:
 
     # ---------------------------------------------- trash / erase (a detached jobs.py job, one at a time)
     def start_job(self, label_, argsets, ids):
+        """Paths reach the worker on a pipe (private); the status file gets only (device, inode) pairs and a
+        count. An erase is a redact job: its command lines carry no path and its output is scrubbed at the end."""
+        redact = label_ == "erase"
         shown = [" ".join(a if a.startswith("--") else "'" + os.path.basename(a) + "'" if os.path.isabs(a) else a
                           for a in args) for args in argsets]
         with self.lock:
             paths = [self.items[i]["path"] for i in ids]
+            files = [list(self.items[i]["fid"]) for i in ids if self.items[i].get("fid")]
             try:
                 claim = jobs.claim(JOB_KEY)  # atomic across pages and servers; the worker inherits it
             except jobs.Busy:
                 raise RuntimeError("another action is still running")
             with claim:
-                st = claim.spawn("commands", dict(label=label_, argsets=argsets, shown=shown, paths=paths),
-                                 total=len(argsets))
+                st = claim.spawn("commands", dict(label=label_, files=files, count=len(ids)), total=len(argsets),
+                                 private=dict(argsets=argsets, paths=paths, **({} if redact else {"shown": shown})),
+                                 redact=redact)
+            self._follow(st["id"], claim.tail)
             self.mark_busy(st)
 
-    def mark_busy(self, st):
-        for p in (st.get("spec") or {}).get("paths") or []:
-            i = self.by_path.get(p)
+    def _follow(self, jid, tail=None):
+        """Point self.tail at job jid's log (with self.lock held)."""
+        if self.tail is not None and self.tail.id == jid:
+            return
+        if self.tail is not None:
+            self.tail.close()
+        self.tail = tail or jobs.Tail(JOB_KEY, jid)
+
+    def job_items(self, st):
+        """Item ids of the files a job acts on (by device and inode, as its status file names them)."""
+        out = []
+        for f in (st.get("spec") or {}).get("files") or []:
+            i = self.by_fid.get(tuple(f)) if isinstance(f, list) and len(f) == 2 else None
             if i is not None:
-                self.items[i]["busy"] = True
+                out.append(i)
+        return out
+
+    def mark_busy(self, st):
+        for i in self.job_items(st):
+            self.items[i]["busy"] = True
 
     def sync(self):
         """The job's status, applied to the items: busy while it runs (whichever page or server started it),
@@ -711,10 +738,7 @@ class App:
                 self.mark_busy(st)
             elif st.get("id") != self.reconciled:
                 self.reconciled = st.get("id")
-                for p in (st.get("spec") or {}).get("paths") or []:
-                    i = self.by_path.get(p)
-                    if i is None:
-                        continue
+                for i in self.job_items(st):
                     it = self.items[i]
                     it.pop("busy", None)
                     if not os.path.lexists(it["path"]):
@@ -728,9 +752,11 @@ class App:
         st = self.sync()
         if not st:
             return dict(id=None, lines=[], next=0, done=True, ok=None, ids=[])
-        ls, nxt = jobs.lines(JOB_KEY, since)  # read after the status: a finished job has written every line
-        ids = [self.by_path[p] for p in (st.get("spec") or {}).get("paths") or [] if p in self.by_path]
-        return dict(jobs.public(st), lines=ls, next=nxt, ids=ids)
+        with self.lock:
+            self._follow(st["id"])
+            tail = self.tail
+        ls, nxt = tail.lines(since, st["done"])  # read after the status: a finished job has written every line
+        return dict(jobs.public(st), lines=ls, next=nxt, ids=self.job_items(st))
 
     def trash(self, ids, confirm):
         if confirm is not True:
@@ -940,6 +966,7 @@ def main(argv=None):
     if a.drive and not os.path.isdir(a.drive):
         sys.exit(f"--drive {a.drive}: not a directory")
     t0 = time.monotonic()
+    jobs.sweep()  # a trash/erase that died while no page watched: marked crashed, an erase's output scrubbed
     items, skipped = scan_library()
     views = view_list([v for vs in plugins.call("gallery_views") for v in vs])
     app = App(items, os.path.abspath(a.drive) if a.drive else None, views)

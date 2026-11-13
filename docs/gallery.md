@@ -89,8 +89,18 @@ one that has started:
   reported as crashed, at its step, not as running; its files stay busy while
   the step it started is still running, and nothing re-runs by itself.
 
-Status `<state>/jobs/gallery.json`, output `gallery.log`, lock `gallery.lock`:
-files 0600 in a 0700 folder, replaced by the next job.
+Status `<state>/jobs/gallery.json`, output `gallery.log`, lock `gallery.lock`
+(and `gallery.mutex`): files 0600 in a 0700 folder, replaced by the next job.
+The paths go to the worker on a pipe and are never written; the status names
+the files only by device and inode, with a count, the step and ok. An Erase
+also logs its command without paths (`forget [2 files] --yes --drive [path]`),
+and when it ends (done or crashed) every line of `forget`'s own output is
+replaced in place by `[output removed when the run ended: it may name a file]`,
+so, as with `forget` on the command line, no name of an erased file is left in
+the state folder (the erase log keeps sha256 and size). The dialog that was
+watching still has the whole output; a page opened later sees the scrubbed
+log. Trash is for junk that isn't private and keeps its output, names
+included, until the next job.
 
 **No crop.** The original's sha256 drives dedupe and erase, so it is never
 edited; make a crop as a copy in another editor.

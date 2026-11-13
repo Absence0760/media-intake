@@ -243,6 +243,11 @@ class GalleryTest(unittest.TestCase):
         self.assertEqual(r.status, 403)
         r, _ = s.req("GET", "/api/list", host=f"evil.example:{s.port}")
         self.assertEqual(r.status, 403)
+        for path in ("/api/job", "/api/job?since=0", "/api/progress"):  # the job routes too
+            r, _ = s.req("GET", path, token=False)
+            self.assertEqual(r.status, 403, path)
+            r, _ = s.req("GET", path, token=False, headers={"X-Token": "wrong"})
+            self.assertEqual(r.status, 403, path)
         r, _ = s.req("GET", f"/?t={s.token}", token=False)
         self.assertEqual(r.status, 303)
         ck = r.getheader("Set-Cookie")
@@ -413,8 +418,25 @@ class GalleryTest(unittest.TestCase):
         j = self.wait_job(s)
         out = "\n".join(j["lines"])
         self.assertTrue(j["ok"], out)
-        self.assertIn("$ intake.py forget", out)
+        self.assertIn("$ intake.py forget [1 file] --yes", out)
         self.assertFalse(os.path.exists(self.b) or os.path.exists(tb))
+        # Once the erase ended, no name or path of what it erased is left in <state>/jobs/ (the erase log keeps
+        # only sha256 and size); the job keeps counts, its step label and ok.
+        jd = os.path.join(self.state, "jobs")
+        for f in os.listdir(jd):
+            with open(os.path.join(jd, f), "rb") as fh:
+                data = fh.read()
+            for n in ("b.jpg", self.b, self.lib, self.home):
+                self.assertNotIn(n.encode(), data, (f, n))
+        with open(os.path.join(jd, "gallery.json")) as f:
+            st = json.load(f)
+        self.assertEqual((st["state"], st["ok"], st["step"], st["total"]), ("done", True, 1, 1))
+        self.assertEqual((st["spec"]["label"], st["spec"]["count"], len(st["spec"]["files"])), ("erase", 1, 1))
+        # a server started now sees the scrubbed output only, but still the summary line
+        s2 = self.start()
+        j2 = s2.get("/api/job")
+        self.assertNotIn("b.jpg", json.dumps(j2))
+        self.assertEqual(j2["lines"][-1], "done: 1 of 1 gone from the library")
         with open(os.path.join(self.state, "erase-log.txt")) as f:
             self.assertIn(self.originals[self.b], f.read())
         os.remove(self.secret)  # the fixture's own erase-log entry (planted, not erased)
