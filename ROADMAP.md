@@ -24,8 +24,8 @@ The goal: someone else can install it on Fedora, import a phone, and trust it.
 - [x] `config.toml` schema with validation and documented defaults (library, videos,
       project folders, state dir, phone allowlist extras); env vars still override
       (`media_intake/config.py`, `docs/configuration.md`).
-- [ ] One script that regenerates hash-pinned requirements and model pins (7-day minimum
-      age), so pins are bumped, not hand-edited.
+- [x] One script that regenerates hash-pinned requirements and model pins (7-day minimum
+      age), so pins are bumped, not hand-edited (`scripts/update-pins.py`).
 - [x] GitHub Actions: unit tests on synthetic data with model-dependent tests skipped
       (`.github/workflows/ci.yml`, `CI gate`).
 - [ ] A nightly or manual job that runs the model tests (needs the venv and model cache).
