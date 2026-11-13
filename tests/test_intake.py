@@ -523,6 +523,24 @@ class EraseEverywhere(unittest.TestCase):
         self.assertIn("refused: denied folder: Download/20261024_100000.jpg", err)
         self.assertEqual(self.phone_files(), before, "the allowed files are not offloaded either")
 
+    def test_erase_refuses_a_symlink_in_phone_thumbnails(self):
+        batch = "2026-11-13-link"
+        qpath = self.quarantine(batch)
+        target = os.path.join(self.phone, "DCIM/Camera/20261024_100000.jpg")
+        link = os.path.join(self.phone, "DCIM/.thumbnails/link.jpg")
+        os.symlink(target, link)
+        before = self.phone_files()
+        err = self.refused("erase", batch, "--phone", self.phone, "--yes")
+        self.assertIn("refused: symlink: DCIM/.thumbnails/link.jpg", err)
+        self.assertIn("--keep-phone-thumbnails", err)
+        self.assertEqual(self.phone_files(), before, "neither the link, its target nor any thumbnail went")
+        self.assertTrue(os.path.isfile(qpath), "nothing was erased")
+        # Leaving the thumbnail folders alone, erase goes ahead; the link's target is untouched.
+        self.intake("erase", batch, "--phone", self.phone, "--yes", "--keep-phone-thumbnails",
+                    "--drive", self.drive, "--no-wipe-free")
+        self.assertFalse(os.path.exists(self.sens))
+        self.assertTrue(os.path.isfile(target) and os.path.islink(link))
+
     def test_wipe_free(self):
         out = self.intake("wipe-free", self.drive)
         self.assertIn("3 MB of zeros", out)

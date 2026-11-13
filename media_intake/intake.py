@@ -1016,7 +1016,11 @@ def cmd_erase(a):
     pthumb_items = phone_thumbnail_items(root) if do_pthumbs else []
     known = [m["src"] for m in man["files"].values() if m.get("src")] + [p for p, _ in pthumb_items]
     phone_todo = device_targets(root, phone_items, known) if root else []
-    pthumb_todo = device_targets(root, pthumb_items, known, phone_thumbnail_check) if do_pthumbs else []
+    # Anything unexpected in a thumbnail folder (a symlink, a path resolving elsewhere) refuses erase:
+    # the yes was given for folders of thumbnails, so a folder that isn't one is for you to look at.
+    pthumb_todo = device_targets(root, pthumb_items, known, phone_thumbnail_check, skip_denied=False,
+                                 hint=" (look at the folder on the phone, or pass --keep-phone-thumbnails)") \
+        if do_pthumbs else []
     thumbs = phone = 0
     for rel in list(q):
         p = os.path.join(quar, rel)

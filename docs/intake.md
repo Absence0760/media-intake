@@ -267,8 +267,12 @@ back from another device or a backup. Anything private goes through `erase`
   spare blocks, so an overwrite is no guarantee there. The robust fix is a
   LUKS-encrypted backup drive, or a drive wiped whole.
 - **Phone.** `erase --phone` deletes the originals over MTP and, by default,
-  `DCIM/.thumbnails` and `Pictures/.thumbnails` (exactly those two paths, no
-  symlinks; Android rebuilds them; `--keep-phone-thumbnails` skips).
+  `DCIM/.thumbnails` and `Pictures/.thumbnails` (Android rebuilds them;
+  `--keep-phone-thumbnails` leaves them alone). Exactly those two paths: a
+  symlink inside either, or anything in them that isn't a plain thumbnail
+  path, **refuses the whole erase** before anything is deleted, naming the
+  path. Your yes covered folders of thumbnails, so one that holds something
+  else is for you to look at on the phone, not for erase to work around.
 
 ## Device deletes and case-insensitive storage
 
@@ -283,8 +287,9 @@ they have just hashed as an erased item, so the name they delete is the
 content they matched.
 
 Before any delete, the gate checks each target: inside the `--phone` root,
-inside the allowlist (`sources.check`: `erase` and `trash` skip a path
-outside it with a line; `offload` refuses the whole command), and the same size as the staged copy
+inside the allowlist (`sources.check`: `erase` and `trash` skip a phone
+original outside it with a line; `offload`, and anything amiss in the phone
+thumbnail folders, refuse the whole command), and the same size as the staged copy
 (a file whose size changed is skipped quietly). A phone original whose
 manifest row records no size refuses the whole command, listing the paths:
 its copy can't be checked, so it is never deleted unchecked; stage the batch
