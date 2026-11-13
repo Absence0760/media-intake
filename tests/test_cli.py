@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 """cli.py tests: `media-intake doctor` against a fake probe (no real tools, models or Ollama),
-plus guards: the model pins have one source, the version one home, and nothing kills by command line.
+plus guards: the model pins (and their 12-character prefixes) have one source, the version one home,
+and nothing kills by command line.
 
   python3 -I -m unittest discover -s tests -p test_cli.py
 """
@@ -184,36 +185,65 @@ class Pins(unittest.TestCase):
         self.assertEqual((semantic.TEXT_SHA, semantic.TOK_SHA), (FILES["onnx/text_model.onnx"], FILES["tokenizer.json"]))
         self.assertEqual((vlm_trash.MODEL, vlm_trash.DIGEST), (PINS["ollama"]["model"], PINS["ollama"]["digest"]))
 
+    PREFIX = 12  # `ollama list` and doctor show 12 characters; a copied prefix goes stale like a full pin
+
     def test_no_pin_copied_elsewhere(self):
         pins = set(FILES.values()) | {PINS["siglip"]["revision"], PINS["ollama"]["digest"]}
-        paths = [os.path.join(support.ROOT, "setup.sh"), *glob.glob(os.path.join(support.PKG, "*.py")),
-                 *glob.glob(os.path.join(support.ROOT, "docs", "*.md")), os.path.join(support.ROOT, "README.md")]
+        prefixes = {pin[:self.PREFIX] for pin in pins}
+        root = support.ROOT
+        paths = [os.path.join(root, "setup.sh"), *glob.glob(os.path.join(support.PKG, "*.py")),
+                 *glob.glob(os.path.join(root, "docs", "*.md")),
+                 *(os.path.join(root, f) for f in ("README.md", "ROADMAP.md", "CONTRIBUTING.md")),
+                 *glob.glob(os.path.join(root, ".github", "workflows", "*.yml"))]
         for p in paths:
             with open(p) as f:
-                found = pins & set(re.findall(r"[0-9a-f]{40,64}", f.read()))
-            self.assertFalse(found, f"{os.path.relpath(p, support.ROOT)} repeats a pin from pins.json")
+                runs = re.findall(r"(?<![0-9a-f])[0-9a-f]{%d,}" % self.PREFIX, f.read())
+            found = sorted({r for r in runs if r[:self.PREFIX] in prefixes})
+            self.assertFalse(found, f"{os.path.relpath(p, root)} repeats a pin (or its prefix) from pins.json")
+
+    def test_prefix_check_catches_a_short_copy(self):
+        digest = PINS["ollama"]["digest"]
+        for text in (digest, f"ID `{digest[:12]}`", f"`{digest[:16]}...`"):
+            runs = re.findall(r"(?<![0-9a-f])[0-9a-f]{%d,}" % self.PREFIX, text)
+            self.assertIn(digest[:12], {r[:12] for r in runs}, text)
 
 
 class KillByPid(unittest.TestCase):
-    """ROADMAP: kill by PID. `pkill -f` / `pgrep -f` match their own shell's command line."""
+    """ROADMAP: kill by PID. `pkill -f` / `pgrep -f` match their own shell's command line.
+    Scans code, workflows, .claude/ and the Markdown docs (repo root and docs/)."""
+
+    PATTERN = re.compile(r"\b(?:pkill|pgrep|killall)\b" + r"|kill\s+\$\(")
+
+    @classmethod
+    def offends(cls, path, line):
+        if path.endswith((".py", ".sh", ".yml")):
+            # In code, a comment saying "never pgrep -f" is the rule, not a use: check only what precedes `#`.
+            line = line.split("#", 1)[0]
+        elif path.endswith(".md") and re.search(r"\bnever\b", line, re.I):
+            # In prose, a line that states the rule ("never `pkill -f`") is not an instruction to use it.
+            return False
+        return bool(cls.PATTERN.search(line))
 
     def test_no_kill_by_command_line(self):
         root = support.ROOT
         paths = [*glob.glob(os.path.join(root, "**", "*.py"), recursive=True),
                  *glob.glob(os.path.join(root, "**", "*.sh"), recursive=True),
                  *glob.glob(os.path.join(root, ".github", "workflows", "*.yml")),
-                 *glob.glob(os.path.join(root, ".claude", "**", "*"), recursive=True)]
-        pattern = re.compile(r"\b(?:pkill|pgrep|killall)\b" + r"|kill\s+\$\(")
+                 *glob.glob(os.path.join(root, ".claude", "**", "*"), recursive=True),
+                 *glob.glob(os.path.join(root, "*.md")), *glob.glob(os.path.join(root, "docs", "*.md"))]
         hits = []
-        for p in paths:
+        for p in sorted(set(paths)):
             if not os.path.isfile(p) or os.path.abspath(p) == os.path.abspath(__file__):
                 continue
             with open(p, errors="replace") as f:
-                code = p.endswith((".py", ".sh", ".yml"))
-                # In code, a comment saying "never pgrep -f" is the rule, not a use: check only what precedes `#`.
-                hits += [f"{os.path.relpath(p, root)}:{n}" for n, ln in enumerate(f, 1)
-                         if pattern.search(ln.split("#", 1)[0] if code else ln)]
+                hits += [f"{os.path.relpath(p, root)}:{n}" for n, ln in enumerate(f, 1) if self.offends(p, ln)]
         self.assertEqual(hits, [])
+
+    def test_markdown_rule_lines_pass_and_uses_fail(self):
+        self.assertFalse(self.offends("ROADMAP.md", "- Kill by PID, never `pkill -f`/`pgrep -f`."))
+        self.assertTrue(self.offends("docs/x.md", "Stop it with `pkill -f media-intake`."))
+        self.assertFalse(self.offends("a.py", "x = 1  # never pgrep -f"))
+        self.assertTrue(self.offends("a.sh", "pgrep -f media-intake  # never"))
 
 
 class Version(unittest.TestCase):
