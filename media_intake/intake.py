@@ -764,19 +764,31 @@ def prune_app_traces(uris, prefixes):
 # device_remove; nothing else in media-intake writes to a device. It never renames or
 # moves a file there: on case-insensitive storage a case-only rename is what makes one
 # file show up under two names.
-def device_targets(root, items, known, check=sources.check, skip_denied=True):
+class _NoSizeCheck:
+    def __repr__(self):
+        return "NO_SIZE_CHECK"
+
+
+# The size of a device_targets item that has no staged copy to compare with (the phone
+# thumbnail folders). Only this marker skips the size check: a missing size (None) is a
+# manifest that lost it, and that target is refused, never deleted unchecked.
+NO_SIZE_CHECK = _NoSizeCheck()
+
+
+def device_targets(root, items, known, check=sources.check, skip_denied=True, hint=""):
     """The device files a command may delete, checked before anything is deleted.
 
-    items: (path, size) pairs the command wants gone from the device at root (size None:
-    no size check, for the thumbnail folders); known: every path the device listed (the
-    batch manifests' src), so a target is compared with names that are not targets too.
-    Skipped, a line each: a path outside root or outside the allowlist (check; with
-    skip_denied False that refuses the whole command instead). Skipped quietly: a file
-    already gone or no longer the staged size. Refused, nothing deleted: any target whose
-    path differs only by letter case from another known path or target
-    (sources.check_case). Returns the paths for device_remove.
+    items: (path, size) pairs the command wants gone from the device at root (size
+    NO_SIZE_CHECK for the thumbnail folders, else the staged size); known: every path the
+    device listed (the batch manifests' src), so a target is compared with names that are
+    not targets too. Skipped, a line each: a path outside root or outside the allowlist
+    (check; with skip_denied False that refuses the whole command instead, hint appended).
+    Skipped quietly: a file already gone or no longer the staged size. Refused, nothing
+    deleted: a file still there with no recorded size, and any target whose path differs
+    only by letter case from another known path or target (sources.check_case). Returns
+    the paths for device_remove.
     """
-    out = []
+    out, unsized = [], []
     for path, size in items:
         if not path.startswith(root + os.sep):
             print(f"skip phone delete, path outside --phone root: {path}")
@@ -785,11 +797,22 @@ def device_targets(root, items, known, check=sources.check, skip_denied=True):
             check(root, path)  # never delete outside the allowlist
         except sources.Denied as e:
             if not skip_denied:
-                sys.exit(f"refused: {e}; nothing deleted from the device")
+                sys.exit(f"refused: {e}; nothing deleted from the device{hint}")
             print(f"skip phone delete, {e}")
             continue
-        if os.path.lexists(path) and (size is None or os.path.getsize(path) == size) and path not in out:
+        if not os.path.lexists(path) or path in out:
+            continue
+        if size is NO_SIZE_CHECK:
             out.append(path)
+        elif type(size) is not int:
+            unsized.append(path)
+        elif os.path.getsize(path) == size:
+            out.append(path)
+    if unsized:
+        sys.exit("refused: nothing deleted from the device. The batch manifest records no size for "
+                 "these, so they can't be checked against the staged copy:\n"
+                 + "\n".join("  " + os.path.relpath(p, root) for p in unsized)
+                 + f"\n(under {root}). Stage the batch again.")
     try:
         sources.check_case(out, known)
     except sources.CaseCollision as e:
@@ -816,13 +839,13 @@ def device_remove(paths, tolerate=False):
 
 
 def phone_thumbnail_items(root):
-    """(path, None) for DCIM/.thumbnails and Pictures/.thumbnails and everything in them, contents
-    before their folder, for device_targets with phone_thumbnail_check."""
+    """(path, NO_SIZE_CHECK) for DCIM/.thumbnails and Pictures/.thumbnails and everything in them,
+    contents before their folder, for device_targets with phone_thumbnail_check."""
     items = []
     for d in sources.thumbnail_dirs(root):
         for r, dirs, fs in os.walk(d, topdown=False, followlinks=False):
-            items += [(os.path.join(r, x), None) for x in fs + dirs]
-        items.append((d, None))
+            items += [(os.path.join(r, x), NO_SIZE_CHECK) for x in fs + dirs]
+        items.append((d, NO_SIZE_CHECK))
     return items
 
 
@@ -1126,10 +1149,11 @@ def cmd_offload(a):
     items = []
     for rel, m in man["files"].items():
         p = plan.get(rel)
+        # A row with no size goes on to device_targets, which refuses it rather than skip it quietly.
         ok = p and (p["action"] == "delete" or (p["action"] == "file" and os.path.exists(p["dst"])
-                                                 and os.path.getsize(p["dst"]) == m["size"]))
+                                                 and m.get("size") in (None, os.path.getsize(p["dst"]))))
         if ok and m["src"].startswith(root + os.sep):
-            items.append((m["src"], m["size"]))
+            items.append((m["src"], m.get("size")))
     todo = device_targets(root, items, [m["src"] for m in man["files"].values()], check, skip_denied=False)
     print(f"{len(todo)} of {len(man['files'])} phone files have a verified copy here")
     if not a.yes:

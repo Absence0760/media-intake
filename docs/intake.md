@@ -282,6 +282,15 @@ sweep never touch a phone; the sweep and `erase --drive` delete only files
 they have just hashed as an erased item, so the name they delete is the
 content they matched.
 
+Before any delete, the gate checks each target: inside the `--phone` root,
+inside the allowlist (`sources.check`; a path outside it is skipped with a
+line, and refuses the whole `offload`), and the same size as the staged copy
+(a file whose size changed is skipped quietly). A phone original whose
+manifest row records no size refuses the whole command, listing the paths:
+its copy can't be checked, so it is never deleted unchecked; stage the batch
+again. Only the phone thumbnail folders, which have no staged copy, skip the
+size check, and they say so with an explicit marker (`NO_SIZE_CHECK`).
+
 Android's emulated storage, and the FAT/exFAT of cameras and drives, ignore
 letter case. After a case-only rename (`IMG_0001.JPG` to `img_0001.jpg`) a
 listing over MTP or gphoto2 can show both names; on the device they are one

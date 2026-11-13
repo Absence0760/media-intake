@@ -464,6 +464,50 @@ class EraseEverywhere(unittest.TestCase):
         self.assertEqual(list(nq), ["Pictures/library/2025/2025-06/IMG_1-edit.jpg"])
         self.assertFalse(os.path.exists(other))
 
+    # ---- device-delete guards: each refusal leaves every device file (and the quarantine) as it was
+    def refused(self, *args):
+        r = subprocess.run([PY, "-I", INTAKE, *args], env=self.env, capture_output=True, text=True,
+                           stdin=subprocess.DEVNULL)
+        self.assertEqual(r.returncode, 1, f"{args}\n{r.stdout}\n{r.stderr}")
+        self.assertIn("nothing deleted from the device", r.stderr)
+        return r.stderr
+
+    def phone_files(self):
+        return {os.path.join(r, f): os.path.realpath(os.path.join(r, f))
+                for r, _, fs in os.walk(self.phone) for f in fs}
+
+    def edit_manifest(self, batch, fn):
+        mp = os.path.join(self.state, "batches", batch, "manifest.json")
+        man = jload(mp)
+        fn(man["files"])
+        with open(mp, "w") as f:
+            json.dump(man, f)
+
+    def filed(self, batch):
+        self.intake("stage", self.phone, "--kind", "phone", "--batch", batch)
+        self.intake("plan", batch)
+        self.intake("apply", batch, "--no-scan")
+
+    def test_erase_refuses_a_phone_original_with_no_recorded_size(self):
+        batch = "2026-11-13-nosize"
+        qpath = self.quarantine(batch)
+        self.edit_manifest(batch, lambda fs: fs["DCIM/Camera/20261023_100000.jpg"].pop("size"))
+        before = self.phone_files()
+        err = self.refused("erase", batch, "--phone", self.phone, "--yes")
+        self.assertIn("records no size", err)
+        self.assertIn("DCIM/Camera/20261023_100000.jpg", err)
+        self.assertEqual(self.phone_files(), before, "no phone file (thumbnails included) was deleted")
+        self.assertTrue(os.path.isfile(qpath), "nothing was erased")
+        self.assertFalse(os.path.exists(os.path.join(self.state, "erase-log.txt")))
+
+    def test_offload_refuses_a_phone_original_with_no_recorded_size(self):
+        batch = "2026-11-13-nosize-off"
+        self.filed(batch)
+        self.edit_manifest(batch, lambda fs: fs["DCIM/Camera/20261024_100000.jpg"].pop("size"))
+        before = self.phone_files()
+        self.assertIn("records no size", self.refused("offload", batch, "--phone", self.phone, "--yes"))
+        self.assertEqual(self.phone_files(), before)
+
     def test_wipe_free(self):
         out = self.intake("wipe-free", self.drive)
         self.assertIn("3 MB of zeros", out)
