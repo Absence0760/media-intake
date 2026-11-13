@@ -1,0 +1,94 @@
+# Model-dependent tests: the ones ci.yml skips because they need setup.sh's venv,
+# the SigLIP models and GeoNames. Nightly and on demand, on the platform the tool
+# targets (Fedora 43: its python3 and dnf packages), so setup.sh's hash-pinned
+# wheels install exactly as they do for a user. Fails if any of those tests skips.
+#
+# Not a required check: nothing runs it on pull requests, and its job is not named
+# `CI gate` (README-ci-gate.md). The real Ollama call (VLM_REAL=1 in
+# tests/test_vlm_trash.py) stays local: it needs a GPU and the pulled model;
+# the stubbed vlm_trash tests do run here.
+name: models
+
+on:
+  schedule:
+    - cron: '17 4 * * *'
+  workflow_dispatch:
+
+permissions: {}
+
+concurrency:
+  group: models-${{ github.ref }}
+  cancel-in-progress: false
+
+defaults:
+  run:
+    shell: bash
+
+jobs:
+  model-tests:
+    name: model tests
+    runs-on: ubuntu-24.04
+    timeout-minutes: 90
+    permissions:
+      contents: read
+    container:
+      # Fedora 43 by digest (no dated tags are published to take an older one).
+      image: registry.fedoraproject.org/fedora:43@sha256:a09ad4bedcd4f12658fb43b20a605ba36b831261dedd30d85b6e400dac601ddc
+    env:
+      TZ: America/New_York
+      TESTER: tester
+      TESTER_HOME: /home/tester
+    steps:
+      - name: System packages (README, Install) and an unprivileged user
+        run: |
+          dnf install -y -q --setopt=install_weak_deps=False \
+            git-core tar zstd tzdata findutils gawk shadow-utils util-linux glib2 gstreamer1 curl \
+            perl-Image-ExifTool tesseract tesseract-langpack-eng python3-zxing-cpp \
+            python3-pillow python3-numpy python3-pyyaml python3-packaging \
+            ffmpeg-free gstreamer1-plugins-bad-free
+          # Tests check file modes and refusals; root would bypass them.
+          useradd --create-home --home-dir "$TESTER_HOME" "$TESTER"
+
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      # Keyed on every pin setup.sh fetches by, and on the image (the venv links its python3).
+      - name: Restore venv and models
+        id: cache
+        uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          key: models-fedora43-a09ad4bedcd4-${{ hashFiles('requirements.txt', 'requirements-labels.txt', 'media_intake/pins.json', 'setup.sh') }}
+          path: |
+            /home/tester/.local/share/media-intake
+            /home/tester/.cache/media-intake-build
+
+      - name: setup.sh (venv, SigLIP vision + text models, GeoNames)
+        run: |
+          chown -R "$TESTER:" "$TESTER_HOME" "$GITHUB_WORKSPACE"
+          runuser -u "$TESTER" -- env HOME="$TESTER_HOME" bash setup.sh --build-labels --no-launcher
+          # --build-labels also rebuilds labels.npz from labels.yaml; test the committed one.
+          git -c safe.directory="$GITHUB_WORKSPACE" diff --quiet -- media_intake/labels.npz \
+            || echo "::warning file=media_intake/labels.npz::rebuilt labels.npz differs from the committed file (labels.yaml changed without a rebuild?)"
+          git -c safe.directory="$GITHUB_WORKSPACE" checkout -- media_intake/labels.npz
+
+      # Saved before the tests run, so nothing a test writes can reach the cache.
+      - name: Save venv and models
+        if: steps.cache.outputs.cache-hit != 'true'
+        uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          key: ${{ steps.cache.outputs.cache-primary-key }}
+          path: |
+            /home/tester/.local/share/media-intake
+            /home/tester/.cache/media-intake-build
+
+      - name: Unit tests, model tests included
+        run: |
+          log="$RUNNER_TEMP/model-tests.log"
+          runuser -u "$TESTER" -- env HOME="$TESTER_HOME" TZ="$TZ" \
+            python3 -I -m unittest discover -s tests -v 2>&1 | tee "$log"
+          # Every venv/model test must have run; only the real-Ollama test may skip.
+          if grep "skipped '" "$log" | grep -v "VLM_REAL"; then
+            echo "::error::tests above skipped although setup.sh ran"
+            exit 1
+          fi

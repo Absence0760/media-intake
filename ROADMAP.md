@@ -28,7 +28,8 @@ The goal: someone else can install it on Fedora, import a phone, and trust it.
       age), so pins are bumped, not hand-edited (`scripts/update-pins.py`).
 - [x] GitHub Actions: unit tests on synthetic data with model-dependent tests skipped
       (`.github/workflows/ci.yml`, `CI gate`).
-- [ ] A nightly or manual job that runs the model tests (needs the venv and model cache).
+- [x] A nightly or manual job that runs the model tests (needs the venv and model cache)
+      (`.github/workflows/models.yml`, Fedora 43 container; not a required check).
 - [ ] Release process: tagged releases; consumers pin by tag + commit SHA.
 
 ### Safety gaps found on real devices
