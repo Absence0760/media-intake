@@ -4,7 +4,7 @@ Thanks for helping. media-intake handles people's private photos, so the bar
 is: nothing leaves the machine, nothing is deleted without an explicit yes,
 and every change comes with tests.
 
-## Workflow
+## Git workflow
 
 - Every change reaches `main` through a pull request; `main` is protected and
   its required check is `CI gate` (`.github/workflows/ci.yml`). PRs are
