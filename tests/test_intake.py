@@ -70,6 +70,10 @@ def save_jpg(im, path, dt=None, gps=False, quality=92):
     if dt:
         kw["exif"] = exif_for(dt, gps)
     im.save(path, **kw)
+    if gps and dt and shutil.which("exiftool"):
+        # Older Pillow (e.g. Ubuntu 24.04's 10.x) drops the GPS IFD on save; write it with exiftool too.
+        subprocess.run(["exiftool", "-q", "-overwrite_original", "-GPSLatitude=37.536", "-GPSLatitudeRef=N",
+                        "-GPSLongitude=77.4347", "-GPSLongitudeRef=W", path], check=True)
 
 
 def video(path, created, seconds=1):
