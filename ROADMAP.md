@@ -48,10 +48,10 @@ The goal: someone else can install it on Fedora, import a phone, and trust it.
 - [ ] Don't move library files while a scan/tag/apply job runs: take a lock per library.
 
 ### Dates and devices
-- [ ] Implausible camera dates (GoPro with an unset clock writes 2015-12-31/2016-01-01):
+- [x] Implausible camera dates (GoPro with an unset clock writes 2015-12-31/2016-01-01):
       use the GPS date (`GPSDateTime` / `GPSDateStamp`) automatically, record the source.
-- [ ] iPhone exports without EXIF dates: use the `DCIM/YYYYMM__` folder month, not mtime.
-- [ ] QuickTime UTC vs local time; EXIF `OffsetTimeOriginal`; a `--clock-offset DEVICE=±Nh`
+- [x] iPhone exports without EXIF dates: use the `DCIM/YYYYMM__` folder month, not mtime.
+- [x] QuickTime UTC vs local time; EXIF `OffsetTimeOriginal`; a `--clock-offset DEVICE=±Nh`
       option for cameras that were simply wrong. Corrected dates go to the sidecar only.
 - [ ] Device identity from Make/Model/serial: tag `Source|<model>` and name batches by it;
       two GoPros with the same file numbers go to separate device folders, never `_1`.

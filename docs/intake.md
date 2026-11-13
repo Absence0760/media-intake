@@ -45,7 +45,7 @@ default; all of them come from `~/.config/media-intake/config.toml`
 
 ```
 media-intake stage SRC_ROOT --kind phone|gopro|drive --batch NAME [--only LISTFILE]
-media-intake plan BATCH [--event [PROJECT/]SLUG@YYYY-MM-DD ...]
+media-intake plan BATCH [--event [PROJECT/]SLUG@YYYY-MM-DD ...] [--clock-offset DEVICE=±Nh ...]
 media-intake scan BATCH                 # local detectors; labels only
 media-intake apply BATCH                # moves files; prints a summary
 media-intake quarantine BATCH           # counts + the folder to open
@@ -82,6 +82,63 @@ once the library is backed up, `offload` to free the phone.
 exiftool `-all=` for images (orientation and ICC profile kept), an ffmpeg
 stream copy without data streams or metadata for videos. exiftool cannot write
 GoPro GPMF tags, so the GPS track is removed by dropping the stream.
+
+## Dates
+
+Each file's date picks its library folder and goes into its sidecar
+(`XMP-exif:DateTimeOriginal`, with the UTC offset when it is known). The rules
+live in `media_intake/dates.py`, tests in `tests/test_dates.py`. Sources, in
+order (`date_src` in `plan.json`; `plan` prints a count per source):
+
+| Source | From |
+|---|---|
+| `exif` | `DateTimeOriginal`, else EXIF `CreateDate`, else `ModifyDate`; local time, with `OffsetTimeOriginal` (else `OffsetTime`) as its offset |
+| `video` | Apple's `Keys:CreationDate` (local time with its own offset), else QuickTime `CreateDate` / ffprobe `creation_time`, which is UTC: converted to local time with `OffsetTimeOriginal` when the file has one, else this machine's time zone for that date |
+| `gps` | `GPSDateTime` (EXIF, or a GoPro's GPMF track read with `exiftool -ee`; the earliest fix), else `GPSDateStamp` alone (noon UTC of that day). UTC, converted like `video` |
+| `filename` | a date in the name (`20261108_071502`, `2026-11-08 07.15.02`, `20261108`) |
+| `folder` | an iPhone export's `DCIM/YYYYMM__/` folder: the 1st of that month (day unknown, so `--event` days don't match it) |
+| `mtime` | the file's modification time, last resort |
+| `offset` | any of the above except `gps`, shifted by `--clock-offset`; `date_from` keeps which |
+
+A camera date (`exif`, `video`) is used only when it is **plausible**;
+otherwise the GPS date wins, and only without one do `filename`, `folder` and
+`mtime` get a turn. Implausible means:
+
+- **impossible**: before 2000-01-02 (the QuickTime 1904, Unix 1970 and DOS
+  1980 epochs, and the 2000-01-01 many cameras reset to), or more than a day
+  in the future. Applies to every source.
+- **contradicted by GPS**: the file has a GPS date and the camera date is more
+  than a day away from it once time zones are allowed for: 24 h between the
+  two instants when the camera's offset is known, else 24 h + 14 h (the widest
+  UTC offset), plus 12 h for a date-only GPS stamp. GPS time comes from the
+  satellites; a camera clock a day or more out is wrong. This catches a GoPro
+  with an unset clock (2015-12-31 / 2016-01-01) and any other wrong day, not
+  just those two. Smaller errors (a wrong time zone, DST) are left to
+  `--clock-offset`.
+
+A plausible camera date on a known clock-reset default (2015-12-31 or
+2016-01-01) with no GPS date to check it is kept but flagged
+(`date_suspect`), as is a file where nothing was plausible (it falls back to
+`mtime`). `plan` lists the files whose camera date GPS replaced, the files
+`--clock-offset` shifted and the files to check (first five names each);
+`date_note` in `plan.json` says why.
+
+**`--clock-offset DEVICE=±Nh`** (repeatable) is for a camera whose clock was
+simply wrong: it shifts every date read from that device's own clock (never a
+GPS date) by N hours (a sign is required; decimals up to two places, e.g.
+`-1.5h`; non-zero; at most 30 years). `DEVICE` is the file's EXIF/QuickTime
+`Make`, `Model` or `Make Model`, case-insensitive (`GoPro`, `'HERO11 Black'`),
+or `all` for every file in the batch. Bad syntax exits 2; the same device
+twice, `all` with another device, two offsets matching one file, or a device
+no file in the batch has, stop `plan` before it writes anything (the message
+lists the devices seen). Corrected dates go to the XMP sidecar only: the
+original keeps its own EXIF and its sha256. `tag-files` keeps a
+`DateTimeOriginal` already in a sidecar (it may be a correction from the
+plan) and only fills in a missing one; to recompute it, clear it first
+(`exiftool -XMP-exif:DateTimeOriginal= FILE.xmp`).
+
+Without exiftool, Pillow (images) and ffprobe (videos) read the same tags,
+except a GoPro video's GPMF GPS time.
 
 ## Duplicates
 
@@ -242,7 +299,8 @@ any plugin's `after_tag` hook ([plugins.md](plugins.md)).
   `XMP-dc:Subject` with each leaf, `XMP-iptcExt:Event`,
   `XMP-photoshop:City/State/Country`, `XMP-iptcCore:CountryCode`,
   `XMP-exif:GPSLatitude/GPSLongitude` (read from the file: EXIF, QuickTime,
-  GoPro GPMF with `-ee`) and `XMP-exif:DateTimeOriginal`.
+  GoPro GPMF with `-ee`) and `XMP-exif:DateTimeOriginal` (the plan's date,
+  with its UTC offset when known; see "Dates" above).
 - **Events**: `plan --event [PROJECT/]SLUG@YYYY-MM-DD`. With a `PROJECT/`
   prefix, or a slug matching one of a project's `events` fnmatch patterns,
   that day's camera files (photos, videos, GoPro; not screenshots or messaging
@@ -412,12 +470,19 @@ Rejected:
 - **Falconsai nsfw_image_detection** (Apache-2.0): only normal/nsfw for the
   whole image, so swimwear would flag; needs torch. **OpenNSFW2**: downloads
   weights at first run with no hash check.
-- **phockup / elodie**: quiet repos; the date logic here is about 40 lines.
+- **phockup / elodie**: quiet repos; the date logic here (`dates.py`) is small and
+  needs rules they don't have (GPS checks, iPhone folders, per-device offsets).
 - Not searched: whether a maintained offline "sensitive documents in a photo
   library" scanner exists. The design doesn't depend on one.
 
 ## Unverified
 
+- Dates on real devices: the date rules were tested on synthetic files only. Not
+  checked against a real GoPro (that its GPMF `GPSDateTime` reads as expected
+  with `exiftool -ee`, and whether a GoPro writes UTC or local time into
+  QuickTime `CreateDate`; this code assumes UTC as the spec says, and
+  `--clock-offset` corrects a camera that doesn't) or a real iPhone export's
+  `DCIM/YYYYMM__` tree.
 - NudeNet false-positive rate on real photo libraries (no published numbers).
 - Tesseract on embossed card numbers and cheque MICR lines.
 - `scan` time: about 1-2 s an image on CPU (OCR dominates), estimated.
@@ -437,6 +502,6 @@ Rejected:
 
 `python3 -I -m unittest discover -s tests` (synthetic media, a throwaway HOME,
 a hermetic config), or one module: `python3 -I -m unittest discover -s tests -p test_intake.py`
-(also `test_sources`, `test_tagging`, `test_config`, and `test_device_case`: offload,
+(also `test_dates`, `test_sources`, `test_tagging`, `test_config`, and `test_device_case`: offload,
 erase and trash on fake MTP, gphoto2 and drive trees with case-only collisions). Run long jobs under your
 own memory cap if you like.
