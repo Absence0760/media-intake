@@ -174,5 +174,37 @@ class Drive(unittest.TestCase):
                 sources.check_drive_root(bad)
 
 
+class CaseCollisions(unittest.TestCase):
+    """check_case: a device path that differs from another only by case is never a delete target."""
+
+    def test_case_only_twins_refused_with_every_name(self):
+        known = ["/dev-root/DCIM/Camera/IMG_1.jpg", "/dev-root/DCIM/Camera/img_1.JPG",
+                 "/dev-root/DCIM/camera/IMG_1.jpg", "/dev-root/DCIM/Camera/IMG_2.jpg"]
+        with self.assertRaises(sources.CaseCollision) as cm:
+            sources.check_case(["/dev-root/DCIM/Camera/IMG_1.jpg"], known)
+        self.assertEqual(cm.exception.groups, [sorted(known[:3])])
+        self.assertIsInstance(cm.exception, sources.Denied, "a collision is a refusal like any other")
+        for p in known[:3]:
+            self.assertIn(p, str(cm.exception))
+
+    def test_other_name_need_not_be_a_target(self):
+        with self.assertRaises(sources.CaseCollision):
+            sources.check_case(["/r/DCIM/a.jpg"], ["/r/DCIM/A.jpg"])
+        with self.assertRaises(sources.CaseCollision, msg="two targets collide with each other"):
+            sources.check_case(["/r/DCIM/a.jpg", "/r/DCIM/A.jpg"], [])
+
+    def test_unicode_case_and_normalisation(self):
+        with self.assertRaises(sources.CaseCollision):
+            sources.check_case(["/r/DCIM/STRASSE.jpg"], ["/r/DCIM/straße.jpg"])
+        with self.assertRaises(sources.CaseCollision, msg="NFC vs NFD spelling of the same name"):
+            sources.check_case(["/r/DCIM/café.jpg"], ["/r/DCIM/café.jpg"])
+
+    def test_distinct_names_pass(self):
+        known = ["/r/DCIM/Camera/IMG_1.jpg", "/r/DCIM/Camera/IMG_2.jpg", "/r/Pictures/IMG_1.jpg"]
+        sources.check_case(known, known)  # the same path twice is one name, not a collision
+        sources.check_case(["/r/DCIM/Camera/IMG_1.jpg"], known + ["/r/DCIM/Camera/IMG_1.jpeg"])
+        sources.check_case([], ["/r/a.jpg", "/r/A.jpg"])  # a collision nobody deletes is left alone
+
+
 if __name__ == "__main__":
     unittest.main()

@@ -187,6 +187,30 @@ back from another device or a backup. Anything private goes through `erase`
 - **Phone.** `erase --phone` deletes the originals over MTP and, by default,
   `DCIM/.thumbnails` and `Pictures/.thumbnails` (exactly those two paths, no
   symlinks; Android rebuilds them; `--keep-phone-thumbnails` skips).
+
+## Device deletes and case-insensitive storage
+
+Every delete on a phone, camera or source drive (`erase --phone` originals and
+phone thumbnails, `offload`, `trash --phone`, the gallery's and review page's
+versions of those, which run the same commands) goes through one gate in
+`intake.py`: `device_targets` checks every path first, then `device_remove`
+runs `gio remove`. It is the only place media-intake changes a device, and it
+never renames or moves a file there. `release`, `forget` and the HOME/drive
+sweep never touch a phone; the sweep and `erase --drive` delete only files
+they have just hashed as an erased item, so the name they delete is the
+content they matched.
+
+Android's emulated storage, and the FAT/exFAT of cameras and drives, ignore
+letter case. After a case-only rename (`IMG_0001.JPG` to `img_0001.jpg`) a
+listing over MTP or gphoto2 can show both names; on the device they are one
+file, so deleting the "duplicate" deletes the real one. So the gate refuses
+the whole command, before anything is deleted, when any target's path
+differs only by case (Unicode NFC, then case-folded) from another path in the
+batch manifests (every batch's, for `trash` without a batch), or from another
+target, whether or not the other name is being deleted too. The refusal lists
+each group of colliding paths. Look on the device itself, rename or delete by
+hand, then stage the batch again. A collision inside the thumbnail folders
+refuses `erase` too; `--keep-phone-thumbnails` skips them.
 - **What erase can't reach**, and doesn't list: cloud photo services, chat
   apps' own copies and their cloud backups, anyone a file was sent to, a phone
   gallery app's own trash (some keep deleted items for 30 days; whether an MTP
@@ -413,5 +437,6 @@ Rejected:
 
 `python3 -I -m unittest discover -s tests` (synthetic media, a throwaway HOME,
 a hermetic config), or one module: `python3 -I -m unittest discover -s tests -p test_intake.py`
-(also `test_sources`, `test_tagging`, `test_config`). Run long jobs under your
+(also `test_sources`, `test_tagging`, `test_config`, and `test_device_case`: offload,
+erase and trash on fake MTP, gphoto2 and drive trees with case-only collisions). Run long jobs under your
 own memory cap if you like.

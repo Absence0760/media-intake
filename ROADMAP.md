@@ -32,7 +32,7 @@ The goal: someone else can install it on Fedora, import a phone, and trust it.
 - [ ] Release process: tagged releases; consumers pin by tag + commit SHA.
 
 ### Safety gaps found on real devices
-- [ ] **Case-insensitive device storage:** Android's emulated storage ignores case, so a
+- [x] **Case-insensitive device storage:** Android's emulated storage ignores case, so a
       case-only rename leaves what looks like a duplicate and deleting it deletes the real
       file. Refuse any device delete whose path differs from another manifest path only
       by case; never rename by case on a device.
@@ -66,7 +66,7 @@ The goal: someone else can install it on Fedora, import a phone, and trust it.
 ### Tests that still don't exist
 - [ ] Real-browser tests (Playwright, synthetic media) for the gallery and review page:
       keys, selection, dialogs, video autoplay, Range seeking.
-- [ ] End-to-end on a fake MTP and gphoto2 tree with case-only collisions.
+- [x] End-to-end on a fake MTP and gphoto2 tree with case-only collisions.
 
 ---
 
