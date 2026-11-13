@@ -30,4 +30,4 @@ media-intake = "media_intake.cli:main"
 packages = ["media_intake"]
 
 [tool.setuptools.package-data]
-media_intake = ["labels.yaml", "labels.npz"]
+media_intake = ["labels.yaml", "labels.npz", "pins.json"]

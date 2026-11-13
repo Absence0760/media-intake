@@ -26,9 +26,11 @@ sys.path.insert(0, HERE)
 import config  # noqa: E402
 
 STATE = config.get()["state"]
-REV = "4649052661e53c7000355844105f8a1792088239"
+with open(os.path.join(HERE, "pins.json")) as _f:
+    PINS = json.load(_f)  # the single source of model pins (setup.sh, doctor, scripts/update-pins.py)
+REV = PINS["siglip"]["revision"]
 MODEL = os.path.join(STATE, "models", f"siglip-base-patch16-224-{REV[:7]}", "vision_model_quantized.onnx")
-MODEL_SHA = "ef14a954f3d57e1806666432bd9785004c1dc27100aa260eee0cb0f10a5de058"
+MODEL_SHA = PINS["siglip"]["files"]["onnx/vision_model_quantized.onnx"]
 # google/siglip-base-patch16-224 model.safetensors at 7fd15f0689c79d79e38b1c2e2e2370a7bf2761ed
 LOGIT_SCALE, LOGIT_BIAS = 4.7649970054626465, -12.9324369430542
 SIZE, MEAN, STD = 224, 0.5, 0.5  # preprocessor_config.json at REV (bicubic resize, no crop)

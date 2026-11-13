@@ -19,8 +19,8 @@ The goal: someone else can install it on Fedora, import a phone, and trust it.
 - [x] `pyproject.toml` entry point `media-intake` with every subcommand (`media_intake/cli.py`).
 - [x] `media-intake doctor`: system tools, tesseract `eng`, zxing-cpp, GStreamer HEVC decoder,
       venv, model files, GeoNames, Ollama version.
-- [ ] `media-intake doctor`: also verify model checksums and the pinned Ollama model digest,
-      and print the exact `dnf install` line for what's missing.
+- [x] `media-intake doctor`: also verify model checksums and the pinned Ollama model digest,
+      and print the exact `dnf install` line for what's missing (pins in `media_intake/pins.json`).
 - [x] `config.toml` schema with validation and documented defaults (library, videos,
       project folders, state dir, phone allowlist extras); env vars still override
       (`media_intake/config.py`, `docs/configuration.md`).
