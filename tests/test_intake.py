@@ -508,6 +508,21 @@ class EraseEverywhere(unittest.TestCase):
         self.assertIn("records no size", self.refused("offload", batch, "--phone", self.phone, "--yes"))
         self.assertEqual(self.phone_files(), before)
 
+    def test_offload_refuses_everything_for_one_target_off_the_allowlist(self):
+        batch = "2026-11-13-allow"
+        self.filed(batch)
+        off = os.path.join(self.phone, "Download/20261024_100000.jpg")
+        os.makedirs(os.path.dirname(off))
+        shutil.copyfile(os.path.join(self.phone, "DCIM/Camera/20261024_100000.jpg"), off)
+
+        def redirect(fs):
+            fs["DCIM/Camera/20261024_100000.jpg"]["src"] = off
+        self.edit_manifest(batch, redirect)
+        before = self.phone_files()
+        err = self.refused("offload", batch, "--phone", self.phone, "--yes")
+        self.assertIn("refused: denied folder: Download/20261024_100000.jpg", err)
+        self.assertEqual(self.phone_files(), before, "the allowed files are not offloaded either")
+
     def test_wipe_free(self):
         out = self.intake("wipe-free", self.drive)
         self.assertIn("3 MB of zeros", out)

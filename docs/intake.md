@@ -283,8 +283,8 @@ they have just hashed as an erased item, so the name they delete is the
 content they matched.
 
 Before any delete, the gate checks each target: inside the `--phone` root,
-inside the allowlist (`sources.check`; a path outside it is skipped with a
-line, and refuses the whole `offload`), and the same size as the staged copy
+inside the allowlist (`sources.check`: `erase` and `trash` skip a path
+outside it with a line; `offload` refuses the whole command), and the same size as the staged copy
 (a file whose size changed is skipped quietly). A phone original whose
 manifest row records no size refuses the whole command, listing the paths:
 its copy can't be checked, so it is never deleted unchecked; stage the batch
