@@ -1,0 +1,6 @@
+# Only for build_label_embeddings.py (regenerating labels.npz), not the runtime.
+# Installed by `bash setup.sh --build-labels` into ~/.cache/media-intake-build/site.
+# >= 7 days old when pinned. Linux x86_64 abi3 wheel only.
+# uploaded 2026-10-09 (1.0.0rc4 is a pre-release, skipped)
+tokenizers==0.23.3 \
+    --hash=sha256:376851d22bcf9d650a5c3090bb83e6cf9e895fbf0595369fa4cd43c1f69b5f87

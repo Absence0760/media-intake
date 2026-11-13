@@ -1,0 +1,88 @@
+# Dependabot configuration
+# https://docs.github.com/en/code-security/dependabot/dependabot-version-updates/configuration-options-for-the-dependabot.yml-file
+#
+# Strategy (the shape every project converged on):
+# - Weekly, Monday 06:00 UTC: low-noise, predictable, lands before the
+#   week's work starts and alongside the other weekly security sweeps.
+# - `cooldown: default-days: 7` on every ecosystem. A version must be a
+#   week old before Dependabot proposes it (security updates are exempt and
+#   still arrive at once). Most malicious package releases are found and
+#   pulled within days. Pair it with the package manager's own floor (e.g.
+#   pnpm's `minimumReleaseAge`) so a manual install obeys the same week.
+# - Aggressive grouping: one `minor-and-patch` PR per ecosystem per week,
+#   majors ungrouped so each gets its own review. dependabot-auto-merge.yml
+#   lands the minor/patch groups once CI is green; majors and Actions bumps
+#   always wait for a human.
+# - Conventional-commit titles, so pr-title-lint accepts Dependabot's PRs:
+#   `prefix` is the type only and `include: scope` appends `(deps)` /
+#   `(deps-dev)`. Do NOT put a scope in `prefix` too — `prefix:
+#   "chore(deps)"` plus `include: scope` produces `chore(deps)(deps): …`
+#   (seen in one project's history).
+# - GitHub Actions are SHA-pinned; Dependabot keeps those SHAs current so
+#   the pinning doesn't go stale.
+#
+# Grouping gotcha: a group filtered by `update-types` only groups updates
+# whose semver type Dependabot can compute, which needs a lockfile it can
+# read. For an ecosystem whose lock it cannot see (e.g. a pip lock not named
+# `<name>.txt` beside a `<name>.in`), it edits requirement RANGES, computes
+# no update type, and every member falls out of the group into its own PR.
+# Use `patterns: ["*"]` for such an ecosystem instead.
+#
+# Adjust or duplicate the package entries below to the template's actual
+# ecosystems and directories; delete the ones it doesn't use. Use
+# `directories:` (a list) for one ecosystem spread across several folders.
+# A directory that feeds a production image deserves its own entry so
+# dependabot-auto-merge.yml can keep it manual by directory.
+
+version: 2
+
+updates:
+  # GitHub Actions used in workflows (and composite actions under
+  # .github/actions/, which `directory: "/"` covers).
+  - package-ecosystem: github-actions
+    directory: "/"
+    schedule:
+      interval: weekly
+      day: monday
+      time: "06:00"
+      timezone: UTC
+    cooldown:
+      default-days: 7
+    open-pull-requests-limit: 5
+    commit-message:
+      prefix: ci
+      include: scope
+    groups:
+      actions:
+        patterns: ["*"]
+
+  - package-ecosystem: pip
+    directory: "/"
+    schedule:
+      interval: weekly
+      day: monday
+      time: "06:00"
+      timezone: UTC
+    cooldown:
+      default-days: 7
+    open-pull-requests-limit: 10
+    commit-message:
+      prefix: chore
+      include: scope
+    groups:
+      minor-and-patch:
+        update-types: ["minor", "patch"]
+
+  - package-ecosystem: terraform
+    directory: "/infra"
+    schedule:
+      interval: weekly
+      day: monday
+      time: "06:00"
+      timezone: UTC
+    cooldown:
+      default-days: 7
+    open-pull-requests-limit: 5
+    commit-message:
+      prefix: chore
+      include: scope

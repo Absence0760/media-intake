@@ -1,0 +1,45 @@
+# Content labels for label.py (SigLIP zero-shot). Each label is scored against
+# every prompt; its score is the highest. A file gets the label when the score
+# reaches the threshold (sigmoid probability, 0..1).
+#
+# Changing a prompt or adding a label means regenerating the text embeddings:
+#   bash setup.sh --build-labels
+# label.py refuses to run while labels.npz doesn't match this file.
+#
+# Thresholds are first guesses, not calibrated on real photos.
+# review: true makes the tag Review|<label> (a flag for a human look), not Label|<label>.
+# Prompts are lower case without punctuation (SigLIP's tokenizer canonicalises text that way).
+default_threshold: 0.05
+labels:
+  runner: {prompts: [a photo of a runner, a photo of a person running]}
+  road race: {prompts: [a photo of a running race, a photo of a road race, a photo of a marathon]}
+  crowd: {prompts: [a photo of a crowd of people]}
+  finish line: {prompts: [a photo of a race finish line, a photo of a finish arch]}
+  race bib: {prompts: [a photo of a race bib number pinned to a shirt]}
+  trail: {prompts: [a photo of a dirt trail, a photo of trail running]}
+  road: {prompts: [a photo of a road]}
+  track: {prompts: [a photo of a running track]}
+  mountain: {prompts: [a photo of mountains]}
+  beach: {prompts: [a photo of a beach]}
+  forest: {prompts: [a photo of a forest]}
+  snow: {prompts: [a photo of snow]}
+  sunrise or sunset: {prompts: [a photo of a sunrise, a photo of a sunset]}
+  city street: {prompts: [a photo of a city street]}
+  dog: {prompts: [a photo of a dog]}
+  food: {prompts: [a photo of food]}
+  selfie: {prompts: [a selfie]}
+  group photo: {prompts: [a group photo of people posing]}
+  medal: {prompts: [a photo of a finisher medal]}
+  screenshot: {prompts: [a screenshot of a phone screen, a screenshot of an app]}
+  document: {prompts: [a photo of a document, a photo of a sheet of paper with text]}
+  car: {prompts: [a photo of a car]}
+  child-in-shot:
+    prompts: [a photo of a child, a toddler, kids running, a photo of a baby]
+    threshold: 0.01
+    review: true
+  maybe-trash:
+    # Junk suggestions for `media-intake suggest-trash`; you decide, nothing auto-deletes.
+    prompts: [a blurry photo, an accidental photo taken in a pocket, a photo of the floor, a photo of a ceiling,
+              a very dark photo, a photo of a product box or food packaging, a closeup photo of a random object]
+    threshold: 0.1
+    review: true

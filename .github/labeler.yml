@@ -1,0 +1,25 @@
+# Config for actions/labeler: each top-level key is a label; a PR touching a
+# matching path gets it.
+
+"area:code":
+  - changed-files:
+      - any-glob-to-any-file:
+          - media_intake/**
+          - setup.sh
+          - requirements*.txt
+          - pyproject.toml
+
+"area:tests":
+  - changed-files:
+      - any-glob-to-any-file:
+          - tests/**
+
+"area:ci":
+  - changed-files:
+      - any-glob-to-any-file:
+          - .github/**
+
+"area:docs":
+  - changed-files:
+      - any-glob-to-any-file:
+          - "**/*.md"

@@ -1,0 +1,119 @@
+# Editor / OS
+.DS_Store
+.vscode/
+.idea/
+*.swp
+*~
+
+# Logs
+*.log
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+pnpm-debug.log*
+
+# Dependencies
+node_modules/
+.pnpm-store/
+__pycache__/
+*.py[cod]
+*$py.class
+.venv/
+venv/
+env/
+.eggs/
+*.egg-info/
+
+# Build output
+dist/
+build/
+.svelte-kit/
+.next/
+.nuxt/
+.output/
+out/
+.turbo/
+.parcel-cache/
+
+# Test / coverage
+coverage/
+.nyc_output/
+test-results/
+playwright-report/
+blob-report/
+htmlcov/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.tox/
+
+# Environment / secrets. Real production secrets do NOT live in project repos —
+# they never belong in this repo (CLAUDE.md, "Hard rules").
+# Committed `.env.development` (non-sensitive local defaults; see CLAUDE.md) is
+# NOT matched here, so it stays tracked. Machine-local real values go in the
+# gitignored `.env.development.local` (caught by `.env.*.local`).
+.env
+.env.local
+.env.*.local
+!.env.example
+!.env.*.example
+
+# Guard: no SOPS-encrypted secrets in a project repo (they never belong here).
+*.sops
+*.sops.yaml
+!*.sops.yaml.example
+
+# Terraform
+.terraform/
+*.tfstate
+*.tfstate.*
+*.tfvars
+!*.tfvars.example
+# Saved plans hold decrypted secrets (sops values, passwords) in plain form.
+# Write them outside the repo; this is the backstop.
+*.tfplan
+*.tfplan.json
+.terraform.lock.hcl.bak
+crash.log
+
+# Partial-backend config — embeds account-id in the bucket name, so
+# templates that use the bootstrap-aware partial-backend pattern keep
+# the per-account value out of git. Bare name matches the file at any
+# depth (infra/backend.config, web/infra/backend.config, etc.).
+backend.config
+
+# AWS SAM / serverless
+.aws-sam/
+.serverless/
+
+# Python misc
+.python-version
+
+# Sanity
+.sanity/
+
+# Local dev infra
+.localstack/
+
+# Claude Code runtime state. `.claude/agents/`, `commands/`, `hooks/` and
+# `settings.json` ARE checked in — they are part of the repo's review surface.
+# Only the per-user / runtime bits are ignored. `claude --worktree <name>`
+# puts each session's isolated checkout under `.claude/worktrees/`; those are
+# runtime state, never repo content.
+.claude/settings.local.json
+.claude/*.lock
+.claude/worktrees/
+
+# Persona audit reports
+# `.claude/agents/personas/persona-*.md` auditors write their findings here. The reports
+# are per-clone working notes (often half-reconciled), never a committed
+# artifact — but the folder's README documents the convention, so keep that one
+# file tracked via the negation below. Glob the contents (`/reviews/*`), not the
+# directory (`/reviews/`) — git won't descend into an ignored directory, so a
+# directory-level ignore would defeat the negation.
+/reviews/*
+!/reviews/README.md
+
+# media-intake: never commit anything from a real library or the state dir
+*.xmp
+media-intake-state/

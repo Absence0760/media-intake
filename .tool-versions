@@ -1,0 +1,3 @@
+# Toolchain versions for asdf / mise. The tool runs on the system Python
+# (Fedora's python3; CI uses Ubuntu 24.04's), so nothing is pinned here.
+# python 3.14

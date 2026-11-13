@@ -1,0 +1,32 @@
+name: labeler
+
+# Auto-label PRs based on changed file paths. Config lives in
+# .github/labeler.yml — add or remove label sections there, not here.
+#
+# This is a quality-of-life workflow: makes PR filtering easier and gives
+# the reviewer instant context about what areas a PR touches. Labels are
+# additive — they don't block merging.
+
+on:
+  pull_request_target:
+    types: [opened, synchronize, reopened]
+
+permissions: read-all
+
+jobs:
+  label:
+    name: apply path-based labels
+    runs-on: ubuntu-latest
+    permissions:
+      # A job-level block replaces the workflow's `read-all`, so name every
+      # scope: the action fetches .github/labeler.yml through the API
+      # (`contents: read`; without it a private repo's run fails to read its
+      # own config) and attaches labels (`pull-requests: write`).
+      contents: read
+      pull-requests: write
+    steps:
+      - uses: actions/labeler@bf12e9b00b37c5c0ca2b87b79b2daf7891dbda13 # v7.0.0
+        with:
+          repo-token: ${{ secrets.GITHUB_TOKEN }}
+          sync-labels: true
+          configuration-path: .github/labeler.yml

@@ -1,0 +1,49 @@
+# gitleaks config: the default rules, plus reviewed false positives.
+#
+# gitleaks (CI's gitleaks.yml, the weekly full-history sweep, and the
+# pre-commit hook) reads this file from the repo root automatically.
+#
+# How to add an entry (the rules every project converged on):
+#
+# 1. Allowlist by exact VALUE, never by path. `regexTarget = "secret"` below
+#    matches each regex against the captured secret only, so anchor it
+#    (`^…$`) to the literal. A real key in the same file is then still a
+#    finding. A path entry blinds the scanner to the whole file forever —
+#    use one only for a file whose every match is synthetic by definition
+#    (a committed local-dev env file of public demo keys), and say why.
+# 2. Write the reason and the file it came from on the line above, so the
+#    next reader can tell a reviewed placeholder from a waved-through key.
+# 3. A one-off finding tied to one historical commit goes in
+#    `.gitleaksignore` by fingerprint (`<commit>:<file>:<rule>:<line>`, from
+#    `gitleaks detect -v`), not here. TOML has no fingerprint field.
+# 4. Never weaken or disable an upstream rule to silence a fixture.
+# 5. An entry added for a value that is now ONLY in history (a squash-merged
+#    PR's interim commit) can't be removed later: the full-history sweep
+#    re-finds the commit that introduced it. Prefer fixing the fixture before
+#    the PR merges, so no allowlist entry is needed at all.
+#
+# Audit the result with:
+#   gitleaks detect --config=.gitleaks.toml --no-banner --redact
+#
+# Common false-positive shapes worth knowing before you reach for an entry:
+# generic-api-key reads `key: <identifier>` / `key = "<name>"` as a secret,
+# so i18n keys, field names and storage-key names trip it on entropy; a
+# deliberately fake key in a security test trips it by design. Rename the
+# fixture to something obviously fake (`test-only-not-a-key-0000…`) where you
+# can, and allowlist it by value where you can't.
+
+[extend]
+useDefault = true
+
+# MUST be the singular [allowlist] table, NOT the plural [[allowlists]]
+# array-of-tables. Measured in one project on gitleaks 8.24.3: under
+# `[extend] useDefault = true` a top-level [[allowlists]] block was silently
+# ignored, so every entry in it was inert. Don't "modernise" the spelling.
+[allowlist]
+description = "Reviewed placeholder and fixture values; each entry says where it lives and why it is not a secret."
+regexTarget = "secret"
+regexes = [
+  # Placeholder values in committed `.env.example` / docs: obviously not a
+  # credential, and the shape a real key never has.
+  '''^(changeme|change-me|replace-me|your-[a-z0-9-]+-here|<[a-z0-9_-]+>)$''',
+]

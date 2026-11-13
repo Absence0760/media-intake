@@ -1,0 +1,23 @@
+# Hash-pinned deps for scan_sensitive.py (NudeNet), label.py and geocode.py. Install with setup.sh.
+# Every version is >= 7 days old. Only Linux x86_64 / pure wheels listed.
+# uploaded 2024-07-03
+nudenet==3.4.2 \
+    --hash=sha256:5937dbd84e5d8e5de038f08ffea5a1bb50a08475776bf2b4795914ce0eaf0331
+# uploaded 2026-10-26
+onnxruntime==1.31.1 \
+    --hash=sha256:c20d7f15d84427db070b163f78c2c7146cc93edd6113fa7327671259a24184fe \
+    --hash=sha256:4d5f5fcc01f0c334d282a8991eab44e7752ad01c47b336d848ba43eb38084958
+# uploaded 2026-07-28
+opencv-python-headless==4.14.0.94 \
+    --hash=sha256:5e02669eac0ba67b2a22d7245af1e8ee1a2ef1185ee526a063d8f0555224bd52 \
+    --hash=sha256:211e581f5a4670acbbe08fff36a35e9946039d2eea28b80394632d036d1be527
+# uploaded 2025-12-19
+flatbuffers==25.12.19 \
+    --hash=sha256:7634f50c427838bb021c2d66a3d1168e9d199b0607e6329399f04846d42e20b4
+# uploaded 2026-09-17
+protobuf==7.36.2 \
+    --hash=sha256:89f23aa53c24553a2416fd4fd1ec06f74fa42b14b546d8883128813f775bbfd2 \
+    --hash=sha256:bdb3a345d48db958e6ce1f18e508beb0cc981d64f24088427549c866cd039f1e
+# uploaded 2026-08-21; numpy<2.8,>=2.0 (system numpy 2.3.5). For geocode.py (cKDTree).
+scipy==1.18.1 \
+    --hash=sha256:ac0333bdf38309aa3dcbe7e3fa7ea29e7a2c37c6ea306a757b700ded8e4596ad

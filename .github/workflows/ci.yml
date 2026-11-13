@@ -1,0 +1,48 @@
+# Unit tests on synthetic media. Tests that need the venv, the models or
+# Ollama skip themselves here (they run on a machine after `bash setup.sh`).
+# Python and its libraries come from Ubuntu's apt packages: no pip, no
+# unpinned downloads. `CI gate` is the single check to require on main.
+name: ci
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+permissions: read-all
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  test:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: System packages
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq --no-install-recommends \
+            python3-pil python3-yaml python3-numpy libimage-exiftool-perl ffmpeg
+      - name: Unit tests
+        env:
+          TZ: America/New_York
+        run: python3 -I -m unittest discover -s tests -v
+
+  gate:
+    name: CI gate
+    if: always()
+    needs: [test]
+    runs-on: ubuntu-24.04
+    permissions: {}
+    steps:
+      - name: Every job passed
+        env:
+          RESULT: ${{ needs.test.result }}
+        run: test "$RESULT" = success

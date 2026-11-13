@@ -1,0 +1,33 @@
+[build-system]
+requires = ["setuptools>=69"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "media-intake"
+version = "0.1.0"
+description = "Local-only photo and video intake: phone, camera and drive imports, dedupe, a sensitive-content quarantine, tags, search and a gallery."
+readme = "README.md"
+license = "AGPL-3.0-only"
+license-files = ["LICENSE", "THIRD_PARTY_NOTICES.md"]
+requires-python = ">=3.11"
+# Runtime Python deps come from the system (Fedora: python3-pillow, python3-numpy,
+# python3-pyyaml, python3-zxing-cpp) and from setup.sh's hash-pinned venv
+# (requirements.txt). Not published to PyPI.
+dependencies = []
+classifiers = [
+  "Private :: Do Not Upload",
+  "Operating System :: POSIX :: Linux",
+  "Programming Language :: Python :: 3",
+]
+
+[project.urls]
+Source = "https://github.com/Absence0760/media-intake"
+
+[project.scripts]
+media-intake = "media_intake.cli:main"
+
+[tool.setuptools]
+packages = ["media_intake"]
+
+[tool.setuptools.package-data]
+media_intake = ["labels.yaml", "labels.npz"]

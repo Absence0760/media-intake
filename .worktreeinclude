@@ -1,0 +1,19 @@
+# Files copied into each new `claude --worktree <name>` checkout.
+#
+# .gitignore syntax; only files that match here AND are git-ignored are
+# copied. A worktree starts from tracked content only, so the committed
+# safe-default env files (`.env.development`) already travel with it and the
+# stack runs out of the box. List here only the git-ignored personal
+# overrides a session would otherwise lose — they win over the committed
+# defaults. Patterns without a slash match at any depth.
+#
+# NOT copied, intentionally: virtualenvs (they hardcode absolute paths, so a
+# copy is broken) and node_modules (heavy; the package manager reinstalls
+# fast from its store). Install inside the worktree when you need to build or
+# test there.
+#
+# Never list a production secret file here — production secrets don't live
+# in project repos at all (CLAUDE.md, "Secrets").
+.env
+.env.local
+.env.*.local

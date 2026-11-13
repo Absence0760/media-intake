@@ -1,0 +1,36 @@
+# media-intake configuration. Copy to ~/.config/media-intake/config.toml.
+# Every key is optional; the values shown are the defaults. docs/configuration.md.
+
+# library = "~/Pictures/library"        # photos, screenshots, messaging media
+# videos  = "~/Videos/personal"         # videos (GoPro included), screen recordings
+# state   = "~/.local/share/media-intake"   # staging, quarantine, index, venv, models (kept 0700)
+
+[phone]
+# Extra exact folders on a phone that may be read (with their subfolders), each
+# mapped to the messaging app it belongs to. Nothing else under Android/ is ever listed.
+# extra_folders = { "Android/media/com.whatsapp/WhatsApp/Media/WhatsApp Images" = "WhatsApp",
+#                   "Android/media/com.whatsapp/WhatsApp/Media/WhatsApp Video" = "WhatsApp" }
+
+[drive]
+# Folder names at a drive's mount root that mean "this is my backup drive, never a source".
+# A .media-intake-backup file at the root does the same; .media-intake-source-ok overrides both.
+# backup_markers = ["photos-backup"]
+
+[queue]
+# Command prefix for the queue's heavy steps (plan, scan, tag, index, vlm), e.g. a
+# memory-capping wrapper. wrapper_lock: that wrapper's lock file, so `queue run` can warn.
+# wrapper = ["systemd-run", "--user", "--scope", "-p", "MemoryMax=6G"]
+# wrapper_lock = ""
+
+# A project: events routed to it file their camera photos and videos under
+# <folder>/<date>-<event>/{phone,gopro}/ with Project|<name> tags.
+# [projects.club]
+# name = "Run Club"                  # the Project| tag (default: the key)
+# folder = "~/Videos/run-club"
+# events = ["*-race"]                # fnmatch patterns: `plan --event park-race@2026-05-01` routes here
+# protect = true                     # never a trash suggestion (default true)
+
+[plugins]
+# Python modules with project-specific hooks (docs/plugins.md). They run with your rights.
+# paths = ["~/src/my-media-plugin"]
+# modules = ["my_media_plugin"]

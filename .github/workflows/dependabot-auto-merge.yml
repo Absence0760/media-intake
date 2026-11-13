@@ -1,0 +1,124 @@
+name: Dependabot auto-merge
+
+# Automatically squash-merges minor + patch Dependabot PRs once CI is
+# green, for package ecosystems only. Saves review burden on the grouped
+# weekly bumps: without it, most of the human review time goes to a patch
+# version of a transitive dependency.
+#
+# Never auto-merged, a human reviews them:
+#   - major bumps. They are the ones that historically need code changes
+#     (in one project a bcrypt major silently broke every login
+#     through a library that read a removed attribute), and auto-merging
+#     them would ship the regression to main.
+#   - GitHub Actions bumps of any size. An action runs inside jobs that
+#     hold deploy credentials, so a hijacked patch release (the
+#     tj-actions/changed-files pattern) would become the new SHA pin on
+#     main unread. The SHA pin only helps if someone reads what it moves to.
+#   - container base images (`docker`). What goes into a production image
+#     gets a human review. If an ecosystem's directory feeds a production
+#     image (a Lambda's requirements.txt, an image's npm deps), exclude
+#     that directory too — see the CUSTOMISE note on the merge step.
+#
+# Supply-chain delay: `.github/dependabot.yml` sets a 7-day `cooldown` on
+# every ecosystem, so a version is a week old before it can land here.
+# (Pair it with the package manager's own release-age floor, e.g. pnpm's
+# `minimumReleaseAge`, so a manual install obeys the same week.)
+#
+# Repository setting required: "Allow auto-merge" enabled on
+# Settings → General → Pull Requests. The step reads that setting first;
+# with it off it leaves a notice and stops, green: PRs sit waiting for a
+# human like before, so worst case is degenerate, not destructive. (It used
+# to call `gh pr merge --auto` anyway, which errors "Auto merge is not
+# allowed for this repository" under `bash -e` and turned every Dependabot
+# PR red in two projects.)
+#
+# CI gating: the squash merge waits on the required `CI gate` check
+# (ci.yml) before landing. A red CI run keeps the PR queued until a
+# human intervenes or the PR is closed.
+
+on:
+  pull_request_target:
+    # A safety scope, not an oversight: other workflows should NOT filter
+    # `pull_request` on a base branch (that leaves a stacked PR ungated),
+    # but this job MERGES code with `contents: write`, so it stays scoped to
+    # the one base it is reasoned about. Dependabot only targets main;
+    # widening gains nothing and would let a bot PR auto-merge into a branch
+    # nobody reviewed.
+    branches: [main]
+
+permissions: read-all
+
+jobs:
+  auto-merge:
+    name: Auto-merge minor + patch
+    runs-on: ubuntu-latest
+    # The PR's author, not github.actor: the actor is whoever triggered
+    # this event, and Dependabot can be the actor of an event on a PR it
+    # did not open (a @dependabot rebase of someone else's branch, the
+    # "Dependabot confusion" pattern). fetch-metadata below also checks the
+    # author and commits, but this gate costs nothing.
+    if: github.event.pull_request.user.login == 'dependabot[bot]'
+    timeout-minutes: 5
+    permissions:
+      # `pull_request_target` runs in the base-branch context — needs
+      # explicit write grants for `gh pr review --approve` and
+      # `gh pr merge --auto`. Scoped to this job only so a future
+      # job in this workflow doesn't silently inherit them.
+      contents: write
+      pull-requests: write
+    steps:
+      - name: Read dependabot metadata
+        id: meta
+        uses: dependabot/fetch-metadata@25dd0e34f4fe68f24cc83900b1fe3fe149efef98 # v3.1.0
+        with:
+          # Fetch metadata signs the result with the workflow's own
+          # GITHUB_TOKEN so a malicious PR can't claim to be a patch
+          # bump it isn't.
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+
+      # An allowlist of ecosystems, so it fails closed: fetch-metadata reads
+      # the ecosystem from the branch name (dependabot/<ecosystem>/...,
+      # `github_actions` for actions, `docker` for images), and a name it
+      # doesn't list is left for a human. Never add `github_actions` or
+      # `docker` (header).
+      #
+      # CUSTOMISE: trim the list to the ecosystems this repo uses. To keep a
+      # directory manual (one that feeds a production image), add BOTH
+      #   !startsWith(steps.meta.outputs.directory, '/<dir>') &&
+      #   !contains(github.event.pull_request.head.ref, '/<dir>/') &&
+      # fetch-metadata derives `directory` from the branch name, so the branch
+      # is checked as well: a branch naming that directory stays manual
+      # whatever fetch-metadata made of it.
+      - name: Approve + auto-merge minor / patch
+        if: >-
+          contains(fromJSON('["npm_and_yarn", "pip", "uv", "pub", "cargo", "go_modules", "bundler", "composer", "docker_compose", "terraform"]'), steps.meta.outputs.package-ecosystem) &&
+          (steps.meta.outputs.update-type == 'version-update:semver-minor' ||
+          steps.meta.outputs.update-type == 'version-update:semver-patch')
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          PR_URL: ${{ github.event.pull_request.html_url }}
+          REPO: ${{ github.repository }}
+        run: |
+          set -euo pipefail
+          # The setting is read, not assumed (header): with auto-merge off
+          # there is nothing to queue, so approve nothing and stop green.
+          # A failed read fails the step (set -e): it is not "off".
+          allowed=$(gh api "repos/$REPO" --jq '.allow_auto_merge')
+          if [ "$allowed" != "true" ]; then
+            echo "::notice::Auto-merge is off for this repository (Settings → General → Pull Requests → Allow auto-merge); this PR waits for a human."
+            exit 0
+          fi
+          # Best-effort approval. A courtesy for repos whose branch
+          # protection requires a review; it fails when the repo setting
+          # "Allow GitHub Actions to create and approve pull requests" is off
+          # (the default), so it must never abort the merge below — under
+          # `bash -e` an unguarded `gh pr review` did exactly that in one
+          # project. If protection requires approvals the merge then
+          # sits in the queue until a human approves, which is the desired
+          # behaviour for that protection-strict mode.
+          gh pr review --approve "$PR_URL" || echo "::notice::PR approval not permitted (enable 'Allow GitHub Actions to create and approve pull requests' in repo settings to enable). Proceeding to queue auto-merge."
+          # `--auto --squash` lands the merge as soon as every required
+          # check turns green. If branch protection blocks the merge,
+          # `--auto` queues it — a human can land it manually after
+          # the protection is satisfied.
+          gh pr merge --auto --squash "$PR_URL"
