@@ -11,7 +11,9 @@ against DNS rebinding, a CSRF value on every POST, no-store on every response.
 Media are served as-is from the quarantine/review files by an opaque id (an
 index into the list built at start-up), never by path; nothing is written to
 disk except batches/<batch>/review-decisions.json (0600) and the run's job
-files in <state>/jobs/ (jobs.py: dir 0700, files 0600).
+files in <state>/jobs/ (jobs.py: dir 0700, files 0600). The run is an erase: its
+paths and decisions reach the worker on a pipe, and once it ends no file name is
+left in <state>/jobs/ (jobs.py redact).
 
 A near-duplicate is shown beside its original (display only, its own opaque id
 under /o/): the plan's `why` names it, and it is served only if it resolves to
@@ -31,8 +33,9 @@ quarantine/near-<batch> and quarantine/<batch>: `release` for kept files,
 `erase --yes` for the rest, `verify-gone`. Closing the page or stopping the
 server never stops it; the page polls the job's status and log, a restarted
 server (or a second one) shows it again, and a worker that died is reported as
-crashed. The server exits once the page has read the end. An assistant may
-start this; only you open the page.
+crashed. The server exits once the page has read the end. A page whose list is
+older than the batch's last run (another page's run finished since it loaded) is
+refused at submit. An assistant may start this; only you open the page.
 """
 import argparse, datetime, hashlib, html, http.server, json, mimetypes, os, re, secrets, shutil, struct
 import subprocess, sys, threading, time, urllib.parse
@@ -318,12 +321,12 @@ class Runner:
         self.phone, self.drive = spec.get("phone"), spec.get("drive")
         self.keep_phone_thumbnails, self.no_wipe_free = spec.get("keep_phone_thumbnails"), spec.get("no_wipe_free")
 
-    def log(self, s):
-        self.job.log(s)
+    def log(self, s, safe=True):
+        """The runner's own lines: counts, batch names and its decisions file, never a file name (safe)."""
+        self.job.log(s, safe=safe)
 
     def run(self, args, label):
-        shown = " ".join(a if not a.startswith(STATE) else "<state>" + a[len(STATE):] for a in args)
-        return self.job.run(args, label, shown)
+        return self.job.run(args, label)  # a redact job: jobs.py renders the command line without paths
 
     def device_args(self, verify=False, phone=True):
         a = []
@@ -342,7 +345,7 @@ class Runner:
         try:
             ok = self._execute(self.dec)
         except Exception as e:  # report, never leave the page hanging
-            self.log(f"error: {type(e).__name__}: {e}")
+            self.log(f"error: {type(e).__name__}: {e}", safe=False)  # an OSError names its file
             ok = False
         where = f"batches/{self.batch}/review-decisions.json" if self.batch else "maybe-trash-decisions.json"
         self.log("done: " + ("all steps succeeded" if ok else f"something failed, see above; decisions are in {where}"))
@@ -439,11 +442,15 @@ class App:
         self.lock = threading.Lock()
         self.key = job_key(batch)
         self.job_id = None  # the job this server shows (started here, or found running)
+        self.tail = None  # its log, followed through an open descriptor (jobs.Tail)
         self.ok = None
         self.done_seen = threading.Event()
         self.finished = threading.Event()
         self.port = None
-        self.current()
+        st = self.current()
+        # The batch's last run when this list was read. A run that ends after this (from another page) can
+        # change what is on disk, e.g. write a fresh near-<batch>, so this page may no longer submit.
+        self.loaded_id = st.get("id") if st else None
 
     @property
     def submitted(self):
@@ -458,8 +465,9 @@ class App:
                 self._watch(st["id"])
         return st
 
-    def _watch(self, jid):
+    def _watch(self, jid, tail=None):
         self.job_id = jid
+        self.tail = tail or jobs.Tail(self.key, jid)
         threading.Thread(target=self._wait, args=(jid,), daemon=True).start()
 
     def _wait(self, jid):
@@ -473,7 +481,7 @@ class App:
             gone = self.job_id is not None
             return dict(lines=[], next=since, done=gone, ok=None if not gone else False,
                         job=jobs.public(st), replaced=gone)
-        ls, nxt = jobs.lines(self.key, since)  # after the status: a done job has written every line
+        ls, nxt = self.tail.lines(since, st["done"])  # after the status: a done job has written every line
         if st["done"] and nxt <= since + len(ls):
             self.done_seen.set()
         return dict(lines=ls, next=nxt, done=st["done"], ok=st.get("ok"), job=jobs.public(st))
@@ -506,6 +514,10 @@ class App:
             except jobs.Busy:
                 return 409, "a run for this batch is already in progress"
             with claim:
+                # Under the claim no run can start or end, so this is the last word on staleness.
+                st = jobs.status(self.key)
+                if (st.get("id") if st else None) != self.loaded_id:
+                    return 409, "a run finished since this page loaded; open the review again"
                 self._start(claim, dec)
         return 202, "started"
 
@@ -522,12 +534,14 @@ class App:
             else:
                 rec["review"][it["rel"]] = dec[i]
         write_private(os.path.join(bd, "review-decisions.json" if self.batch else "maybe-trash-decisions.json"), rec)
-        spec = dict(batch=self.batch, decisions={str(i): d for i, d in dec.items()},
-                    items=[dict(tab=it["tab"], qbatch=it["qbatch"], rel=it["rel"], path=it["path"]) for it in self.items],
-                    phone=self.phone, drive=self.drive, keep_phone_thumbnails=self.keep_phone_thumbnails,
-                    no_wipe_free=self.no_wipe_free)
-        st = claim.spawn("review_ui", spec)
-        self._watch(st["id"])
+        # Paths and decisions go to the worker on a pipe, never into <state>/jobs/ (the run erases).
+        private = dict(batch=self.batch, decisions={str(i): d for i, d in dec.items()},
+                       items=[dict(tab=it["tab"], qbatch=it["qbatch"], rel=it["rel"], path=it["path"])
+                              for it in self.items],
+                       phone=self.phone, drive=self.drive, keep_phone_thumbnails=self.keep_phone_thumbnails,
+                       no_wipe_free=self.no_wipe_free)
+        st = claim.spawn("review_ui", dict(batch=self.batch, items=len(self.items)), private=private, redact=True)
+        self._watch(st["id"], claim.tail)
 
     def public_items(self):
         return [dict(id=i, tab=it["tab"], batch=it["qbatch"] or self.batch, rel=it["rel"], reasons=it["reasons"],
@@ -753,6 +767,7 @@ def main(argv=None):
     for flag, v in (("--phone", a.phone), ("--drive", a.drive)):
         if v and not os.path.isdir(v):
             sys.exit(f"{flag} {v}: not a directory")
+    jobs.sweep()  # a run that died while no page watched: marked crashed, its output scrubbed
     items = collect(a.batch) if a.batch else []
     origs = attach_originals(a.batch, items) if a.batch else []
     if a.maybe_trash:
