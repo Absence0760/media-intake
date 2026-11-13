@@ -4,7 +4,7 @@ sensitive files quarantined for you to review, erased everywhere on confirm.
 Run as `media-intake <command>` (cli.py); `python3 -I media_intake/intake.py` works too.
 
   media-intake stage   SRC_ROOT --kind phone|gopro|drive --batch NAME [--only LISTFILE]
-  media-intake plan    BATCH [--event [PROJECT/]SLUG@YYYY-MM-DD ...]
+  media-intake plan    BATCH [--event [PROJECT/]SLUG@YYYY-MM-DD ...] [--clock-offset DEVICE=±Nh ...]
   media-intake scan    BATCH                     (local detectors; labels only)
   media-intake apply   BATCH                     (moves files; prints a summary)
   media-intake quarantine BATCH                  (counts + the folder to open)
@@ -51,6 +51,7 @@ import argparse, collections, datetime, glob, hashlib, json, os, re, shutil, sta
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import config  # noqa: E402
+import dates  # noqa: E402
 import sources  # noqa: E402
 
 CFG = config.get()
@@ -170,38 +171,9 @@ def orphan_sidecar(p):
 
 
 def media_date(path):
-    """(datetime, source) from EXIF, video metadata, filename, then mtime."""
-    from PIL import Image
-    ext = os.path.splitext(path)[1].lower()
-    if ext in IMG:
-        try:
-            ex = Image.open(path).getexif()
-            dt = ex.get_ifd(0x8769).get(36867) or ex.get(306)
-            if dt:
-                return datetime.datetime.strptime(dt.strip()[:19], "%Y:%m:%d %H:%M:%S"), "exif"
-        except Exception:
-            pass
-    if ext in VID:
-        r = subprocess.run(["ffprobe", "-v", "quiet", "-of", "json", "-show_entries",
-                            "format_tags=creation_time", path], capture_output=True, text=True)
-        ct = json.loads(r.stdout or "{}").get("format", {}).get("tags", {}).get("creation_time")
-        if ct and not ct.startswith(("1970", "1904")):
-            try:
-                d = datetime.datetime.fromisoformat(ct.replace("Z", "+00:00"))
-                return d.astimezone().replace(tzinfo=None), "video"
-            except ValueError:
-                pass
-    n = os.path.basename(path)
-    for rx in (r"(20\d\d)(\d\d)(\d\d)[_-](\d\d)(\d\d)(\d\d)", r"(20\d\d)-(\d\d)-(\d\d)[ _-](\d\d)[.:-]?(\d\d)[.:-]?(\d\d)",
-               r"(20\d\d)(\d\d)(\d\d)"):
-        m = re.search(rx, n)
-        if m:
-            g = [int(x) for x in m.groups()] + [0, 0, 0]
-            try:
-                return datetime.datetime(*g[:6]), "filename"
-            except ValueError:
-                pass
-    return datetime.datetime.fromtimestamp(os.path.getmtime(path)), "mtime"
+    """(datetime, source) for one file; the rules live in dates.py (docs/intake.md, Dates)."""
+    d = dates.resolve_all([path])[path]
+    return d.dt, d.src
 
 
 def has_gps(path):
@@ -298,13 +270,19 @@ def cmd_plan(a):
     index = load(os.path.join(STATE, "index.json"), {})
     by_sha = {v["sha"]: k for k, v in index.items()}
 
+    try:
+        dated = dates.resolve_all([os.path.join(raw, rel) for rel in man["files"]],
+                                  dates.clock_offsets(a.clock_offset))
+    except ValueError as e:
+        sys.exit(str(e))
     rows = []
     for rel in sorted(man["files"]):
         p = os.path.join(raw, rel)
-        d, dsrc = media_date(p)
+        dd = dated[p]
         ext = os.path.splitext(rel)[1].lower()
         dh, w, h = dhash(p) if ext in IMG else (None, 0, 0)
-        rows.append(dict(rel=rel, sha=sha256(p), size=os.path.getsize(p), date=d.isoformat(), date_src=dsrc,
+        rows.append(dict(rel=rel, sha=sha256(p), size=os.path.getsize(p), date=dd.dt.isoformat(), date_src=dd.src,
+                         date_tz=dd.tz, date_from=dd.base, date_note=dd.note, date_suspect=dd.suspect,
                          cat=category(rel, kind), dhash=dh, w=w, h=h, ext=ext))
 
     pref = {"photo": 5, "video": 5, "gopro": 5, "screenshot": 3, "screenrec": 3}
@@ -394,6 +372,13 @@ def cmd_plan(a):
                                 for p in plan)
     print(f"plan: {len(plan)} files  file {c['file']}  delete(exact dup) {c['delete']}  review {c['review']}")
     print("dates from", dict(collections.Counter(p["date_src"] for p in plan)))
+    for label, sel in (("camera dates replaced by GPS", lambda p: p["date_src"] == "gps" and p["date_note"]),
+                       ("dates shifted by --clock-offset", lambda p: p["date_src"] == "offset"),
+                       ("dates to check (clock-reset default or nothing plausible; --clock-offset fixes a wrong "
+                        "clock)", lambda p: p["date_suspect"])):
+        hit = sorted(p["rel"] for p in plan if sel(p))
+        if hit:
+            print(f"  {len(hit)} {label}: " + ", ".join(hit[:5]) + (" ..." if len(hit) > 5 else ""))
     for k in sorted({os.path.dirname(os.path.relpath(p["dst"], HOME)) for p in plan if p["action"] == "file"}):
         print("  ~/" + k)
 
@@ -1522,7 +1507,7 @@ def tag_files(items, labels=True):
             hier.append(f"Source|{source}")
         if event:
             hier.append(f"Event|{event}")
-        t = dict(event=event, date=dt.strftime("%Y:%m:%d %H:%M:%S") if dt else None)
+        t = dict(event=event, date=dates.exif_string(dt) if dt else None)
         if path in gps:
             t["lat"], t["lon"] = gps[path]
             pl = places.get(path)
@@ -1570,7 +1555,8 @@ def cmd_tag(a):
         project = p.get("project") or infer(p["dst"])[0]
         cat = p["cat"]
         src = SOURCE.get(cat) or (cat.split(":", 1)[1].lower() if cat.startswith("messaging:") else None)
-        items.append((p["dst"], project, src, p.get("event"), datetime.datetime.fromisoformat(p["date"])))
+        items.append((p["dst"], project, src, p.get("event"),
+                      dates.aware(datetime.datetime.fromisoformat(p["date"]), p.get("date_tz"))))
     print(f"{len(items)} filed files to tag" + (f"; {sum(1 for p in plan if p['rel'] in flags)} flagged by scan are never tagged" if flags else ""))
     tag_files(items, labels=not a.no_labels)
     # Plugins (docs/plugins.md) get the filed files, e.g. to register a project's clips.
@@ -1584,11 +1570,25 @@ def cmd_tag(a):
                                for i in live if i[0] not in bad])
 
 
+def sidecar_dates(paths):
+    """Media paths whose sidecar already has XMP-exif:DateTimeOriginal (written by `tag` from the plan,
+    possibly GPS- or --clock-offset-corrected): tag-files keeps it rather than re-reading the original."""
+    xs = [sidecar(p) for p in paths if os.path.isfile(sidecar(p))]
+    if not xs or not shutil.which("exiftool"):
+        return set()
+    r = subprocess.run(["exiftool", "-j", "-q", "-q", "-XMP-exif:DateTimeOriginal", "-@", "-"],
+                       input="\n".join(xs) + "\n", capture_output=True, text=True)
+    return {row["SourceFile"][:-4] for row in json.loads(r.stdout or "[]") if row.get("DateTimeOriginal")}
+
+
 def cmd_tag_files(a):
+    files = [os.path.abspath(f) for f in a.files]
+    keep = sidecar_dates(files)
+    fresh = dates.resolve_all([f for f in files if os.path.isfile(f) and f not in keep])
     items = []
-    for f in a.files:
+    for f in files:
         project, src, event = infer(f)
-        items.append((os.path.abspath(f), project, src, a.event or event, media_date(f)[0] if os.path.isfile(f) else None))
+        items.append((f, project, src, a.event or event, fresh[f].aware() if f in fresh else None))
     tag_files(items, labels=not a.no_labels)
 
 
@@ -1692,6 +1692,14 @@ def cmd_gallery(a):
     sys.exit(gallery.main(argv))
 
 
+def clock_offset_arg(v):
+    try:
+        dates.parse_clock_offset(v)
+    except ValueError as e:
+        raise argparse.ArgumentTypeError(str(e))
+    return v
+
+
 def build_parser(prog=None):
     ap = argparse.ArgumentParser(prog=prog, description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     sp = ap.add_subparsers(dest="cmd", required=True)
@@ -1702,6 +1710,9 @@ def build_parser(prog=None):
     s.add_argument("--event", action="append", metavar="[PROJECT/]SLUG@YYYY-MM-DD",
                    help="an event on that day: Event|SLUG tags; with a PROJECT/ prefix, or a slug matching a "
                         "project's events patterns in config.toml, that day's camera files go to the project's folder")
+    s.add_argument("--clock-offset", action="append", metavar="DEVICE=+-Nh", type=clock_offset_arg,
+                   help="shift dates from a camera whose clock was wrong (DEVICE: its Make, Model, 'Make Model' or "
+                        "all; e.g. 'HERO11 Black=+3h'); GPS dates are never shifted; sidecars only")
     s = sp.add_parser("scan"); s.add_argument("batch")
     s = sp.add_parser("apply"); s.add_argument("batch"); s.add_argument("--no-scan", action="store_true"); s.add_argument("--allow-missing-detectors", action="store_true")
     s = sp.add_parser("quarantine"); s.add_argument("batch")
