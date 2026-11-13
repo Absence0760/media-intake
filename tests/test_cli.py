@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """cli.py tests: `media-intake doctor` against a fake probe (no real tools, models or Ollama),
-plus a guard that the model pins have one source.
+plus guards: the model pins have one source, the version one home, and nothing kills by command line.
 
   python3 -I -m unittest discover -s tests -p test_cli.py
 """
@@ -192,6 +192,25 @@ class Pins(unittest.TestCase):
             with open(p) as f:
                 found = pins & set(re.findall(r"[0-9a-f]{40,64}", f.read()))
             self.assertFalse(found, f"{os.path.relpath(p, support.ROOT)} repeats a pin from pins.json")
+
+
+class KillByPid(unittest.TestCase):
+    """ROADMAP: kill by PID. `pkill -f` / `pgrep -f` match their own shell's command line."""
+
+    def test_no_kill_by_command_line(self):
+        root = support.ROOT
+        paths = [*glob.glob(os.path.join(root, "**", "*.py"), recursive=True),
+                 *glob.glob(os.path.join(root, "**", "*.sh"), recursive=True),
+                 *glob.glob(os.path.join(root, ".github", "workflows", "*.yml")),
+                 *glob.glob(os.path.join(root, ".claude", "**", "*"), recursive=True)]
+        pattern = re.compile(r"\b(?:pkill|pgrep|killall)\b" + r"|kill\s+\$\(")
+        hits = []
+        for p in paths:
+            if not os.path.isfile(p) or os.path.abspath(p) == os.path.abspath(__file__):
+                continue
+            with open(p, errors="replace") as f:
+                hits += [f"{os.path.relpath(p, root)}:{n}" for n, ln in enumerate(f, 1) if pattern.search(ln)]
+        self.assertEqual(hits, [])
 
 
 class Version(unittest.TestCase):
