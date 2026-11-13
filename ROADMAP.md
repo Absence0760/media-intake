@@ -36,7 +36,7 @@ The goal: someone else can install it on Fedora, import a phone, and trust it.
       case-only rename leaves what looks like a duplicate and deleting it deletes the real
       file. Refuse any device delete whose path differs from another manifest path only
       by case; never rename by case on a device.
-- [ ] **Long actions survive the page:** release/erase/trash started from the review page
+- [x] **Long actions survive the page:** release/erase/trash started from the review page
       or gallery must run as a detached, resumable job with a status file. Today stopping
       the page does not stop an erase already started, and a second page can show stale
       state. Show progress in the page; refuse a second submit for the same batch.

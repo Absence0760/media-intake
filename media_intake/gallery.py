@@ -13,7 +13,9 @@ verify-gone checks them), filters, semantic search (semantic.py, local SigLIP),
 and your actions: Keep, Trash (intake.py trash), Erase (intake.py forget, the
 erase-everywhere path), my tags, Rotate (XMP-tiff:Orientation in the sidecar
 only). Views: Library, Trash suggestions, plus any tab a plugin adds
-(plugins.py gallery_views(), docs/plugins.md).
+(plugins.py gallery_views(), docs/plugins.md). Trash and Erase run as a detached
+job (jobs.py, key "gallery", one at a time): closing the page or stopping the
+server never stops one, and a restarted server or another page shows it again.
 
 Server security is review_ui.py's: stdlib only, everything inline, 127.0.0.1 on a
 random port, random token swapped for an HttpOnly SameSite=Strict cookie, Host
@@ -27,6 +29,7 @@ import xml.etree.ElementTree as ET
 HERE = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, HERE)
 import intake  # noqa: E402  (constants, sidecar helpers, trash_allowed, exiftool_batch)
+import jobs  # noqa: E402  (trash / erase run as a detached job: <state>/jobs/gallery.*)
 import label  # noqa: E402  (flagged / refused: stdlib only at import)
 import plugins  # noqa: E402  (extra tabs: gallery_views())
 import review_ui as R  # noqa: E402  (server guards, media with Range, sizes)
@@ -37,7 +40,7 @@ ROOTS = list(intake.LIB_ROOTS)
 PROTECTED = intake.config.protected_tags(intake.CFG)
 THUMBS = intake.THUMBS
 CACHE = os.path.dirname(THUMBS)
-INTAKE = os.environ.get("MEDIA_REVIEW_INTAKE", os.path.join(HERE, "intake.py"))
+JOB_KEY = "gallery"  # one trash/erase at a time across every gallery page and server
 IMG, VID = intake.IMG, intake.VID
 THUMB_PX, PREVIEW_PX = 320, 1600
 # Namespaces "my tag" never writes or removes (docs/intake.md, "Tags: who writes what").
@@ -334,7 +337,7 @@ class App:
         self.lock = threading.RLock()
         self.thumb_sem = threading.BoundedSemaphore(3)
         self.port = None
-        self.job = None  # {"lines": [...], "done": bool, "ok": bool}
+        self.reconciled = None  # id of the last finished job whose results are applied to items
         self.search_cache = {}
         self.text_why = None
         self.text_checked = threading.Event()
@@ -676,50 +679,58 @@ class App:
                 self.drop_thumb(self.items[i])
             return f"rotated {len(ids)} (sidecar XMP-tiff:Orientation only; originals untouched)"
 
-    # ---------------------------------------------- trash / erase (intake.py subprocesses, one job at a time)
+    # ---------------------------------------------- trash / erase (a detached jobs.py job, one at a time)
     def start_job(self, label_, argsets, ids):
+        shown = [" ".join(a if a.startswith("--") else "'" + os.path.basename(a) + "'" if os.path.isabs(a) else a
+                          for a in args) for args in argsets]
         with self.lock:
-            if self.job and not self.job["done"]:
+            paths = [self.items[i]["path"] for i in ids]
+            try:
+                claim = jobs.claim(JOB_KEY)  # atomic across pages and servers; the worker inherits it
+            except jobs.Busy:
                 raise RuntimeError("another action is still running")
-            self.job = dict(lines=[], done=False, ok=None, label=label_)
-            for i in ids:
+            with claim:
+                st = claim.spawn("commands", dict(label=label_, argsets=argsets, shown=shown, paths=paths),
+                                 total=len(argsets))
+            self.mark_busy(st)
+
+    def mark_busy(self, st):
+        for p in (st.get("spec") or {}).get("paths") or []:
+            i = self.by_path.get(p)
+            if i is not None:
                 self.items[i]["busy"] = True
-        threading.Thread(target=self._job, args=(argsets, ids), daemon=True).start()
 
-    def log(self, s):
+    def sync(self):
+        """The job's status, applied to the items: busy while it runs (whichever page or server started it),
+        gone / not busy once it has finished. Survives a restart: everything comes from the status file."""
+        st = jobs.status(JOB_KEY)
+        if not st:
+            return None
         with self.lock:
-            self.job["lines"].append(s)
+            if not st["done"] or st.get("step_running"):  # a crashed job's orphaned step may still delete them
+                self.mark_busy(st)
+            elif st.get("id") != self.reconciled:
+                self.reconciled = st.get("id")
+                for p in (st.get("spec") or {}).get("paths") or []:
+                    i = self.by_path.get(p)
+                    if i is None:
+                        continue
+                    it = self.items[i]
+                    it.pop("busy", None)
+                    if not os.path.lexists(it["path"]):
+                        it["gone"] = True
+                        if it.get("sha") and os.path.exists(os.path.join(THUMBS, it["sha"] + ".jpg")):
+                            intake.gallery_thumb_forget(it["sha"])
+                self.search_cache.clear()
+        return st
 
-    def _job(self, argsets, ids):
-        ok = True
-        try:
-            for args in argsets:
-                self.log("$ intake.py " + " ".join(a if a.startswith("--") else "'" + os.path.basename(a) + "'"
-                                                   if os.path.isabs(a) else a for a in args))
-                p = subprocess.Popen([sys.executable, "-I", "-u", INTAKE, *args], stdin=subprocess.DEVNULL,
-                                     stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True, cwd=HERE)
-                for line in p.stdout:
-                    self.log("  " + line.rstrip("\n"))
-                rc = p.wait()
-                self.log(f"  [exit {rc}]")
-                ok &= rc == 0
-        except Exception as e:
-            self.log(f"error: {type(e).__name__}: {e}")
-            ok = False
-        with self.lock:
-            n = 0
-            for i in ids:
-                it = self.items[i]
-                it.pop("busy", None)
-                if not os.path.lexists(it["path"]):
-                    it["gone"] = True
-                    n += 1
-                    if it.get("sha") and os.path.exists(os.path.join(THUMBS, it["sha"] + ".jpg")):
-                        intake.gallery_thumb_forget(it["sha"])
-            self.search_cache.clear()
-            self.job["lines"].append(f"done: {n} of {len(ids)} gone from the library"
-                                     + ("" if ok else "; something failed, see above"))
-            self.job["done"], self.job["ok"] = True, ok
+    def job_view(self, since):
+        st = self.sync()
+        if not st:
+            return dict(id=None, lines=[], next=0, done=True, ok=None, ids=[])
+        ls, nxt = jobs.lines(JOB_KEY, since)  # read after the status: a finished job has written every line
+        ids = [self.by_path[p] for p in (st.get("spec") or {}).get("paths") or [] if p in self.by_path]
+        return dict(jobs.public(st), lines=ls, next=nxt, ids=ids)
 
     def trash(self, ids, confirm):
         if confirm is not True:
@@ -799,16 +810,16 @@ class Handler(R.Handler):
         elif path == "/api/facets":
             self.json(200, app.facets())
         elif path == "/api/list":
+            app.sync()
             self.json(200, app.listing(f))
         elif path == "/api/job":
-            with app.lock:
-                j = app.job or dict(lines=[], done=True, ok=None)
-                try:
-                    since = max(0, int(f.get("since") or 0))
-                except ValueError:
-                    since = 0
-                self.json(200, dict(lines=j["lines"][since:], next=len(j["lines"]), done=j["done"], ok=j["ok"]))
+            try:
+                since = max(0, int(f.get("since") or 0))
+            except ValueError:
+                since = 0
+            self.json(200, app.job_view(since))
         elif m := re.fullmatch(r"/api/item/([0-9]{1,9})", path):
+            app.sync()
             i = int(m.group(1))
             if not app.live(i):
                 return self.reply(404, "404\n")
@@ -932,6 +943,7 @@ def main(argv=None):
     items, skipped = scan_library()
     views = view_list([v for vs in plugins.call("gallery_views") for v in vs])
     app = App(items, os.path.abspath(a.drive) if a.drive else None, views)
+    running = app.sync()  # a trash/erase started before a restart: its files stay busy until it ends
     threading.Thread(target=app.check_text, daemon=True).start()
     httpd, url = serve(app, a.port)
     print(f"xdg-open '{url}'", flush=True)
@@ -939,10 +951,14 @@ def main(argv=None):
     print(f"({len(items)} items in {time.monotonic() - t0:.1f} s, {skipped} flagged/erased left out.{reg} "
           "A private browser window keeps it out of history. "
           "Ctrl-C or the Close button stops it.)", flush=True)
+    if running and not running["done"]:
+        print("(a trash/erase started earlier is still running; the page shows its progress)", flush=True)
     try:
         httpd.serve_forever(poll_interval=0.2)
     except KeyboardInterrupt:
-        print("stopped")
+        st = jobs.status(JOB_KEY)
+        print("stopped" + ("; the trash/erase keeps going on its own (<state>/jobs/gallery.json)"
+                           if st and not st["done"] else ""))
         return 130
     finally:
         httpd.server_close()
@@ -1097,11 +1113,19 @@ function askTrash(ids){confirmBox(`Trash ${ids.length} item${ids.length>1?"s":""
  ()=>runJob("/api/trash",{ids,confirm:true},ids))}
 function askErase(ids){confirmBox(`Erase ${ids.length} item${ids.length>1?"s":""} everywhere?`,[names(ids),"For sensitive files: intake.py forget moves them to quarantine and erases every copy in HOME (and the drive, if the gallery was started with --drive), with the sidecars, thumbnails and recent-file entries. This cannot be undone.",...warnings(ids)],true,
  ()=>runJob("/api/erase",{ids,confirm:$("#mtyped").value},ids))}
-async function runJob(path,body,ids){await api(path,body);$("#mgo").hidden=true;$("#mtype").hidden=true;$("#mout").hidden=false;$("#mout").textContent="";poll(0,ids)}
-async function poll(since,ids){let j;try{j=await api("/api/job?since="+since)}catch(e){$("#mout").textContent+="\n(server stopped)";return}
+/* Trash and Erase run as a detached job (jobs.py): closing the page or stopping the server never stops
+   them, and any page (a reload, a second tab, a restarted server) shows the running one from its status file. */
+async function runJob(path,body,ids){try{await api(path,body)}catch(e){if(/still running/.test(e.message)){attachJob();return}throw e}
+ progressMode();poll(0,ids)}
+function progressMode(){$("#mgo").hidden=true;$("#mtype").hidden=true;$("#mout").hidden=false;$("#mout").textContent="";$("#modal").classList.add("on")}
+function stepText(j){return j.step?` (step ${j.step}${j.total?" of "+j.total:""}: ${j.label})`:""}
+async function poll(since,ids){let j;try{j=await api("/api/job?since="+since)}catch(e){$("#mout").textContent+="\n(server stopped; an action already started keeps going on its own)";return}
  if(j.lines.length){$("#mout").textContent+=j.lines.join("\n")+"\n";$("#mout").scrollTop=1e9}
- if(!j.done){setTimeout(()=>poll(j.next,ids),600);return}
- $("#mh").textContent=j.ok?"Done":"Finished with problems (see below)";ids.forEach(id=>sel.delete(id));closeViewer();loadFacets();reset()}
+ if(!j.done){$("#mh").textContent="Running"+stepText(j)+"; closing the page does not stop it";setTimeout(()=>poll(j.next,ids),600);return}
+ $("#mh").textContent=j.state==="crashed"?"The action stopped unexpectedly (crashed)"+stepText(j)+(j.step_running?"; the step it started is still running":"")+". Nothing more runs by itself."
+  :j.ok?"Done":"Finished with problems (see below)";
+ ids.forEach(id=>sel.delete(id));closeViewer();loadFacets();reset()}
+async function attachJob(){let j;try{j=await api("/api/job")}catch(e){return}if(j.done)return;$("#mh").textContent="An action is running";$("#mb").replaceChildren();progressMode();poll(0,j.ids||[])}
 async function tagAsk(op){const ids=vi>=0&&!sel.size?[items[vi].id]:selIds();if(!ids.length)return;
  const t=prompt((op==="add"?"Add":"Remove")+" a tag of yours on "+ids.length+" item(s). Not Project|, Source|, Event|, Place|, Label|, Review|, AI|, Used|, Owner| (the tools' own):");
  if(!t)return;try{const j=await api("/api/tag",{ids,tag:t,op});toast(j.result);loadFacets();refreshAfter(ids,false)}catch(e){alert("Refused: "+e.message)}}
@@ -1162,7 +1186,7 @@ $("#clear").onclick=()=>{document.querySelectorAll("[data-f]").forEach(e=>{e.val
 let qt=null;$("#q").oninput=()=>{clearTimeout(qt);qt=setTimeout(()=>{simId=null;reset()},500)};
 $("#close").onclick=async()=>{if(!confirm("Stop the gallery server?"))return;try{await api("/api/close",{})}catch(e){}document.body.replaceChildren(el("p",null,"Gallery stopped. You can close this tab."))};
 new IntersectionObserver(es=>{if(es.some(e=>e.isIntersecting))more()},{rootMargin:"800px"}).observe($("#sentinel"));
-loadFacets().then(()=>reset()).catch(e=>{$("#note").textContent="Error: "+e.message});
+loadFacets().then(()=>reset()).then(attachJob).catch(e=>{$("#note").textContent="Error: "+e.message});
 </script></body></html>
 """
 

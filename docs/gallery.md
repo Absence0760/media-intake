@@ -74,6 +74,24 @@ The summary before Trash or Erase lists the names and warns when any were
 used or kept before. Trash and Erase run one at a time with their output
 streamed into the dialog.
 
+Trash and Erase run as a detached job (`media_intake/jobs.py`, the same module
+as the review page), so closing the page or stopping the server never stops
+one that has started:
+
+- The dialog polls the job and shows its step and output. A page opened (or
+  reloaded) while one runs, from this server or a restarted one, opens the
+  dialog on the running job; the files it acts on stay hidden from thumbnails
+  and media until it ends.
+- One at a time across every gallery page and server: an `flock` on
+  `<state>/jobs/gallery.lock`, so a second Trash or Erase gets 409 and the
+  page shows the running one.
+- A job whose worker PID is gone (checked by PID and its `/proc` start time) is
+  reported as crashed, at its step, not as running; its files stay busy while
+  the step it started is still running, and nothing re-runs by itself.
+
+Status `<state>/jobs/gallery.json`, output `gallery.log`, lock `gallery.lock`:
+files 0600 in a 0700 folder, replaced by the next job.
+
 **No crop.** The original's sha256 drives dedupe and erase, so it is never
 edited; make a crop as a copy in another editor.
 
@@ -116,10 +134,13 @@ cold read from disk will be slower.
 ## Test
 
 `python3 -I -m unittest discover -s tests -p test_gallery.py`: synthetic media in a throwaway
-HOME, the real `intake.py` for trash and forget, and a demo plugin view.
+HOME, the real `intake.py` for trash and forget, and a demo plugin view; the
+job tests swap in a fake `intake.py` whose trash waits on a FIFO, then kill
+the server or the worker mid-job.
 
 ## Not verified
 
+- The job dialog (progress, attach on load, crash message) in a real browser.
 - A full click-through in a real browser (layout, keys, selection, dialogs,
   infinite scroll, video playback, HEVC posters through GStreamer); the tests
   drive the HTTP API. Checked: the inline script parses (`node --check`) and
