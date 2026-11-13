@@ -265,7 +265,7 @@ class LabelerGuard(Base):
         self.assertEqual(self.venv("label.py", [lib]).returncode, 3)
 
 
-@unittest.skipUnless(HAVE_MODEL, "SigLIP model or labels.npz not present (bash tools/media/setup.sh)")
+@unittest.skipUnless(HAVE_MODEL, "SigLIP model or labels.npz not present (bash setup.sh --build-labels)")
 class RealLabeler(Base):
     def test_model_loads_and_returns_json(self):
         img = os.path.join(self.lib, "2026", "a.jpg")
