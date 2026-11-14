@@ -65,7 +65,9 @@ media-intake similar ~/Videos/personal/2026/2026-05/GX010123.MP4 -n 20
   `--project P` (`Project|P`), `--unused-since Nd` (no
   `Used|<YYYY-MM-DD-slug>` in the last N days, same rule as `media-intake
   find`), `--clean` (drops `Review|child-in-shot`, `Review|maybe-trash` and
-  `AI|vlm/*/trash/*`).
+  `AI|vlm/*/trash/*` unless you kept the file: `Owner|keep`, `Owner|not-trash`
+  or the legacy `Review|not-trash` outrank a trash flag; `Owner|trash` is always
+  dropped, and `Review|child-in-shot` is never cleared by a keep).
 - Output: `score  path`, best first; the score is the cosine (SigLIP
   text-image cosines are small, about 0.05-0.2; compare within one query
   only).
@@ -136,9 +138,11 @@ AI|vlm/qwen3-vl-2b/conf/<0.0-1.0>     the model's confidence, one decimal
   adds the new ones; another model would write `AI|vlm/<its tag>/` beside
   them. No other keyword is ever added or removed (`Review|child-in-shot`
   included).
-- Skipped entirely (not sent, not tagged): sidecars with `Owner|not-trash`,
-  `Owner|keep`, `Owner|trash`, the legacy `Review|not-trash` or a digiKam pick
-  label.
+- Skipped entirely (not sent, not tagged): any owner decision
+  (`media_intake/owner.py`): `Owner|not-trash`, `Owner|keep`, `Owner|trash`,
+  the legacy `Review|not-trash` or a digiKam pick label. The default candidate
+  scan (no `--all`, no FILE) lists only `Review|maybe-trash` files you haven't
+  kept.
 - Files tagged `Used|*` or a protected project's `Project|<name>`
   ([configuration.md](configuration.md)) are not sent and get `.../keep`
   (never a trash verdict).

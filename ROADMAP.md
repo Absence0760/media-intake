@@ -61,10 +61,10 @@ The goal: someone else can install it on Fedora, import a phone, and trust it.
 - [x] GoPro chapters (GX01xxxx, GX02xxxx...) dated and grouped by the first chapter.
 
 ### Tag precedence (who writes what)
-- [ ] Review page writes `Owner|keep` and `Owner|trash` (the gallery's Keep already writes
+- [x] Review page writes `Owner|keep` and `Owner|trash` (the gallery's Keep already writes
       `Owner|keep`); nothing writes `Owner|trash` yet.
-- [ ] All tools honour `Owner|not-trash`; drop the legacy `Review|not-trash`.
-- [ ] Tests that a re-tag replaces only its own namespace and never an owner tag.
+- [x] All tools honour `Owner|not-trash`; drop the legacy `Review|not-trash`.
+- [x] Tests that a re-tag replaces only its own namespace and never an owner tag.
 
 ### Tests that still don't exist
 - [ ] Real-browser tests (Playwright, synthetic media) for the gallery and review page:

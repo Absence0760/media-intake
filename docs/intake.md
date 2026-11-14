@@ -61,6 +61,7 @@ media-intake trash [BATCH] FILE... [--phone ROOT]
 media-intake trash --from-digikam [--yes]
 media-intake suggest-trash [--batch B] [--phone ROOT]
 media-intake not-trash FILE...
+media-intake migrate-tags [--dry-run]
 media-intake share-copy FILE... --out DIR     # alias: social-copy
 media-intake tag BATCH [--no-labels]
 media-intake tag-files FILE... [--event SLUG] [--no-labels]
@@ -499,11 +500,12 @@ doctor`; CPU, onnxruntime.
 - `suggest-trash [--batch B]` lists files the VLM called trash
   (`AI|vlm/<model>/trash/*` with that model's confidence >= 0.7, or the older
   `Review|vlm-trash/*`), or with `Review|maybe-trash` and no VLM keep; never
-  ones with `Owner|not-trash`, `Owner|keep`, digiKam Accepted, `Used|*` or a
-  protected project's `Project|<name>`. They show in the review page's "Maybe
-  trash" tab: Keep runs `not-trash` (`Review|maybe-trash` off,
-  `Owner|not-trash` on), Trash runs `trash`. Nothing is deleted without a
-  decision.
+  ones you kept (`Owner|not-trash`, `Owner|keep`, the legacy
+  `Review|not-trash`, digiKam Accepted), `Used|*` or a protected project's
+  `Project|<name>`; plus copies marked `Owner|trash`. They show in the review
+  page's "Maybe trash" tab: Keep runs `not-trash` (`Owner|keep` +
+  `Owner|not-trash` on; `Review|maybe-trash`, `Owner|trash` and the legacy
+  spelling off), Trash runs `trash`. Nothing is deleted without a decision.
 - Videos: up to 30 frames spread over the clip (at most 0.5 fps), max score
   per label. A video the installed ffmpeg can't decode gets
   `Review|untagged-video`.
@@ -518,7 +520,7 @@ own namespace; your tags win.
 
 | Namespace | Written by | Re-tag behaviour |
 |---|---|---|
-| Your keywords (digiKam), digiKam pick labels, `Owner\|keep`, `Owner\|not-trash` | you (digiKam, the gallery, Keep on a suggestion) | never touched by any tool; `trash --from-digikam` acts on Rejected (PickLabel 1) only when you run it |
+| Your keywords (digiKam), digiKam pick labels, `Owner\|keep`, `Owner\|not-trash`, `Owner\|trash` | you (digiKam; Keep and Trash in the gallery and on the review page) | never touched by any tool except your next decision on the same file (Keep drops `Owner\|trash`); `trash --from-digikam` acts on Rejected (PickLabel 1) only when you run it |
 | `Project\|`, `Source\|`, `Event\|`, `Place\|`, dates | `tag`, `tag-files` | a prefix is replaced only when the run has a value for it |
 | `Label\|*`, `Review\|maybe-trash`, `Review\|untagged-*` | SigLIP (`label.py` via `tag`/`tag-files`) | replaced as a set on every labelled run (`--no-labels` leaves them) |
 | `Review\|child-in-shot` | SigLIP | added, never removed by a tool; only you clear it |
@@ -526,7 +528,34 @@ own namespace; your tags win.
 | `Used\|<slug>` | `mark-used` | never removed |
 
 - `Review|maybe-trash` is never added to a file with `Owner|not-trash`,
-  `Owner|keep` (or the legacy `Review|not-trash`) or digiKam Accepted.
+  `Owner|keep`, `Owner|trash` (or the legacy `Review|not-trash`) or digiKam
+  Accepted.
+
+#### Owner decisions
+
+One definition (`media_intake/owner.py`) that every tool reads: tag, tag-files,
+suggest-trash, vlm-trash, semantic `--clean`, the gallery and the review page.
+
+- **Keep** (`not-trash`, the review page's Keep, the gallery's Keep):
+  `Owner|keep` + `Owner|not-trash` in the sidecar; removes `Review|maybe-trash`,
+  an older `Owner|trash` and the legacy `Review|not-trash`. Never suggested as
+  trash again; the VLM never judges it.
+- **Trash** (`trash`, the review page's Trash, the gallery's Trash) deletes the
+  file and its sidecar, so the decision can't live there. Its durable home is
+  the sha256 in `<state>/trashed.json`, written before the delete: `plan`
+  drops that content if it ever comes back. Library copies of the same sha256
+  that `index.json` knows and that stay on disk (`trash` deletes only the paths
+  you name) get `Owner|trash` in their sidecar, so suggest-trash and the
+  gallery offer them for a confirm and the VLM leaves them alone. A copy with
+  its own keep decision is left as it is. Keep on such a copy later wins (it
+  drops `Owner|trash`; the sha stays in `trashed.json`, where it changes
+  nothing while a library copy exists).
+- **Legacy `Review|not-trash`**: read as `Owner|not-trash` until it is
+  rewritten, never written. `media-intake migrate-tags` rewrites every library
+  sidecar once (idempotent; `--dry-run` counts), and any re-tag of a file
+  (`tag`, `tag-files`) or Keep rewrites it on the way. Reading it stays because
+  a sidecar can come back unmigrated (a restored backup, a digiKam copy), and
+  dropping the read would turn a kept file into a trash suggestion.
 - `dc:Subject` leaves go only with a removed tag, and never a leaf another
   kept tag or digiKam's `TagsList` still uses (your keyword "food" survives
   `Label|food` being replaced).

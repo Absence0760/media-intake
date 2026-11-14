@@ -664,7 +664,7 @@ class Trash(unittest.TestCase):
         self.assertEqual(stat.S_IMODE(os.stat(mt).st_mode), 0o600)
         self.assertEqual(jload(mt)["items"], [{"path": f["plain"], "labels": ["Review|maybe-trash", "Label|food"]}])
         self.intake("not-trash", f["plain"])
-        self.assertEqual(sorted(self.tags(f["plain"])), ["Label|food", "Owner|not-trash"])
+        self.assertEqual(sorted(self.tags(f["plain"])), ["Label|food", "Owner|keep", "Owner|not-trash"])
         self.assertIn("0 library files suggested", self.intake("suggest-trash", "--no-serve"))
         self.assertTrue(all(os.path.isfile(p) for p in f.values()), "suggesting never deletes")
 

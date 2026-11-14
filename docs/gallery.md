@@ -29,9 +29,11 @@ copies there go too.
   image, or `<video controls>`; HEIC/DNG get a 1600 px JPEG made in memory)
   with tags, date, place, event, project, source, folder, resolution and size.
   Arrow keys go to the previous/next item, Esc closes.
-- **Trash suggestions**: `Review|maybe-trash`, or an `AI|vlm/<model>/trash/*`
+- **Trash suggestions**: `Review|maybe-trash`, an `AI|vlm/<model>/trash/*`
   verdict with that model's `conf` >= 0.7 (or the older `Review|vlm-trash/*`),
-  never a file with `Owner|not-trash`, `Owner|keep`, digiKam Accepted,
+  or `Owner|trash` (a copy of content you trashed elsewhere, chip "trashed
+  copy"); never a file with `Owner|not-trash` (or the legacy
+  `Review|not-trash`), `Owner|keep`, digiKam Accepted,
   `Used|*` or a protected project's `Project|<name>`. Most confident first,
   big tiles. K / T mark the outlined tile, arrows move, Enter opens it;
   nothing changes until **Apply**, which shows the counts and needs a confirm.
@@ -64,8 +66,8 @@ large view the keys act on the item shown; **R** / **Shift+R** rotate.
 
 | Action | What it writes |
 |---|---|
-| Keep | sidecar: `Owner\|keep` and `Owner\|not-trash` added, `Review\|maybe-trash` removed (its `maybe-trash` leaf only when no other tag uses it). Nothing else. |
-| Trash | `media-intake trash FILE...`: plain delete of the file, its sidecar, thumbnails (freedesktop and the gallery's) and index entry; the sha goes in `trashed.json` so intake never takes it in again. Summary + confirm. |
+| Keep | sidecar: `Owner\|keep` and `Owner\|not-trash` added; `Review\|maybe-trash`, an older `Owner\|trash` and the legacy `Review\|not-trash` removed (each leaf only when no other tag uses it). Nothing else. The same rule as the review page's Keep (`intake.keep_args`). |
+| Trash | `media-intake trash FILE...`: plain delete of the file, its sidecar, thumbnails (freedesktop and the gallery's) and index entry; the sha goes in `trashed.json` (the durable `Owner\|trash`) so intake never takes it in again, and library copies of it left on disk get `Owner\|trash` in their sidecar. The same command the review page's Trash runs. Summary + confirm. |
 | Erase | `media-intake forget FILE... --yes [--drive]`: the erase-everywhere path (quarantine, sweep of HOME, sidecars, thumbnails, recent files, erase log, verify-gone). Summary + type ERASE. For anything private. |
 | My tag + / - | sidecar `HierarchicalSubject` + its `dc:Subject` leaf. Refused for the tools' namespaces (`Project\|`, `Source\|`, `Event\|`, `Place\|`, `Label\|`, `Review\|`, `AI\|`, `Used\|`, `Owner\|`); removal only touches your tags, and keeps a leaf another tag still uses. |
 | Rotate | sidecar `XMP-tiff:Orientation` only (1/6/3/8). The original is never re-encoded or written; digiKam reads the same field. |

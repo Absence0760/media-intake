@@ -18,8 +18,8 @@ The raw verdict is written; consumers (suggest-trash) take trash with conf >= 0.
 A re-run replaces only tags under AI|vlm/<this model>/; another model writes
 beside them; no other keyword is added or removed. Videos: 3 sampled frames,
 trash only when at least 2 of the 3 say TRASH >= 0.7 (conf: the lowest of those).
-Skipped, never sent or tagged: files whose sidecar has Owner|not-trash,
-Owner|keep, Owner|trash, legacy Review|not-trash or a digiKam pick label. Files tagged
+Skipped, never sent or tagged: files you decided on (owner.decided: Owner|keep,
+Owner|not-trash or its legacy spelling, Owner|trash, a digiKam pick label). Files tagged
 Used|* or a protected project's Project|<name> (config.toml) are not sent either and get .../keep (never trash).
 Nothing else is stored: no description, no model text. Output is counts only.
 
@@ -38,6 +38,7 @@ import urllib.error, urllib.parse, urllib.request
 HERE = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, HERE)
 import label  # noqa: E402  (read-only: refused(), STATE, IMG/VID)
+import owner  # noqa: E402  (owner decisions: kept / decided)
 
 HOME = os.path.expanduser("~")
 STATE = label.STATE
@@ -77,8 +78,6 @@ EMPTY_XMP = ("<?xpacket begin='﻿' id='W5M0MpCehiHzreSzNTczkc9d'?>\n"
              "<rdf:RDF xmlns:rdf='http://www.w3.org/1999/02/22-rdf-syntax-ns#'>\n"
              "</rdf:RDF>\n</x:xmpmeta>\n<?xpacket end='w'?>\n")
 NS = "AI|vlm/" + MODEL.replace(":", "-") + "/"   # AI|vlm/qwen3-vl-2b/
-NOT_TRASH = {"Owner|not-trash", "Review|not-trash"}  # Review|not-trash: legacy spelling
-OWNER_SKIP = NOT_TRASH | {"Owner|keep", "Owner|trash"}
 _OPENER = urllib.request.build_opener(urllib.request.ProxyHandler({}))  # never via a proxy
 
 
@@ -260,14 +259,16 @@ def read_tags(paths):
     for row in json.loads(r.stdout or "[]"):
         v = row.get("HierarchicalSubject")
         t = [] if v is None else [str(x) for x in (v if isinstance(v, list) else [v])]
-        if row.get("PickLabel") not in (None, 0, "0", ""):
-            t.append(f"digiKam|pick/{row['PickLabel']}")
+        if owner.pick_label(row.get("PickLabel")) not in ("", "0"):
+            t.append(f"digiKam|pick/{owner.pick_label(row['PickLabel'])}")
         out[row["SourceFile"][:-4]] = t
     return out
 
 
 def owner_decided(t):
-    return any(x in OWNER_SKIP or x.startswith("digiKam|pick/") for x in t)
+    """t: read_tags() output, where a pick label shows as digiKam|pick/<n>."""
+    pick = next((x.split("/", 1)[1] for x in t if x.startswith("digiKam|pick/")), "")
+    return owner.decided(t, pick)
 
 
 def protected(t):
@@ -286,7 +287,7 @@ def candidates():
         v = row.get("HierarchicalSubject")
         tags = [] if v is None else [str(x) for x in (v if isinstance(v, list) else [v])]
         media = row["SourceFile"][:-4]
-        if "Review|maybe-trash" in tags and not NOT_TRASH & set(tags) and os.path.isfile(media):
+        if "Review|maybe-trash" in tags and not owner.kept(tags) and os.path.isfile(media):
             out.append(media)
     return sorted(out)
 
