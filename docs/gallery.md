@@ -7,6 +7,10 @@ that intake files: a day-to-day browser in place of digiKam.
 media-intake gallery [--drive MOUNT] [--port 0]
 ```
 
+`python3 -I media_intake/gallery.py` takes the same flags and `--share-out DIR`
+(where share-safe copies go, below; `media-intake gallery` does not pass it on
+yet, so it always uses the default).
+
 It prints exactly one `xdg-open 'http://127.0.0.1:<port>/?t=<token>'` line,
 then a note with the item count, the start-up time, how many flagged or erased
 files were left out and any plugin tabs. A private browser window keeps the
@@ -24,12 +28,14 @@ copies there go too.
   opens as a drawer): the views with counts (Library, Trash suggestions, any
   plugin tab; quick views Recently added = filed in the last 30 days, by the
   file's inode change time, Possible child = `Review|child-in-shot`,
-  Untagged), the search box (a one-line hint when semantic search is off, the
+  Untagged; then **Events** with counts, the eight largest and "All N events"),
+  the search box (a one-line hint when semantic search is off, the
   full reason under "why"), then the filters as collapsible sections with
   counts (open / closed remembered per section) and "Clear filters (N)".
   Counts are for the whole library, not narrowed by the other filters.
 - **Main area**: a slim header (view, item count, thumbnail-size slider,
-  Close), the active filters as removable chips, the month grid. The
+  Close), the active filters as removable chips (in an event: the event's
+  **Rename…** and **Merge into…** bar), the month grid. The
   selection actions sit in a bar at the bottom that appears only while
   something is selected (Trash suggestions keeps its Apply bar there).
 - **Large view**: the photo or video fills everything left of the info pane.
@@ -64,6 +70,23 @@ The sidebar rail, open sections and tile size live in the browser's
   `Used|*` or a protected project's `Project|<name>`. Most confident first,
   big tiles. K / T mark the outlined tile, arrows move, Enter opens it;
   nothing changes until **Apply**, which shows the counts and needs a confirm.
+- **Events**: every event in the library, from the sidecars' `Event|<slug>`
+  tags (or `XMP-iptcExt:Event` on a file with no `Event|` tag), with its count;
+  an item in two events counts and shows in both. A click shows that event's
+  items (the Event filter, as a chip) and a bar with:
+  - **Rename…** (`POST /api/event/rename`, `{"from": old, "to": new}`): every
+    sidecar with `Event|old` gets `Event|new` instead. The new name is a slug
+    (lowercase letters, digits, dashes, like `plan --event`) that no event has
+    yet; joining an existing event is a merge.
+  - **Merge into…** (`POST /api/event/merge`, `{"from": [a, ...], "into": b}`):
+    every item of each `from` event moves to `b`, which must exist.
+
+  Both rewrite only `Event|` tags (and `XMP-iptcExt:Event` when it named the
+  old event), in the sidecars that have them, under the library lock: never an
+  original, never `Owner|`, your tags or any other namespace, and a removed
+  `dc:Subject` leaf only when no other tag uses it. A later `tag` or
+  `tag-files` with an event replaces `Event|` again ([intake.md](intake.md),
+  "Tags: who writes what").
 - **Plugin tabs**: any view a plugin adds through `gallery_views()`, with its
   routes under `/plugin/<id>/` ([plugins.md](plugins.md)).
 
@@ -96,8 +119,12 @@ folders. **Similar** on any item runs `semantic.py similar`. Both need
 
 Tick the box on a tile (shift-click a second box selects the range between;
 Space on a focused tile ticks it), then the bottom bar's buttons or keys:
-**K** Keep, **T** Trash, **E** Erase; Esc or **Clear selection** clears it.
-In the large view the keys act on the item shown; **R** / **Shift+R** rotate.
+**K** Keep, **T** Trash, **E** Erase, **+ tag** / **− tag**, **Set event…**,
+**Rotate ⟳**, **Share-safe copy**; Esc or **Clear selection** clears it. Each
+applies to every selected item through the same endpoint as one item (one
+unknown or removed id refuses the whole request). In the large view the keys
+act on the item shown; **R** / **Shift+R** rotate, and its buttons include Set
+event and Share-safe copy.
 
 | Action | What it writes |
 |---|---|
@@ -105,12 +132,15 @@ In the large view the keys act on the item shown; **R** / **Shift+R** rotate.
 | Trash | `media-intake trash FILE...`: plain delete of the file, its sidecar, thumbnails (freedesktop and the gallery's) and index entry; the sha goes in `trashed.json` (the durable `Owner\|trash`) so intake never takes it in again, and library copies of it left on disk get `Owner\|trash` in their sidecar. The same command the review page's Trash runs. Summary + confirm. |
 | Erase | `media-intake forget FILE... --yes [--drive]`: the erase-everywhere path (quarantine, sweep of HOME, sidecars, thumbnails, recent files, erase log, verify-gone). Summary + type ERASE. For anything private. |
 | My tag + / - | sidecar `HierarchicalSubject` + its `dc:Subject` leaf. Refused for the tools' namespaces (`Project\|`, `Source\|`, `Event\|`, `Place\|`, `Label\|`, `Review\|`, `AI\|`, `Used\|`, `Owner\|`); removal only touches your tags, and keeps a leaf another tag still uses. |
-| Rotate | sidecar `XMP-tiff:Orientation` only (1/6/3/8). The original is never re-encoded or written; digiKam reads the same field. |
+| Rotate | sidecar `XMP-tiff:Orientation` only (1/6/3/8), each item from its own orientation. The original is never re-encoded or written; digiKam reads the same field. |
+| Set event | `POST /api/event/set` (`{"ids": [...], "event": slug}`): sidecar `Event\|<slug>` (and `XMP-iptcExt:Event`), replacing the item's other `Event\|` tags; `"event": ""` takes the items out of every event. Nothing else. |
+| Share-safe copy | nothing in the library: `media-intake share-copy` into a new folder (below). |
 | Open in the system player | nothing: `POST /api/open` with one id (`{"ids": [id]}`) runs `xdg-open <file>` (an argument list, no shell, detached) for the one item, only on that button's POST, and only for a regular file inside a library root after resolving links, not in a running job and not flagged, quarantined or erased (else 400). |
 
 Every action holds the library lock ([intake.md](intake.md), "One writer at
-a time"): Keep, my tags, Rotate and a plugin view's POST for the write
-([plugins.md](plugins.md)), Trash and Erase for their whole job. While a CLI command (`apply`, `erase`, ...), a review run or
+a time"): Keep, my tags, Rotate, Set event, Rename, Merge and a plugin view's
+POST for the write ([plugins.md](plugins.md)), Trash, Erase and Share-safe copy
+for their whole job. While a CLI command (`apply`, `erase`, ...), a review run or
 another gallery's job holds it, the action gets 409 naming the holder and
 nothing is written; browsing is never locked.
 
@@ -157,6 +187,34 @@ the state folder (the erase log keeps sha256 and size). The dialog that was
 watching still has the whole output; a page opened later sees the scrubbed
 log. Trash is for junk that isn't private and keeps its output, names
 included, until the next job.
+
+## Share-safe copy
+
+**Share-safe copy** (bottom bar, or the large view) asks first, naming the
+items and the folder, then runs `media-intake share-copy FILE... --out DIR`
+as a job (`POST /api/share`, `{"ids": [...]}`): every metadata field and the
+GPS stripped (exiftool `-all=` for images, keeping orientation and ICC; an
+ffmpeg stream copy without data streams for videos; [intake.md](intake.md)).
+The stripping is share-copy's own; the gallery only picks the files and the
+folder:
+
+- `DIR` is a new folder per export, `<share-out>/<YYYY-MM-DD-HHMMSS>` (0700;
+  `-2`, `-3` if that exists), under `--share-out`, default
+  `~/Pictures/share-safe`. A `--share-out` inside a library root or the state
+  folder is refused, so a copy is never taken for a library file.
+- The reply and the dialog give the folder (`~/Pictures/share-safe/...`) and
+  share-copy's own lines (each copy's path and `gps=none`); the page never
+  shows a copy. If a line says `gps=STILL PRESENT`, the title says so: don't
+  share that one.
+- Only library files the media routes may serve (not flagged, quarantined,
+  erased or a symlink, as for Open in the system player), and never two with
+  the same file name in one export (share-copy names copies by file name; the
+  second would overwrite the first): 400.
+- It shares the job slot with Trash and Erase (one at a time, 409 while one
+  runs) and holds the library lock while it copies, so nothing deletes or
+  rewrites a file mid-copy; the items stay viewable meanwhile. The job's last
+  line is jobs.py's summary, `done: 0 of N gone from the library`. Sidecars are
+  not copied.
 
 **No crop.** The original's sha256 drives dedupe and erase, so it is never
 edited; make a crop as a copy in another editor.
@@ -206,7 +264,16 @@ the server or the worker mid-job, and a plugin POST gets 409 while such a job
 holds the library lock (a view declared `post_read_only` does not). Also: the sidebar counts against their
 filters, the added-in-N-days filter, a trashed file's copy showing as
 "trashed copy" at once, and Open in the system player through a fake
-`xdg-open` on PATH (its refusals included).
+`xdg-open` on PATH (its refusals included). Events: the sidebar counts, the
+filter, rename and merge (and their refusals) with `Owner|` and other tags
+kept; bulk tags, Set event (and clearing it) and Rotate on a selection; a
+share-safe copy through exiftool with no GPS or Model left. `ViewsEndpointsTest`
+writes its sidecars as plain XMP, so it runs without exiftool: every new POST
+(`/api/event/set`, `/api/event/rename`, `/api/event/merge`, `/api/share`)
+refused without the token, with a wrong CSRF value, another Origin or Host
+(403) or a non-JSON type (415), 409 while a job holds the library lock, and a
+share-safe copy (Pillow's re-encode when exiftool is missing) into its own
+0700 folder, with its refusals.
 
 In headless Chromium (`tests/browser/test_browser_gallery.py`, see
 CONTRIBUTING.md, Tests): keys, click and shift-click selection, the bottom
@@ -214,8 +281,10 @@ selection bar appearing only while something is selected, a sidebar quick
 view and its chip, the Trash, Erase (ERASE typed) and Close confirms, the
 lightbox video playing by itself, Space pausing and resuming it, seeking by
 Range, and the job dialog's progress, re-attach after a reload and crash
-message, and Erase's status line shown while its output is still empty (a
-fake `intake.py` that prints nothing until the test opens a FIFO).
+message, Erase's status line shown while its output is still empty (a
+fake `intake.py` that prints nothing until the test opens a FIFO), and the
+Events list (filter, Rename with a refused name first), Set event on a
+selection and a Share-safe copy ending in "Done: share-safe copies in ...".
 
 ## Not verified
 
@@ -226,3 +295,6 @@ fake `intake.py` that prints nothing until the test opens a FIFO).
 - Semantic search and Similar through the venv: tested only as "unavailable,
   falls back", not with the real model.
 - Start-up time on a large real library read from disk.
+- Share-safe copy of videos, HEIC and DNG from the gallery (share-copy's own
+  test covers a video; the gallery tests copy JPEGs), and Rename / Merge on a
+  real digiKam-written library.

@@ -84,11 +84,11 @@ The goal: someone else can install it on Fedora, import a phone, and trust it.
       H.264 proxy (GStreamer GPU decode → x264), cached by sha256 in the private cache
       and cleaned by erase/trash/forget/verify-gone like thumbnails.
 - [ ] Burst groups: show bursts as one stack, pick the best, trash the rest.
-- [ ] Albums/events as first-class views (from `Event|` tags), with rename and merge.
+- [x] Albums/events as first-class views (from `Event|` tags), with rename and merge.
 - [ ] Map view without leaking locations: offline vector tiles (or none); never fetch
       tiles for private photos from a third-party server.
-- [ ] Bulk edits on a selection: add/remove tags, set event, rotate.
-- [ ] A "share-safe export" button in the gallery (the CLI has `media-intake share-copy`:
+- [x] Bulk edits on a selection: add/remove tags, set event, rotate.
+- [x] A "share-safe export" button in the gallery (the CLI has `media-intake share-copy`:
       copy with all metadata and GPS stripped).
 
 ## Milestone 0.3: better classification
