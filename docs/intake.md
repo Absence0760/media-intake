@@ -82,6 +82,40 @@ A typical phone batch: `stage` the phone's storage root, `plan` (add
 `--event` for a shoot), `scan`, `apply`, open the review page, `tag`, then,
 once the library is backed up, `offload` to free the phone.
 
+### One writer at a time: the library lock
+
+Anything that moves, deletes or rewrites library files, sidecars or
+`index.json` holds one lock per library first, so a gallery Erase, a review
+run and a CLI `apply` never interleave (`media_intake/library_lock.py`):
+
+- **The lock:** an `flock` on `<state>/locks/library-<id>.lock` (folder 0700,
+  file 0600), `<id>` from the sha256 of the library root's real path. It dies
+  with its holder, so a crashed or killed process never leaves the library
+  locked. The file notes who holds it (a command or job key and a PID, never a
+  file name).
+- **CLI:** `intake.py main()` takes it for every subcommand in
+  `intake.LOCKED` (stage, plan, scan, apply, release, erase, forget, offload,
+  purge-review, trash, not-trash, suggest-trash, tag, tag-files, mark-used).
+  The read-only ones in `intake.READ_ONLY` (quarantine, verify-gone, wipe-free,
+  share-copy, find, gallery) never do; a new subcommand counts as locked until
+  it is listed there, and `tests/test_library_lock.py` fails on one in neither.
+  `vlm-trash` takes it around each batch of verdicts it writes.
+- **Jobs** (the review page's run, the gallery's Trash and Erase) take it with
+  their job lock at submit and hold it until their last step is over; each
+  `intake.py` step inherits it from the worker (descriptor plus
+  `MEDIA_INTAKE_LIBRARY_LOCK_FD`) and checks it really is this library's lock,
+  already held through that descriptor, so a step never waits on its own job
+  and an unrelated process can't set the variable to skip the lock. A review
+  run and a gallery job lock each other out, whatever their batch.
+- **The gallery's own writes** (Keep, my tags, Rotate) take it per request.
+- **When it is busy:** the one refused is told who holds it ("job gallery
+  (PID 4242)", "intake.py apply (PID 77)", and when a job's worker has died
+  while its step still runs, that too). The CLI waits up to
+  `MEDIA_INTAKE_LOCK_WAIT` seconds (default 10, `0` refuses at once), printing
+  that it waits, then exits 75 (try again later); 10 s covers a gallery Keep,
+  and a job can run for an hour, so waiting longer is opt-in. The pages never
+  wait: Submit, Trash, Erase, Keep, a tag or Rotate get 409 with the holder.
+
 `share-copy` writes copies with no GPS or metadata, for sending or posting:
 exiftool `-all=` for images (orientation and ICC profile kept), an ffmpeg
 stream copy without data streams or metadata for videos. exiftool cannot write
@@ -646,5 +680,6 @@ Rejected:
 `python3 -I -m unittest discover -s tests` (synthetic media, a throwaway HOME,
 a hermetic config), or one module: `python3 -I -m unittest discover -s tests -p test_intake.py`
 (also `test_dates`, `test_devices`, `test_sources`, `test_tagging`, `test_config`, and `test_device_case`: offload,
-erase and trash on fake MTP, gphoto2 and drive trees with case-only collisions). Run long jobs under your
+erase and trash on fake MTP, gphoto2 and drive trees with case-only collisions; `test_library_lock`: the
+CLI, a gallery write and a job contending for the library lock). Run long jobs under your
 own memory cap if you like.

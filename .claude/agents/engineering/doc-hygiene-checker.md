@@ -36,6 +36,7 @@ A change can hit several rows. Report only the rows that match.
 | Capture dates, `--clock-offset` (`media_intake/dates.py`) | `docs/intake.md` § Dates |
 | Review page | `docs/review-ui.md` |
 | Detached jobs (`media_intake/jobs.py`) | `docs/review-ui.md` and `docs/gallery.md` (the pages that start them) |
+| The library lock (`media_intake/library_lock.py`, `intake.LOCKED` / `READ_ONLY`) | `docs/intake.md` § One writer at a time, `docs/configuration.md` (`MEDIA_INTAKE_LOCK_WAIT`) |
 | Gallery | `docs/gallery.md` |
 | Index, search, similar, labels, the VLM check | `docs/search.md` |
 | Drive queue | `docs/queue.md` |

@@ -1980,9 +1980,26 @@ def build_parser(prog=None):
     return ap
 
 
+# The library lock (library_lock.py; docs/intake.md, "One writer at a time"): every subcommand is in exactly one
+# of these (tests/test_library_lock.py checks), and main() is the only place that takes it for the CLI.
+LOCKED = {"stage", "plan", "scan", "apply", "release", "erase", "forget", "offload", "purge-review", "trash",
+          "not-trash", "suggest-trash", "tag", "tag-files", "mark-used"}
+READ_ONLY = {"quarantine", "verify-gone", "wipe-free", "share-copy", "social-copy", "find", "gallery"}
+
+
 def main(argv=None, prog=None):
     a = build_parser(prog).parse_args(argv)
-    globals()["cmd_" + a.cmd.replace("-", "_")](a)
+    run = globals()["cmd_" + a.cmd.replace("-", "_")]
+    if a.cmd in READ_ONLY:  # gallery takes the lock itself, per write
+        run(a)
+        return
+    import library_lock
+    try:
+        with library_lock.hold(f"intake.py {a.cmd}", wait=library_lock.cli_wait(), out=sys.stderr):
+            run(a)
+    except library_lock.Busy as e:
+        print(f"media-intake {a.cmd}: refused: {e}", file=sys.stderr)
+        sys.exit(library_lock.EX_TEMPFAIL)
 
 
 if __name__ == "__main__":

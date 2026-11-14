@@ -26,6 +26,12 @@ write itself (the steps' output, which can name files) replaced in place, so no
 name of an erased file stays in <state>/jobs/. A page that was following the log
 keeps reading the full output through its open descriptor (Tail).
 
+Every job also holds the library lock (library_lock.py): claim() takes it next to the job lock and refuses
+(Busy, naming the holder) if a CLI command, the gallery or another job has it, so jobs with different keys
+(a review run and a gallery erase) never touch the library at once. The worker inherits it with the job
+lock, notes itself as the holder, and passes it to every intake.py step, which recognises it as already
+held (library_lock.inherited) instead of waiting on its own parent.
+
 A job whose status says running but whose worker PID is gone (or was reused:
 the /proc start time differs, or it is a zombie) is reported as "crashed",
 never as running forever. A crashed job is not re-run by itself: the pages say
@@ -38,6 +44,7 @@ import contextlib, datetime, fcntl, json, os, re, secrets, subprocess, sys, thre
 HERE = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, HERE)
 import config  # noqa: E402
+import library_lock  # noqa: E402
 
 KEY_RE = re.compile(r"^[A-Za-z0-9_][A-Za-z0-9._-]{0,159}$")
 LOCK_FD_ENV = "MEDIA_INTAKE_JOB_LOCK_FD"
@@ -47,7 +54,7 @@ REDACTED = "  [output removed when the run ended: it may name a file]"
 
 
 class Busy(Exception):
-    """A job with this key is still running (or a step it started still is)."""
+    """A job with this key is still running (or a step it started still is), or the library is locked."""
 
 
 def intake_path():
@@ -348,7 +355,7 @@ class Claim:
     After spawn(), .tail follows the new job's log from its first byte."""
 
     def __init__(self, key):
-        self.key, self.P, self.tail = key, _paths(key, create=True), None
+        self.key, self.P, self.tail, self.lib_fd = key, _paths(key, create=True), None, None
         self.fd = os.open(self.P["lock"], os.O_RDWR | os.O_CREAT, 0o600)
         with _mutex(self.P):  # never at the instant a status() probe holds the lock (see _held)
             got = _try_lock(self.fd)
@@ -356,11 +363,17 @@ class Claim:
             os.close(self.fd)
             self.fd = None
             raise Busy(f"a job for {key} is still running")
+        try:  # never waits: always after the job lock, and a page gets the holder at once
+            self.lib_fd = library_lock.acquire(f"job {key}")
+        except library_lock.Busy as e:
+            self.release()
+            raise Busy(str(e)) from None
 
     def release(self):
-        if self.fd is not None:
-            os.close(self.fd)
-            self.fd = None
+        for k in ("lib_fd", "fd"):
+            if getattr(self, k) is not None:
+                os.close(getattr(self, k))
+                setattr(self, k, None)
 
     def __enter__(self):
         return self
@@ -381,11 +394,11 @@ class Claim:
             _update_held(self.P, **dict(id=jid, runner=runner, state="starting", pid=None, pstart=None,
                                         started=_now(), ended=None, ok=None, step=0, total=total, label="",
                                         spec=spec, redact=bool(redact), safe=[], scrubbed=False))
-        env = dict(os.environ, **{LOCK_FD_ENV: str(self.fd)})
+        env = dict(os.environ, **{LOCK_FD_ENV: str(self.fd), library_lock.FD_ENV: str(self.lib_fd)})
         try:
             p = subprocess.Popen([sys.executable, "-I", "-u", os.path.abspath(__file__), "run", self.key],
                                  stdin=subprocess.PIPE, stdout=fd, stderr=fd, cwd=HERE, env=env,
-                                 start_new_session=True, pass_fds=(self.fd,))
+                                 start_new_session=True, pass_fds=(self.fd, self.lib_fd))
         except OSError as e:
             _update(self.key, only_id=jid, state="crashed", ok=False, ended=_now(), label=f"could not start: {e}")
             self.tail.close()
@@ -402,7 +415,7 @@ class Claim:
         _update(self.key, only_id=jid, when=lambda s: not s.get("pid"), pid=p.pid, pstart=proc_start(p.pid))
         # Reap it when it ends, so a finished worker is never a zombie that looks alive.
         threading.Thread(target=p.wait, daemon=True).start()
-        self.release()  # the worker's inherited copy keeps the lock held
+        self.release()  # the worker's inherited copies keep both locks held
         return status(self.key)
 
 
@@ -414,8 +427,8 @@ def claim(key):
 class Job:
     """Handed to a runner inside the worker: log lines and run intake.py steps."""
 
-    def __init__(self, key, st, lock_fd, private=None):
-        self.key, self.id, self.lock_fd = key, st["id"], lock_fd
+    def __init__(self, key, st, lock_fd, private=None, lib_fd=None):
+        self.key, self.id, self.lock_fd, self.lib_fd = key, st["id"], lock_fd, lib_fd
         self.spec = dict(st.get("spec") or {}, **(private or {}))
         self.redact = bool(st.get("redact"))
         self.safe = []
@@ -436,14 +449,15 @@ class Job:
         _update(self.key, only_id=self.id, step=self.step, label=label)
 
     def run(self, args, label=None, shown=None):
-        """intake.py ARGS as a child holding the job lock too; its output goes to the log. Returns rc."""
+        """intake.py ARGS as a child holding the job lock and the library lock too (inherited descriptors; the
+        worker's environment names the library one); its output goes to the log. Returns rc."""
         self.mark(label or (args[0] if args else ""))
         # A redact job never logs a caller's rendering: that could carry a name.
         line = shown_args(args) if self.redact else shown if shown is not None else " ".join(args)
         self.log("$ intake.py " + line, safe=True)
         p = subprocess.Popen([sys.executable, "-I", "-u", intake_path(), *args], stdin=subprocess.DEVNULL,
                              stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True, cwd=HERE,
-                             pass_fds=(self.lock_fd,) if self.lock_fd is not None else ())
+                             pass_fds=tuple(f for f in (self.lock_fd, self.lib_fd) if f is not None))
         for line in p.stdout:
             self.log("  " + line.rstrip("\n"))
         rc = p.wait()
@@ -474,6 +488,10 @@ def worker(key):
     with _mutex(_paths(key)):  # a status() probe may hold the lock for an instant; never collide with it
         if not _try_lock(lock_fd):  # already ours (inherited); fails if not
             sys.exit("jobs.py run: the job lock is not ours")
+    lib_fd = library_lock.inherited()
+    if lib_fd is None:
+        sys.exit("jobs.py run: started without the library lock; use jobs.claim(key).spawn()")
+    library_lock.note(lib_fd, f"job {key}")  # the starter (a page server) may exit; name the worker instead
     try:
         private = json.loads(sys.stdin.read() or "null")
     except ValueError:
@@ -484,7 +502,7 @@ def worker(key):
     if st.get("state") != "starting":
         sys.exit(f"jobs.py run: {key} is not waiting to start")
     st = _update(key, only_id=st["id"], state="running", pid=os.getpid(), pstart=proc_start(os.getpid()))
-    job = Job(key, st, lock_fd, private)
+    job = Job(key, st, lock_fd, private, lib_fd)
     ok = False
     try:
         if st.get("runner") == "commands":
@@ -500,8 +518,9 @@ def worker(key):
         ok = False
     if job.redact:  # still holding the lock, so no new job can take the key while its output is scrubbed
         _scrub(key, job.id)
-    # Let go of the lock first, so a page that sees "done" can start the next job at once. If a new job
+    # Let go of the locks first, so a page that sees "done" can start the next job at once. If a new job
     # takes the key in between, only_id keeps this write from touching its status.
+    os.close(lib_fd)
     os.close(lock_fd)
     _update(key, only_id=job.id, state="done", ok=bool(ok), ended=_now())
     return 0 if ok else 1

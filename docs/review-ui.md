@@ -86,7 +86,11 @@ of its steps:
   `<state>/jobs/review-BATCH.lock` (`maybe-trash` without a batch), taken
   before `review-decisions.json` is written, so a second submit from any page
   or server gets 409 and the page shows the running job instead. Each
-  `intake.py` step holds the lock too. A page checking the lock (a crashed
+  `intake.py` step holds the lock too. The run also holds the library lock
+  from submit to its last step ([intake.md](intake.md), "One writer at a
+  time"), so it never overlaps a gallery Trash or Erase, another batch's run
+  or a CLI command that changes the library; each step inherits it instead of
+  waiting on its own run. A page checking the job lock (a crashed
   run's step) never makes a submit at that instant fail: both go through a
   short mutex, `<key>.mutex`.
 - **A page older than the last run can't submit:** the server records the

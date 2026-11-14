@@ -13,7 +13,7 @@ Paths take `~` and `$VARS`.
 | --- | --- | --- |
 | `library` | `~/Pictures/library` | Photos, `Screenshots/`, `Messaging/<app>/` |
 | `videos` | `~/Videos/personal` | Videos (GoPro included), `Screen recordings/` |
-| `state` | `~/.local/share/media-intake` | Staging, quarantine, index, erase log, `jobs/` (each detached job's status, log and lock), venv, models, GeoNames. Kept `0700` (`jobs/` too, its files `0600`); never sync or index it. |
+| `state` | `~/.local/share/media-intake` | Staging, quarantine, index, erase log, `jobs/` (each detached job's status, log and lock), `locks/` (the library lock), venv, models, GeoNames. Kept `0700` (`jobs/` too, its files `0600`); never sync or index it. |
 | `phone.extra_folders` | none | `{ "relative/folder" = "App" }`: extra exact folders on a phone that may be read, each filed under `Messaging/<App>/`. Everything else outside `DCIM/` and `Pictures/` stays unlisted. |
 | `drive.backup_markers` | `[]` | Folder names at a drive's mount root that mark your backup drive; `stage --kind drive` and `queue add` refuse it. A `.media-intake-backup` file at the root does the same; `.media-intake-source-ok` overrides both. |
 | `queue.wrapper` | `[]` | Command prefix for the queue's heavy steps (plan, scan, tag, index, vlm). |
@@ -23,7 +23,9 @@ Paths take `~` and `$VARS`.
 
 Environment variables win over the file: `MEDIA_INTAKE_STATE`, `PHOTO_LIBRARY`,
 `PERSONAL_FOOTAGE`, and `MEDIA_QUEUE_WRAPPER` (space-separated) for
-`queue.wrapper`.
+`queue.wrapper`. `MEDIA_INTAKE_LOCK_WAIT` (seconds, default 10, `0` to refuse
+at once, at most 86400) is how long a CLI command waits for the library lock
+before it exits 75 ([intake.md](intake.md), "One writer at a time").
 
 ## Projects and events
 

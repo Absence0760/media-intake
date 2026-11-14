@@ -265,8 +265,11 @@ class JobsTest(unittest.TestCase):
         self.assertTrue(jobs.alive(cur["pid"], cur["pstart"]))
         with self.assertRaises(jobs.Busy):
             jobs.claim("t2")
-        self.assertIsNone(jobs.status("t3"))  # other keys are independent
-        jobs.claim("t3").release()
+        self.assertIsNone(jobs.status("t3"))  # other keys have their own job lock...
+        with self.assertRaises(jobs.Busy) as cm:  # ...but every job holds the one library lock
+            jobs.claim("t3")
+        self.assertIn(f"job t2 (PID {cur['pid']})", str(cm.exception))
+        self.assertIsNone(jobs.status("t3"))
         self.open_gate()
         end = jobs.wait("t2", st["id"], interval=0.02)
         self.assertEqual((end["state"], end["ok"]), ("done", True))
