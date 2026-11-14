@@ -1,7 +1,7 @@
 # Intake: design decisions and research
 
-`media-intake` brings photos and videos in from a phone, a GoPro or an
-external drive, files them, drops duplicates and junk, and quarantines
+`media-intake` brings photos and videos in from a phone, a GoPro, an
+external drive or a folder on the laptop (`--kind folder`, [queue.md](queue.md)), files them, drops duplicates and junk, and quarantines
 sensitive images for you to confirm and erase. Every path below is the
 default; all of them come from `~/.config/media-intake/config.toml`
 ([configuration.md](configuration.md)).
@@ -45,7 +45,7 @@ default; all of them come from `~/.config/media-intake/config.toml`
 ## Commands
 
 ```
-media-intake stage SRC_ROOT --kind phone|gopro|drive [--batch NAME] [--only LISTFILE]
+media-intake stage SRC_ROOT --kind phone|gopro|drive|folder [--batch NAME] [--only LISTFILE]
 media-intake plan BATCH [--event [PROJECT/]SLUG@YYYY-MM-DD ...] [--clock-offset DEVICE=±Nh ...]
 media-intake scan BATCH                 # local detectors; labels only
 media-intake apply BATCH                # moves files; prints a summary
@@ -55,7 +55,7 @@ media-intake erase BATCH [--phone ROOT [--keep-phone-thumbnails]] [--drive MOUNT
 media-intake forget LIBRARY_FILE... [--drive MOUNT]
 media-intake verify-gone [BATCH] [--drive MOUNT]
 media-intake wipe-free MOUNT
-media-intake offload BATCH --phone ROOT [--yes]
+media-intake offload BATCH --phone ROOT [--yes]   # refused for a --kind folder batch
 media-intake purge-review BATCH
 media-intake trash [BATCH] FILE... [--phone ROOT]
 media-intake trash --from-digikam [--yes]
@@ -72,7 +72,7 @@ media-intake gallery [--drive MOUNT]
 
 `media-intake <command> --help` shows every option. The review page is
 `media-intake review BATCH` ([review-ui.md](review-ui.md)), the web gallery
-[gallery.md](gallery.md), the external-drive queue [queue.md](queue.md),
+[gallery.md](gallery.md), the drive and laptop-folder queue [queue.md](queue.md),
 semantic search and the VLM trash check [search.md](search.md). `media-intake
 doctor` checks system packages (and prints the `sudo dnf install` line for
 what's missing), the venv, the model files' sha256 and the local Ollama
