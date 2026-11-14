@@ -683,7 +683,8 @@ class ReviewUITest(unittest.TestCase):
         self.assertIsNone(items["b4.jpg"]["burst"])  # its dHash says another picture
         self.assertIsNone(items["solo.jpg"]["burst"])  # a single shot is no stack
         r, page = s.req("GET", "/")
-        for text in (b"Keep this one, trash the rest", b"Burst: ", b"function visibleOf", b"function keepOne"):
+        for text in (b"Keep this one, trash the rest", b"Keep this one, erase the rest", b"Burst: ",
+                     b"function visibleOf", b"function keepOne"):
             self.assertIn(text, page)
         # Keep b2, trash the rest of its stack; decide the others one by one.
         dec = {str(items[n]["id"]): d for n, d in (("b1.jpg", "trash"), ("b2.jpg", "keep"), ("b3.jpg", "trash"),

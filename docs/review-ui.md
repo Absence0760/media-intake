@@ -57,8 +57,10 @@ review files it prints `nothing to review for BATCH` and exits 0.
 - **Burst stacks** (in each tab): shots from one device a moment apart show as
   one stack with a count badge ("Burst: 4 shots, 2 undecided"); "Show all"
   (or X) opens it and every shot follows the first. On an open stack each shot
-  has "Keep this one, trash the rest": it sets Keep on that shot and Trash on
-  the others, nothing more. They run with the rest at submit, after the same
+  has "Keep this one, trash the rest" ("... erase the rest" in Quarantine): it
+  sets Keep on that shot and Trash on the others, or Erase in Quarantine,
+  where every shot is flagged and so takes the erase-everywhere path, never
+  plain trash. Nothing more: they run with the rest at submit, after the same
   ERASE confirm, guards and job as any decision (no endpoint of its own):
   Trash is `media-intake trash` (the sha256 goes in `trashed.json`), Keep is
   the tab's Keep (Maybe trash: `not-trash`, so `Owner|keep`; Quarantine:

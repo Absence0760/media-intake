@@ -28,7 +28,8 @@ Every item can also be trashed (`intake.py trash`: plain delete for junk that
 isn't private, remembered so it never comes back). --maybe-trash adds a tab of
 library files `suggest-trash` listed (maybe-trash.json): Keep runs `not-trash`.
 Bursts (bursts.py: one device, shots a moment apart) show as one stack per tab; "Keep this one, trash the
-rest" only sets those decisions (Keep on one, Trash on the others), which go through the same submit.
+rest" only sets those decisions (Keep on one, Trash on the others; Erase in Quarantine, where every shot is
+flagged), which go through the same submit.
 
 On submit (every item decided, ERASE typed) it starts a detached job
 (jobs.py, key review-<batch>; one at a time per batch, taken with flock) that
@@ -969,7 +970,7 @@ pre{white-space:pre-wrap;word-break:break-all;font-size:15px;background:var(--bg
  <div id="lists">
   <p class="note" id="last" hidden></p>
   <p class="help" id="helpq">K = keep (back to the library), E = erase everywhere, T = trash (plain delete for junk that isn't private). ← → or ↑ ↓ move between items.</p>
-  <p class="help" id="helpb" hidden>A stack is a burst (shots from one camera a moment apart): X opens or closes it, and "Keep this one, trash the rest" on a shot decides the whole stack. Nothing is deleted until you submit and type ERASE.</p>
+  <p class="help" id="helpb" hidden>A stack is a burst (shots from one camera a moment apart): X opens or closes it, and "Keep this one" on a shot decides the whole stack: the rest are erased everywhere in Quarantine, trashed elsewhere. Nothing is deleted until you submit and type ERASE.</p>
   <p class="help" id="helpr" hidden>K = keep, E or D = delete (near-duplicates and junk), T = trash (delete, and never take it in again). ← → or ↑ ↓ move between items.</p>
   <p class="help" id="helpm" hidden>Suggested junk from your library. K = keep (never suggested again), T = trash. Nothing is deleted until you submit. ← → or ↑ ↓ move between items.</p>
   <div id="list"></div>
@@ -990,7 +991,10 @@ function isCover(it){return it.burst==null||BM[it.burst][0]===it}
 function visibleOf(t){const v=[];itemsOf(t).forEach(i=>{if(i.burst==null)v.push(i);else if(isCover(i))v.push(...(open[i.burst]?BM[i.burst]:[i]))});return v}
 function toggleStack(it){if(it.burst==null)return;open[it.burst]=!open[it.burst];const v=visibleOf(tab);
  cur[tab]=Math.max(0,v.indexOf(v.includes(it)?it:members(it)[0]));render();paint(true)}
-function keepOne(it){members(it).forEach(m=>{dec[m.id]=m===it?"keep":"trash"});const v=visibleOf(tab);cur[tab]=Math.max(0,v.indexOf(it));paint(false)}
+/* The rest of a quarantine stack is flagged too, so it takes the erase-everywhere path, never plain trash. */
+function restOf(it){return it.tab==="quarantine"?"erase":"trash"}
+function oneLabel(it){return it.tab==="quarantine"?"Keep this one, erase the rest":"Keep this one, trash the rest"}
+function keepOne(it){members(it).forEach(m=>{dec[m.id]=m===it?"keep":restOf(it)});const v=visibleOf(tab);cur[tab]=Math.max(0,v.indexOf(it));paint(false)}
 function mediaEl(kind,src,alt){const m=el("div","media");
  if(kind==="image"){const im=el("img");im.loading="lazy";im.alt=alt;im.src=src;m.append(im)}
  else if(kind==="video"){const v=el("video");v.controls=true;v.preload="metadata";v.src=src;m.append(v)}
@@ -1026,7 +1030,7 @@ function render(){
   k.onclick=()=>{decide(it,"keep",n,false)};t.onclick=()=>{decide(it,"trash",n,false)};b.append(k);
   if(second(it)){const e=el("button","e",(it.tab==="quarantine"?"Erase":"Delete")+" (E)");e.onclick=()=>{decide(it,second(it),n,false)};b.append(e)}
   b.append(t);c.append(b);
-  if(it.burst!=null&&open[it.burst]){const o1=el("button","one","Keep this one, trash the rest");o1.onclick=()=>{keepOne(it)};c.append(o1)}
+  if(it.burst!=null&&open[it.burst]){const o1=el("button","one",oneLabel(it));o1.onclick=()=>{keepOne(it)};c.append(o1)}
   c.onclick=ev=>{if(ev.target.tagName!=="BUTTON"&&ev.target.tagName!=="VIDEO"){cur[tab]=n;paint(false)}};
   L.append(c);
  });
