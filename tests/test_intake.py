@@ -335,6 +335,43 @@ class EraseEverywhere(unittest.TestCase):
         self.intake("apply", batch, "--allow-missing-detectors")
         return os.path.join(self.state, "quarantine", batch, "DCIM/Camera/20261023_100000.jpg")
 
+    def test_apply_never_replaces_a_file_filed_since_plan(self):
+        batch = "2026-11-13-taken"
+        self.intake("stage", self.phone, "--kind", "phone", "--batch", batch)
+        self.intake("plan", batch)
+        bd = os.path.join(self.state, "batches", batch)
+        with open(os.path.join(bd, "scan.json"), "w") as f:
+            json.dump({"DCIM/Camera/20261023_100000.jpg": ["nudity"]}, f)
+        want = next(p["dst"] for p in jload(os.path.join(bd, "plan.json"))
+                    if p["rel"] == "DCIM/Camera/20261024_100000.jpg")
+        # Between plan and apply, something else is filed at that place (another batch, a release) ...
+        save_jpg(pattern(12), want)
+        with open(want + ".xmp", "w") as f:
+            f.write("its own tags")
+        before = self.sha(want)
+        # ... and the flagged file's quarantine place holds a file quarantine.json does not describe yet.
+        qtaken = os.path.join(self.state, "quarantine", batch, "DCIM/Camera/20261023_100000.jpg")
+        self.plant(qtaken, os.path.join(self.phone, "DCIM/Camera/20261024_100000.jpg"))
+        qbefore = self.sha(qtaken)
+        out = self.intake("apply", batch, "--allow-missing-detectors")
+        self.assertEqual(self.sha(want), before, "the file already there is never replaced")
+        self.assertEqual(read(want + ".xmp"), "its own tags")
+        stem, ext = os.path.splitext(want)
+        self.assertTrue(os.path.isfile(stem + "_1" + ext), out)
+        self.assertFalse(os.path.exists(stem + "_1" + ext + ".xmp"))
+        self.assertIn("1 files went to a free name", out)
+        plan = {p["rel"]: p for p in jload(os.path.join(bd, "plan.json"))}
+        self.assertEqual(plan["DCIM/Camera/20261024_100000.jpg"]["dst"], stem + "_1" + ext,
+                         "tag and offload find it where it went")
+        self.assertIn(stem + "_1" + ext, jload(os.path.join(self.state, "index.json")))
+        self.assertEqual(self.sha(qtaken), qbefore, "a quarantined file is never replaced either")
+        self.assertIn("'left in raw (its quarantine place is taken)': 1", out)
+        self.assertTrue(os.path.isfile(os.path.join(bd, "raw", "DCIM/Camera/20261023_100000.jpg")))
+
+    def sha(self, p):
+        with open(p, "rb") as f:
+            return __import__("hashlib").sha256(f.read()).hexdigest()
+
     def test_erase_everywhere(self):
         batch = "2026-11-13-sweep"
         qpath = self.quarantine(batch)

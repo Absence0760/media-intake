@@ -277,6 +277,18 @@ instead of being replaced. Serials are read from EXIF `SerialNumber`
 - Images under 200 px and empty files go to review as junk.
 - `index.json` in the state folder keeps sha256 and dHash of everything in
   the library, so later batches are checked against it.
+- **A move never replaces a file** (`intake.free_path`). `release` puts a
+  file back at its old place only while that place and its sidecar are free.
+  If another file was filed there since (erase moved `2026-08/IMG_1.jpg` to
+  `near-<batch>`, a later apply filed a different `IMG_1.jpg` there), the
+  released file goes to the first free `IMG_1_<n>.jpg` beside it, with its
+  own sidecar and `index.json` entry, and `release` prints where it went;
+  the file already there keeps its content, sidecar and index entry. `apply`
+  does the same for a planned place filled after `plan` (and rewrites
+  `plan.json`, so `tag` and `offload` find the file), and leaves a flagged
+  file in `raw/` (counted) when its quarantine place is taken. Near-copies
+  moved into quarantine, and `forget`, never land on an existing file or
+  sidecar either.
 
 ## Trash vs erase
 

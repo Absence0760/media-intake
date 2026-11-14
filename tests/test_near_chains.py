@@ -131,6 +131,43 @@ class EraseChains(Base):
         self.assertNotIn("x/n1.jpg", json.dumps(rec2), "never the erased file's path")
 
 
+class ReleaseNeverReplaces(Base):
+    """release puts a kept near-copy back at its old place only while that place is free."""
+
+    def test_release_onto_a_refilled_place_keeps_both(self):
+        rel = "Pictures/library/2026/2026-08/IMG_1.jpg"
+        lib = self.H(rel)
+        # erase moved IMG_1.jpg (with its tags) into near-<b>; a later apply filed a different IMG_1.jpg there
+        near = self.quarantined(f"near-{B}", rel, pattern(6).resize((800, 600)),
+                                near_of_sha="0" * 64, erased_on="2026-11-12")
+        with open(near + ".xmp", "w") as f:
+            f.write("near-copy's own tags")
+        save_jpg(pattern(8), lib, "2026:08:01 10:00:00")
+        with open(lib + ".xmp", "w") as f:
+            f.write("new photo's tags")
+        new_sha, near_sha = sha(lib), sha(near)
+        idx = os.path.join(self.state, "index.json")
+        with open(idx, "w") as f:
+            json.dump({lib: dict(sha=new_sha, size=os.path.getsize(lib), dhash=None)}, f)
+        r = subprocess.run([PY, "-I", INTAKE, "release", f"near-{B}", rel], env=self.env, capture_output=True,
+                           text=True, stdin=subprocess.DEVNULL)
+        self.assertEqual(r.returncode, 0, r.stderr)
+        moved = self.H("Pictures/library/2026/2026-08/IMG_1_1.jpg")
+        self.assertIn(f"released -> {moved}", r.stdout)
+        self.assertIn("IMG_1.jpg is taken there: kept both", r.stdout)
+        self.assertEqual(sha(lib), new_sha, "the photo filed there is untouched")
+        with open(lib + ".xmp") as f:
+            self.assertEqual(f.read(), "new photo's tags")
+        self.assertEqual(sha(moved), near_sha)
+        with open(moved + ".xmp") as f:
+            self.assertEqual(f.read(), "near-copy's own tags")
+        self.assertFalse(os.path.exists(near) or os.path.exists(near + ".xmp"))
+        index = jload(idx)
+        self.assertEqual(index[lib]["sha"], new_sha, "its index entry is not replaced")
+        self.assertEqual((index[moved]["sha"], index[moved]["released"]), (near_sha, True))
+        self.assertEqual(jload(self.Q(f"near-{B}", "quarantine.json")), {})
+
+
 def fresh(name, env):
     """Load media_intake/<name>.py anew under env (its STATE and roots are read at import)."""
     old = {k: os.environ.get(k) for k in KEYS}

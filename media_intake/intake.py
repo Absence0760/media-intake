@@ -166,6 +166,18 @@ def drop_sidecar(path):
     return 0
 
 
+def free_path(dst):
+    """dst, else the first <stem>_<n><ext> where neither a file nor its sidecar exists. Every move onto a
+    library or quarantine path goes through this (or skips): a move never replaces a file someone filed
+    there meanwhile, nor its sidecar. Callers hold the library lock, so nothing else fills the place
+    between this check and the move."""
+    stem, ext = os.path.splitext(dst)
+    p, i = dst, 1
+    while os.path.lexists(p) or os.path.lexists(sidecar(p)):
+        p, i = f"{stem}_{i}{ext}", i + 1
+    return p
+
+
 def orphan_sidecar(p):
     """A <file>.<media ext>.xmp whose media file no longer exists."""
     base, ext = os.path.splitext(p)
@@ -448,12 +460,16 @@ def cmd_apply(a):
     index = load(os.path.join(STATE, "index.json"), {})
     qman = load(os.path.join(quar, "quarantine.json"), {})
     c = collections.Counter()
+    moved = 0  # plan entries whose place was taken since `plan`: filed under a free name instead
     for p in plan:
         src = os.path.join(raw, p["rel"])
         if not os.path.exists(src):
             continue
         if p["rel"] in flags and p["action"] != "delete":
             dst = os.path.join(quar, p["rel"])
+            if os.path.lexists(dst):  # quarantine.json is keyed by rel: never replace the file it describes
+                c["left in raw (its quarantine place is taken)"] += 1
+                continue
             os.makedirs(os.path.dirname(dst), mode=0o700, exist_ok=True)
             os.replace(src, dst)
             os.chmod(dst, stat.S_IRUSR | stat.S_IWUSR)
@@ -464,6 +480,11 @@ def cmd_apply(a):
             os.remove(src)
             c["deleted (exact duplicate)"] += 1
         else:
+            dst = free_path(p["dst"])
+            if dst != p["dst"]:  # something was filed there after `plan`: keep both
+                p["dst"], moved = dst, moved + 1
+                if p["action"] == "file":
+                    p["lib_dst"] = dst
             os.makedirs(os.path.dirname(p["dst"]), exist_ok=True)
             shutil.move(src, p["dst"])
             if p["action"] == "file":
@@ -473,6 +494,9 @@ def cmd_apply(a):
                 c["to review"] += 1
     save(os.path.join(quar, "quarantine.json"), qman)
     save(os.path.join(STATE, "index.json"), index)
+    if moved:  # tag, offload and the review page read each file's place from the plan
+        save(os.path.join(b, "plan.json"), plan)
+        print(f"{moved} files went to a free name (<name>_<n>): their planned place was taken since `plan`")
     left = [os.path.join(r, f) for r, _, fs in os.walk(raw) for f in fs]
     if not left:
         shutil.rmtree(raw)
@@ -511,7 +535,10 @@ def cmd_release(a):
         if rel not in q or not q[rel]["dst"]:
             print(f"not in quarantine (or was a near-duplicate): {f}")
             continue
-        dst = q[rel]["dst"]
+        want = q[rel]["dst"]
+        # Its old place may hold another file by now (a later apply filed a different IMG_1.jpg there):
+        # never replace it or its sidecar; the released file takes a free <name>_<n> beside it.
+        dst = free_path(want)
         os.makedirs(os.path.dirname(dst), exist_ok=True)
         shutil.move(os.path.join(quar, rel), dst)
         os.chmod(dst, 0o644)
@@ -521,7 +548,7 @@ def cmd_release(a):
         index[dst] = dict(sha=q[rel]["sha"], size=q[rel]["size"], dhash=dh, released=True)
         thumb_forget(os.path.join(quar, rel))
         del q[rel]
-        print(f"released -> {dst}")
+        print(f"released -> {dst}" + (f"   ({os.path.basename(want)} is taken there: kept both)" if dst != want else ""))
     save(os.path.join(quar, "quarantine.json"), q)
     save(os.path.join(STATE, "index.json"), index)
 
@@ -734,7 +761,7 @@ def near_dups(refs, kept, index, batch, spare=()):
             continue  # you released this exact picture
         rel = os.path.relpath(p, HOME)
         dst = os.path.join(quar, rel)
-        if not room or rel in q or os.path.lexists(dst):
+        if not room or rel in q or os.path.lexists(dst) or os.path.lexists(sidecar(dst)):
             left += 1
             continue
         private_dir(quar)
@@ -1186,12 +1213,12 @@ def cmd_forget(a):
     batch = datetime.datetime.now().strftime("forget-%Y%m%d-%H%M%S")
     quar = private_dir(os.path.join(private_dir(os.path.join(STATE, "quarantine")), batch))
     index = load(os.path.join(STATE, "index.json"), {})
-    q = {}
+    q = load(os.path.join(quar, "quarantine.json"), {}) or {}  # a forget in the same second adds to it
     for f in a.files:
         f = os.path.abspath(f)
         stem, ext = os.path.splitext(os.path.basename(f))
         rel, i = stem + ext, 1
-        while rel in q:  # same name from two library folders
+        while rel in q or os.path.lexists(os.path.join(quar, rel)):  # same name from two library folders
             rel, i = f"{stem}_{i}{ext}", i + 1
         s = sha256(f)
         q[rel] = dict(reasons=["owner"], sha=s, size=os.path.getsize(f), dst=None)
