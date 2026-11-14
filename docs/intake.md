@@ -16,7 +16,8 @@ default; all of them come from `~/.config/media-intake/config.toml`
   `~/Videos/personal/<YYYY>/<YYYY-MM>/` (a dedicated camera's files in a
   `<device id>/` folder there, see "Devices" below), screenshots to
   `~/Pictures/library/Screenshots/<YYYY>/`, screen recordings to
-  `~/Videos/personal/Screen recordings/<YYYY>/`, messaging-app media to
+  `~/Videos/personal/Screen recordings/<YYYY>/` (a video in a phone's
+  `Screenshots/` folder is one too), messaging-app media to
   `~/Pictures/library/Messaging/<app>/<YYYY>/`. An event routed to a configured
   project goes to `<project folder>/<date>-<slug>/{phone,gopro}/` (see
   "Events" below). Original file names are kept: GoPro chapters (`GX01xxxx`,
@@ -282,8 +283,8 @@ cameras of one model share a folder, as above.
 - **Near**: a 64-bit dHash on Pillow (EXIF-rotated, 9x8 grey). Images within
   2 bits of another in the batch, with the same orientation, go to the batch's
   `review/` folder with `why` naming the one kept, so you glance before
-  anything is deleted. Two camera photos are never merged (burst shots look
-  alike). A screenshot or messaging copy is also checked against the library
+  anything is deleted. Two camera photos (phone or GoPro) are never merged
+  (burst shots and time-lapse frames look alike). A screenshot or messaging copy is also checked against the library
   index and goes to review when it is near a library image.
 - Images under 200 px and empty files go to review as junk.
 - `index.json` in the state folder keeps sha256 and dHash of everything in
@@ -409,14 +410,22 @@ back from another device or a backup. Anything private goes through `erase`
   path, **refuses the whole erase** before anything is deleted, naming the
   path. Your yes covered folders of thumbnails, so one that holds something
   else is for you to look at on the phone, not for erase to work around.
+- **GoPro card.** Beside each chapter a GoPro writes a low-resolution copy
+  (`GL010042.LRV` for `GX010042.MP4`; `GOPR0042.LRV` for `GOPR0042.MP4`) and
+  a thumbnail (`GX010042.THM`). `stage` never copies them, so they are not in
+  the batch, but they hold the same footage: `erase --phone` deletes the
+  previews of each chapter it deletes (one it skips, say because its size
+  changed, keeps them) by name, from the same folder, through the same gate (`sources.check_preview`: allowlisted folders, `.LRV`/`.THM` only,
+  never a symlink), and prints `camera previews removed: N`. Other chapters'
+  previews stay; `offload` leaves previews on the card.
 
 ## Device deletes and case-insensitive storage
 
-Every delete on a phone, camera or source drive (`erase --phone` originals and
-phone thumbnails, `offload`, `trash --phone`, the gallery's and review page's
-versions of those, which run the same commands) goes through one gate in
-`intake.py`: `device_targets` checks every path first, then `device_remove`
-runs `gio remove`. It is the only place media-intake changes a device, and it
+Every delete on a phone, camera or source drive (`erase --phone` originals, a
+GoPro's previews of them and phone thumbnails, `offload`, `trash --phone`, the
+gallery's and review page's versions of those, which run the same commands)
+goes through one gate in `intake.py`: `device_targets` checks every path
+first, then `device_remove` runs `gio remove`. It is the only place media-intake changes a device, and it
 never renames or moves a file there. `release`, `forget` and the HOME/drive
 sweep never touch a phone; the sweep and `erase --drive` delete only files
 they have just hashed as an erased item, so the name they delete is the
@@ -720,6 +729,8 @@ Rejected:
 `python3 -I -m unittest discover -s tests` (synthetic media, a throwaway HOME,
 a hermetic config), or one module: `python3 -I -m unittest discover -s tests -p test_intake.py`
 (also `test_dates`, `test_devices`, `test_sources`, `test_tagging`, `test_config`, and `test_device_case`: offload,
-erase and trash on fake MTP, gphoto2 and drive trees with case-only collisions; `test_library_lock`: the
+erase and trash on fake MTP, gphoto2 and drive trees with case-only collisions; `test_device_ops_media_kinds`:
+stage, plan, apply, erase, offload and verify-gone with photos, videos and a mix from a phone, a GoPro card,
+a drive, a laptop folder and the drive queue; `test_library_lock`: the
 CLI, a gallery write and a job contending for the library lock; `test_offline_guard`). Run long jobs under your
 own memory cap if you like.

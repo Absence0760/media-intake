@@ -20,7 +20,8 @@ GoPro chapters: a long recording is split into files of one recording number. HE
 later name them GHccnnnn.MP4 (H.264) or GXccnnnn.MP4 (HEVC), chapter cc from 01; HERO5 and
 earlier GOPRnnnn.MP4 for the first chapter, then GP01nnnn.MP4, GP02nnnn.MP4, ... Names are
 matched exactly (upper case, .MP4, as the camera writes them); anything else is not a
-chapter.
+chapter. Beside each chapter the camera writes a low-resolution copy (.LRV) and a thumbnail (.THM):
+`previews` names them, so erasing a chapter from the card takes them too.
 """
 import collections, hashlib, hmac, os, re, secrets
 from dataclasses import dataclass
@@ -145,6 +146,17 @@ def chapter(name):
     if m and m.group(2) != "00":
         return "GP", m.group(3), int(m.group(2))
     return None
+
+
+def previews(name):
+    """The preview files a GoPro writes beside a chapter video, by name: the low-resolution copy (.LRV)
+    and the thumbnail (.THM). HERO6 and later: GHccnnnn.MP4 / GXccnnnn.MP4 -> GLccnnnn.LRV and
+    G?ccnnnn.THM; HERO5 and earlier: the same stem with .LRV and .THM. [] for any other name."""
+    c = chapter(name)
+    if c is None:
+        return []
+    stem = name[:-len(".MP4")]
+    return [("GL" + stem[2:] if c[0] in ("GH", "GX") else stem) + ".LRV", stem + ".THM"]
 
 
 def gopro_name(name):
