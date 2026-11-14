@@ -95,7 +95,8 @@ run and a CLI `apply` never interleave (`media_intake/library_lock.py`):
   file name).
 - **CLI:** `intake.py main()` takes it for every subcommand in
   `intake.LOCKED` (stage, plan, scan, apply, release, erase, forget, offload,
-  purge-review, trash, not-trash, suggest-trash, tag, tag-files, mark-used).
+  purge-review, trash, not-trash, suggest-trash, tag, tag-files, mark-used,
+  migrate-tags).
   The read-only ones in `intake.READ_ONLY` (quarantine, verify-gone, wipe-free,
   share-copy, find, gallery) never do; a new subcommand counts as locked until
   it is listed there, and `tests/test_library_lock.py` fails on one in neither.
@@ -200,7 +201,9 @@ plan) and only fills in a missing one; to recompute it, clear it first
 (`exiftool -XMP-exif:DateTimeOriginal= FILE.xmp`).
 
 Without exiftool, Pillow (images) and ffprobe (videos) read the same tags,
-except a GoPro video's GPMF GPS time and any serial number in a video.
+except a GoPro video's GPMF GPS time and any serial number: ffprobe can't
+read a video's serial, so neither fallback reads one, and a camera's photos
+and videos get the same Make/Model device id (Devices, below).
 
 ### GoPro chapters
 
@@ -257,9 +260,15 @@ An owner-chosen alias in the config was the alternative; the hash needs no
 setup and still separates cameras. Keep the salt with the rest of the state
 folder: a new salt gives every camera a new id (new folders from then on;
 filed files don't move). A corrupt salt file stops `plan` and `stage`
-instead of being replaced. Serials are read from EXIF `SerialNumber`
+instead of being replaced. On a filesystem without hard links the salt is
+made with an exclusive create instead of a link (never replacing another
+run's salt). Serials are read from EXIF `SerialNumber`
 (`BodySerialNumber`), `InternalSerialNumber` and GoPro's
-`CameraSerialNumber`; blank, all-zero and "Unknown" values count as none.
+`CameraSerialNumber`, through exiftool only; blank, all-zero and "Unknown"
+values count as none. Without exiftool no serial is read at all, from
+photos or videos (Pillow could read a photo's, ffprobe never a video's, and
+one camera must not get two ids), so ids are Make/Model only and two
+cameras of one model share a folder, as above.
 
 ## Duplicates
 
@@ -277,6 +286,18 @@ instead of being replaced. Serials are read from EXIF `SerialNumber`
 - Images under 200 px and empty files go to review as junk.
 - `index.json` in the state folder keeps sha256 and dHash of everything in
   the library, so later batches are checked against it.
+- **A move never replaces a file** (`intake.free_path`). `release` puts a
+  file back at its old place only while that place and its sidecar are free.
+  If another file was filed there since (erase moved `2026-08/IMG_1.jpg` to
+  `near-<batch>`, a later apply filed a different `IMG_1.jpg` there), the
+  released file goes to the first free `IMG_1_<n>.jpg` beside it, with its
+  own sidecar and `index.json` entry, and `release` prints where it went;
+  the file already there keeps its content, sidecar and index entry. `apply`
+  does the same for a planned place filled after `plan` (and rewrites
+  `plan.json`, so `tag` and `offload` find the file), and leaves a flagged
+  file in `raw/` (counted) when its quarantine place is taken. Near-copies
+  moved into quarantine, and `forget`, never land on an existing file or
+  sidecar either.
 
 ## Trash vs erase
 
@@ -321,6 +342,15 @@ back from another device or a backup. Anything private goes through `erase`
   `verify-gone [BATCH]` repeats the sweep read-only and exits 1 if anything is
   left (including orphaned sidecars and gallery thumbnails). `erase` runs it
   last.
+- **Progress while it searches.** The HOME sweep, the drive sweep, the
+  near-duplicate search and verify-gone can take minutes on a big HOME, so
+  each prints a start line (what it searches, how many erased items), then a
+  line every 10,000 files or every 2 s, whichever comes first (`home sweep:
+  12,000 files checked, 0 copies so far`), then its summary. Counts only,
+  never a file name. stdout is line-buffered (and jobs run `python3 -u`), so
+  a gallery Erase or `forget` streams these to its job log as they happen.
+  `MEDIA_INTAKE_PROGRESS_EVERY` / `MEDIA_INTAKE_PROGRESS_SECS` change the
+  two intervals (the tests set a count and `inf` seconds).
 - **Near-duplicates** (a messaging-app recompress, a resized edit) don't match
   by checksum. `erase` takes the dHash of each erased image before deleting it
   and moves any image within 4 bits and with the same orientation to
@@ -579,7 +609,8 @@ suggest-trash, vlm-trash, semantic `--clean`, the gallery and the review page.
   the sha256 in `<state>/trashed.json`, written before the delete: `plan`
   drops that content if it ever comes back. Library copies of the same sha256
   that `index.json` knows and that stay on disk (`trash` deletes only the paths
-  you name) get `Owner|trash` in their sidecar, so suggest-trash and the
+  you name) get `Owner|trash` in their sidecar (only copies `index.json`
+  knows: a copy made outside the tool is not looked for and is not marked), so suggest-trash and the
   gallery offer them for a confirm and the VLM leaves them alone. A copy with
   its own keep decision is left as it is. Keep on such a copy later wins (it
   drops `Owner|trash`; the sha stays in `trashed.json`, where it changes

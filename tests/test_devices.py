@@ -8,7 +8,8 @@ Serial numbers are personal identifiers: the tests check that none reaches a fol
 batch name, plan.json, a sidecar or the command output. Cases needing exiftool or ffmpeg skip
 when it is missing.
 """
-import datetime, glob, json, os, re, shutil, stat, subprocess, sys, tempfile, unittest
+import datetime, errno, glob, json, os, re, shutil, stat, subprocess, sys, tempfile, unittest
+from unittest import mock
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import support  # noqa: E402,F401  (hermetic config)
@@ -85,6 +86,31 @@ class Salt(unittest.TestCase):
                 devices.salt(st)  # never silently replaced: every camera would get a new folder
 
 
+    def test_filesystem_without_hard_links(self):
+        """os.link failing with an OSError other than EEXIST (vfat, some FUSE mounts) falls back to an
+        exclusive create: a private salt, made once, no temp file left, never another run's salt replaced."""
+        with tempfile.TemporaryDirectory() as t:
+            st = os.path.join(t, "state")
+            with mock.patch.object(devices.os, "link", side_effect=OSError(errno.EPERM, "no hard links")) as link:
+                s = devices.salt(st)
+                self.assertEqual(devices.salt(st), s)
+            self.assertEqual(link.call_count, 1, "the second call reads the salt the first made")
+            self.assertRegex(s, r"^[0-9a-f]{64}$")
+            p = os.path.join(st, devices.SALT_FILE)
+            self.assertEqual(stat.S_IMODE(os.stat(p).st_mode), 0o600)
+            self.assertEqual(os.listdir(st), [devices.SALT_FILE], "no temp file left behind")
+        with tempfile.TemporaryDirectory() as t:  # another run made it between our read and our create
+            st = os.path.join(t, "state")
+            theirs = "cd" * 32
+
+            def race(src, dst):
+                with open(dst, "w") as f:
+                    f.write(theirs + "\n")
+                raise OSError(errno.EOPNOTSUPP, "no hard links")
+            with mock.patch.object(devices.os, "link", side_effect=race):
+                self.assertEqual(devices.salt(st), theirs, "theirs is kept, never replaced")
+
+
 class Chapters(unittest.TestCase):
     def test_gopro_chapter_names(self):
         for name, want in (("GX010042.MP4", ("GX", "0042", 0)), ("GX020042.MP4", ("GX", "0042", 1)),
@@ -141,19 +167,36 @@ class Chapters(unittest.TestCase):
 
 class Reading(unittest.TestCase):
     def test_read_meta_replaces_the_serial_with_the_device(self):
-        writers = ["pillow"] + (["exiftool"] if HAVE_EXIFTOOL else [])
-        for writer in writers:
-            for use in ([None, False] if HAVE_EXIFTOOL else [False]):
-                with self.subTest(writer=writer, exiftool=use), tempfile.TemporaryDirectory() as t:
-                    p = jpg(os.path.join(t, "GOPR0001.JPG"), "2026:11:08 07:00:00", make="GoPro",
-                            model="HERO11 Black", serial=SERIAL_A, writer=writer)
-                    m = dates.read_meta([p], use_exiftool=use, state=os.path.join(t, "state"))[p]
-                    self.assertRegex(m["Device"], r"^gopro-hero11-black-[0-9a-f]{6}$")
-                    self.assertEqual((m["DeviceModel"], m["DeviceLabel"]), ("HERO11 Black", "GoPro HERO11 Black"))
-                    self.assertNotIn(SERIAL_A, json.dumps(m))
-                    self.assertEqual(m["Device"], devices.identify(
-                        {"Make": "GoPro", "Model": "HERO11 Black", "SerialNumber": SERIAL_A},
-                        devices.salt(os.path.join(t, "state"))).id)
+        if not HAVE_EXIFTOOL:
+            self.skipTest("serials are read only through exiftool")
+        for writer in ("pillow", "exiftool"):
+            with self.subTest(writer=writer), tempfile.TemporaryDirectory() as t:
+                p = jpg(os.path.join(t, "GOPR0001.JPG"), "2026:11:08 07:00:00", make="GoPro",
+                        model="HERO11 Black", serial=SERIAL_A, writer=writer)
+                m = dates.read_meta([p], use_exiftool=None, state=os.path.join(t, "state"))[p]
+                self.assertRegex(m["Device"], r"^gopro-hero11-black-[0-9a-f]{6}$")
+                self.assertEqual((m["DeviceModel"], m["DeviceLabel"]), ("HERO11 Black", "GoPro HERO11 Black"))
+                self.assertNotIn(SERIAL_A, json.dumps(m))
+                self.assertEqual(m["Device"], devices.identify(
+                    {"Make": "GoPro", "Model": "HERO11 Black", "SerialNumber": SERIAL_A},
+                    devices.salt(os.path.join(t, "state"))).id)
+
+    def test_fallbacks_ignore_serials_so_photos_and_videos_agree(self):
+        """Without exiftool, Pillow could read a photo's serial but ffprobe never a video's: neither is read,
+        so one camera's photos and videos get one id (one folder), and no salt is made for it."""
+        with tempfile.TemporaryDirectory() as t:
+            photo = jpg(os.path.join(t, "GOPR0001.JPG"), "2026:11:08 07:00:00", make="GoPro",
+                        model="HERO11 Black", serial=SERIAL_A)
+            vid = os.path.join(t, "GX010002.MP4")
+            open(vid, "wb").close()
+            probe = {"CreateDate": "2026-11-08T12:00:00Z", "Make": "GoPro", "Model": "HERO11 Black"}
+            st = os.path.join(t, "state")
+            with mock.patch.object(dates, "_ffprobe", return_value=dict(probe)):
+                m = dates.read_meta([photo, vid], use_exiftool=False, state=st)
+            self.assertEqual((m[photo]["Device"], m[vid]["Device"]), ("gopro-hero11-black", "gopro-hero11-black"))
+            self.assertNotIn(SERIAL_A, json.dumps(m))
+            self.assertNotIn("SerialNumber", dates._pil(photo))
+            self.assertFalse(os.path.exists(st), "no serial was read, so no salt is needed")
 
     def test_no_serial_needs_no_salt(self):
         with tempfile.TemporaryDirectory() as t:
@@ -228,6 +271,30 @@ class EndToEnd(unittest.TestCase):
         self.assertIn(f"devices {{'{pb['device']}': 1}}", out)
         self.run_intake("apply", "b", "--no-scan")
         self.assertFalse(glob.glob(os.path.join(month, "**", "*_1.*"), recursive=True))
+        self.assert_no_serial()
+
+    def test_corrupt_salt_stops_stage_and_plan_and_is_left_as_it_is(self):
+        if not HAVE_EXIFTOOL:
+            self.skipTest("serials (and so the salt) are read only through exiftool")
+        a = self.card("card-a", SERIAL_A)
+        self.run_intake("stage", a, "--kind", "gopro", "--batch", "a")
+        salt = os.path.join(self.state, devices.SALT_FILE)
+        os.makedirs(self.state, exist_ok=True)
+        with open(salt, "w") as f:
+            f.write("half a salt\n")
+        os.chmod(salt, 0o600)
+        before = os.stat(salt)
+        for args in (("plan", "a"), ("stage", a, "--kind", "gopro")):
+            with self.subTest(args=args[0]):
+                r = self.run_intake(*args, ok=False)
+                self.assertNotEqual(r.returncode, 0, r.stdout)
+                self.assertIn("is not a device salt (64 hex digits)", r.stderr)
+                with open(salt) as f:
+                    self.assertEqual(f.read(), "half a salt\n", "never replaced: cameras would get new folders")
+                after = os.stat(salt)
+                self.assertEqual((after.st_ino, after.st_mtime_ns, stat.S_IMODE(after.st_mode)),
+                                 (before.st_ino, before.st_mtime_ns, 0o600))
+        self.assertFalse(os.path.exists(os.path.join(self.state, "batches", "a", "plan.json")))
         self.assert_no_serial()
 
     def test_same_model_without_serials_shares_a_folder(self):

@@ -335,6 +335,66 @@ class EraseEverywhere(unittest.TestCase):
         self.intake("apply", batch, "--allow-missing-detectors")
         return os.path.join(self.state, "quarantine", batch, "DCIM/Camera/20261023_100000.jpg")
 
+    def test_apply_never_replaces_a_file_filed_since_plan(self):
+        batch = "2026-11-13-taken"
+        self.intake("stage", self.phone, "--kind", "phone", "--batch", batch)
+        self.intake("plan", batch)
+        bd = os.path.join(self.state, "batches", batch)
+        with open(os.path.join(bd, "scan.json"), "w") as f:
+            json.dump({"DCIM/Camera/20261023_100000.jpg": ["nudity"]}, f)
+        want = next(p["dst"] for p in jload(os.path.join(bd, "plan.json"))
+                    if p["rel"] == "DCIM/Camera/20261024_100000.jpg")
+        # Between plan and apply, something else is filed at that place (another batch, a release) ...
+        save_jpg(pattern(12), want)
+        with open(want + ".xmp", "w") as f:
+            f.write("its own tags")
+        before = self.sha(want)
+        # ... and the flagged file's quarantine place holds a file quarantine.json does not describe yet.
+        qtaken = os.path.join(self.state, "quarantine", batch, "DCIM/Camera/20261023_100000.jpg")
+        self.plant(qtaken, os.path.join(self.phone, "DCIM/Camera/20261024_100000.jpg"))
+        qbefore = self.sha(qtaken)
+        out = self.intake("apply", batch, "--allow-missing-detectors")
+        self.assertEqual(self.sha(want), before, "the file already there is never replaced")
+        self.assertEqual(read(want + ".xmp"), "its own tags")
+        stem, ext = os.path.splitext(want)
+        self.assertTrue(os.path.isfile(stem + "_1" + ext), out)
+        self.assertFalse(os.path.exists(stem + "_1" + ext + ".xmp"))
+        self.assertIn("1 files went to a free name", out)
+        plan = {p["rel"]: p for p in jload(os.path.join(bd, "plan.json"))}
+        self.assertEqual(plan["DCIM/Camera/20261024_100000.jpg"]["dst"], stem + "_1" + ext,
+                         "tag and offload find it where it went")
+        self.assertIn(stem + "_1" + ext, jload(os.path.join(self.state, "index.json")))
+        self.assertEqual(self.sha(qtaken), qbefore, "a quarantined file is never replaced either")
+        self.assertIn("'left in raw (its quarantine place is taken)': 1", out)
+        self.assertTrue(os.path.isfile(os.path.join(bd, "raw", "DCIM/Camera/20261023_100000.jpg")))
+
+    def sha(self, p):
+        with open(p, "rb") as f:
+            return __import__("hashlib").sha256(f.read()).hexdigest()
+
+    def test_erase_prints_sweep_progress_before_its_summary(self):
+        """A long HOME sweep says what it searches and how far it got (counts only), driven here by file count."""
+        batch = "2026-11-13-progress"
+        self.quarantine(batch)
+        for i in range(12):  # enough files that a line every 5 has to come
+            self.plant(self.H(f"Documents/other-{i}.bin"), os.path.join(self.phone, "DCIM/.other/5.jpg"))
+        self.env.update(MEDIA_INTAKE_PROGRESS_EVERY="5", MEDIA_INTAKE_PROGRESS_SECS="inf")
+        out = self.intake("erase", batch, "--yes", "--drive", self.drive, "--no-wipe-free").splitlines()
+        start = out.index("home sweep: searching every file in HOME for copies of 1 erased items "
+                          "(same size, then sha256)")
+        ticks = [i for i, ln in enumerate(out) if re.fullmatch(r"home sweep: [\d,]+ files checked, \d+ copies so far", ln)]
+        summary = next(i for i, ln in enumerate(out) if re.fullmatch(r"home sweep: \d+ more copies deleted", ln))
+        self.assertGreaterEqual(len(ticks), 2, out)
+        self.assertTrue(start < ticks[0] and ticks[-1] < summary, out)
+        self.assertEqual([out[i].split(":")[1].split()[0] for i in ticks[:2]], ["5", "10"], "a line every 5 files")
+        for ln in out:  # progress never names a file
+            if ln.startswith(("home sweep:", "drive sweep:", "verify-gone:", "near-duplicate search:")):
+                self.assertNotIn("/", ln)
+        self.assertIn("drive sweep: searching every file on the drive for copies of 1 erased items (same size, then sha256)",
+                      out)
+        self.assertIn("verify-gone: searching every file in HOME and on the drive for copies of 1 erased items "
+                      "(same size, then sha256)", out)
+
     def test_erase_everywhere(self):
         batch = "2026-11-13-sweep"
         qpath = self.quarantine(batch)

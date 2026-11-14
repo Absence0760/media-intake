@@ -177,6 +177,7 @@ class Sidecars(Base):
         subprocess.run(["exiftool", "-q", "-overwrite_original", "-XMP-lr:HierarchicalSubject+=Owner|keep",
                         kept + ".xmp"], check=True)
         s = intake.sha256(a)
+        kept_sha = intake.sha256(kept)
         os.makedirs(self.state, mode=0o700)
         with open(os.path.join(self.state, "index.json"), "w") as f:
             json.dump({p: {"sha": s, "size": os.path.getsize(a), "dhash": None} for p in (a, copy, kept)}, f)
@@ -186,6 +187,8 @@ class Sidecars(Base):
         self.assertFalse(os.path.exists(a) or os.path.exists(a + ".xmp"))
         self.assertEqual(jload(os.path.join(self.state, "trashed.json")), {s: os.path.getsize(copy)})
         self.assertEqual(self.read(copy), (["Owner|trash"], ["trash"]))
+        self.assertEqual(intake.sha256(copy), s, "Owner|trash goes to the sidecar; the original is never written")
+        self.assertEqual(intake.sha256(kept), kept_sha)
         self.assertEqual(self.read(kept)[0], ["Owner|keep"])  # its own decision stands
         self.assertTrue(os.path.isfile(copy) and os.path.isfile(kept), "only the named path is deleted")
         # the copy is offered for confirmation; the kept one never is
@@ -209,6 +212,7 @@ class Sidecars(Base):
         both = self.photo("both.jpg", 24, ["Review|not-trash", "Owner|not-trash"])
         other = self.photo("other.jpg", 25, ["Label|food"])
         before = self.read(other)
+        shas = {p: intake.sha256(p) for p in (leg, both, other)}
         self.assertEqual(self.suggested(), {})  # unmigrated, the legacy decision is still honoured
         self.assertIn("2 sidecars have the legacy", self.intake("migrate-tags", "--dry-run"))
         self.assertIn("Review|not-trash", self.read(leg)[0])
@@ -218,6 +222,7 @@ class Sidecars(Base):
         self.assertEqual(self.read(both)[0], ["Owner|not-trash"])
         self.assertEqual(self.read(other), before)
         self.assertIn("migrated 0 sidecars", self.intake("migrate-tags"))  # idempotent
+        self.assertEqual({p: intake.sha256(p) for p in shas}, shas, "only sidecars are rewritten, never an original")
         self.assertEqual(self.suggested(), {})  # still kept after the migration
 
     def fake_venv(self, labels):
