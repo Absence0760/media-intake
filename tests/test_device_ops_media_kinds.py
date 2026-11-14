@@ -549,7 +549,8 @@ class GoPro(Base):
         self.staged(b)
         self.apply(b, [self.G + "GX010042.MP4"])
         gio = shutil.which("gio")
-        self.assertTrue(gio, "gio is needed (the CI image has it)")
+        if not gio:
+            self.skipTest("gio missing (the CI image has it)")
         stub = os.path.join(self.tmp, "stub-bin")
         os.makedirs(stub)
         with open(os.path.join(stub, "gio"), "w") as f:  # refuses any .LRV, like a busy or read-only file
