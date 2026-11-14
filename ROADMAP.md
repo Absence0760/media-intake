@@ -83,7 +83,8 @@ The goal: someone else can install it on Fedora, import a phone, and trust it.
 - [ ] **HEVC in the browser:** Firefox/Chromium often can't play HEVC. Make an on-demand
       H.264 proxy (GStreamer GPU decode → x264), cached by sha256 in the private cache
       and cleaned by erase/trash/forget/verify-gone like thumbnails.
-- [ ] Burst groups: show bursts as one stack, pick the best, trash the rest.
+- [x] Burst groups: show bursts as one stack, pick the best, trash the rest (review page;
+      the gallery's stacks wait for a later round).
 - [ ] Albums/events as first-class views (from `Event|` tags), with rename and merge.
 - [ ] Map view without leaking locations: offline vector tiles (or none); never fetch
       tiles for private photos from a third-party server.
