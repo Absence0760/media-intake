@@ -77,7 +77,7 @@ def salt(state):
         try:
             os.link(tmp, p)  # atomic, and never replaces a salt another run just made
         except FileExistsError:
-            pass
+            pass  # another run made the salt first; use theirs (read below)
         finally:
             os.remove(tmp)
         return salt(state)

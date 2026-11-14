@@ -6,7 +6,7 @@ and nothing kills by command line.
   python3 -I -m unittest discover -s tests -p test_cli.py
 """
 import glob, io, json, os, re, shutil, sys, tempfile, unittest
-from unittest import mock
+import unittest.mock as mock
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import support  # noqa: E402,F401  (hermetic config)
@@ -16,7 +16,8 @@ import label  # noqa: E402
 import semantic  # noqa: E402
 import vlm_trash  # noqa: E402
 
-PINS = json.load(open(os.path.join(support.PKG, "pins.json")))
+with open(os.path.join(support.PKG, "pins.json")) as _f:
+    PINS = json.load(_f)
 FILES = PINS["siglip"]["files"]
 VISION, TEXT, TOKENIZER = (label.MODEL, os.path.join(semantic.BUILD, "text_model.onnx"),
                            os.path.join(semantic.BUILD, "tokenizer.json"))

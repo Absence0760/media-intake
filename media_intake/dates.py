@@ -229,7 +229,7 @@ def _pil(path):
             h, mi, s = (float(x) for x in hms)
             m["GPSDateTime"] = f"{day} {int(h):02d}:{int(mi):02d}:{int(s):02d}Z"
         except (TypeError, ValueError):
-            pass
+            pass  # a malformed GPS time: keep the date stamp alone
     return m
 
 
@@ -280,7 +280,7 @@ def read_meta(paths, use_exiftool=None, state=None, gpmf=True):
         try:
             out[p]["mtime"] = os.path.getmtime(p)
         except OSError:
-            pass
+            pass  # the file vanished while being read: no mtime candidate
     return out
 
 
@@ -369,7 +369,7 @@ def _weak(path, meta, local_tz):
                 out.append(_Cand("filename", datetime.datetime(*g[:6]), day_only=len(m.groups()) == 3))
                 break
             except ValueError:
-                pass
+                pass  # digits that aren't a real date: try the next pattern
     m = FOLDER_RX.search(path.replace(os.sep, "/"))
     if m and 1 <= int(m.group(2)) <= 12:
         out.append(_Cand("folder", datetime.datetime(int(m.group(1)), int(m.group(2)), 1)))

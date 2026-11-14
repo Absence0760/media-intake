@@ -188,7 +188,7 @@ class LibraryLockTest(unittest.TestCase):
         os.makedirs(bin_)
         with open(os.path.join(bin_, "exiftool"), "w") as f:
             f.write(EXIFTOOL.replace("{py}", PY).replace("{real!r}", repr(real)))
-        os.chmod(os.path.join(bin_, "exiftool"), 0o755)
+        os.chmod(os.path.join(bin_, "exiftool"), 0o700)
         gate = os.path.join(self.tmp, "exif-gate")
         a = os.path.join(self.lib, "2026/2026-11/a.jpg")
         img(a, (200, 30, 30))

@@ -182,8 +182,8 @@ class ReviewChains(Base):
         os.makedirs(self.Q(f"near-other-{B}"))  # another batch's chain is not this one's
 
     def test_every_level_in_one_review_deepest_first(self):
-        self.assertEqual(self.ui.sub_batches(B), (f"near-near-{B}", f"near-{B}", f"near-near-xcheck-{B}",
-                                                  f"xcheck-{B}", B))
+        self.assertEqual(self.ui.sub_batches(B), [f"near-near-{B}", f"near-{B}", f"near-near-xcheck-{B}",
+                                                  f"xcheck-{B}", B])
         items = self.ui.collect(B)
         self.assertEqual([it["qbatch"] for it in items],
                          [f"near-near-{B}", f"near-{B}", f"near-near-xcheck-{B}", f"xcheck-{B}", B])

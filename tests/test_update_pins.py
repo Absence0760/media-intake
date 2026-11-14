@@ -6,7 +6,7 @@ no downloads, nothing written outside a throwaway dir.
 """
 import datetime, hashlib, importlib.util, io, json, os, shutil, tempfile, unittest
 from contextlib import redirect_stderr, redirect_stdout
-from unittest import mock
+import unittest.mock as mock
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 spec = importlib.util.spec_from_file_location("update_pins", os.path.join(ROOT, "scripts", "update-pins.py"))

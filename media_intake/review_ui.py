@@ -286,8 +286,8 @@ def sub_batches(batch):
     first (erasing any batch can write a fresh near-<it>, so each level runs before the one that feeds it),
     then messaging cross-check copies, then the batch. None (a maybe-trash-only page) has none."""
     if not batch:
-        return ()
-    return (*near_chain(batch), *near_chain(f"xcheck-{batch}"), f"xcheck-{batch}", batch)
+        return []
+    return [*near_chain(batch), *near_chain(f"xcheck-{batch}"), f"xcheck-{batch}", batch]
 
 
 def collect(batch):

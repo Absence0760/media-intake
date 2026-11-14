@@ -277,7 +277,7 @@ class JobsTest(unittest.TestCase):
         jobs.claim("t2").release()
 
     def test_crashed_worker_is_reported_not_running(self):
-        st = self.start("t4", [["block", self.fifo], ["ok", "never"]])
+        self.start("t4", [["block", self.fifo], ["ok", "never"]])
         until(lambda: self.log_has("t4", "started"), "the step to start")
         pid = jobs.status("t4")["pid"]
         os.kill(pid, signal.SIGKILL)  # by PID, never pkill -f

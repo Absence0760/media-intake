@@ -228,7 +228,7 @@ class Sidecars(Base):
             json.dump(labels, fh)
         with open(py, "w") as fh:
             fh.write(f"#!/bin/sh\ncat >/dev/null\ncat '{lj}'\n")
-        os.chmod(py, 0o755)
+        os.chmod(py, 0o700)
 
     def test_retag_never_touches_owner_tags(self):
         mine = ["Owner|keep", "Owner|not-trash", "pasta", "Used|2026-11-14-demo-x", "AI|vlm/m/keep"]
