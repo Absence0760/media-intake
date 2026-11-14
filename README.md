@@ -33,10 +33,19 @@ Fedora Linux first. Python, no service, no account.
   refused when its path differs from another path on the device only by
   letter case (case-insensitive storage may hold them as one file), and
   nothing on a device is ever renamed or moved.
-- The state folder (staging, quarantine, index, erase log, and `jobs/`: each
-  detached job's status, log and lock) is `0700`, and so is `jobs/`, whose
-  files are `0600`; the review page and gallery listen on `127.0.0.1` only,
-  behind a random token.
+- The state folder (staging, quarantine, index, erase log, `jobs/`: each
+  detached job's status, log and lock, `locks/`: the library lock, and
+  `device-salt`) is `0700`. So are `jobs/` and `locks/`, whose files are
+  `0600`; the lock's holder note names the command and its PID, never a file
+  name. `device-salt` is `0600`.
+- **Raw camera serial numbers are never written anywhere** (folder names,
+  tags, plans, logs). A device id is a salted HMAC pseudonym of make, model
+  and serial, keyed by `device-salt`.
+- The review page and gallery listen on `127.0.0.1` only, behind a random
+  token. The gallery can launch the desktop's default app (`xdg-open`, an
+  argument list, no shell) on one library file, for media the browser can't
+  play, and only from its "Open in the system player" button's POST (token,
+  CSRF and Origin checked); a quarantined or flagged file is refused.
 
 ## Install (Fedora)
 
@@ -71,6 +80,7 @@ A phone import, start to finish:
 
 ```sh
 media-intake stage /run/user/$UID/gvfs/mtp:host=.../Internal\ shared\ storage --kind phone --batch phone-1
+                                   # --batch is optional; default <device id>-<YYYYMMDD>
 media-intake plan phone-1 [--event park-race@2026-05-01] [--clock-offset DEVICE=±Nh]
 media-intake scan phone-1          # local detectors; flags only
 media-intake apply phone-1         # file, dedupe, quarantine
@@ -86,6 +96,7 @@ media-intake offload phone-1 --phone <device root> --yes   # after a backup: fre
 | `erase`, `forget`, `verify-gone`, `wipe-free` | Erase everywhere, check, overwrite free space on a drive |
 | `trash`, `suggest-trash`, `not-trash`, `purge-review` | Plain deletes of junk, with suggestions |
 | `tag`, `tag-files`, `mark-used`, `find` | Sidecar tags and searching them |
+| `migrate-tags` | One-shot: rewrite the legacy `Review\|not-trash` tag as `Owner\|not-trash` |
 | `index`, `search`, `similar` | Local semantic search (SigLIP) |
 | `vlm-trash` | Local vision-model second opinion on trash candidates |
 | `gallery` | Local web gallery: browse, keep, trash, erase, tag, rotate |

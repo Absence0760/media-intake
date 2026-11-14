@@ -42,10 +42,14 @@ Tests are stdlib `unittest` in `tests/`, one `test_<area>.py` per area, every on
 | `media_intake/jobs.py` (detached review / gallery jobs) | `tests/test_jobs.py` |
 | `media_intake/library_lock.py`, `intake.py` `LOCKED` / `READ_ONLY` | `tests/test_library_lock.py` |
 | `media_intake/dates.py` (capture dates, `--clock-offset`) | `tests/test_dates.py` |
+| `media_intake/devices.py` (device ids, `device-salt`, GoPro chapters) and `dates.py`'s chapter dating (`chapter_of`) | `tests/test_devices.py` |
+| `media_intake/owner.py`, `migrate-tags`, `Owner\|keep` / `Owner\|not-trash` / `Owner\|trash` (incl. `trashed.json` marking copies) | `tests/test_tag_precedence.py` |
+| Near-duplicate chains (`intake.py` `NEAR_DEPTH`, `near_level`, `near_dups`; `review_ui.py` `collect` / `Runner`; `drive_queue.py` `pending`) | `tests/test_near_chains.py` |
+| Page JavaScript in `gallery.py` or `review_ui.py` (keys, selection, dialogs, video, job progress), `requirements-browser.txt` | `tests/browser/` (real Chromium; run with `PLAYWRIGHT_BROWSERS_PATH=$PWD/.venv-browser/browsers .venv-browser/bin/python -I -m unittest discover -s tests/browser -t tests`, venv set up per `CONTRIBUTING.md` § Tests) |
 | The device-delete gate (`intake.py` `device_targets`, `sources.py` `check_case`) | `tests/test_device_case.py` |
 | `media_intake/cli.py` `doctor` | `tests/test_cli.py` |
 | `media_intake/cli.py`, other subcommands | the area test for the subcommand it wires |
-| `scripts/update-pins.py`, `media_intake/pins.json` | `tests/test_update_pins.py` and `tests/test_cli.py` (the `Pins` guard) |
+| `scripts/update-pins.py`, `media_intake/pins.json`, `requirements*.txt` | `tests/test_update_pins.py` and `tests/test_cli.py` (the `Pins` guard) |
 | `tests/support.py` | every test file that imports it (it's shared) |
 
 What each surface warrants:
