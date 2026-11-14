@@ -41,7 +41,7 @@ The goal: someone else can install it on Fedora, import a phone, and trust it.
       or gallery must run as a detached, resumable job with a status file. Today stopping
       the page does not stop an erase already started, and a second page can show stale
       state. Show progress in the page; refuse a second submit for the same batch.
-- [ ] **Near-duplicate chains:** each erase can surface near-copies of the erased item,
+- [x] **Near-duplicate chains:** each erase can surface near-copies of the erased item,
       then near-copies of those (`near-`, `near-near-`, ...). Bound the depth, merge them
       into one review, and show the matched original whenever it still exists.
 - [x] **Kill by PID, never `pkill -f`/`pgrep -f`:** they match their own shell's command

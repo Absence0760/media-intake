@@ -11,7 +11,8 @@ Pass-throughs to `erase`: `--keep-phone-thumbnails`, `--no-wipe-free`.
 window to keep it out of your history. If the batch has no quarantined or
 review files it prints `nothing to review for BATCH` and exits 0.
 
-- **Quarantine** tab: `quarantine/BATCH` and `quarantine/near-BATCH`, with
+- **Quarantine** tab: `quarantine/BATCH` and every level of its near-copy
+  chain (`near-BATCH`, `near-near-BATCH`, ...; see below), with
   the scanner's labels; Keep (release to the library) or Erase. **Review**
   tab: `batches/BATCH/review` with plan.json's `why`; Keep or Delete. Keys: K
   keep, E (or D) erase/delete, T trash, arrows move. Submit unlocks when every
@@ -19,10 +20,23 @@ review files it prints `nothing to review for BATCH` and exits 0.
 - **Near-duplicates** (in either tab) show their original beside them:
   "Original (kept)" left, "This copy" right, each with resolution, size, date
   and folder (from plan.json's `why`; display only, served by id only from the
-  library roots or this batch's `raw/` or `review/`). A `near-BATCH` item
-  instead says "Near-copy of a photo you erased on <date>" (`erased_on` in its
-  quarantine.json, plus the matched `near_of_sha`); the erased file is never
-  looked for.
+  library roots or this batch's `raw/` or `review/`). A near-copy of an
+  erased photo (any `near-` level) is shown beside the **root original** when
+  one survives: the library photo the erased one was itself a copy of (an
+  xcheck entry's `of`, carried down the chain as `root_of`), same roots check,
+  re-checked at start-up. Otherwise it says "Near-copy of a photo you erased on
+  <date>" (`erased_on` in its quarantine.json, plus the matched
+  `near_of_sha`); the erased file is never looked for and its path is never
+  stored.
+- **Near-copy chains**: erasing `quarantine/X` moves near-copies of what it
+  erased to `near-X`; erasing `near-X` moves theirs to `near-near-X`. One
+  review of `BATCH` shows every level that exists, of `BATCH` and of
+  `xcheck-BATCH`. The chain stops at depth 3 (`NEAR_DEPTH` in intake.py: each
+  level allows 4 dHash bits, so level 3 can be 12 of 64 bits from the photo
+  first erased; past that a match is likelier another picture than a copy).
+  Erasing a level-3 batch moves nothing: the matches stay where they are and
+  erase prints how many. A level that already exists is added to, never
+  replaced.
 - **Messaging copies**: a `quarantine/xcheck-BATCH` folder (quarantine-only,
   no plan or manifest) is shown with `BATCH` too: messaging-app copies of
   library photos, each beside its `of` original. Keep releases to `dst`; its
@@ -40,9 +54,13 @@ review files it prints `nothing to review for BATCH` and exits 0.
   relative paths and decisions) first, then runs: review deletions
   (`purge-review` when all are deleted, else file by file plus its
   freedesktop thumbnail; kept review items stay in `review/`, there is no
-  command to file them yet); then for `near-BATCH`, `xcheck-BATCH`, then
-  `BATCH`: `release` for kept files, `erase --yes` with the devices given,
-  `verify-gone`. A kept file with no library place (it was quarantined from
+  command to file them yet); then for each near- level of `BATCH` (deepest
+  first), each near- level of `xcheck-BATCH` (deepest first), `xcheck-BATCH`,
+  then `BATCH`: `release` for kept files, `erase --yes` with the devices given,
+  `verify-gone`. Deepest first because erasing a level writes the next one
+  down: a near-copy the run itself finds lands in a level already done, is
+  never erased unreviewed, and the log says "N near-duplicates now in
+  quarantine/<level>: review BATCH again to decide them". A kept file with no library place (it was quarantined from
   review) stays put and that batch's erase is skipped. Closing the tab
   without submitting changes nothing (Ctrl-C the server).
 

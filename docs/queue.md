@@ -93,8 +93,8 @@ nohup media-intake queue run --inhibit > ~/.local/share/media-intake/queue-run.l
 
 `offload <name> --yes` runs `media-intake offload <batch> --phone <root>
 --yes` for each finished, not yet offloaded chunk. Refused when any of those
-batches still has files in `quarantine/<batch>` or `quarantine/near-<batch>`,
-when the drive's UUID differs from the one queued, or when the drive now looks
+batches still has files in `quarantine/<batch>` or any level of
+`quarantine/near-<batch>` (`near-near-<batch>`, ...), when the drive's UUID differs from the one queued, or when the drive now looks
 like the backup. `media-intake offload` itself checks the UUID and the backup
 markers again for a drive batch. It deletes only originals whose copy is filed
 in the library (or that `plan` dropped as exact duplicates of library files

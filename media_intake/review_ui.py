@@ -18,8 +18,10 @@ left in <state>/jobs/ (jobs.py redact).
 A near-duplicate is shown beside its original (display only, its own opaque id
 under /o/): the plan's `why` names it, and it is served only if it resolves to
 a file under the library roots or this batch's raw/ or review/. A near-copy of
-an erased photo (quarantine/near-<batch>) gets a note with the erase date; the
-erased file is never looked for. quarantine/xcheck-<batch> (quarantine-only: no
+an erased photo (any level of quarantine/near-<batch>, near-near-<batch>, ...,
+all reviewed on this one page) is shown beside the original its erased photo
+was a copy of when one survives in the library (`root_of`), else gets a note
+with the erase date; the erased file is never looked for. quarantine/xcheck-<batch> (quarantine-only: no
 plan or manifest) holds messaging copies of library photos; each entry's `of`
 is shown as the original, same roots check, and its erase gets no --phone.
 Every item can also be trashed (`intake.py trash`: plain delete for junk that
@@ -29,7 +31,7 @@ library files `suggest-trash` listed (maybe-trash.json): Keep runs `not-trash`.
 On submit (every item decided, ERASE typed) it starts a detached job
 (jobs.py, key review-<batch>; one at a time per batch, taken with flock) that
 runs, as subprocesses of the same Python: deletions of review items, then for
-quarantine/near-<batch> and quarantine/<batch>: `release` for kept files,
+each near- level (deepest first), xcheck-<batch> and <batch>: `release` for kept files,
 `erase --yes` for the rest, `verify-gone`. Closing the page or stopping the
 server never stops it; the page polls the job's status and log, a restarted
 server (or a second one) shows it again, and a worker that died is reported as
@@ -208,10 +210,19 @@ def attach_originals(batch, items):
     origs = []
     for it in items:
         it["orig"], it["meta"] = None, None
-        if it["qbatch"] == f"near-{batch}":
+        if (it["qbatch"] or "").startswith("near-"):  # any level of a near chain: near-, near-near-, ...
             v = load(os.path.join(STATE, "quarantine", it["qbatch"], "quarantine.json"), {}).get(it["rel"], {})
-            it["orig"] = dict(erased=True, date=v.get("erased_on"))
             it["meta"] = meta(it["path"], it["kind"])
+            date = v.get("erased_on") if isinstance(v.get("erased_on"), str) else None
+            root = v.get("root_of")  # the surviving original the erased photo was a copy of, if any
+            if isinstance(root, str) and os.path.isabs(root) and os.path.isfile(root) and original_allowed(batch, root):
+                k, mime = kind_of(root)
+                origs.append(dict(path=root, kind=k, mime=mime))
+                it["orig"] = dict(id=len(origs) - 1, kind=k, meta=meta(root, k),
+                                  label="Near-copy of a photo you erased" + (f" on {date}" if date else "")
+                                  + "; the original it was copied from is still in your library")
+            else:
+                it["orig"] = dict(erased=True, date=date)
             continue
         why = it["why"] or ""
         if it.get("of"):  # xcheck-<batch>: a messaging copy of a library photo
@@ -253,10 +264,30 @@ def attach_originals(batch, items):
     return origs
 
 
+def near_chain(root):
+    """The near-duplicate chain of quarantine/<root> on disk, deepest level first: near-near-<root>, near-<root>.
+    Erasing a level writes the next one down (intake.py near_dups, up to its NEAR_DEPTH), so the deepest goes first."""
+    try:
+        names = os.listdir(os.path.join(STATE, "quarantine"))
+    except FileNotFoundError:
+        return []
+    chain = []
+    for n in names:
+        b, k = n, 0
+        while b.startswith("near-"):
+            b, k = b[len("near-"):], k + 1
+        if k and b == root and os.path.isdir(os.path.join(STATE, "quarantine", n)):
+            chain.append((k, n))
+    return [n for _, n in sorted(chain, reverse=True)]
+
+
 def sub_batches(batch):
-    """Quarantine batches reviewed together, in run order: near-copies of erased photos first
-    (erasing the others can write a fresh near-<batch>), then messaging cross-check copies, then the batch."""
-    return (f"near-{batch}", f"xcheck-{batch}", batch)
+    """Quarantine batches reviewed together, in run order: every level of the near-copy chains first, deepest
+    first (erasing any batch can write a fresh near-<it>, so each level runs before the one that feeds it),
+    then messaging cross-check copies, then the batch. None (a maybe-trash-only page) has none."""
+    if not batch:
+        return ()
+    return (*near_chain(batch), *near_chain(f"xcheck-{batch}"), f"xcheck-{batch}", batch)
 
 
 def collect(batch):
@@ -388,7 +419,8 @@ class Runner:
                 self.log(f"review: deleted {n} of {len(gone)} files ({t} thumbnails)")
             if kept:
                 self.log(f"review: {len(kept)} kept items stay in review/ — no command to file them yet")
-        # 2. Quarantine: near-<batch> first (erasing <batch> can write a fresh near-<batch>).
+        # 2. Quarantine: the near chains deepest first, then xcheck-, then the batch (erasing a batch can
+        # write a fresh near-<it>, which then waits for the next review).
         for qb in sub_batches(self.batch):
             q_items = [(i, it) for i, it in enumerate(self.items) if it["tab"] == "quarantine" and it["qbatch"] == qb]
             if not q_items:
@@ -417,11 +449,12 @@ class Runner:
                 dev = self.device_args(phone=not qb.startswith("xcheck-"))
                 ok &= self.run(["erase", qb, "--yes"] + dev, f"erase {qb}") == 0
                 ok &= self.run(["verify-gone", qb] + self.device_args(verify=True), f"verify-gone {qb}") == 0
-        for qb, again in ((f"near-{self.batch}", self.batch), (f"near-near-{self.batch}", self.batch),
-                          (f"near-xcheck-{self.batch}", f"xcheck-{self.batch}")):
-            q = load(os.path.join(STATE, "quarantine", qb, "quarantine.json"), {})
+        # Near-copies this run's erases found (and any kept file that could not be released): one review of
+        # the batch shows every level of its chains.
+        for qb in sub_batches(self.batch):
+            q = load(os.path.join(STATE, "quarantine", qb, "quarantine.json"), {}) if qb.startswith("near-") else None
             if q:
-                self.log(f"{len(q)} near-duplicates now in quarantine/{qb}: run the review again for {again}")
+                self.log(f"{len(q)} near-duplicates now in quarantine/{qb}: review {self.batch} again to decide them")
         return ok
 
 

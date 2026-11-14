@@ -229,7 +229,15 @@ back from another device or a backup. Anything private goes through `erase`
   by checksum. `erase` takes the dHash of each erased image before deleting it
   and moves any image within 4 bits and with the same orientation to
   `quarantine/near-<batch>`, never deleting it: you look, `release` false
-  matches and erase the rest. It looks only in the media library (library,
+  matches and erase the rest (`media-intake review <batch>` shows every
+  level). Each record keeps the matched image's sha256, the erase date and,
+  when the erased image was a copy of a surviving library original (an xcheck
+  `of`), that original as `root_of`, never the erased file's path. Erasing a
+  near batch can find near-copies again (`near-near-<batch>`); the chain stops
+  at depth 3 (`NEAR_DEPTH`, 12 dHash bits from the first erased photo), past
+  which matches stay where they are and erase prints the count. An existing
+  level is added to, never replaced, and `of`/`root_of` originals are never
+  moved. It looks only in the media library (library,
   videos and project folders, plus batches' `raw/` and `review/`), never in
   caches, app icons, map tiles or git repos, which hold look-alikes that
   aren't your photos. Images under 200 px and featureless hashes are ignored.
