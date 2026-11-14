@@ -87,7 +87,9 @@ a repository (or moved) stops the run with `folder refused now`.
 A folder source has no mount and no UUID. The free-space, duplicate-label and
 overlap checks above apply to it as well. **Offload never deletes its
 originals**: `media-intake queue offload` and `media-intake offload` refuse a
-folder source. The one exception is `erase`: its HOME sweep deletes every copy
+folder source, and so do `erase --phone` and `trash --phone` for a folder batch
+(a folder laid out like a phone would otherwise pass the phone allowlist; the
+batch's kind decides). The one exception is `erase`: its HOME sweep deletes every copy
 of a file you confirmed for erasure, including the original still in the
 source folder ([intake.md](intake.md), "Every copy in HOME"). When every chunk is reviewed, `status` says so; check the
 library, then delete the folder yourself.

@@ -345,6 +345,21 @@ class Queue(unittest.TestCase):
                             src["chunks"]["1"]["batch"], "--phone", f, "--yes"], capture_output=True, text=True)
         self.assertNotEqual(r.returncode, 0)
         self.assertIn("never deletes", r.stderr)
+        # erase --phone and trash --phone reach the same device-delete path: a folder laid out
+        # like a phone must not pass the phone allowlist into deleting its originals.
+        intake_py = os.path.join(HERE, "intake.py")
+        b1 = src["chunks"]["1"]["batch"]
+        one = next(os.path.join(r_, x) for r_, _, fs in os.walk(self.lib) for x in fs if x.endswith(".jpg"))
+        for args in (["erase", b1, "--phone", f, "--yes"], ["trash", "--batch", b1, one, "--phone", f, "--yes"]):
+            r = subprocess.run([sys.executable, "-I", intake_py, *args], capture_output=True, text=True)
+            self.assertNotEqual(r.returncode, 0, args)
+            self.assertIn("never deletes", r.stderr, args)
+        self.assertTrue(os.path.exists(one), "a refused trash trashes nothing")
+        # Without a named batch, the folder batch is simply not a device source.
+        r = subprocess.run([sys.executable, "-I", intake_py, "trash", one, "--phone", f, "--yes"],
+                           capture_output=True, text=True)
+        self.assertEqual(r.returncode, 0, r.stderr)
+        self.assertIn("phone 0", r.stdout)
         self.assertEqual(sorted(os.listdir(os.path.join(f, "2018"))), before, "originals untouched")
 
     def test_folder_refused_roots(self):

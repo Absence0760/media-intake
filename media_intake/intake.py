@@ -918,6 +918,17 @@ class _NoSizeCheck:
 NO_SIZE_CHECK = _NoSizeCheck()
 
 
+def folder_refusal(man):
+    """Why a device delete is refused for a laptop folder batch (kind folder), or None.
+
+    offload, erase --phone and trash --phone all ask this: a folder that happens to be laid
+    out like a phone (DCIM/...) would pass the phone allowlist, so the kind decides."""
+    if (man or {}).get("kind") != "folder":
+        return None
+    return (f"refused: {man.get('root')} is a folder on this laptop; the tool never deletes its originals. "
+            "Check the import, then delete the folder yourself.")
+
+
 def device_targets(root, items, known, check=sources.check, skip_denied=True, hint=""):
     """The device files a command may delete, checked before anything is deleted.
 
@@ -1129,6 +1140,8 @@ def cmd_erase(a):
     q = load(os.path.join(quar, "quarantine.json"), {})
     man = load(os.path.join(bdir(a.batch), "manifest.json"), {"files": {}})
     plan = load(os.path.join(bdir(a.batch), "plan.json"), [])
+    if a.phone and (refusal := folder_refusal(man)):
+        sys.exit(refusal + " (run erase without --phone)")
     if not q:
         sys.exit("quarantine is empty")
     if not a.yes:
@@ -1295,9 +1308,8 @@ def cmd_offload(a):
     """
     b = bdir(a.batch)
     man = load(os.path.join(b, "manifest.json"))
-    if (man or {}).get("kind") == "folder":
-        sys.exit(f"refused: {man.get('root')} is a folder on this laptop; the tool never deletes its originals. "
-                 "Check the import, then delete the folder yourself.")
+    if refusal := folder_refusal(man):
+        sys.exit(refusal)
     plan = {p["rel"]: p for p in load(os.path.join(b, "plan.json"))}
     root = os.path.abspath(a.phone)
     check = sources.check
@@ -1403,6 +1415,10 @@ def trash_files(files, batch=None, phone=None):
     batches = [batch] if batch else sorted(os.path.basename(d) for d in glob.glob(os.path.join(STATE, "batches", "*")))
     mans = {b: load(os.path.join(bdir(b), "manifest.json"), {"files": {}}) or {"files": {}} for b in batches} \
         if root else {}
+    if batch and (refusal := folder_refusal(mans.get(batch))):
+        sys.exit(refusal + " (trash without --phone)")
+    # Without a named batch, a folder batch's originals are never device targets.
+    mans = {b: man for b, man in mans.items() if not folder_refusal(man)}
     refused, todo = [], []
     for f in files:  # every phone delete is checked before anything is trashed
         p = os.path.abspath(f)
