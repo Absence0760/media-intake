@@ -939,7 +939,9 @@ def device_targets(root, items, known, check=sources.check, skip_denied=True, hi
     (check; with skip_denied False that refuses the whole command instead, hint appended).
     Skipped quietly: a file already gone or no longer the staged size. Refused, nothing
     deleted: a file still there with no recorded size, and any target whose path differs
-    only by letter case from another known path or target (sources.check_case). Returns
+    only by letter case from another known path, another target, or any path the device
+    lists right now (sources.live_case_matches, then sources.check_case); a device whose
+    live listing can't be taken refuses too, never falling back on the manifests. Returns
     the paths for device_remove.
     """
     out, unsized = [], []
@@ -967,8 +969,14 @@ def device_targets(root, items, known, check=sources.check, skip_denied=True, hi
                  "these, so they can't be checked against the staged copy:\n"
                  + "\n".join("  " + os.path.relpath(p, root) for p in unsized)
                  + f"\n(under {root}). Stage the batch again.")
+    try:  # the device as it is now, not only as staged: fail closed if it can't be listed
+        live = sources.live_case_matches(root, out)
+    except sources.ListingFailed as e:
+        sys.exit(f"refused: nothing deleted from the device. {e}, so a name that differs only by letter "
+                 "case can't be ruled out. Check the device is still connected and unlocked, then run "
+                 "the command again.")
     try:
-        sources.check_case(out, known)
+        sources.check_case(out, [*known, *live])
     except sources.CaseCollision as e:
         sys.exit("refused: nothing deleted from the device. These paths on it differ only by letter "
                  "case; its storage ignores case, so each group may be one file, and deleting the "

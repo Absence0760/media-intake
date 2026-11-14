@@ -461,9 +461,19 @@ listing over MTP or gphoto2 can show both names; on the device they are one
 file, so deleting the "duplicate" deletes the real one. So the gate refuses
 the whole command, before anything is deleted, when any target's path
 differs only by case (Unicode NFC, then case-folded) from another path in the
-batch manifests (every batch's, for `trash` without a batch), or from another
-target, whether or not the other name is being deleted too. The refusal lists
-each group of colliding paths. Look on the device itself, rename or delete by
+batch manifests (every batch's, for `trash` without a batch), from another
+target, or from anything the device lists right now, whether or not the other
+name is being deleted too. The manifests only know what was there at staging,
+so the gate also takes the device's live listing at delete time
+(`sources.live_case_matches`): for each target it lists the folders on the way
+down from the `--phone` root and follows every name that matches
+case-insensitively, so a file copied onto the device after staging, one the
+manifest never recorded (outside the allowlist, in a hidden folder), or a
+case twin of a folder above the target, blocks the delete just the same. If
+that listing can't be taken (the device was unplugged or locked, a folder
+can't be read) or doesn't show a target at all, the whole command is refused
+before anything is deleted; it never falls back on the manifests alone. The
+refusal lists each group of colliding paths. Look on the device itself, rename or delete by
 hand, then stage the batch again. A collision inside the thumbnail folders
 refuses `erase` too; `--keep-phone-thumbnails` skips them.
 - **What erase can't reach**, and doesn't list: cloud photo services, chat
@@ -749,7 +759,7 @@ Rejected:
 `python3 -I -m unittest discover -s tests` (synthetic media, a throwaway HOME,
 a hermetic config), or one module: `python3 -I -m unittest discover -s tests -p test_intake.py`
 (also `test_dates`, `test_devices`, `test_sources`, `test_tagging`, `test_config`, and `test_device_case`: offload,
-erase and trash on fake MTP, gphoto2 and drive trees with case-only collisions; `test_device_ops_media_kinds`:
+erase and trash on fake MTP, gphoto2 and drive trees with case-only collisions, in the manifests or only in the live listing, and a listing that fails; `test_device_ops_media_kinds`:
 stage, plan, apply, erase, offload and verify-gone with photos, videos and a mix from a phone, a GoPro card,
 a drive, a laptop folder and the drive queue; `test_library_lock`: the
 CLI, a gallery write and a job contending for the library lock; `test_library_ops_media_kinds`: every

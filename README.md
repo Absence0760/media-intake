@@ -32,7 +32,8 @@ Fedora Linux first. Python, no service, no account.
   (a laptop folder source is never offloaded: you delete it yourself),
   and only files with a verified copy in the library. A device delete is
   refused when its path differs from another path on the device only by
-  letter case (case-insensitive storage may hold them as one file), and
+  letter case (case-insensitive storage may hold them as one file; checked
+  against the device's live listing, and refused if it can't be listed), and
   nothing on a device is ever renamed or moved. Erasing a GoPro chapter
   from the card also removes its `.LRV`/`.THM` previews (unstaged copies of
   the same footage), behind the same `--yes` and path checks.
