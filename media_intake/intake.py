@@ -10,7 +10,7 @@ Run as `media-intake <command>` (cli.py); `python3 -I media_intake/intake.py` wo
   media-intake quarantine BATCH                  (counts + the folder to open)
   media-intake release BATCH FILE...             (false positive -> library)
   media-intake erase   BATCH [--phone ROOT [--keep-phone-thumbnails]] [--drive MOUNT [--no-wipe-free]]
-  media-intake forget  LIBRARY_FILE... [--drive MOUNT]   (later finds)
+  media-intake forget  LIBRARY_FILE... [--drive MOUNT] [--yes]  (later finds; asks before anything moves)
   media-intake verify-gone [BATCH] [--drive MOUNT]  (read-only sweep; exit 1 if a copy remains)
   media-intake wipe-free MOUNT                   (zero a backup drive's free space)
   media-intake purge-review BATCH                (empty the review folder)
@@ -216,11 +216,10 @@ def category(rel, kind):
     app = sources.extra_app(rel)
     if app:
         return f"messaging:{app}"
+    if p[0] in ("DCIM", "Pictures") and sub == "Screenshots":  # Pixel and stock Android use Pictures/
+        return "screenrec" if ext in VID else "screenshot"  # some phones save screen recordings there too
     if p[0] == "DCIM":
-        return {"Screenshots": "screenshot", "Videocaptures": "screenrec",
-                "Screen recordings": "screenrec"}.get(sub, "video" if ext in VID else "photo")
-    if p[0] == "Pictures" and sub == "Screenshots":  # Pixel and stock Android
-        return "screenshot"
+        return {"Videocaptures": "screenrec", "Screen recordings": "screenrec"}.get(sub, "video" if ext in VID else "photo")
     if p[0] == "Pictures" and sub:
         return f"messaging:{sub}"
     return "photo"
@@ -336,6 +335,7 @@ def cmd_plan(a):
                          cat=category(rel, kind), dhash=dh, w=w, h=h, ext=ext))
 
     pref = {"photo": 5, "video": 5, "gopro": 5, "screenshot": 3, "screenrec": 3}
+    CAMERA = ("photo", "gopro")  # camera originals: one is never a near-duplicate of another
     def rank(r):
         return (pref.get(r["cat"], 1), "/Restored/" not in r["rel"], r["w"] * r["h"], r["size"])
 
@@ -362,13 +362,13 @@ def cmd_plan(a):
         for y in imgs[i + 1:]:
             if y["rel"] in action or bin(x["dhash"] ^ y["dhash"]).count("1") > 2:
                 continue
-            if (x["w"] >= x["h"]) != (y["w"] >= y["h"]) or (x["cat"] == y["cat"] == "photo"):
-                continue  # burst shots in the camera roll are never merged
+            if (x["w"] >= x["h"]) != (y["w"] >= y["h"]) or (x["cat"] in CAMERA and y["cat"] in CAMERA):
+                continue  # burst shots and time-lapse frames (phone or GoPro) are never merged
             keep, drop = (x, y) if rank(x) >= rank(y) else (y, x)
             action[drop["rel"]] = ("review", f"near-duplicate of {keep['rel']}")
             if drop is x:
                 break
-        if x["rel"] not in action and x["cat"] != "photo":
+        if x["rel"] not in action and x["cat"] not in CAMERA:
             for k, v in lib_imgs:
                 if bin(x["dhash"] ^ v["dhash"]).count("1") <= 2:
                     action[x["rel"]] = ("review", f"near-duplicate of library {k}")
@@ -1177,6 +1177,13 @@ def cmd_erase(a):
     pthumb_items = phone_thumbnail_items(root) if do_pthumbs else []
     known = [m["src"] for m in man["files"].values() if m.get("src")] + [p for p, _ in pthumb_items]
     phone_todo = device_targets(root, phone_items, known) if root else []
+    # A GoPro's .LRV (a low-resolution copy) and .THM beside an erased chapter hold the same footage. Only
+    # beside a chapter the gate passed: one skipped (size changed, denied, gone) keeps its previews too.
+    prev_items = [(os.path.join(os.path.dirname(src), n), NO_SIZE_CHECK)
+                  for src in phone_todo for n in devices.previews(os.path.basename(src))]
+    listed = {os.path.join(d, n) for d in {os.path.dirname(p) for p, _ in prev_items} if os.path.isdir(d)
+              for n in os.listdir(d)}  # never staged, so not in the manifest: the folder's own listing
+    prev_todo = device_targets(root, prev_items, known + sorted(listed), sources.check_preview) if root else []
     # Anything unexpected in a thumbnail folder (a symlink, a path resolving elsewhere) refuses erase:
     # the yes was given for folders of thumbnails, so a folder that isn't one is for you to look at.
     pthumb_todo = device_targets(root, pthumb_items, known, phone_thumbnail_check, skip_denied=False,
@@ -1194,10 +1201,11 @@ def cmd_erase(a):
         if q[rel]["sha"] in shas:
             thumbs += gallery_thumb_forget(q[rel]["sha"])
     if root:
-        for src, _ in phone_items:
+        for src, _ in phone_items + prev_items:
             thumbs += thumb_forget(src)
             gone.add(src)
     phone = len(device_remove(phone_todo))
+    previews = len(device_remove(prev_todo))
     pthumbs, prefused = phone_thumbnails(pthumb_todo)
     # Identical copies already in the library (filed by an earlier batch) are the
     # same picture: erase them too.
@@ -1247,6 +1255,8 @@ def cmd_erase(a):
         print(f"{len(in_git)} exact copies inside git repos, not deleted: " + ", ".join(in_git))
     if orphans:
         print(f"orphan sidecars deleted (.xmp left by a deleted file): {sum(orphans.values())}")
+    if previews:
+        print(f"camera previews removed: {previews} (.LRV/.THM beside the erased videos)")
     if do_pthumbs:
         print(f"phone thumbnail folders removed ({pthumbs} files; Android rebuilds them)"
               + (f"; {prefused} the phone refused to delete (held open by Android's media service)" if prefused else ""))
@@ -1274,13 +1284,28 @@ def cmd_erase(a):
 
 
 def cmd_forget(a):
-    """A sensitive file found later in the library: same erase path as intake."""
+    """A sensitive file found later in the library: same erase path as intake.
+
+    Every file is checked, and the yes given, before anything moves: a missing file or a "no" leaves
+    every file, sidecar and index entry where it was (nothing half-forgotten in quarantine)."""
+    files = list(dict.fromkeys(os.path.abspath(f) for f in a.files))
+    bad = [f for f in files if os.path.islink(f) or not os.path.isfile(f)]
+    if bad:
+        sys.exit(f"not forgetting anything: {len(bad)} of {len(files)} are missing or not regular files")
+    if not a.yes:
+        try:
+            ans = input(f"Erase {len(files)} files everywhere for good{' and from the drive' if a.drive else ''}? "
+                        "Type ERASE: ")
+        except EOFError:
+            ans = ""
+        if ans.strip() != "ERASE":
+            sys.exit("nothing erased")
+        a.yes = True
     batch = datetime.datetime.now().strftime("forget-%Y%m%d-%H%M%S")
     quar = private_dir(os.path.join(private_dir(os.path.join(STATE, "quarantine")), batch))
     index = load(os.path.join(STATE, "index.json"), {})
     q = load(os.path.join(quar, "quarantine.json"), {}) or {}  # a forget in the same second adds to it
-    for f in a.files:
-        f = os.path.abspath(f)
+    for f in files:
         stem, ext = os.path.splitext(os.path.basename(f))
         rel, i = stem + ext, 1
         while rel in q or os.path.lexists(os.path.join(quar, rel)):  # same name from two library folders
@@ -1339,6 +1364,8 @@ def cmd_offload(a):
 
 
 def cmd_purge_review(a):
+    if not BATCH_NAME.match(a.batch):  # a batch name, never a path: rmtree stays under batches/<batch>/review
+        sys.exit(f"purge-review {a.batch!r}: not a batch name (letters, digits, '.', '_' and '-' only)")
     rv = os.path.join(bdir(a.batch), "review")
     n = sum(len(fs) for _, _, fs in os.walk(rv))
     for r, _, fs in os.walk(rv):
@@ -1979,15 +2006,40 @@ def cmd_find(a):
 
 
 # ---------------------------------------------------------------- share copy
+def share_copy_refusal(files, out):
+    """Why share-copy must not run (None if it may): every check is made before any copy, so a refusal
+    writes nothing. A copy never lands in a library root or the state folder (it would be taken for a
+    library file, and could replace an original of the same name there), never on a source file, and two
+    sources never share one name in --out (the second would replace the first one's copy)."""
+    real = os.path.realpath(out)
+    for r in LIB_ROOTS + [STATE]:
+        rr = os.path.realpath(r)
+        if real == rr or real.startswith(rr + os.sep):
+            return f"not copying: --out {out} is inside the library or the state folder"
+    missing = [f for f in files if not os.path.isfile(f)]
+    if missing:
+        return f"not copying: {len(missing)} files are missing"
+    names = [os.path.basename(f) for f in files]
+    if len(set(names)) != len(names):
+        return "not copying: two of these have the same file name; share them one at a time"
+    if any(os.path.realpath(os.path.join(out, n)) == os.path.realpath(f) for f, n in zip(files, names)):
+        return f"not copying: --out {out} holds a source file itself; pick another folder"
+    return None
+
+
 def cmd_share_copy(a):
+    if refusal := share_copy_refusal(a.files, a.out):
+        sys.exit(refusal)
     os.makedirs(a.out, exist_ok=True)
     for f in a.files:
         dst = os.path.join(a.out, os.path.basename(f))
         ext = os.path.splitext(f)[1].lower()
         if ext in VID:
-            # Drop every data stream (GoPro GPMF GPS track) and all metadata.
-            subprocess.run(["ffmpeg", "-v", "error", "-y", "-i", f, "-map", "0:v", "-map", "0:a?", "-c", "copy",
-                            "-map_metadata", "-1", "-map_chapters", "-1", dst], check=True)
+            # Drop every data stream (GoPro GPMF GPS track), attached pictures (cover art: a JPEG with its
+            # own EXIF; 0:V, not 0:v) and all metadata.
+            # file: so a name with a colon (a:b.mp4) is never read as an ffmpeg protocol.
+            subprocess.run(["ffmpeg", "-v", "error", "-y", "-i", "file:" + f, "-map", "0:V", "-map", "0:a?",
+                            "-c", "copy", "-map_metadata", "-1", "-map_chapters", "-1", "file:" + dst], check=True)
         elif shutil.which("exiftool"):
             if os.path.exists(dst):
                 os.remove(dst)  # exiftool -o refuses to overwrite

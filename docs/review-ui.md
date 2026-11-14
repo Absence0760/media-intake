@@ -40,7 +40,8 @@ review files it prints `nothing to review for BATCH` and exits 0.
   replaced.
 - **Messaging copies**: a `quarantine/xcheck-BATCH` folder (quarantine-only,
   no plan or manifest) is shown with `BATCH` too: messaging-app copies of
-  library photos, each beside its `of` original. Keep releases to `dst`; its
+  library photos and videos, each beside its `of` original ("WhatsApp/Messages
+  copy of this photo", or "... video"). Keep releases to `dst`; its
   erase runs without `--phone` (the device originals are already offloaded)
   and never moves an `of` original to near-quarantine.
 - **Trash** (T) on every item: `media-intake trash` (plain delete for junk
@@ -154,7 +155,10 @@ HttpOnly cookie after the first load), a Host check (DNS rebinding), a CSRF
 header and an Origin check on POST, `no-store` and a strict CSP on every
 response. Media are served by opaque id from the files themselves (no
 thumbnails written), with Range for video seeking. HEIC/DNG show "no
-preview"; open those in your file manager.
+preview"; open those in your file manager. A card whose file the browser can't
+decode says so instead of an empty box: a picture it can't show, or a video it
+can't play, including one whose sound plays but whose picture doesn't (an
+iPhone HEVC `.mov` in Chromium); open those in your file manager too.
 
 An AI assistant may start the server for you but must never open the page or
 its media.
@@ -168,12 +172,22 @@ mid-run). The job module itself: `python3 -I -m unittest discover -s tests -p
 test_jobs.py`. Burst grouping: `python3 -I -m unittest discover -s tests -p
 test_bursts.py`.
 
+Every decision on a photo, a video and a mix of both, run by the real
+`intake.py` (no fake) in a throwaway HOME and checked by what is left on disk:
+`python3 -I -m unittest discover -s tests -p test_review_media_kinds.py`. Keep
+releases the file with its sidecar and sha256 unchanged, Erase removes it and
+its copies, index entries and thumbnails, Trash records its sha256, and a
+burst's kept shot survives the erase's near-duplicate search; Maybe trash Keep
+needs exiftool and skips without it.
+
 In headless Chromium (`tests/browser/test_browser_review.py`, see
 CONTRIBUTING.md, Tests): the keys and arrows, Submit unlocking, the ERASE
 panel, a card's video seeking by Range, and the run's progress and re-attach
-after a reload.
+after a reload. `tests/browser/test_browser_review_media_kinds.py`: burst
+stacks (K on a closed stack, X, "Keep this one" in Quarantine and Review) with
+a video beside each that is never stacked, the cards for files the browser
+can't decode, and a messaging copy of a video beside its original.
 
 Not verified: the crash message in a real browser (the HTTP tests cover the
-crash itself), burst stacks in a real browser (opening, X, keep-one; the HTTP
-tests cover the grouping, the page code being served and the submit it leads
-to), layout, and any browser but Chromium.
+crash itself), a real HEVC file (the test stands in a file with sound and no
+picture), layout, and any browser but Chromium.

@@ -116,12 +116,19 @@ folders. **Similar** on any item runs `semantic.py similar`. Both need
 
 ## Actions (one item, or a selection)
 
-Tick the box on a tile (shift-click a second box selects the range between;
-Space on a focused tile ticks it), then the bottom bar's buttons or keys:
+Tick the box on a tile (shift-click a second box selects the range between,
+in the grid as it is now: after the grid reloads, for another view or filter,
+a shift-click starts a new selection; Ctrl-click on a tile ticks or unticks
+it; Space on a focused tile ticks it), then the bottom bar's buttons or keys:
 **K** Keep, **T** Trash, **E** Erase, **+ tag** / **− tag**, **Set event…**,
 **Rotate ⟳**, **Share-safe copy**; Esc or **Clear selection** clears it. Each
-applies to every selected item through the same endpoint as one item (one
-unknown or removed id refuses the whole request). In the large view the keys
+applies to every selected item through the same endpoint as one item, photos
+and videos alike (one unknown or removed id refuses the whole request, and so
+does a file deleted since the gallery scanned, by a CLI `trash` say: 400,
+nothing written, so no sidecar is made for a file that is gone, and it leaves
+the grid). The replies to Keep, my tags, Rotate and Set event carry the
+items' new grid summaries (`"items"`), so the tiles' flags ("kept", ...)
+change at once; the selection stays for the next action. In the large view the keys
 act on the item shown; **R** / **Shift+R** rotate, and its buttons include Set
 event and Share-safe copy.
 
@@ -232,6 +239,8 @@ the sidecar baked in), ffmpeg for a video frame at 1 s (falling back to
 are copies of photo content, so `trash`, `forget` and `erase` delete them by
 sha256, and `verify-gone` reports one that is still there as STILL PRESENT.
 Previews of formats a browser can't show are made in memory, never on disk.
+Rotate drops the item's thumbnail and the next request makes it again, turned
+(a video's frame too: the page turns the player itself).
 Safe to delete the whole folder at any time; it rebuilds.
 
 ## Security
@@ -274,6 +283,20 @@ refused without the token, with a wrong CSRF value, another Origin or Host
 share-safe copy (Pillow's re-encode when exiftool is missing) into its own
 0700 folder, with its refusals.
 
+`tests/test_gallery_media_kinds.py` runs every operation on a photo, a video and
+a mixed selection (JPEG, PNG, H.264 in .mp4 and an upper-case .MOV): the
+listing, kind filter and counts, item detail, media with Range, the photo-only
+preview, thumbnails, Keep, my tags, Rotate, events (set, rename, merge, clear),
+Trash and Erase (the real `intake.py`), Trash suggestions' Apply both ways,
+Share-safe copy (the copies' title and GPS gone, the video a stream copy),
+Open in the system player, and the refusal of a selection holding a file
+deleted since the scan. `tests/browser/test_browser_gallery_media_kinds.py`
+does it on the page: a mixed selection by Space, a shift-click range and
+Ctrl-click, Keep by K and by the bar (sidecars and the tiles' "kept" flags),
+a shift-click after the grid reloads, + tag / − tag, Set event, Rotate (the
+thumbnails made again turned) and Trash on a mixed selection, and the large
+view playing an .mp4 and a .MOV and rotating a video.
+
 In headless Chromium (`tests/browser/test_browser_gallery.py`, see
 CONTRIBUTING.md, Tests): keys, click and shift-click selection, the bottom
 selection bar appearing only while something is selected, a sidebar quick
@@ -294,6 +317,6 @@ selection and a Share-safe copy ending in "Done: share-safe copies in ...".
 - Semantic search and Similar through the venv: tested only as "unavailable,
   falls back", not with the real model.
 - Start-up time on a large real library read from disk.
-- Share-safe copy of videos, HEIC and DNG from the gallery (share-copy's own
-  test covers a video; the gallery tests copy JPEGs), and Rename / Merge on a
-  real digiKam-written library.
+- Share-safe copy of HEIC and DNG from the gallery (the gallery tests copy
+  JPEGs, an .mp4 and a .MOV), any operation on an HEVC video (no HEVC test
+  fixture), and Rename / Merge on a real digiKam-written library.

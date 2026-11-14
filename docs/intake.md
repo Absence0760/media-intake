@@ -16,7 +16,8 @@ default; all of them come from `~/.config/media-intake/config.toml`
   `~/Videos/personal/<YYYY>/<YYYY-MM>/` (a dedicated camera's files in a
   `<device id>/` folder there, see "Devices" below), screenshots to
   `~/Pictures/library/Screenshots/<YYYY>/`, screen recordings to
-  `~/Videos/personal/Screen recordings/<YYYY>/`, messaging-app media to
+  `~/Videos/personal/Screen recordings/<YYYY>/` (a video in a phone's
+  `Screenshots/` folder is one too), messaging-app media to
   `~/Pictures/library/Messaging/<app>/<YYYY>/`. An event routed to a configured
   project goes to `<project folder>/<date>-<slug>/{phone,gopro}/` (see
   "Events" below). Original file names are kept: GoPro chapters (`GX01xxxx`,
@@ -52,11 +53,11 @@ media-intake apply BATCH                # moves files; prints a summary
 media-intake quarantine BATCH           # counts + the folder to open
 media-intake release BATCH FILE...      # false positive -> library
 media-intake erase BATCH [--phone ROOT [--keep-phone-thumbnails]] [--drive MOUNT [--no-wipe-free]]
-media-intake forget LIBRARY_FILE... [--drive MOUNT]
+media-intake forget LIBRARY_FILE... [--drive MOUNT] [--yes]   # asks (type ERASE) before anything moves
 media-intake verify-gone [BATCH] [--drive MOUNT]
 media-intake wipe-free MOUNT
 media-intake offload BATCH --phone ROOT [--yes]   # refused for a --kind folder batch
-media-intake purge-review BATCH
+media-intake purge-review BATCH        # a batch name, never a path
 media-intake trash [BATCH] FILE... [--phone ROOT]
 media-intake trash --from-digikam [--yes]
 media-intake suggest-trash [--batch B] [--phone ROOT]
@@ -122,7 +123,15 @@ run and a CLI `apply` never interleave (`media_intake/library_lock.py`):
 `share-copy` writes copies with no GPS or metadata, for sending or posting:
 exiftool `-all=` for images (orientation and ICC profile kept), an ffmpeg
 stream copy without data streams or metadata for videos. exiftool cannot write
-GoPro GPMF tags, so the GPS track is removed by dropping the stream.
+GoPro GPMF tags, so the GPS track is removed by dropping the stream; a video's
+attached picture (cover art, a JPEG with its own EXIF) and subtitle streams
+are dropped too, so a copy holds only its video and audio streams. It checks
+everything before copying anything, and refuses (writing nothing) when `--out`
+is inside a library root or the state folder (the gallery's Share-safe copy
+has the same rule: a copy there would be taken for a library file, and could
+replace an original of the same name), when a copy would land on its own
+source, when two files share a name (the second copy would replace the
+first), or when a file is missing. Sidecars never go with a copy.
 
 ## Dates
 
@@ -282,8 +291,8 @@ cameras of one model share a folder, as above.
 - **Near**: a 64-bit dHash on Pillow (EXIF-rotated, 9x8 grey). Images within
   2 bits of another in the batch, with the same orientation, go to the batch's
   `review/` folder with `why` naming the one kept, so you glance before
-  anything is deleted. Two camera photos are never merged (burst shots look
-  alike). A screenshot or messaging copy is also checked against the library
+  anything is deleted. Two camera photos (phone or GoPro) are never merged
+  (burst shots and time-lapse frames look alike). A screenshot or messaging copy is also checked against the library
   index and goes to review when it is near a library image.
 - Images under 200 px and empty files go to review as junk.
 - `index.json` in the state folder keeps sha256 and dHash of everything in
@@ -313,6 +322,12 @@ marks any later copy "delete" with why "trashed before", so it never comes
 back from another device or a backup. Anything private goes through `erase`
 (or `forget` for files already in the library). The review page offers Trash
 (T) on every item.
+
+`forget FILE...` checks every file first: one missing (or a symlink, or not a
+regular file) refuses the whole command, and without `--yes` it asks (type
+ERASE) before anything moves. A refusal or a "no" leaves every file, sidecar
+and `index.json` entry where it was; nothing is left half-forgotten in
+quarantine. A file named twice is forgotten once.
 
 ## Erasing, and what it can't reach
 
@@ -409,14 +424,22 @@ back from another device or a backup. Anything private goes through `erase`
   path, **refuses the whole erase** before anything is deleted, naming the
   path. Your yes covered folders of thumbnails, so one that holds something
   else is for you to look at on the phone, not for erase to work around.
+- **GoPro card.** Beside each chapter a GoPro writes a low-resolution copy
+  (`GL010042.LRV` for `GX010042.MP4`; `GOPR0042.LRV` for `GOPR0042.MP4`) and
+  a thumbnail (`GX010042.THM`). `stage` never copies them, so they are not in
+  the batch, but they hold the same footage: `erase --phone` deletes the
+  previews of each chapter it deletes (one it skips, say because its size
+  changed, keeps them) by name, from the same folder, through the same gate (`sources.check_preview`: allowlisted folders, `.LRV`/`.THM` only,
+  never a symlink), and prints `camera previews removed: N`. Other chapters'
+  previews stay; `offload` leaves previews on the card.
 
 ## Device deletes and case-insensitive storage
 
-Every delete on a phone, camera or source drive (`erase --phone` originals and
-phone thumbnails, `offload`, `trash --phone`, the gallery's and review page's
-versions of those, which run the same commands) goes through one gate in
-`intake.py`: `device_targets` checks every path first, then `device_remove`
-runs `gio remove`. It is the only place media-intake changes a device, and it
+Every delete on a phone, camera or source drive (`erase --phone` originals, a
+GoPro's previews of them and phone thumbnails, `offload`, `trash --phone`, the
+gallery's and review page's versions of those, which run the same commands)
+goes through one gate in `intake.py`: `device_targets` checks every path
+first, then `device_remove` runs `gio remove`. It is the only place media-intake changes a device, and it
 never renames or moves a file there. `release`, `forget` and the HOME/drive
 sweep never touch a phone; the sweep and `erase --drive` delete only files
 they have just hashed as an erased item, so the name they delete is the
@@ -711,15 +734,24 @@ Rejected:
   (lower-casing and punctuation handling were reimplemented).
 - HEVC videos: Fedora's `ffmpeg-free` can't decode them, so `scan` labels such
   videos `unscanned-video` for you to check (a GStreamer hardware decoder is
-  used for frames where available; `media-intake doctor` reports it).
-  Likewise a barcode decoder error on a readable image gives
-  `unscanned-barcode` rather than no flag: "not checked" is never "clean".
+  used for frames where available; `media-intake doctor` reports it). An
+  empty, truncated or audio-only video, or a decoder that is missing or hangs,
+  gets the same label. "Not checked" is never "clean", so these go to
+  quarantine too: a barcode decoder error on a readable image gives
+  `unscanned-barcode`, a NudeNet error on a photo or any frame of a video
+  `unscanned-nudity`, a staged kind no detector reads `unscanned-type`, and a
+  check that crashes on one file `unscanned-error` (the rest of the batch is
+  still scanned and `scan.json` still written). GoPro `.gpr` raw files are
+  read through Pillow; one it can't open is `unreadable`.
 
 ## Tests
 
 `python3 -I -m unittest discover -s tests` (synthetic media, a throwaway HOME,
 a hermetic config), or one module: `python3 -I -m unittest discover -s tests -p test_intake.py`
 (also `test_dates`, `test_devices`, `test_sources`, `test_tagging`, `test_config`, and `test_device_case`: offload,
-erase and trash on fake MTP, gphoto2 and drive trees with case-only collisions; `test_library_lock`: the
-CLI, a gallery write and a job contending for the library lock; `test_offline_guard`). Run long jobs under your
+erase and trash on fake MTP, gphoto2 and drive trees with case-only collisions; `test_device_ops_media_kinds`:
+stage, plan, apply, erase, offload and verify-gone with photos, videos and a mix from a phone, a GoPro card,
+a drive, a laptop folder and the drive queue; `test_library_lock`: the
+CLI, a gallery write and a job contending for the library lock; `test_library_ops_media_kinds`: every
+library-side command on a photo, an mp4 and a .mov, alone and mixed; `test_offline_guard`). Run long jobs under your
 own memory cap if you like.
