@@ -84,3 +84,31 @@ script's output in the PR body. A pin bump is its own PR, model-tested
   `main` before a release.
 - When a test fails, fix the test if it is wrong, or the code if it is; never
   loosen an assertion or add a sleep to make it pass.
+- Real-browser tests (`tests/browser/`, Playwright + headless Chromium) drive
+  the gallery and the review page: keys, selection, the confirm dialogs (ERASE
+  typed), lightbox video autoplay, Range seeking, and the detached job's
+  progress, including re-attaching after a reload. They skip with a reason
+  when Playwright or its Chromium is missing, so the commands above are
+  unaffected; the `browser` job in `ci.yml` runs them (and fails, not skips,
+  through `MEDIA_INTAKE_BROWSER_REQUIRED=1`). Locally, once:
+
+  ```sh
+  python3 -m venv --system-site-packages .venv-browser   # gitignored; reuses the system Pillow
+  .venv-browser/bin/pip install --require-hashes --no-deps -r requirements-browser.txt
+  PLAYWRIGHT_BROWSERS_PATH=$PWD/.venv-browser/browsers .venv-browser/bin/python -m playwright install --only-shell chromium
+  ```
+
+  Then run them (one file with `-p test_browser_gallery.py`):
+
+  ```sh
+  PLAYWRIGHT_BROWSERS_PATH=$PWD/.venv-browser/browsers .venv-browser/bin/python -I -m unittest discover -s tests/browser -t tests
+  ```
+
+  The browser comes only from that explicit install, never at import; it is
+  the build the pinned Playwright names. The video tests make a 30 s H.264
+  test pattern with ffmpeg (`libx264` or `libopenh264`) and skip without one.
+  Tests wait on real signals (`data-ready`, `data-job`, media events), never a
+  sleep; the hooks each file relies on are listed in its docstring. Bump
+  `requirements-browser.txt` like the other pins (7 days old, hashes), with
+  `uv pip compile --generate-hashes --exclude-newer <cutoff>`; it is not yet
+  in `scripts/update-pins.py`.

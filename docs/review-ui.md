@@ -116,6 +116,10 @@ runs; its erase can wait on a FIFO so the tests kill the server or the worker
 mid-run). The job module itself: `python3 -I -m unittest discover -s tests -p
 test_jobs.py`.
 
-Not verified: the page's progress, attach and crash messages in a real
-browser (the tests drive the HTTP API; the inline script is checked with
-`node --check`).
+In headless Chromium (`tests/browser/test_browser_review.py`, see
+CONTRIBUTING.md, Tests): the keys and arrows, Submit unlocking, the ERASE
+panel, a card's video seeking by Range, and the run's progress and re-attach
+after a reload.
+
+Not verified: the crash message in a real browser (the HTTP tests cover the
+crash itself), layout, and any browser but Chromium.

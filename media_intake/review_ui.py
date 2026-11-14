@@ -895,7 +895,7 @@ function render(){
  const its=itemsOf(tab);
  if(!its.length)L.append(el("p","help","Nothing here."));
  its.forEach((it,n)=>{
-  const c=el("div","card");c.id="c"+it.id;c.dataset.n=n;
+  const c=el("div","card");c.id="c"+it.id;c.dataset.n=n;c.dataset.item=it.rel;
   const m=mediaEl(it.kind,"/m/"+it.id,it.rel),o=it.orig;
   if(o&&o.label)c.append(el("div","note",o.label));
   if(o&&o.meta){const p=el("div","pair");
@@ -918,7 +918,7 @@ function render(){
 function paint(scroll){
  itemsOf(tab).forEach((it,n)=>{const c=$("#c"+it.id);if(!c)return;
   const d=dec[it.id],e=c.querySelector(".e");
-  c.classList.toggle("focus",n===cur[tab]);c.classList.toggle("keep",d==="keep");c.classList.toggle("erase",d==="erase"||d==="delete");c.classList.toggle("trash",d==="trash");
+  c.classList.toggle("focus",n===cur[tab]);c.setAttribute("aria-current",n===cur[tab]);c.classList.toggle("keep",d==="keep");c.classList.toggle("erase",d==="erase"||d==="delete");c.classList.toggle("trash",d==="trash");
   c.querySelector(".k").setAttribute("aria-pressed",d==="keep");if(e)e.setAttribute("aria-pressed",d==="erase"||d==="delete");c.querySelector(".t").setAttribute("aria-pressed",d==="trash");
   if(scroll&&n===cur[tab])c.scrollIntoView({block:"center",behavior:"smooth"});});
  const left=data.items.filter(i=>!dec[i.id]).length,und=t=>itemsOf(t).filter(i=>!dec[i.id]).length;
@@ -967,7 +967,7 @@ async function poll(since){
  let j;try{j=await (await fetch("/api/progress?since="+since,{credentials:"same-origin"})).json()}
  catch(e){$("#runh").textContent="Page server stopped";$("#runs").textContent="If the run had not finished it keeps going on its own; run the same review command again to watch it.";return}
  if(j.lines.length)$("#out").textContent+=j.lines.join("\n")+"\n";$("#out").scrollTop=1e9;
- const jb=j.job||{};$("#runs").textContent=stepText(jb)+(jb.started?` (started ${jb.started})`:"");
+ const jb=j.job||{};$("#run").dataset.job=!j.done?"running":j.replaced?"replaced":jb.state==="crashed"?"crashed":j.ok?"done":"failed";$("#runs").textContent=stepText(jb)+(jb.started?` (started ${jb.started})`:"");
  if(j.done){
   if(j.replaced)$("#runh").textContent="Another page started a newer run of this batch; open the review again to see it.";
   else if(jb.state==="crashed"){$("#runh").textContent="The run stopped unexpectedly (crashed)";
@@ -979,7 +979,7 @@ async function poll(since){
 function lastRun(jb){if(!jb||!jb.done)return;const L=$("#last");L.hidden=false;
  L.textContent=`Last run of this batch (started ${jb.started}): `+(jb.state==="crashed"?`crashed at ${stepText(jb)||"start-up"}`+(jb.step_running?"; the step it started is still running, so submit is refused until it ends.":"."):jb.ok?"finished OK.":"finished with problems.")}
 fetch("/api/items",{credentials:"same-origin"}).then(r=>r.json()).then(j=>{data=j;tab=TABS.find(t=>itemsOf(t).length)||"quarantine";
- if(j.watching){attach();return}render();lastRun(j.job);
+ if(j.watching){attach();document.body.dataset.ready="1";return}render();lastRun(j.job);document.body.dataset.ready="1";
  /* a run started from another page or server of this batch: show it instead of stale items */
  const watch=async()=>{if(attached)return;try{const k=await (await fetch("/api/job",{credentials:"same-origin"})).json();if(k.watching){attach();return}}catch(e){return}setTimeout(watch,4000)};
  setTimeout(watch,4000)});
