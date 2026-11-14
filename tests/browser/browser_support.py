@@ -49,10 +49,11 @@ def make_clip(path, seconds=30):
     """An H.264 test pattern (640x480, ~3 Mbit/s, ~11 MB), moov atom at the end (no faststart), a
     keyframe every second.
 
-    Sized so a seek near the end must fetch a new byte range: Chromium reads ahead of the play
-    position about 10 s of media (at least 2 MB; media/blink/multibuffer_data_source.cc,
-    kTargetSecondsBufferedAhead), so a seek from the start to the last seconds of a 30 s clip
-    lands outside what it has fetched.
+    Sized so a seek near the end must fetch a new byte range: Chromium reads only a bounded
+    distance ahead of the play position (seen here: 8 s buffered of a 12 s, 4.6 MB clip), so a
+    seek from the start to the last seconds of a 30 s clip lands outside what it has fetched.
+    The tests check that precondition (BUFFERED) before they seek, so a change in Chromium's
+    read-ahead shows up as a fixture failure, not a false pass.
     """
     enc = h264_encoder()
     if not enc:
