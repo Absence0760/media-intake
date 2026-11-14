@@ -7,9 +7,8 @@ that intake files: a day-to-day browser in place of digiKam.
 media-intake gallery [--drive MOUNT] [--port 0]
 ```
 
-`python3 -I media_intake/gallery.py` takes the same flags and `--share-out DIR`
-(where share-safe copies go, below; `media-intake gallery` does not pass it on
-yet, so it always uses the default).
+`media-intake gallery` and `python3 -I media_intake/gallery.py` both take
+`--share-out DIR` (where share-safe copies go, below).
 
 It prints exactly one `xdg-open 'http://127.0.0.1:<port>/?t=<token>'` line,
 then a note with the item count, the start-up time, how many flagged or erased

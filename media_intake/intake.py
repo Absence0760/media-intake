@@ -1999,6 +1999,8 @@ cmd_social_copy = cmd_share_copy  # older name
 def cmd_gallery(a):
     import gallery
     argv = (["--drive", a.drive] if a.drive else []) + ["--port", str(a.port)]
+    if a.share_out:
+        argv += ["--share-out", a.share_out]
     sys.exit(gallery.main(argv))
 
 
@@ -2061,6 +2063,7 @@ def build_parser(prog=None):
     s.add_argument("--never-used", action="store_true"); s.add_argument("--root", action="append", help="search here instead of the library folders")
     s = sp.add_parser("gallery", help="local web gallery of the library (gallery.py)")
     s.add_argument("--drive", help="backup drive mount, passed to forget by Erase"); s.add_argument("--port", type=int, default=0)
+    s.add_argument("--share-out", help="folder for share-safe copies (default ~/Pictures/share-safe)")
     return ap
 
 

@@ -1,8 +1,8 @@
 #!/usr/bin/env python3
 """Local web gallery for the media library (a day-to-day browser, in place of digiKam).
 
-  media-intake gallery [--drive MOUNT] [--port 0]
-  python3 -I media_intake/gallery.py         (same flags, and --share-out DIR)
+  media-intake gallery [--drive MOUNT] [--port 0] [--share-out DIR]
+  python3 -I media_intake/gallery.py         (same flags)
 
 Shows everything under the library, videos and project folders (config.toml)
 (never the media-intake state folder: quarantine, staging, review; never a file
