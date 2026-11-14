@@ -15,7 +15,8 @@ review files it prints `nothing to review for BATCH` and exits 0.
   chain (`near-BATCH`, `near-near-BATCH`, ...; see below), with
   the scanner's labels; Keep (release to the library) or Erase. **Review**
   tab: `batches/BATCH/review` with plan.json's `why`; Keep or Delete. Keys: K
-  keep, E (or D) erase/delete, T trash, arrows move. Submit unlocks when every
+  keep, E (or D) erase/delete, T trash, X opens or closes a burst stack,
+  arrows move. Submit unlocks when every
   item is decided, shows a summary and needs ERASE typed.
 - **Near-duplicates** (in either tab) show their original beside them:
   "Original (kept)" left, "This copy" right, each with resolution, size, date

@@ -28,7 +28,8 @@ Fedora Linux first. Python, no service, no account.
 - **Originals are never modified.** Tags live in XMP sidecars
   (`<file>.<ext>.xmp`, digiKam's naming), so sha256 stays stable for dedupe
   and erase.
-- **Nothing is deleted from a device or drive without your explicit `--yes`**,
+- **Nothing is deleted from a device or drive without your explicit `--yes`**
+  (a laptop folder source is never offloaded: you delete it yourself),
   and only files with a verified copy in the library. A device delete is
   refused when its path differs from another path on the device only by
   letter case (case-insensitive storage may hold them as one file), and
@@ -99,7 +100,7 @@ media-intake offload phone-1 --phone <device root> --yes   # after a backup: fre
 | `migrate-tags` | One-shot: rewrite the legacy `Review\|not-trash` tag as `Owner\|not-trash` |
 | `index`, `search`, `similar` | Local semantic search (SigLIP) |
 | `vlm-trash` | Local vision-model second opinion on trash candidates |
-| `gallery` | Local web gallery: browse, keep, trash, erase, tag, rotate |
+| `gallery` | Local web gallery: browse, keep, trash, erase, tag, rotate, events, bulk edits, share-safe copies |
 | `queue add/run/status/offload` | Process an old external drive or a laptop folder in resumable chunks |
 | `share-copy` | Copy files with GPS and metadata stripped, for posting |
 | `doctor` | Check the install |

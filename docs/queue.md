@@ -84,9 +84,12 @@ case-insensitively so a case-insensitive disk can't slip one past. Everything
 is checked again when `run` stages each chunk: a folder that has since become
 a repository (or moved) stops the run with `folder refused now`.
 
-A folder source has no mount and no UUID. **The tool never deletes its
+A folder source has no mount and no UUID. The free-space, duplicate-label and
+overlap checks above apply to it as well. **Offload never deletes its
 originals**: `media-intake queue offload` and `media-intake offload` refuse a
-folder source. When every chunk is reviewed, `status` says so; check the
+folder source. The one exception is `erase`: its HOME sweep deletes every copy
+of a file you confirmed for erasure, including the original still in the
+source folder ([intake.md](intake.md), "Every copy in HOME"). When every chunk is reviewed, `status` says so; check the
 library, then delete the folder yourself.
 
 ## What `run` does

@@ -86,6 +86,9 @@ The goal: someone else can install it on Fedora, import a phone, and trust it.
 - [x] Burst groups: show bursts as one stack, pick the best, trash the rest (review page;
       the gallery's stacks wait for a later round).
 - [x] Albums/events as first-class views (from `Event|` tags), with rename and merge.
+- [ ] Burst stacks in the gallery (the review page has them; `media_intake/bursts.py` is shared).
+- [ ] Record a camera's `BurstUUID` as `burst_id` in plan entries (`bursts.py` reads it;
+      intake doesn't write it yet).
 - [ ] Map view without leaking locations: offline vector tiles (or none); never fetch
       tiles for private photos from a third-party server.
 - [x] Bulk edits on a selection: add/remove tags, set event, rotate.

@@ -4,11 +4,11 @@
 that intake files: a day-to-day browser in place of digiKam.
 
 ```
-media-intake gallery [--drive MOUNT] [--port 0]
+media-intake gallery [--drive MOUNT] [--port 0] [--share-out DIR]
 ```
 
-`media-intake gallery` and `python3 -I media_intake/gallery.py` both take
-`--share-out DIR` (where share-safe copies go, below).
+`python3 -I media_intake/gallery.py` takes the same flags. `--share-out` is
+where share-safe copies go (below).
 
 It prints exactly one `xdg-open 'http://127.0.0.1:<port>/?t=<token>'` line,
 then a note with the item count, the start-up time, how many flagged or erased
@@ -147,7 +147,7 @@ The summary before Trash or Erase lists the names and warns when any were
 used or kept before. Trash and Erase run one at a time with their output
 streamed into the dialog.
 
-Trash and Erase run as a detached job (`media_intake/jobs.py`, the same module
+Trash, Erase and Share-safe copy run as a detached job (`media_intake/jobs.py`, the same module
 as the review page), so closing the page or stopping the server never stops
 one that has started:
 
@@ -162,7 +162,7 @@ one that has started:
   dialog on the running job; the files it acts on stay hidden from thumbnails
   and media until it ends.
 - One at a time across every gallery page and server: an `flock` on
-  `<state>/jobs/gallery.lock`, so a second Trash or Erase gets 409 and the
+  `<state>/jobs/gallery.lock`, so a second Trash, Erase or Share-safe copy gets 409 and the
   page shows the running one. The job also holds the library lock, so it
   can't start while a review run or a CLI command is changing the library
   (409, naming it), and they can't start while it runs.
