@@ -8,9 +8,10 @@ the real intake.py (trash / forget) against the throwaway HOME only; nothing poi
 at the real ~/.local/share/media-intake, ~/Pictures or ~/Videos. A toy plugin
 checks the gallery_views() seam (plugins.py). The job tests swap in a fake intake.py
 (MEDIA_REVIEW_INTAKE) whose trash waits on a FIFO the test opens, so a job is held
-mid-step without a sleep while servers are killed and restarted.
+mid-step without a sleep while servers are killed and restarted. The system-player action
+runs a fake xdg-open put first on PATH, which only records its arguments.
 """
-import datetime, errno, hashlib, http.client, json, os, re, shutil, signal, stat, subprocess, sys, tempfile, time
+import errno, hashlib, http.client, json, os, re, shutil, signal, stat, subprocess, sys, tempfile, time
 import unittest, urllib.parse
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
@@ -91,6 +92,14 @@ def until(pred, what, timeout=60):
             return v
         time.sleep(0.05)
     raise AssertionError(f"timed out waiting for {what}")
+
+
+FAKE_OPENER = r'''#!/usr/bin/env python3
+import json, os, sys
+with open(os.environ["FAKE_OPEN_LOG"] + ".tmp", "w") as f:
+    json.dump(sys.argv[1:], f)
+os.replace(os.environ["FAKE_OPEN_LOG"] + ".tmp", os.environ["FAKE_OPEN_LOG"])
+'''
 
 
 TOY_PLUGIN = """
@@ -243,7 +252,7 @@ class GalleryTest(unittest.TestCase):
         self.assertEqual(r.status, 403)
         r, _ = s.req("GET", "/api/list", host=f"evil.example:{s.port}")
         self.assertEqual(r.status, 403)
-        for path in ("/api/job", "/api/job?since=0", "/api/progress"):  # the job routes too
+        for path in ("/api/facets", "/api/job", "/api/job?since=0", "/api/progress"):  # every API route
             r, _ = s.req("GET", path, token=False)
             self.assertEqual(r.status, 403, path)
             r, _ = s.req("GET", path, token=False, headers={"X-Token": "wrong"})
@@ -575,12 +584,124 @@ class GalleryTest(unittest.TestCase):
         r, _ = s.req("GET", "/plugin/toy/hello", token=False)  # the gallery's guard runs first
         self.assertNotEqual(r.status, 200)
 
+    # ------------------------------------------------------------ page layout and the sidebar's counts
+    def test_page_layout_and_facet_counts(self):
+        """Left sidebar (views, search, filters), bottom action bar, lightbox info pane; nothing external."""
+        s = self.start()
+        r, b = s.req("GET", "/")
+        self.assertEqual(r.status, 200)
+        for needle in (b'<aside id="sidebar"', b'<nav id="views"', b'id="filters"', b'id="q"', b'id="chips"',
+                       b'id="tsize"', b'id="actionbar" hidden', b'aria-label="Selection actions"', b'<aside id="info"',
+                       b'data-v="recent"', b'data-v="child"', b'data-v="untagged"', b'data-dialog="confirm"'):
+            self.assertIn(needle, b)
+        self.assertNotIn(b"://", b)  # no URL of any kind, so nothing loads from anywhere else
+        for bad in (b"<link", b"@import", b"url(", b"<iframe", b"@font-face"):
+            self.assertNotIn(bad, b)
+        self.assertEqual(re.findall(rb"<(?:script|img|video|source)[^>]*\bsrc=", b), [])
+        f = s.get("/api/facets")
+        c = f["counts"]
+        self.assertEqual(f["total"], 7)
+        self.assertEqual((c["kind:photo"], c["kind:video"]), (5, 2))
+        self.assertEqual(c["review:maybe-trash"], 3)
+        for k, flt in (("review:child-in-shot", dict(review="child-in-shot")),
+                       ("review:untagged", dict(review="untagged")),
+                       ("ai:trash", dict(ai="trash", aimin="0")), ("ai:none", dict(ai="none")),
+                       ("used:used", dict(used="used")), ("suggest", dict(view="suggest"))):
+            self.assertEqual(c.get(k, 0), len(self.names(s, **flt)[0]), k)  # each count is what its filter lists
+        self.assertEqual(c["used:used"] + c["used:unused"], f["total"])
+        # Recently added: every file in this fresh HOME was filed (its inode changed) just now
+        self.assertEqual(f["recent_days"], 30)
+        self.assertEqual(c["recent"], f["total"])
+        self.assertEqual(len(self.names(s, added=str(f["recent_days"]))[0]), f["total"])
+        for bad in ("0", "-3", "x", ""):  # not a positive day count: no filter
+            self.assertEqual(len(self.names(s, added=bad)[0]), f["total"], bad)
+
+    # ------------------------------------------------------------ the system player (xdg-open)
+    def test_open_in_system_player(self):
+        fdir = os.path.join(self.tmp, "fakebin")
+        os.makedirs(fdir)
+        opener = os.path.join(fdir, "xdg-open")
+        with open(opener, "w") as f:
+            f.write(FAKE_OPENER)
+        os.chmod(opener, 0o755)
+        log = os.path.join(self.tmp, "opened.json")
+        self.env.update(PATH=fdir + os.pathsep + self.env["PATH"], FAKE_OPEN_LOG=log)
+        s = self.start()
+        idv, idb, idk = self.id_of(s, "v.mp4"), self.id_of(s, "b.jpg"), self.id_of(s, "k.jpg")
+        # a POST from the page only: no token, no CSRF or another Origin never runs it
+        r, _ = s.req("POST", "/api/open", token=False, headers={"X-CSRF": s.csrf()}, body={"ids": [idv]})
+        self.assertEqual(r.status, 403)
+        r, _ = s.req("POST", "/api/open", body={"ids": [idv]})
+        self.assertEqual(r.status, 403)
+        r, _ = s.req("POST", "/api/open", headers={"X-CSRF": s.csrf(), "Origin": "http://evil.example"},
+                     body={"ids": [idv]})
+        self.assertEqual(r.status, 403)
+        for bad in ([], [idv, idb], [999], ["0"], [True], None, "0"):
+            code, _ = s.post("/api/open", {"ids": bad})
+            self.assertEqual(code, 400, bad)
+        self.assertFalse(os.path.exists(log))
+        code, j = s.post("/api/open", {"ids": [idv]})
+        self.assertEqual(code, 200, j)
+        def opened():
+            if os.path.exists(log):
+                with open(log) as f:
+                    return json.load(f)
+        self.assertEqual(until(opened, "the fake opener to record its arguments"), [self.v])
+        os.remove(log)
+        # swapped for a symlink after the scan, or flagged since: refused like the media routes refuse it
+        os.remove(self.b)
+        os.symlink(os.path.join(self.tmp, "outside.jpg"), self.b)
+        code, _ = s.post("/api/open", {"ids": [idb]})
+        self.assertEqual(code, 400)
+        self.assertEqual(s.req("GET", f"/m/{idb}")[0].status, 404)
+        with open(os.path.join(self.state, "erase-log.txt"), "a") as f:
+            f.write(f"2026-11-02 10:00 b0 sha256:{sha(self.k)} size:{os.path.getsize(self.k)}\n")
+        code, _ = s.post("/api/open", {"ids": [idk]})
+        self.assertEqual(code, 400)
+        self.assertFalse(os.path.exists(log))
+
+    # ------------------------------------------------------------ a trash job's surviving copies
+    def test_trash_refreshes_copies_tags(self):
+        """trash marks other library copies Owner|trash; the gallery shows that without a restart."""
+        copy = os.path.join(self.lib, "2026/2026-08/a-copy.jpg")
+        os.makedirs(os.path.dirname(copy))
+        shutil.copyfile(self.a, copy)
+        h = sha(self.a)
+        with open(os.path.join(self.state, "index.json"), "w") as f:
+            json.dump({p: {"sha": h, "size": os.path.getsize(p)} for p in (self.a, copy)}, f)
+        s = self.start()
+        ida, idc = self.id_of(s, "a.jpg"), self.id_of(s, "a-copy.jpg")
+        self.assertNotIn("a-copy.jpg", self.names(s, view="suggest")[0])
+        code, j = s.post("/api/trash", {"ids": [ida], "confirm": True})
+        self.assertEqual(code, 200, j)
+        j = self.wait_job(s)
+        self.assertTrue(j["ok"], j)
+        self.assertIn("Owner|trash", tags_of(copy)[0])  # what intake wrote
+        names, lst = self.names(s, view="suggest")
+        self.assertIn("a-copy.jpg", names)
+        self.assertIn("trashed copy", next(i for i in lst["items"] if i["id"] == idc)["f"])
+        self.assertIn("Owner|trash", s.get(f"/api/item/{idc}")["tags"])
+        self.assertEqual(s.get("/api/facets")["counts"]["suggest"], len(names))
+
     # ------------------------------------------------------------ close
     def test_close_button(self):
         s = self.start()
         code, _ = s.post("/api/close", {})
         self.assertEqual(code, 200)
         self.assertEqual(s.p.wait(timeout=10), 0)
+
+
+class AddedFilterTest(unittest.TestCase):
+    """The "added in the last N days" filter on items whose inode changed long ago (no test can set a ctime)."""
+
+    def test_added_days(self):
+        import gallery
+        app = gallery.App([])
+        old = dict(gone=False, tags=[], media="photo", date="2026-01-01 00:00", ctime=time.time() - 40 * 86400)
+        new = dict(old, ctime=time.time() - 86400)
+        for it, f, want in ((old, {"added": "30"}, False), (new, {"added": "30"}, True), (old, {"added": "41"}, True),
+                            (old, {"added": "0"}, True), (old, {"added": "x"}, True), (old, {}, True)):
+            self.assertEqual(app.matches(it, f), want, (it["ctime"], f))
 
 
 if __name__ == "__main__":

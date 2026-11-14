@@ -85,8 +85,9 @@ script's output in the PR body. A pin bump is its own PR, model-tested
 - When a test fails, fix the test if it is wrong, or the code if it is; never
   loosen an assertion or add a sleep to make it pass.
 - Real-browser tests (`tests/browser/`, Playwright + headless Chromium) drive
-  the gallery and the review page: keys, selection, the confirm dialogs (ERASE
-  typed), lightbox video autoplay, Range seeking, and the detached job's
+  the gallery and the review page: keys, selection and the bottom selection
+  bar, the confirm dialogs (ERASE typed), lightbox video autoplay and Space
+  play / pause, Range seeking, and the detached job's
   progress, including re-attaching after a reload. They skip with a reason
   when Playwright or its Chromium is missing, so the commands above are
   unaffected; the `browser` job in `ci.yml` runs them (and fails, not skips,
