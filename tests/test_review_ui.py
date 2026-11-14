@@ -654,6 +654,98 @@ class ReviewUITest(unittest.TestCase):
         self.assertTrue(os.path.isfile(outside) and os.path.isfile(inq))
         self.assertEqual(s.p.wait(timeout=30), 0)
 
+    def test_burst_stack_keep_one_trash_the_rest(self):
+        """A burst of library files in the maybe-trash tab is one stack; keep-one is Keep on it and Trash on
+        the rest, through the same guarded submit (no endpoint of its own) and the existing trash path."""
+        lib = os.path.join(self.home, "photo_library/2026/2026-11")
+        names = ("b1.jpg", "b2.jpg", "b3.jpg", "b4.jpg", "solo.jpg")
+        p = {n: os.path.join(lib, n) for n in names}
+        for n, c in zip(names, ((200, 0, 0), (0, 200, 0), (0, 0, 200), (9, 9, 9), (90, 90, 90))):
+            img(p[n], c)
+        # b1-b3: one camera, 0.5 s apart (b3's dHash from index.json); b4 0.5 s later but 40 dHash bits
+        # away (another picture); solo a minute later.
+        when = {"b1.jpg": "07:15:00", "b2.jpg": "07:15:00.500000", "b3.jpg": "07:15:01", "b4.jpg": "07:15:01.500000",
+                "solo.jpg": "07:16:00"}
+        write_json(os.path.join(self.state, "batches", BATCH, "plan.json"), [
+            dict(rel=f"DCIM/Camera/{n}", action="file", why="", dst=p[n], lib_dst=p[n], device="cam-a",
+                 date=f"2026-11-08T{when[n]}", dhash=None if n in ("b3.jpg", "b4.jpg") else 0) for n in names])
+        write_json(os.path.join(self.state, "index.json"), {p["b3.jpg"]: {"sha": "a" * 64, "size": 1, "dhash": 3},
+                                                            p["b4.jpg"]: {"sha": "b" * 64, "size": 1,
+                                                                          "dhash": (1 << 40) - 1}})
+        write_json(os.path.join(self.state, "maybe-trash.json"), {"batch": BATCH, "items": [
+            {"path": p[n], "labels": ["Review|maybe-trash"]} for n in names]})
+        s = self.start("--maybe-trash", "--phone", self.phone, batch=None)
+        items = {os.path.basename(i["rel"]): i for i in self.items(s)}
+        self.assertEqual(sorted(items), sorted(names))
+        b = items["b1.jpg"]["burst"]
+        self.assertIsInstance(b, int)
+        self.assertEqual([items[n]["burst"] for n in ("b2.jpg", "b3.jpg")], [b, b])
+        self.assertIsNone(items["b4.jpg"]["burst"])  # its dHash says another picture
+        self.assertIsNone(items["solo.jpg"]["burst"])  # a single shot is no stack
+        r, page = s.req("GET", "/")
+        for text in (b"Keep this one, trash the rest", b"Burst: ", b"function visibleOf", b"function keepOne"):
+            self.assertIn(text, page)
+        # Keep b2, trash the rest of its stack; decide the others one by one.
+        dec = {str(items[n]["id"]): d for n, d in (("b1.jpg", "trash"), ("b2.jpg", "keep"), ("b3.jpg", "trash"),
+                                                     ("b4.jpg", "keep"), ("solo.jpg", "keep"))}
+        csrf = s.csrf()
+        body = {"decisions": dec, "confirm": "ERASE"}
+        # The same guards as every submit: a bad origin, token, CSRF value or a missing ERASE runs nothing.
+        r, _ = s.req("POST", "/api/submit", headers={"X-CSRF": csrf, "Origin": "http://evil.example"}, body=body)
+        self.assertEqual(r.status, 403)
+        r, _ = s.req("POST", "/api/submit", token=False, headers={"X-CSRF": csrf}, body=body)
+        self.assertEqual(r.status, 403)
+        r, _ = s.req("POST", "/api/submit", token=False, headers={"X-CSRF": csrf, "X-Token": "wrong"}, body=body)
+        self.assertEqual(r.status, 403)
+        r, _ = s.req("POST", "/api/submit", headers={"X-CSRF": "wrong"}, body=body)
+        self.assertEqual(r.status, 403)
+        r, _ = s.req("POST", "/api/submit", headers={"X-CSRF": csrf}, body={"decisions": dec, "confirm": "erase"})
+        self.assertEqual(r.status, 400)
+        self.assertEqual(self.calls(), [])
+        self.assertFalse(os.path.exists(os.path.join(self.state, "maybe-trash-decisions.json")))
+        r, b2 = s.req("POST", "/api/submit", headers={"X-CSRF": csrf}, body=body)
+        self.assertEqual(r.status, 202, b2)
+        j, out = self.wait_done(s)
+        self.assertTrue(j["ok"], out)
+        self.assertEqual(self.calls(), [["not-trash", p["b2.jpg"], p["b4.jpg"], p["solo.jpg"]],
+                                        ["trash", p["b1.jpg"], p["b3.jpg"], "--phone", self.phone]])
+        self.assertTrue(all(os.path.isfile(p[n]) for n in ("b2.jpg", "b4.jpg", "solo.jpg")))
+        self.assertEqual(s.p.wait(timeout=30), 0)
+
+    def test_bursts_stay_inside_their_tab(self):
+        """Review and quarantine shots of one moment are separate stacks; near- items are never grouped."""
+        quar, _ = self.quarantine()
+        b = os.path.join(self.state, "batches", BATCH)
+        for n, c in (("s1.jpg", (1, 1, 1)), ("s2.jpg", (2, 2, 2)), ("s3.jpg", (3, 3, 3))):
+            img(os.path.join(b, "review/DCIM/Camera", n), c)
+        img(os.path.join(quar, "DCIM/Camera/q2.jpg"), (4, 4, 4))
+        with open(os.path.join(quar, "quarantine.json")) as f:
+            q = json.load(f)
+        q["DCIM/Camera/q2.jpg"] = {"reasons": ["nudity:exposed"], "sha": "4" * 64, "size": 1, "dst": None}
+        write_json(os.path.join(quar, "quarantine.json"), q)
+        t = "2026-11-08T07:15:0"
+        write_json(os.path.join(b, "plan.json"), [
+            {"rel": "DCIM/Camera/s1.jpg", "action": "review", "why": "junk", "date": t + "0", "device": "cam-a"},
+            {"rel": "DCIM/Camera/s2.jpg", "action": "review", "why": "junk", "date": t + "1", "device": "cam-a"},
+            {"rel": "DCIM/Camera/s3.jpg", "action": "review", "why": "junk", "date": t + "1", "device": "cam-b"},
+            {"rel": "DCIM/Camera/a.jpg", "action": "file", "why": "", "date": t + "0", "device": "cam-a"},
+            {"rel": "DCIM/Camera/q2.jpg", "action": "file", "why": "", "date": t + "2", "device": "cam-a"},
+            {"rel": "DCIM/Camera/c.mp4", "action": "file", "why": "", "date": t + "1", "device": "cam-a"},
+            {"rel": "Downloads/n.jpg", "action": "file", "why": "", "date": t + "1", "device": "cam-a"}])
+        s = self.start()
+        items = {(i["tab"], i["batch"], i["rel"]): i["burst"] for i in self.items(s)}
+        rv = items[("review", BATCH, "DCIM/Camera/s1.jpg")]
+        qb = items[("quarantine", BATCH, "DCIM/Camera/a.jpg")]
+        self.assertIsInstance(rv, int)
+        self.assertIsInstance(qb, int)
+        self.assertNotEqual(rv, qb)
+        self.assertEqual(items[("review", BATCH, "DCIM/Camera/s2.jpg")], rv)
+        self.assertIsNone(items[("review", BATCH, "DCIM/Camera/s3.jpg")])  # another camera
+        self.assertEqual(items[("quarantine", BATCH, "DCIM/Camera/q2.jpg")], qb)
+        self.assertIsNone(items[("quarantine", BATCH, "DCIM/Camera/c.mp4")])  # a video is never a burst
+        self.assertIsNone(items[("quarantine", f"near-{BATCH}", "Downloads/n.jpg")])  # no plan entry of its own
+        self.assertIsNone(items[("quarantine", BATCH, "DCIM/Camera/b.png")])  # no date in the plan
+
     def test_unreleasable_keep_blocks_erase(self):
         quar, _ = self.quarantine()
         man = os.path.join(quar, "quarantine.json")

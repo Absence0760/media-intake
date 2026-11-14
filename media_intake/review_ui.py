@@ -27,6 +27,8 @@ is shown as the original, same roots check, and its erase gets no --phone.
 Every item can also be trashed (`intake.py trash`: plain delete for junk that
 isn't private, remembered so it never comes back). --maybe-trash adds a tab of
 library files `suggest-trash` listed (maybe-trash.json): Keep runs `not-trash`.
+Bursts (bursts.py: one device, shots a moment apart) show as one stack per tab; "Keep this one, trash the
+rest" only sets those decisions (Keep on one, Trash on the others), which go through the same submit.
 
 On submit (every item decided, ERASE typed) it starts a detached job
 (jobs.py, key review-<batch>; one at a time per batch, taken with flock) that
@@ -44,6 +46,7 @@ import subprocess, sys, threading, time, urllib.parse
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, HERE)
+import bursts  # noqa: E402  (burst groups: pure functions over date, device, dHash)
 import config  # noqa: E402
 import jobs  # noqa: E402  (detached, re-attachable runs: <state>/jobs/)
 
@@ -337,6 +340,47 @@ def collect_maybe():
     return items
 
 
+def attach_bursts(batch, items):
+    """Give every item `burst`: a group number shared by the shots of one burst (bursts.py), else None.
+    Groups never cross a tab or a quarantine batch (each runs its own steps). The date, device and dHash
+    come from plan.json (this batch's quarantine and review items by rel; a maybe-trash library file by
+    its dst in the plan of maybe-trash.json's batch or this one), the dHash of a library file also from
+    index.json. near- and xcheck- items have no plan entry and are never grouped. No file is opened."""
+    plans = []
+    mt = load(os.path.join(STATE, "maybe-trash.json"), {}) or {}
+    for b in dict.fromkeys(x for x in (batch, mt.get("batch") if isinstance(mt, dict) else None)
+                           if isinstance(x, str) and BATCH_RE.match(x)):
+        plans.append((b, [p for p in load(os.path.join(STATE, "batches", b, "plan.json"), []) or []
+                          if isinstance(p, dict)]))
+    by_rel = {p.get("rel"): p for b, pl in plans if b == batch for p in pl}
+    by_dst = {p.get("dst"): p for _, pl in plans for p in pl if isinstance(p.get("dst"), str)}
+    index = load(os.path.join(STATE, "index.json"), {}) or {}
+    recs = {}
+    for n, it in enumerate(items):
+        it["burst"] = None
+        if it["tab"] == "maybe":
+            p = by_dst.get(it["path"])
+        elif it["tab"] == "review" or it["qbatch"] == batch:
+            p = by_rel.get(it["rel"])
+        else:
+            continue
+        if not p:
+            continue
+        dh = p.get("dhash")
+        if not isinstance(dh, int) and it["tab"] == "maybe":
+            dh = (index.get(it["path"]) or {}).get("dhash") if isinstance(index, dict) else None
+        recs.setdefault((it["tab"], it["qbatch"]), []).append(
+            dict(path=it["path"], datetime=p.get("date"), device=p.get("device"),
+                 dhash=dh if isinstance(dh, int) else None, burst_id=p.get("burst_id"), n=n))
+    gid = 0
+    for rs in recs.values():
+        for g in bursts.groups(rs):
+            for r in g:
+                items[r["n"]]["burst"] = gid
+            gid += 1
+    return gid
+
+
 def job_key(batch):
     """One job per batch (its quarantine, near- and xcheck- batches, review folder); one for maybe-trash alone."""
     return f"review-{batch}" if batch else "maybe-trash"
@@ -581,7 +625,8 @@ class App:
     def public_items(self):
         return [dict(id=i, tab=it["tab"], batch=it["qbatch"] or self.batch, rel=it["rel"], reasons=it["reasons"],
                      why=it["why"], kind=it["kind"], releasable=it["releasable"],
-                     orig=it.get("orig"), meta=it.get("meta")) for i, it in enumerate(self.items)]
+                     orig=it.get("orig"), meta=it.get("meta"), burst=it.get("burst"))
+                for i, it in enumerate(self.items)]
 
 
 class Handler(http.server.BaseHTTPRequestHandler):
@@ -819,6 +864,7 @@ def main(argv=None):
     origs = attach_originals(a.batch, items) if a.batch else []
     if a.maybe_trash:
         items += collect_maybe()
+    attach_bursts(a.batch, items)
     app = App(a.batch, items, os.path.abspath(a.phone) if a.phone else None,
               os.path.abspath(a.drive) if a.drive else None, a.keep_phone_thumbnails, a.no_wipe_free, origs)
     if not items and not app.submitted:  # a run still going is shown even when nothing is left to decide
@@ -895,6 +941,14 @@ main{padding:16px;max-width:1100px;margin:0 auto}
 .panel button{font:inherit;font-weight:700;padding:10px 18px;border-radius:8px;margin:8px 8px 0 0;cursor:pointer}
 #go{background:var(--erase);color:#fff;border:2px solid var(--erase)}
 #go:disabled{opacity:.4}
+.card.stack{box-shadow:6px 6px 0 -2px var(--card),6px 6px 0 0 var(--line),12px 12px 0 -2px var(--card),12px 12px 0 0 var(--line)}
+.card.stack.keep{box-shadow:inset 8px 0 0 var(--keep),6px 6px 0 -2px var(--card),6px 6px 0 0 var(--line)}
+.card.stack.erase{box-shadow:inset 8px 0 0 var(--erase),6px 6px 0 -2px var(--card),6px 6px 0 0 var(--line)}
+.card.stack.trash{box-shadow:inset 8px 0 0 var(--trash),6px 6px 0 -2px var(--card),6px 6px 0 0 var(--line)}
+.burst{display:flex;flex-wrap:wrap;gap:10px;align-items:center;margin-bottom:8px}
+.badge{font-weight:700;background:var(--focus);color:#fff;border-radius:999px;padding:2px 12px;font-size:15px}
+.burst button,.one{font:inherit;font-size:15px;padding:6px 12px;border-radius:8px;border:2px solid var(--line);background:var(--bg);color:var(--fg);cursor:pointer}
+.one{width:100%;margin-top:10px;font-weight:700}
 pre{white-space:pre-wrap;word-break:break-all;font-size:15px;background:var(--bg);border:1px solid var(--line);border-radius:8px;padding:10px;max-height:70vh;overflow:auto}
 </style></head><body>
 <header>
@@ -915,6 +969,7 @@ pre{white-space:pre-wrap;word-break:break-all;font-size:15px;background:var(--bg
  <div id="lists">
   <p class="note" id="last" hidden></p>
   <p class="help" id="helpq">K = keep (back to the library), E = erase everywhere, T = trash (plain delete for junk that isn't private). ← → or ↑ ↓ move between items.</p>
+  <p class="help" id="helpb" hidden>A stack is a burst (shots from one camera a moment apart): X opens or closes it, and "Keep this one, trash the rest" on a shot decides the whole stack. Nothing is deleted until you submit and type ERASE.</p>
   <p class="help" id="helpr" hidden>K = keep, E or D = delete (near-duplicates and junk), T = trash (delete, and never take it in again). ← → or ↑ ↓ move between items.</p>
   <p class="help" id="helpm" hidden>Suggested junk from your library. K = keep (never suggested again), T = trash. Nothing is deleted until you submit. ← → or ↑ ↓ move between items.</p>
   <div id="list"></div>
@@ -923,10 +978,19 @@ pre{white-space:pre-wrap;word-break:break-all;font-size:15px;background:var(--bg
 <script>
 "use strict";
 const CSRF=document.querySelector('meta[name=csrf]').content;
-let data=null,tab="quarantine",cur={quarantine:0,review:0,maybe:0};const dec={};
+let data=null,tab="quarantine",cur={quarantine:0,review:0,maybe:0};const dec={},open={};
 const $=s=>document.querySelector(s);
 function el(t,cls,txt){const e=document.createElement(t);if(cls)e.className=cls;if(txt!=null)e.textContent=txt;return e}
 function itemsOf(t){return data.items.filter(i=>i.tab===t)}
+/* Bursts: the shots of one burst share it.burst (bursts.py, never across tabs). A closed stack shows only
+   its first shot (the cover); an open one shows every shot right after the cover. */
+const BM={};
+function members(it){return it.burst==null?[it]:BM[it.burst]}
+function isCover(it){return it.burst==null||BM[it.burst][0]===it}
+function visibleOf(t){const v=[];itemsOf(t).forEach(i=>{if(i.burst==null)v.push(i);else if(isCover(i))v.push(...(open[i.burst]?BM[i.burst]:[i]))});return v}
+function toggleStack(it){if(it.burst==null)return;open[it.burst]=!open[it.burst];const v=visibleOf(tab);
+ cur[tab]=Math.max(0,v.indexOf(v.includes(it)?it:members(it)[0]));render();paint(true)}
+function keepOne(it){members(it).forEach(m=>{dec[m.id]=m===it?"keep":"trash"});const v=visibleOf(tab);cur[tab]=Math.max(0,v.indexOf(it));paint(false)}
 function mediaEl(kind,src,alt){const m=el("div","media");
  if(kind==="image"){const im=el("img");im.loading="lazy";im.alt=alt;im.src=src;m.append(im)}
  else if(kind==="video"){const v=el("video");v.controls=true;v.preload="metadata";v.src=src;m.append(v)}
@@ -939,10 +1003,14 @@ function render(){
  const L=$("#list");L.replaceChildren();
  TABS.forEach(t=>$(TID[t]).setAttribute("aria-selected",tab===t));
  $("#helpq").hidden=tab!=="quarantine";$("#helpr").hidden=tab!=="review";$("#helpm").hidden=tab!=="maybe";
- const its=itemsOf(tab);
+ const its=visibleOf(tab);$("#helpb").hidden=!its.some(i=>i.burst!=null);
  if(!its.length)L.append(el("p","help","Nothing here."));
  its.forEach((it,n)=>{
   const c=el("div","card");c.id="c"+it.id;c.dataset.n=n;c.dataset.item=it.rel;
+  if(it.burst!=null){const ms=members(it),bx=el("div","burst"),bd=el("span","badge");c.dataset.burst=it.burst;bd.dataset.count=ms.length;
+   if(isCover(it)){const x=el("button","x",open[it.burst]?"Close stack (X)":`Show all ${ms.length} (X)`);x.onclick=()=>{toggleStack(it)};
+    if(!open[it.burst])c.classList.add("stack");bx.append(bd,x)}else bx.append(bd);
+   c.append(bx)}
   const m=mediaEl(it.kind,"/m/"+it.id,it.rel),o=it.orig;
   if(o&&o.label)c.append(el("div","note",o.label));
   if(o&&o.meta){const p=el("div","pair");
@@ -957,32 +1025,37 @@ function render(){
   const b=el("div","btns"),k=el("button","k","Keep (K)"),t=el("button","t","Trash (T)");
   k.onclick=()=>{decide(it,"keep",n,false)};t.onclick=()=>{decide(it,"trash",n,false)};b.append(k);
   if(second(it)){const e=el("button","e",(it.tab==="quarantine"?"Erase":"Delete")+" (E)");e.onclick=()=>{decide(it,second(it),n,false)};b.append(e)}
-  b.append(t);c.append(b);c.onclick=ev=>{if(ev.target.tagName!=="BUTTON"&&ev.target.tagName!=="VIDEO"){cur[tab]=n;paint(false)}};
+  b.append(t);c.append(b);
+  if(it.burst!=null&&open[it.burst]){const o1=el("button","one","Keep this one, trash the rest");o1.onclick=()=>{keepOne(it)};c.append(o1)}
+  c.onclick=ev=>{if(ev.target.tagName!=="BUTTON"&&ev.target.tagName!=="VIDEO"){cur[tab]=n;paint(false)}};
   L.append(c);
  });
  paint(false);
 }
 function paint(scroll){
- itemsOf(tab).forEach((it,n)=>{const c=$("#c"+it.id);if(!c)return;
+ visibleOf(tab).forEach((it,n)=>{const c=$("#c"+it.id);if(!c)return;
   const d=dec[it.id],e=c.querySelector(".e");
   c.classList.toggle("focus",n===cur[tab]);c.setAttribute("aria-current",n===cur[tab]);c.classList.toggle("keep",d==="keep");c.classList.toggle("erase",d==="erase"||d==="delete");c.classList.toggle("trash",d==="trash");
   c.querySelector(".k").setAttribute("aria-pressed",d==="keep");if(e)e.setAttribute("aria-pressed",d==="erase"||d==="delete");c.querySelector(".t").setAttribute("aria-pressed",d==="trash");
+  const bd=c.querySelector(".badge");if(bd){const ms=members(it),u=ms.filter(m=>!dec[m.id]).length;
+   bd.textContent=`Burst: ${ms.length} shots`+(u?`, ${u} undecided`:", all decided")}
   if(scroll&&n===cur[tab])c.scrollIntoView({block:"center",behavior:"smooth"});});
  const left=data.items.filter(i=>!dec[i.id]).length,und=t=>itemsOf(t).filter(i=>!dec[i.id]).length;
  $("#count").textContent=left?`${left} undecided (`+TABS.filter(t=>itemsOf(t).length).map(t=>TNAME[t].toLowerCase()+" "+und(t)).join(", ")+")":"All decided";
  TABS.forEach(t=>{$(TID[t]).textContent=`${TNAME[t]} (${itemsOf(t).length})`});$("#tm").hidden=!itemsOf("maybe").length;
  $("#submit").disabled=left>0;
 }
-function decide(it,d,n,adv){dec[it.id]=d;cur[tab]=n;if(adv)cur[tab]=Math.min(n+1,itemsOf(tab).length-1);paint(adv)}
-function move(d){const its=itemsOf(tab);if(!its.length)return;cur[tab]=Math.max(0,Math.min(its.length-1,cur[tab]+d));paint(true)}
+function decide(it,d,n,adv){dec[it.id]=d;cur[tab]=n;if(adv)cur[tab]=Math.min(n+1,visibleOf(tab).length-1);paint(adv)}
+function move(d){const its=visibleOf(tab);if(!its.length)return;cur[tab]=Math.max(0,Math.min(its.length-1,cur[tab]+d));paint(true)}
 function setTab(t){tab=t;render();window.scrollTo(0,0)}
 TABS.forEach(t=>{$(TID[t]).onclick=()=>setTab(t)});
 document.addEventListener("keydown",ev=>{
  if(!data||$("#lists").hidden||ev.target.tagName==="INPUT"||ev.ctrlKey||ev.metaKey||ev.altKey)return;
- const its=itemsOf(tab),it=its[cur[tab]];const k=ev.key.toLowerCase();
+ const its=visibleOf(tab),it=its[cur[tab]];const k=ev.key.toLowerCase();
  if(k==="k"&&it){decide(it,"keep",cur[tab],true);ev.preventDefault()}
  else if((k==="e"||k==="d")&&it&&second(it)){decide(it,second(it),cur[tab],true);ev.preventDefault()}
  else if(k==="t"&&it){decide(it,"trash",cur[tab],true);ev.preventDefault()}
+ else if(k==="x"&&it&&it.burst!=null){toggleStack(it);ev.preventDefault()}
  else if(k==="arrowright"||k==="arrowdown"||k==="j"){move(1);ev.preventDefault()}
  else if(k==="arrowleft"||k==="arrowup"){move(-1);ev.preventDefault()}
 });
@@ -1025,7 +1098,8 @@ async function poll(since){
 }
 function lastRun(jb){if(!jb||!jb.done)return;const L=$("#last");L.hidden=false;
  L.textContent=`Last run of this batch (started ${jb.started}): `+(jb.state==="crashed"?`crashed at ${stepText(jb)||"start-up"}`+(jb.step_running?"; the step it started is still running, so submit is refused until it ends.":"."):jb.ok?"finished OK.":"finished with problems.")}
-fetch("/api/items",{credentials:"same-origin"}).then(r=>r.json()).then(j=>{data=j;tab=TABS.find(t=>itemsOf(t).length)||"quarantine";
+fetch("/api/items",{credentials:"same-origin"}).then(r=>r.json()).then(j=>{data=j;
+ j.items.forEach(i=>{if(i.burst!=null)(BM[i.burst]=BM[i.burst]||[]).push(i)});tab=TABS.find(t=>itemsOf(t).length)||"quarantine";
  if(j.watching){attach();document.body.dataset.ready="1";return}render();lastRun(j.job);document.body.dataset.ready="1";
  /* a run started from another page or server of this batch: show it instead of stale items */
  const watch=async()=>{if(attached)return;try{const k=await (await fetch("/api/job",{credentials:"same-origin"})).json();if(k.watching){attach();return}}catch(e){return}setTimeout(watch,4000)};
