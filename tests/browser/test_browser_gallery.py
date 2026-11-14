@@ -4,9 +4,10 @@
   .venv-browser/bin/python -I -m unittest discover -s tests/browser -t tests -p test_browser_gallery.py
 
 Covers what the HTTP tests in tests/test_gallery.py can't: keys, tile selection (click and
-shift-click), the confirm dialogs (Trash; Erase with ERASE typed; the Close button's native
-confirm), the lightbox video playing by itself, HTTP Range while the video loads and seeks,
-and the detached-job dialog, including re-attaching to a running job after a reload.
+shift-click), the bottom selection bar (shown only while something is selected), the sidebar's
+views, the confirm dialogs (Trash; Erase with ERASE typed; the Close button's native confirm),
+the lightbox video playing by itself, Space pausing and resuming it, HTTP Range while the video
+loads and seeks, and the detached-job dialog, including re-attaching to a running job after a reload.
 
 Trash and Erase run a fake intake.py (MEDIA_REVIEW_INTAKE, tests/test_gallery.py's GATED) that
 deletes the files it is given; with a FIFO at FAKE_GATE it first waits until the test opens it,
@@ -16,15 +17,23 @@ Hooks the tests rely on (keep them when the layout changes): body[data-ready] on
 items has rendered; each grid item's [data-item] (its file name) and its checkbox named
 "select <name>"; the lightbox as role=dialog named "Item" with [data-current] = the name of the item shown;
 the confirm/job dialog as [data-dialog=confirm] (role=dialog) with [data-job] =
-running/done/failed/crashed; the textbox named "Type ERASE"; buttons by their names (Confirm,
-Cancel, Apply…, Trash suggestions, Close).
+running/done/failed/crashed; the textbox named "Type ERASE"; the selection bar as role=toolbar
+named "Selection actions"; buttons by their names (Confirm, Cancel, Apply…, Trash suggestions,
+Possible child, Library, Clear selection, Close).
 """
 import json, os, re, shutil, signal, sys, tempfile, unittest
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import browser_support as B  # noqa: E402  (puts tests/ on sys.path, hermetic config)
-import support  # noqa: E402
 import test_gallery as G  # noqa: E402  (fixtures and the server wrapper only)
+
+
+# resolve once the <video> is paused (at once if it already is), bounded by STEP_MS.
+PAUSED = """v => new Promise((res, rej) => {
+  setTimeout(() => rej(new Error("still playing")), %d);
+  if (v.paused) return res(true);
+  v.addEventListener("pause", () => res(true), {once: true});
+})""" % B.STEP_MS
 
 
 class GalleryBrowserTest(B.BrowserCase):
@@ -42,7 +51,7 @@ class GalleryBrowserTest(B.BrowserCase):
         self.gate = os.path.join(self.tmp, "gate")  # a FIFO only in the tests that hold a job
         self.env = dict(os.environ, HOME=self.home, MEDIA_INTAKE_STATE=self.state, PHOTO_LIBRARY=self.lib,
                         PERSONAL_FOOTAGE=self.vids, MEDIA_REVIEW_INTAKE=fake, FAKE_GATE=self.gate,
-                        MEDIA_INTAKE_CONFIG=support.write_config(os.path.join(self.home, "Videos/demo-footage")))
+                        MEDIA_INTAKE_CONFIG=B.write_config(os.path.join(self.home, "Videos/demo-footage")))
         L = lambda *p: os.path.join(self.lib, *p)  # noqa: E731
         self.a, self.b, self.c = L("2026/2026-11/a.jpg"), L("2026/2026-11/b.jpg"), L("2026/2026-11/c.png")
         self.d = L("2026/2026-10/d.jpg")
@@ -72,6 +81,9 @@ class GalleryBrowserTest(B.BrowserCase):
 
     def tiles(self, page):
         return page.locator("[data-item]").evaluate_all("els => els.map(e => e.dataset.item)")
+
+    def tiles_selected(self, page):
+        return page.locator("[data-item] input:checked").count()
 
     def confirm(self, page):
         return page.locator("[data-dialog=confirm]")
@@ -144,6 +156,42 @@ class GalleryBrowserTest(B.BrowserCase):
         B.expect(dlg).to_be_hidden()
         self.assertIn("Owner|keep", G.tags_of(self.a)[0])
         self.assertNotIn("Review|maybe-trash", G.tags_of(self.a)[0])
+
+    # ------------------------------------------------------------ the bottom selection bar and the sidebar views
+    def test_selection_bar_only_while_selected(self):
+        s = self.start()
+        page = self.new_page()
+        self.open(page, s)
+        bar = page.get_by_role("toolbar", name="Selection actions")
+        box = lambda n: page.get_by_role("checkbox", name=f"select {n}")  # noqa: E731
+        B.expect(bar).to_be_hidden()
+        box("b.jpg").click()
+        B.expect(bar).to_be_visible()
+        B.expect(bar).to_contain_text("1 selected")
+        for name in ("Keep", "Trash", "Erase", "+ tag", "Rotate", "Clear selection"):
+            B.expect(bar.get_by_role("button", name=name)).to_be_visible()
+        box("c.png").click()
+        B.expect(bar).to_contain_text("2 selected")
+        bar.get_by_role("button", name="Clear selection").click()  # the bar's own Clear
+        B.expect(bar).to_be_hidden()
+        B.expect(box("b.jpg")).not_to_be_checked()
+        box("d.jpg").click()
+        B.expect(bar).to_be_visible()
+        page.keyboard.press("Escape")  # and Esc
+        B.expect(bar).to_be_hidden()
+        box("d.jpg").click()
+        box("d.jpg").click()  # unticking the last one hides it too
+        B.expect(bar).to_be_hidden()
+        # a quick view in the sidebar filters the grid and shows as a removable chip; Library clears it
+        G.write_tags(self.c, ["Review|child-in-shot"])  # read at start-up: a fresh server
+        s2 = self.start()
+        self.open(page, s2)
+        page.get_by_role("button", name="Possible child").click()
+        B.expect(page.locator("[data-item]")).to_have_count(1)
+        B.expect(page.locator("[data-item]")).to_have_attribute("data-item", "c.png")
+        B.expect(page.get_by_role("button", name="Remove Review: Child in shot")).to_be_visible()
+        page.get_by_role("button", name="Library").click()
+        B.expect(page.locator("[data-item]")).to_have_count(4)
 
     # ------------------------------------------------------------ confirm dialogs
     def test_trash_and_erase_dialogs(self):
@@ -221,6 +269,13 @@ class GalleryBrowserTest(B.BrowserCase):
         self.assertAlmostEqual(video.evaluate(B.SEEK, 28.0), 28.0, delta=0.5)
         self.assertGreaterEqual(video.evaluate(B.PLAYING), 27.5)
         self.assert_ranges(media.of(src), size, after=before)
+        # Space pauses and plays it again (the large view has the focus, not a button or the video's controls)
+        B.expect(viewer).to_be_focused()
+        page.keyboard.press(" ")
+        self.assertTrue(video.evaluate(PAUSED))
+        page.keyboard.press(" ")
+        self.assertGreater(video.evaluate(B.PLAYING), 0)
+        self.assertEqual(self.tiles_selected(page), 0)  # Space in the large view never ticks a tile
         # Esc closes the lightbox and drops the video (nothing keeps playing behind it)
         page.keyboard.press("Escape")
         B.expect(viewer).to_be_hidden()

@@ -15,7 +15,10 @@ HERE = os.path.dirname(os.path.abspath(__file__))
 TESTS = os.path.dirname(HERE)
 if TESTS not in sys.path:
     sys.path.insert(0, TESTS)
-import support  # noqa: E402,F401  (hermetic config)
+import support  # noqa: E402  (imported for its side effect too: a hermetic MEDIA_INTAKE_CONFIG for every server)
+
+# The per-test config (its demo project folder inside the test's throwaway HOME), for the browser tests.
+write_config = support.write_config
 
 try:
     from playwright.sync_api import Error as PlaywrightError, expect, sync_playwright

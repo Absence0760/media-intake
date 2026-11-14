@@ -30,7 +30,8 @@ clips, for example.
 
 ## `gallery_views()`
 
-Returns a list of extra gallery tabs. Each is a dict:
+Returns a list of extra gallery tabs, shown in the sidebar's views after Trash
+suggestions. Each is a dict:
 
 | Key | Type | What |
 | --- | --- | --- |
