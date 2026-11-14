@@ -1145,8 +1145,11 @@ def cmd_erase(a):
     if not q:
         sys.exit("quarantine is empty")
     if not a.yes:
-        ans = input(f"Erase {len(q)} quarantined files for good{' and from the phone' if a.phone else ''}"
-                    f"{' and the drive' if a.drive else ''}? Type ERASE: ")
+        try:
+            ans = input(f"Erase {len(q)} quarantined files for good{' and from the phone' if a.phone else ''}"
+                        f"{' and the drive' if a.drive else ''}? Type ERASE: ")
+        except EOFError:  # no terminal (a cron job, the queue): no answer is no
+            ans = ""
         if ans.strip() != "ERASE":
             sys.exit("nothing erased")
     # A checksum that is also in the library belongs to a released (or library)
@@ -1204,8 +1207,10 @@ def cmd_erase(a):
         for src, _ in phone_items + prev_items:
             thumbs += thumb_forget(src)
             gone.add(src)
-    phone = len(device_remove(phone_todo))
+    # Previews before their chapters: a run stopped by a refused delete keeps the chapter, so the next
+    # run finds the previews beside it again. Chapter first would strand them: no chapter, no lookup.
     previews = len(device_remove(prev_todo))
+    phone = len(device_remove(phone_todo))
     pthumbs, prefused = phone_thumbnails(pthumb_todo)
     # Identical copies already in the library (filed by an earlier batch) are the
     # same picture: erase them too.

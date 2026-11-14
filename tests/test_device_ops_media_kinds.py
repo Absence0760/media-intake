@@ -110,9 +110,10 @@ class Base(unittest.TestCase):
     def tearDown(self):
         shutil.rmtree(self.tmp, ignore_errors=True)
 
-    def intake(self, *args, code=0):
-        r = subprocess.run([PY, "-I", INTAKE, *args], env=self.env, capture_output=True, text=True,
-                           stdin=subprocess.DEVNULL)
+    def intake(self, *args, code=0, answer=None, env=None):
+        """answer: what is typed at a prompt (None: stdin is closed, as under a cron job or the queue)."""
+        r = subprocess.run([PY, "-I", INTAKE, *args], env=env or self.env, capture_output=True, text=True,
+                           **({"stdin": subprocess.DEVNULL} if answer is None else {"input": answer}))
         self.assertEqual(r.returncode, code, f"{args}\n{r.stdout}\n{r.stderr}")
         return r.stdout + r.stderr if code else r.stdout
 
@@ -512,6 +513,81 @@ class GoPro(Base):
         self.assertTrue(os.path.islink(thm) and os.path.isfile(self.C(self.G + "GX010043.THM")))
         self.assertFalse(os.path.exists(self.C(self.G + "GL010042.LRV")))
 
+    def test_erase_without_yes_takes_nothing_off_the_card(self):
+        """Without --yes erase asks; any answer but ERASE, or no answer at all (stdin closed), deletes
+        nothing: not the chapter, not its previews, not the quarantined copy."""
+        b = "gopro-erase-ask"
+        self.staged(b)
+        self.apply(b, [self.G + "GX010042.MP4"])
+        before = files_under(self.card)
+        quar = os.path.join(self.state, "quarantine", b)
+        for answer in ("no\n", "erase\n", "", None):
+            out = self.intake("erase", b, "--phone", self.card, code=1, answer=answer)
+            self.assertIn("nothing erased", out, repr(answer))
+            self.assertNotIn("Traceback", out, repr(answer))
+            self.assertEqual(files_under(self.card), before, repr(answer))
+            self.assertTrue(os.path.isfile(os.path.join(quar, self.G + "GX010042.MP4")), repr(answer))
+
+    def test_erase_twice_is_safe(self):
+        """A second erase of the same batch finds the quarantine gone and touches nothing on the card."""
+        b = "gopro-erase-twice"
+        self.staged(b)
+        self.apply(b, [self.G + "GX010042.MP4"])
+        self.intake("erase", b, "--phone", self.card, "--yes")
+        after = files_under(self.card)
+        out = self.intake("erase", b, "--phone", self.card, "--yes", code=1)
+        self.assertIn("quarantine is empty", out)
+        self.assertEqual(files_under(self.card), after)
+        self.assertIn(self.G + "GL020042.LRV", after, "the other chapter's previews stay")
+
+    def test_erase_stopped_by_a_failed_preview_delete_finishes_on_the_next_run(self):
+        """A device that refuses one delete stops erase. The previews go before the chapter, so a run
+        stopped part way still has the chapter on the card, and the next run (which finds the previews
+        beside it) takes what is left. Chapter first would leave the .LRV, a copy of the footage, behind
+        for good: the next run finds no chapter and so looks for no previews."""
+        b = "gopro-erase-retry"
+        self.staged(b)
+        self.apply(b, [self.G + "GX010042.MP4"])
+        gio = shutil.which("gio")
+        self.assertTrue(gio, "gio is needed (the CI image has it)")
+        stub = os.path.join(self.tmp, "stub-bin")
+        os.makedirs(stub)
+        with open(os.path.join(stub, "gio"), "w") as f:  # refuses any .LRV, like a busy or read-only file
+            f.write(f'#!/bin/sh\ncase "$2" in *.LRV) exit 1;; esac\nexec "{gio}" "$@"\n')
+        os.chmod(os.path.join(stub, "gio"), 0o755)
+        env = dict(self.env, PATH=stub + os.pathsep + self.env.get("PATH", ""))
+        out = self.intake("erase", b, "--phone", self.card, "--yes", code=1, env=env)
+        self.assertIn("gio remove failed", out)
+        self.assertTrue(os.path.isfile(self.C(self.G + "GX010042.MP4")), "the chapter waits for its previews")
+        out = self.intake("erase", b, "--phone", self.card, "--yes")
+        self.assertIn("phone 1;", out)
+        self.assertIn("camera previews removed: 2", out)
+        left = files_under(self.card)
+        for n in ("GX010042.MP4", "GL010042.LRV", "GX010042.THM"):
+            self.assertNotIn(self.G + n, left, n)
+
+    def test_erase_never_touches_a_chapter_or_preview_in_a_denied_folder(self):
+        """A manifest naming a chapter under a denied folder (hand-edited, or from another tool): the
+        chapter is skipped by the allowlist, so its .LRV/.THM are never looked for, and nothing there
+        is touched."""
+        b = "gopro-erase-denied"
+        self.staged(b)
+        self.apply(b, [self.G + "GX010042.MP4"])
+        hidden = "Android/data/"
+        copy(self.C(self.G + "GX010042.MP4"), self.C(hidden + "GX010042.MP4"))
+        for n in ("GL010042.LRV", "GX010042.THM"):
+            copy(self.C(self.G + n), self.C(hidden + n))
+        mp = os.path.join(self.bd(b), "manifest.json")
+        man = jload(mp)
+        man["files"][self.G + "GX010042.MP4"]["src"] = self.C(hidden + "GX010042.MP4")
+        jsave(mp, man)
+        before = files_under(self.card)
+        out = self.intake("erase", b, "--phone", self.card, "--yes")
+        self.assertIn("skip phone delete, denied folder: " + hidden + "GX010042.MP4", out)
+        self.assertIn("phone 0;", out)
+        self.assertNotIn("camera previews removed", out)
+        self.assertEqual(files_under(self.card), before)
+
     def test_offload_frees_the_card_of_videos_and_photos(self):
         b = "gopro-offload"
         self.staged(b)
@@ -567,6 +643,25 @@ class PreviewNames(unittest.TestCase):
                 sources.check_preview(r, bad)
         with self.assertRaises(sources.Denied):
             sources.check(r, "/card/DCIM/100GOPRO/GL010042.LRV")  # never a media target
+
+    def test_a_preview_in_a_denied_folder_is_never_a_device_target(self):
+        """erase gates previews through device_targets with check_preview: one in a denied folder is
+        skipped with a line, never returned for deletion, even with no size to check."""
+        import intake
+        import sources
+        root = tempfile.mkdtemp(prefix="preview-gate-")
+        self.addCleanup(shutil.rmtree, root, True)
+        ok = os.path.join(root, "DCIM/100GOPRO/GL010042.LRV")
+        bad = [os.path.join(root, d, "GL010042.LRV") for d in ("Android/data", "DCIM/Vault", "Download")]
+        for p in [ok] + bad:
+            copy(__file__, p)
+        buf = io.StringIO()
+        with redirect_stdout(buf):
+            todo = intake.device_targets(root, [(p, intake.NO_SIZE_CHECK) for p in bad + [ok]], [],
+                                         sources.check_preview)
+        self.assertEqual(todo, [ok])
+        self.assertEqual(buf.getvalue().count("skip phone delete, denied"), 3, buf.getvalue())
+        self.assertTrue(all(os.path.isfile(p) for p in bad))
 
 
 # ---------------------------------------------------------------- external drive (kind drive)
