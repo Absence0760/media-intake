@@ -530,6 +530,21 @@ def walk_files(root, skip_rel=(), git=False):
             yield (os.path.join(r, f), in_git) if git else os.path.join(r, f)
 
 
+# How deep a near-duplicate chain goes: erasing quarantine/<b> moves near-copies to near-<b>, erasing those to
+# near-near-<b>, and so on. Each hop allows NEAR_MAX bits, so level k can be k * NEAR_MAX bits from the photo
+# first erased; 3 levels (12 of 64 bits) is as far as a match still means "a copy of a copy". Past it nothing
+# moves: the matches stay where they are and erase prints how many.
+NEAR_DEPTH = 3
+
+
+def near_level(batch):
+    """(depth, root): near-near-b -> (2, "b"); a batch that is not a near- batch is depth 0."""
+    n = 0
+    while batch.startswith("near-"):
+        batch, n = batch[len("near-"):], n + 1
+    return n, batch
+
+
 def near_roots():
     """The media library locations near-duplicates are looked for in, and nowhere else: app
     icon caches, map tiles, render frames and repo assets look alike and aren't your photos."""
@@ -634,15 +649,21 @@ def dhash_orient(p):
 def near_dups(refs, kept, index, batch, spare=()):
     """Move images within NEAR_MAX of an erased image into quarantine/near-<batch>/ (never deleted).
 
-    refs: [(dhash, landscape, sha256)] of the erased images. Each moved file records the
-    sha256 of the erased image it matched and the erase date (never its path or content),
-    so the review page can say "near-copy of a photo you erased on <date>". Looks only in near_roots() (the
-    library, videos, project folders, every batch's raw/ and review/), never inside a git working tree. spare: paths never moved (the
-    full-quality originals an xcheck batch's messaging copies point at with `of`).
+    refs: [(dhash, landscape, sha256, root)] of the erased images; root is the surviving original the
+    erased image was a copy of (an xcheck entry's `of`, or a near entry's `root_of`), else None. Each moved
+    file records the sha256 of the erased image it matched, the erase date and that root (never the erased
+    image's path or content), so the review page can show the root or say "near-copy of a photo you erased
+    on <date>". Looks only in near_roots() (the library, videos, project folders, every batch's raw/ and
+    review/), never inside a git working tree. spare: paths never moved (the originals an xcheck batch's
+    messaging copies, or a near batch's entries, point at). An existing near-<batch> is added to, never
+    replaced. Past NEAR_DEPTH, or where a quarantined file already holds the place, a match stays where it is
+    and is only counted.
+    Returns (moved, near batch name or None, matches left in place).
     """
     if not refs:
-        return 0, None
+        return 0, None, 0
     near = f"near-{batch}"
+    room = near_level(near)[0] <= NEAR_DEPTH
     qroot = os.path.join(STATE, "quarantine")
     cands = set()
     for root in near_roots():
@@ -650,11 +671,14 @@ def near_dups(refs, kept, index, batch, spare=()):
             if not git and os.path.splitext(p)[1].lower() in IMG and not p.startswith(qroot + os.sep):
                 cands.add(p)
     lib_dh = {k: v.get("dhash") for k, v in index.items()}
-    moved, q, quar = 0, {}, os.path.join(qroot, near)
+    quar = os.path.join(qroot, near)
+    qfile = os.path.join(quar, "quarantine.json")
+    q = load(qfile, {}) or {}
+    moved = left = 0
     spare = {os.path.abspath(x) for x in spare}
     for p in sorted(cands - spare):
         pre = lib_dh.get(p)
-        if pre is not None and all(bin(pre ^ d).count("1") > NEAR_MAX + 2 for d, *_ in refs):
+        if pre is not None and all(bin(pre ^ r[0]).count("1") > NEAR_MAX + 2 for r in refs):
             continue  # library entry: the stored hash rules it out without decoding
         try:
             if os.path.islink(p) or not os.path.isfile(p):
@@ -669,9 +693,12 @@ def near_dups(refs, kept, index, batch, spare=()):
             continue
         if s in kept:
             continue  # you released this exact picture
-        private_dir(quar)
         rel = os.path.relpath(p, HOME)
         dst = os.path.join(quar, rel)
+        if not room or rel in q or os.path.lexists(dst):
+            left += 1
+            continue
+        private_dir(quar)
         os.makedirs(os.path.dirname(dst), mode=0o700, exist_ok=True)
         shutil.move(p, dst)
         os.chmod(dst, stat.S_IRUSR | stat.S_IWUSR)
@@ -679,12 +706,14 @@ def near_dups(refs, kept, index, batch, spare=()):
             shutil.move(sidecar(p), sidecar(dst))  # goes with the file; erased with the quarantine
         q[rel] = dict(reasons=["near-duplicate"], sha=s, size=os.path.getsize(dst), dst=p,
                       near_of_sha=hit[2], erased_on=f"{datetime.date.today():%Y-%m-%d}")
+        if hit[3]:
+            q[rel]["root_of"] = hit[3]
         thumb_forget(p)
         index.pop(p, None)
         moved += 1
-    if q:
-        save(os.path.join(quar, "quarantine.json"), q)
-    return moved, near
+    if moved:
+        save(qfile, q)
+    return moved, near, left
 
 
 def prune_recent(uris, prefixes):
@@ -1002,7 +1031,8 @@ def cmd_erase(a):
         if v["sha"] in shas and os.path.splitext(rel)[1].lower() in IMG and os.path.exists(p):
             dh, land = dhash_orient(p)
             if dh is not None:
-                refs.append((dh, land, v["sha"]))
+                root = v.get("of") if isinstance(v.get("of"), str) else v.get("root_of")
+                refs.append((dh, land, v["sha"], root if isinstance(root, str) else None))
     gone = set()  # every path erased or moved: for recent files, app state and the index
     # Exact duplicates of a quarantined file were dropped by `apply`, but their
     # phone originals (e.g. DCIM/Restored copies) are just as sensitive.
@@ -1057,8 +1087,9 @@ def cmd_erase(a):
         gone.add(p)
         index.pop(p, None)
     drive = drive_purge(a.drive, shas) if a.drive else 0
-    spare = [v["of"] for v in q.values() if isinstance(v.get("of"), str)]
-    near, near_batch = near_dups(refs, kept, index, a.batch, spare)
+    # The originals this quarantine's entries are copies of stay: an xcheck `of`, a near chain's `root_of`.
+    spare = [v[k] for v in q.values() for k in ("of", "root_of") if isinstance(v.get(k), str)]
+    near, near_batch, near_left = near_dups(refs, kept, index, a.batch, spare)
     save(os.path.join(STATE, "index.json"), index)
     if near_batch and near:
         gone |= {v["dst"] for v in load(os.path.join(STATE, "quarantine", near_batch, "quarantine.json"), {}).values()}
@@ -1090,10 +1121,16 @@ def cmd_erase(a):
               + (f"; {prefused} the phone refused to delete (held open by Android's media service)" if prefused else ""))
     print(f"recent files: {recent} entries removed; " + (", ".join(f"{k} {v}" for k, v in sorted(traces.items())) or "no app traces"))
     if near:
+        rb = near_level(near_batch)[1]
+        rb = rb[len("xcheck-"):] if rb.startswith("xcheck-") else rb
         print(f"{near} near-duplicates (resized/recompressed copies) moved to quarantine/{near_batch}, not deleted.\n"
               f"  Open:   xdg-open {os.path.abspath(os.path.join(STATE, 'quarantine', near_batch))}\n"
-              f"  Review: media-intake quarantine {near_batch}\n"
-              f"  then:   media-intake erase {near_batch}")
+              f"  Review: media-intake review {rb}   (one page shows every near- level)\n"
+              f"  or:     media-intake quarantine {near_batch}, then media-intake erase {near_batch}")
+    if near_left:
+        why = (f"near-duplicate chains stop at depth {NEAR_DEPTH}" if near_level(near_batch)[0] > NEAR_DEPTH
+               else "a file already quarantined holds the same place")
+        print(f"{near_left} near-duplicates of erased photos left where they are, not moved ({why})")
     print("videos: only exact copies are found; re-encoded or trimmed copies are not matched")
     if a.drive and not a.no_wipe_free:
         try:

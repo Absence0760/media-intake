@@ -235,7 +235,11 @@ def summary(batch):
 def pending(batch):
     """What in this batch waits for you: quarantine (and near-) counts, review folder files."""
     q = len(load(os.path.join(STATE, "quarantine", batch, "quarantine.json"), {}) or {})
-    near = len(load(os.path.join(STATE, "quarantine", f"near-{batch}", "quarantine.json"), {}) or {})
+    # Every level of its near-copy chain (near-, near-near-, ...): the review page shows them all.
+    qd = os.path.join(STATE, "quarantine")
+    levels = [n for n in (os.listdir(qd) if os.path.isdir(qd) else [])
+              if re.fullmatch(rf"(?:near-)+{re.escape(batch)}", n)]
+    near = sum(len(load(os.path.join(qd, n, "quarantine.json"), {}) or {}) for n in levels)
     rv = sum(len(fs) for _, _, fs in os.walk(os.path.join(bdir(batch), "review")))
     return q, near, rv
 
