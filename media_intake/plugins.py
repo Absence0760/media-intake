@@ -12,9 +12,12 @@ importable from [plugins] paths. Every hook is optional:
                                     {render(el, api)}",
                          "get":  callable(path, query) -> (status, json-able) | None,
                          "post": callable(path, body) -> (status, json-able) | None,
+                         "post_read_only": True (optional: post never writes the library),
                          "media": callable(path) -> {"path", "mime"} | None}
                       Its routes live under /plugin/<id>/...; the gallery's own
                       token, Host, Origin and CSRF checks run before any of them.
+                      A post runs inside the library lock (409 at once while a job
+                      or the CLI holds it) unless the view sets post_read_only.
 
 A plugin runs with your user's rights: list only modules you wrote or read.
 """

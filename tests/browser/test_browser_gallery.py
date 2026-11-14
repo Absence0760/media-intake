@@ -17,7 +17,8 @@ Hooks the tests rely on (keep them when the layout changes): body[data-ready] on
 items has rendered; each grid item's [data-item] (its file name) and its checkbox named
 "select <name>"; the lightbox as role=dialog named "Item" with [data-current] = the name of the item shown;
 the confirm/job dialog as [data-dialog=confirm] (role=dialog) with [data-job] =
-running/done/failed/crashed; the textbox named "Type ERASE"; the selection bar as role=toolbar
+running/done/failed/crashed, its job status as role=status (shown while a job runs, hidden when it ends)
+and its output as its <pre>; the textbox named "Type ERASE"; the selection bar as role=toolbar
 named "Selection actions"; buttons by their names (Confirm, Cancel, Apply…, Trash suggestions,
 Possible child, Library, Clear selection, Close).
 """
@@ -26,6 +27,21 @@ import json, os, re, shutil, signal, sys, tempfile, unittest
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import browser_support as B  # noqa: E402  (puts tests/ on sys.path, hermetic config)
 import test_gallery as G  # noqa: E402  (fixtures and the server wrapper only)
+
+
+# An erase that prints nothing until the test opens FAKE_GATE (as the real one sweeping HOME for copies can
+# for minutes), then one progress line, then waits on FAKE_GATE2 before it deletes the files it was given.
+SLOW_ERASE = r'''
+import os, sys
+with open(os.environ["FAKE_GATE"]) as f:
+    f.read()
+print("erase: looked in 1 of 2 folders", flush=True)
+with open(os.environ["FAKE_GATE2"]) as f:
+    f.read()
+for p in sys.argv[2:]:
+    if os.path.isabs(p) and os.path.lexists(p):
+        os.remove(p)
+'''
 
 
 # resolve once the <video> is paused (at once if it already is), bounded by STEP_MS.
@@ -318,6 +334,39 @@ class GalleryBrowserTest(B.BrowserCase):
             B.expect(d.locator("pre")).to_contain_text("done: 1 of 1 gone from the library")
             B.expect(p.locator('[data-item="c.png"]')).to_have_count(0)
         self.assertFalse(os.path.exists(self.c))
+
+    def test_erase_status_before_any_output(self):
+        """Erase shows what it is doing at once, while its output is still empty, then streams the output."""
+        fake, gate2 = os.path.join(self.tmp, "slow_erase.py"), os.path.join(self.tmp, "gate2")
+        with open(fake, "w") as f:
+            f.write(SLOW_ERASE)
+        os.mkfifo(self.gate)
+        os.mkfifo(gate2)
+        self.env.update(MEDIA_REVIEW_INTAKE=fake, FAKE_GATE2=gate2)
+        s = self.start()
+        page = self.new_page()
+        self.open(page, s)
+        dlg = self.confirm(page)
+        page.get_by_role("checkbox", name="select b.jpg").click()
+        page.keyboard.press("e")
+        dlg.get_by_role("textbox", name="Type ERASE").fill("ERASE")
+        dlg.get_by_role("button", name="Confirm").click()
+        status, out = dlg.get_by_role("status"), dlg.locator("pre")
+        B.expect(status).to_have_text("Erasing… looking for copies in your home folder. This can take a few "
+                                      "minutes; you can close this page, it keeps running.")
+        B.expect(dlg).to_have_attribute("data-job", "running")
+        # the fake has printed nothing yet: the output is the command line alone
+        B.expect(out).to_have_text(re.compile(r"^\$ intake\.py forget \[1 file\] --yes\s*$"))
+        B.open_gate(self.gate)
+        B.expect(out).to_contain_text("erase: looked in 1 of 2 folders")  # streamed while it runs
+        B.expect(dlg).to_have_attribute("data-job", "running")
+        B.expect(status).to_be_visible()
+        B.open_gate(gate2)
+        B.expect(dlg).to_have_attribute("data-job", "done")
+        B.expect(dlg.get_by_role("heading")).to_have_text("Done")
+        B.expect(out).to_contain_text("done: 1 of 1 gone from the library")
+        B.expect(status).to_be_hidden()
+        self.assertFalse(os.path.exists(self.b))
 
     def test_crashed_job_is_shown(self):
         os.mkfifo(self.gate)

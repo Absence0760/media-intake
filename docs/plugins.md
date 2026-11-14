@@ -40,6 +40,7 @@ suggestions. Each is a dict:
 | `script` | str | JavaScript, inlined into the page, that sets `window.mediaIntakeViews[id] = {render(el, ctx)}` |
 | `get` | `callable(rest, query) -> (status, json) or None` | `GET /plugin/<id>/<rest>`; `None` is a 404 |
 | `post` | `callable(rest, body) -> (status, json) or None` | `POST /plugin/<id>/<rest>` with a JSON object body |
+| `post_read_only` | `True`, optional | Declares that `post` never writes the library: it is called without the library lock (below) |
 | `media` | `callable(rest) -> {"path", "mime"} or None` | `GET /plugin/<id>/media/<rest>`, served with Range support |
 
 `render(el, ctx)` gets the tab's container element and `ctx` with
@@ -54,4 +55,28 @@ symlink) outside the state folder and not flagged, quarantined or erased;
 otherwise the route answers 404. The page's Content-Security-Policy still
 applies: no external scripts, styles or connections.
 
-A minimal plugin is in `tests/test_gallery.py` (`TOY_PLUGIN`).
+### Plugin POSTs hold the library lock
+
+A `post` handler may write sidecars or other library files, so the gallery
+calls it inside the library lock ([intake.md](intake.md), "One writer at a
+time"), the same `writing()` guard that Keep, my tags and Rotate use. The
+lock is taken before your handler runs and released after it returns; it is
+never waited on. While anything else holds it (a Trash or Erase job, a
+review run, a CLI `apply` or `erase`, another gallery's write), the request
+gets `409 {"error": "the library is busy: <holder> ..."}` at once and your
+handler is not called. So a handler:
+
+- must not take the library lock itself (it is already held; a second
+  `flock` on the lock file from the same process would be refused), and must
+  not start a `media-intake` subcommand that takes it;
+- should return quickly: Keep and the CLI get 409 (or wait, for the CLI)
+  while it runs;
+- can set `post_read_only=True` on the view when none of its POSTs ever
+  write the library (a search, a preview, writing only to its own files
+  outside the library). It is then called without the lock and never gets
+  the 409. Only the literal `True` counts.
+
+`get` and `media` never take the lock: reading is never locked.
+
+A minimal plugin is in `tests/test_gallery.py` (`TOY_PLUGIN`, with a
+`post_read_only` view too).
