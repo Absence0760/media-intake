@@ -339,6 +339,10 @@ def video_jpeg(path, px, delta):
 
 
 # ---------------------------------------------------------------- app
+class LockBusy(RuntimeError):
+    """App.writing() could not take the library lock (an HTTP 409; its message names the holder)."""
+
+
 class App:
     def __init__(self, items, drive=None, views=()):
         self.items = items
@@ -638,7 +642,7 @@ class App:
         try:
             fd = library_lock.acquire(f"gallery {what}")
         except library_lock.Busy as e:
-            raise RuntimeError(str(e)) from None
+            raise LockBusy(str(e)) from None
         try:
             yield
         finally:
@@ -1027,7 +1031,17 @@ class Handler(R.Handler):
             return
         if m := re.fullmatch(r"/plugin/([a-z0-9-]{1,32})/([^?#]{1,512})", path):
             v = app.views.get(m.group(1))
-            got = v["post"](m.group(2), body) if v and callable(v.get("post")) else None
+            if not v or not callable(v.get("post")):
+                return self.reply(404, "404\n")
+            # A plugin POST may write sidecars or library files, so it runs under the library lock like Keep,
+            # tags and Rotate (409 naming the holder, at once, while a job or the CLI writes). Only a view that
+            # declares post_read_only=True is called without it (docs/plugins.md).
+            try:
+                with contextlib.nullcontext() if v.get("post_read_only") is True \
+                        else app.writing(f"plugin {m.group(1)}"):
+                    got = v["post"](m.group(2), body)
+            except LockBusy as e:
+                return self.json(409, {"error": str(e)})
             return self.json(*got) if got is not None else self.reply(404, "404\n")
         if path not in acts:
             return self.reply(404, "404\n")
@@ -1287,6 +1301,7 @@ dl.dt dd{margin:0;word-break:break-word}
 .box pre{white-space:pre-wrap;word-break:break-all;font-size:12px;background:var(--card);padding:10px;border-radius:8px;max-height:50vh;overflow:auto}
 .box input{height:34px;padding:0 10px;border:1px solid var(--line);border-radius:8px;background:var(--bg)}
 .mbtns{display:flex;gap:8px;justify-content:flex-end;margin-top:14px}
+#mstatus{margin:12px 0 0;padding:10px 12px;border-radius:8px;background:var(--acc-soft)}
 
 /* ---------------------------------------------------------------- phone */
 @media (max-width:760px){
@@ -1369,7 +1384,7 @@ dl.dt dd{margin:0;word-break:break-word}
 </div>
 <div class="modal" id="modal" role="dialog" aria-modal="true" aria-labelledby="mh" data-dialog="confirm"><div class="box"><h3 id="mh"></h3><div id="mb"></div>
  <p id="mtype" hidden>Type <b>ERASE</b> to confirm: <input id="mtyped" autocomplete="off" spellcheck="false" aria-label="Type ERASE"></p>
- <div class="mbtns"><button type="button" class="btn" id="mno">Cancel</button><button type="button" class="btn primary" id="mgo">Confirm</button></div><pre id="mout" hidden></pre></div></div>
+ <div class="mbtns"><button type="button" class="btn" id="mno">Cancel</button><button type="button" class="btn primary" id="mgo">Confirm</button></div><p id="mstatus" role="status" hidden></p><pre id="mout" hidden></pre></div></div>
 <script>
 "use strict";
 const CSRF=document.querySelector('meta[name=csrf]').content;
@@ -1515,7 +1530,7 @@ function nameOf(id){const it=items.find(i=>i.id===id);return it?it.n:"#"+id}
 let tt=null;function toast(s){const t=$("#toast");t.textContent=s;t.classList.add("on");clearTimeout(tt);tt=setTimeout(()=>t.classList.remove("on"),4500)}
 async function doKeep(ids){try{const j=await api("/api/keep",{ids});toast(j.result);refreshAfter(ids,false);loadFacets()}catch(e){alert("Keep refused: "+e.message)}}
 function confirmBox(title,lines,needType,go){$("#mh").textContent=title;const b=$("#mb");b.replaceChildren();lines.forEach(l=>b.append(el("p",l.startsWith("!")?"warn":null,l.replace(/^!/,""))));
- $("#mtype").hidden=!needType;$("#mtyped").value="";$("#mgo").disabled=!!needType;$("#mgo").hidden=false;$("#mout").hidden=true;$("#mout").textContent="";delete $("#modal").dataset.job;$("#modal").classList.add("on");
+ $("#mtype").hidden=!needType;$("#mtyped").value="";$("#mgo").disabled=!!needType;$("#mgo").hidden=false;$("#mout").hidden=true;$("#mout").textContent="";$("#mstatus").hidden=true;delete $("#modal").dataset.job;$("#modal").classList.add("on");
  $("#mtyped").oninput=()=>{$("#mgo").disabled=$("#mtyped").value!=="ERASE"};if(needType)$("#mtyped").focus();else $("#mno").focus();
  $("#mgo").onclick=async()=>{$("#mgo").disabled=true;try{await go()}catch(e){$("#mout").hidden=false;$("#mout").textContent="Refused: "+e.message;$("#mgo").disabled=false}}}
 $("#mno").onclick=()=>{$("#modal").classList.remove("on")};
@@ -1530,16 +1545,21 @@ function askErase(ids){confirmBox(`Erase ${ids.length} item${ids.length>1?"s":""
 /* Trash and Erase run as a detached job (jobs.py): closing the page or stopping the server never stops
    them, and any page (a reload, a second tab, a restarted server) shows the running one from its status file. */
 async function runJob(path,body,ids){try{await api(path,body)}catch(e){if(/still running/.test(e.message)){attachJob();return}throw e}
- progressMode();poll(0,ids)}
-function progressMode(){$("#mgo").hidden=true;$("#mtype").hidden=true;$("#mout").hidden=false;$("#mout").textContent="";$("#modal").classList.add("on")}
+ progressMode(path==="/api/erase"?"forget":"trash");poll(0,ids)}
+/* Shown from the moment a job starts, before its first output line: an erase sweeps HOME for copies and can
+   print nothing for minutes, which looked like a hang. Hidden once the job has finished. */
+const STATUS={forget:"Erasing… looking for copies in your home folder. This can take a few minutes; you can close this page, it keeps running.",
+ trash:"Trashing… you can close this page, it keeps running."};
+function jobStatus(label){const t=STATUS[label]||"Working… you can close this page, it keeps running.";const m=$("#mstatus");if(m.textContent!==t)m.textContent=t;m.hidden=false}
+function progressMode(label){$("#mgo").hidden=true;$("#mtype").hidden=true;$("#mout").hidden=false;$("#mout").textContent="";jobStatus(label);$("#modal").classList.add("on")}
 function stepText(j){return j.step?` (step ${j.step}${j.total?" of "+j.total:""}: ${j.label})`:""}
 async function poll(since,ids){let j;try{j=await api("/api/job?since="+since)}catch(e){$("#mout").textContent+="\n(server stopped; an action already started keeps going on its own)";return}
  if(j.lines.length){$("#mout").textContent+=j.lines.join("\n")+"\n";$("#mout").scrollTop=1e9}$("#modal").dataset.job=j.done?(j.state==="crashed"?"crashed":j.ok?"done":"failed"):"running";
- if(!j.done){$("#mh").textContent="Running"+stepText(j)+"; closing the page does not stop it";setTimeout(()=>poll(j.next,ids),600);return}
+ if(!j.done){if(j.label)jobStatus(j.label);$("#mh").textContent="Running"+stepText(j)+"; closing the page does not stop it";setTimeout(()=>poll(j.next,ids),600);return}
  $("#mh").textContent=j.state==="crashed"?"The action stopped unexpectedly (crashed)"+stepText(j)+(j.step_running?"; the step it started is still running":"")+". Nothing more runs by itself."
   :j.ok?"Done":"Finished with problems (see below)";
- ids.forEach(id=>sel.delete(id));closeViewer();loadFacets();reset()}
-async function attachJob(){let j;try{j=await api("/api/job")}catch(e){return}if(j.done)return;$("#mh").textContent="An action is running";$("#mb").replaceChildren();progressMode();poll(0,j.ids||[])}
+ $("#mstatus").hidden=true;ids.forEach(id=>sel.delete(id));closeViewer();loadFacets();reset()}
+async function attachJob(){let j;try{j=await api("/api/job")}catch(e){return}if(j.done)return;$("#mh").textContent="An action is running";$("#mb").replaceChildren();progressMode(j.label);poll(0,j.ids||[])}
 async function tagAsk(op){const ids=vi>=0&&!sel.size?[items[vi].id]:selIds();if(!ids.length)return;
  const t=prompt((op==="add"?"Add":"Remove")+" a tag of yours on "+ids.length+" item(s). Not Project|, Source|, Event|, Place|, Label|, Review|, AI|, Used|, Owner| (the tools' own):");
  if(!t)return;try{const j=await api("/api/tag",{ids,tag:t,op});toast(j.result);loadFacets();refreshAfter(ids,false)}catch(e){alert("Refused: "+e.message)}}
@@ -1550,7 +1570,7 @@ $("#bkeep").onclick=()=>doKeep(selIds());$("#btrash").onclick=()=>askTrash(selId
 $("#btag").onclick=()=>tagAsk("add");$("#buntag").onclick=()=>tagAsk("remove");$("#brot").onclick=()=>rot(selIds(),"cw");$("#bnone").onclick=()=>{sel.clear();paintSel()};
 $("#sugapply").onclick=()=>{const keep=Object.keys(dec).filter(k=>dec[k]==="keep").map(Number),trash=Object.keys(dec).filter(k=>dec[k]==="trash").map(Number);
  confirmBox(`Apply: ${keep.length} keep, ${trash.length} trash?`,[keep.length?"Keep: Owner|keep + Owner|not-trash in the sidecar (never suggested again).":"",trash.length?"Trash ("+names(trash)+"): plain delete, never taken in again (Owner|trash: the sha256 in trashed.json; copies left on disk are marked).":""].filter(Boolean),false,
-  async()=>{const j=await api("/api/decide",{keep,trash,confirm:true});if(trash.length){$("#mgo").hidden=true;$("#mout").hidden=false;$("#mout").textContent=j.result+"\n";poll(0,trash)}else{$("#modal").classList.remove("on");toast(j.result);loadFacets();reset()}})};
+  async()=>{const j=await api("/api/decide",{keep,trash,confirm:true});if(trash.length){progressMode("trash");$("#mout").textContent=j.result+"\n";poll(0,trash)}else{$("#modal").classList.remove("on");toast(j.result);loadFacets();reset()}})};
 // ---------------------------------------------------------------- large view
 function curVideo(){return $("#media video")}
 function stopVideo(){const v=curVideo();if(v){v.pause();v.removeAttribute("src");v.load()}}  // releases the file

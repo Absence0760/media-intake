@@ -37,7 +37,8 @@ copies there go too.
   browser refuses sound), Space plays / pauses, Prev / Next play the next one,
   Esc stops it and releases the file. When the browser can't decode it (often
   HEVC), the thumbnail shows large with **Open in the system player**, which
-  runs `xdg-open` on that one file (below).
+  runs `xdg-open` on that one file (below; `xdg-open` comes from Fedora's
+  `xdg-utils`, which `media-intake doctor` lists as optional).
 
 The sidebar rail, open sections and tile size live in the browser's
 `localStorage` (a per-browser convenience; the page works without it).
@@ -105,11 +106,11 @@ In the large view the keys act on the item shown; **R** / **Shift+R** rotate.
 | Erase | `media-intake forget FILE... --yes [--drive]`: the erase-everywhere path (quarantine, sweep of HOME, sidecars, thumbnails, recent files, erase log, verify-gone). Summary + type ERASE. For anything private. |
 | My tag + / - | sidecar `HierarchicalSubject` + its `dc:Subject` leaf. Refused for the tools' namespaces (`Project\|`, `Source\|`, `Event\|`, `Place\|`, `Label\|`, `Review\|`, `AI\|`, `Used\|`, `Owner\|`); removal only touches your tags, and keeps a leaf another tag still uses. |
 | Rotate | sidecar `XMP-tiff:Orientation` only (1/6/3/8). The original is never re-encoded or written; digiKam reads the same field. |
-| Open in the system player | nothing: runs `xdg-open <file>` (an argument list, no shell, detached) for the one item, only on that button's POST, and only for a regular file inside a library root after resolving links, not in a running job and not flagged, quarantined or erased (else 400). |
+| Open in the system player | nothing: `POST /api/open` with one id (`{"ids": [id]}`) runs `xdg-open <file>` (an argument list, no shell, detached) for the one item, only on that button's POST, and only for a regular file inside a library root after resolving links, not in a running job and not flagged, quarantined or erased (else 400). |
 
 Every action holds the library lock ([intake.md](intake.md), "One writer at
-a time"): Keep, my tags and Rotate for the write, Trash and Erase for their
-whole job. While a CLI command (`apply`, `erase`, ...), a review run or
+a time"): Keep, my tags, Rotate and a plugin view's POST for the write
+([plugins.md](plugins.md)), Trash and Erase for their whole job. While a CLI command (`apply`, `erase`, ...), a review run or
 another gallery's job holds it, the action gets 409 naming the holder and
 nothing is written; browsing is never locked.
 
@@ -121,7 +122,13 @@ Trash and Erase run as a detached job (`media_intake/jobs.py`, the same module
 as the review page), so closing the page or stopping the server never stops
 one that has started:
 
-- The dialog polls the job and shows its step and output. A page opened (or
+- The dialog shows what the job is doing from the moment it starts, before
+  any output exists (Erase: "Erasing… looking for copies in your home folder.
+  This can take a few minutes; you can close this page, it keeps running.",
+  since the sweep of HOME can print nothing for minutes), then polls the job
+  and shows its step and output as it arrives. When it ends the status goes
+  and the title says "Done" or "Finished with problems", with the summary
+  line last in the output. A page opened (or
   reloaded) while one runs, from this server or a restarted one, opens the
   dialog on the running job; the files it acts on stay hidden from thumbnails
   and media until it ends.
@@ -195,7 +202,8 @@ cold read from disk will be slower.
 `python3 -I -m unittest discover -s tests -p test_gallery.py`: synthetic media in a throwaway
 HOME, the real `intake.py` for trash and forget, and a demo plugin view; the
 job tests swap in a fake `intake.py` whose trash waits on a FIFO, then kill
-the server or the worker mid-job. Also: the sidebar counts against their
+the server or the worker mid-job, and a plugin POST gets 409 while such a job
+holds the library lock (a view declared `post_read_only` does not). Also: the sidebar counts against their
 filters, the added-in-N-days filter, a trashed file's copy showing as
 "trashed copy" at once, and Open in the system player through a fake
 `xdg-open` on PATH (its refusals included).
@@ -206,7 +214,8 @@ selection bar appearing only while something is selected, a sidebar quick
 view and its chip, the Trash, Erase (ERASE typed) and Close confirms, the
 lightbox video playing by itself, Space pausing and resuming it, seeking by
 Range, and the job dialog's progress, re-attach after a reload and crash
-message.
+message, and Erase's status line shown while its output is still empty (a
+fake `intake.py` that prints nothing until the test opens a FIFO).
 
 ## Not verified
 

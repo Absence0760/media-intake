@@ -28,7 +28,7 @@ class FakeProbe:
     """A machine with everything installed and every pinned file correct; tests knock pieces out."""
 
     def __init__(self):
-        self.tools = set(cli.SYSTEM_TOOLS) | {"ollama"}
+        self.tools = set(cli.SYSTEM_TOOLS) | {"ollama", cli.XDG_OPEN}
         self.modules = set(cli.SYSTEM_MODULES)
         self.langs = "List of available languages (2):\neng\nosd\n"
         self.plugins = "va:  vah265dec: VA-API H.265 Decoder\n"
@@ -111,6 +111,15 @@ class Doctor(unittest.TestCase):
         self.assertEqual(code, 0, lines)
         self.assertIn("Optional:  sudo dnf install gstreamer1-plugins-bad-free gvfs-mtp", lines)
         self.assertFalse([ln for ln in lines if ln.startswith("Install what's missing")], lines)
+
+    def test_no_xdg_open_is_optional(self):
+        self.assertTrue(self.line(self.run_doctor()[1], "xdg-open").startswith("ok "))
+        self.p.tools.discard("xdg-open")
+        code, lines = self.run_doctor()
+        self.assertEqual(code, 0, lines)
+        self.assertEqual(self.line(lines, "xdg-open"),
+                         "optional xdg-open (the gallery's Open in the system player button) (xdg-utils)")
+        self.assertIn("Optional:  sudo dnf install xdg-utils", lines)
 
     def test_no_gst_inspect_is_optional(self):
         self.p.tools.discard("gst-inspect-1.0")

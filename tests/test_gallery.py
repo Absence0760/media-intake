@@ -105,12 +105,18 @@ os.replace(os.environ["FAKE_OPEN_LOG"] + ".tmp", os.environ["FAKE_OPEN_LOG"])
 TOY_PLUGIN = """
 import os
 SECRET = os.path.join(os.environ["PHOTO_LIBRARY"], "2026/2026-11/secret.jpg")
+POSTS = []  # every body a toy post handler ran with: a handler refused at the lock never runs
+def post(rest, body):
+    POSTS.append(body)
+    return 200, dict(got=body)
 def gallery_views():
     return [dict(id="toy", title="Toy", script="window.mediaIntakeViews.toy={render(el,api){}};",
-                 get=lambda rest, q: (200, dict(rest=rest, **q)) if rest == "hello" else None,
-                 post=lambda rest, body: (200, dict(got=body)),
+                 get=lambda rest, q: (200, dict(rest=rest, **q)) if rest == "hello"
+                 else (200, dict(posts=len(POSTS))) if rest == "posts" else None,
+                 post=post,
                  media=lambda rest: dict(path="__CLIP__", mime="video/mp4") if rest == "clip"
-                 else dict(path=SECRET, mime="image/jpeg") if rest == "secret" else None)]
+                 else dict(path=SECRET, mime="image/jpeg") if rest == "secret" else None),
+            dict(id="ro", title="Read-only", post_read_only=True, post=post)]
 """
 
 
@@ -556,7 +562,7 @@ class GalleryTest(unittest.TestCase):
         self.assertNotIn("a.jpg", self.names(s)[0])  # the orphaned step did finish; the listing follows the disk
 
     # ------------------------------------------------------------ plugin views
-    def test_plugin_view(self):
+    def with_toy_plugin(self):
         pdir = os.path.join(self.tmp, "plugins")
         os.makedirs(pdir)
         with open(os.path.join(pdir, "toy_plugin.py"), "w") as f:
@@ -567,6 +573,9 @@ class GalleryTest(unittest.TestCase):
         with open(cfg, "w") as f:
             f.write(base + f'\n[plugins]\npaths = ["{pdir}"]\nmodules = ["toy_plugin"]\n')
         self.env["MEDIA_INTAKE_CONFIG"] = cfg
+
+    def test_plugin_view(self):
+        self.with_toy_plugin()
         s = self.start()
         r, page = s.req("GET", "/")
         self.assertEqual(r.status, 200)
@@ -583,6 +592,33 @@ class GalleryTest(unittest.TestCase):
         self.assertEqual(r.status, 404)
         r, _ = s.req("GET", "/plugin/toy/hello", token=False)  # the gallery's guard runs first
         self.assertNotEqual(r.status, 200)
+
+    def test_plugin_post_takes_the_library_lock(self):
+        """A plugin POST runs under the library lock (as Keep does): 409 naming the holder while a job holds it,
+        unless the view declares post_read_only."""
+        self.with_toy_plugin()
+        fake, gate = os.path.join(self.tmp, "gated_intake.py"), os.path.join(self.tmp, "gate")
+        with open(fake, "w") as f:
+            f.write(GATED)
+        os.mkfifo(gate)
+        self.env.update(MEDIA_REVIEW_INTAKE=fake, FAKE_GATE=gate)
+        s = self.start()
+        code, j = s.post("/api/trash", {"ids": [self.id_of(s, "a.jpg")], "confirm": True})
+        self.assertEqual(code, 200, j)
+        until(lambda: any("waiting at the gate" in x for x in s.get("/api/job")["lines"]), "the trash to start")
+        code, j = s.post("/plugin/toy/write", {"a": 1})
+        self.assertEqual(code, 409, j)
+        self.assertIn("the library is busy: job gallery", j["error"])
+        self.assertEqual(s.get("/plugin/toy/posts"), {"posts": 0})  # the handler never ran
+        code, j = s.post("/plugin/ro/look", {"b": 2})  # declared read-only: not locked
+        self.assertEqual((code, j), (200, {"got": {"b": 2}}))
+        fd = os.open(gate, os.O_WRONLY)  # the fake is waiting on it: this returns at once
+        os.write(fd, b"go")
+        os.close(fd)
+        self.assertTrue(self.wait_job(s)["ok"])
+        code, j = s.post("/plugin/toy/write", {"a": 1})  # the job is over: the lock is free
+        self.assertEqual((code, j), (200, {"got": {"a": 1}}))
+        self.assertEqual(s.get("/plugin/toy/posts"), {"posts": 2})
 
     # ------------------------------------------------------------ page layout and the sidebar's counts
     def test_page_layout_and_facet_counts(self):
