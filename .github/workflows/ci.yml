@@ -35,14 +35,48 @@ jobs:
           TZ: America/New_York
         run: python3 -I -m unittest discover -s tests -v
 
+  # Real-browser tests (tests/browser/): Playwright from requirements-browser.txt (hash-pinned,
+  # --no-deps) in a venv over the apt Python, and the headless Chromium that Playwright version
+  # pins, fetched by its own explicit install step. MEDIA_INTAKE_BROWSER_REQUIRED=1 turns a
+  # missing piece into a failure, so this job never passes on skips.
+  browser:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    permissions:
+      contents: read
+    env:
+      PLAYWRIGHT_BROWSERS_PATH: ${{ github.workspace }}/.venv-browser/browsers
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: System packages
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq --no-install-recommends \
+            python3-venv python3-pil python3-yaml python3-numpy libimage-exiftool-perl ffmpeg
+      - name: Playwright (hash-pinned)
+        run: |
+          python3 -m venv --system-site-packages .venv-browser
+          .venv-browser/bin/pip install -q --require-hashes --no-deps --only-binary :all: \
+            -r requirements-browser.txt
+      - name: Chromium headless shell
+        run: .venv-browser/bin/python -m playwright install --with-deps --only-shell chromium
+      - name: Browser tests
+        env:
+          TZ: America/New_York
+          MEDIA_INTAKE_BROWSER_REQUIRED: "1"
+        run: .venv-browser/bin/python -I -m unittest discover -s tests/browser -t tests -v
+
   gate:
     name: CI gate
     if: always()
-    needs: [test]
+    needs: [test, browser]
     runs-on: ubuntu-24.04
     permissions: {}
     steps:
       - name: Every job passed
         env:
-          RESULT: ${{ needs.test.result }}
-        run: test "$RESULT" = success
+          TEST: ${{ needs.test.result }}
+          BROWSER: ${{ needs.browser.result }}
+        run: test "$TEST" = success && test "$BROWSER" = success
