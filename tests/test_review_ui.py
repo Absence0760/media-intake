@@ -216,7 +216,7 @@ class ReviewUITest(unittest.TestCase):
             if j["done"]:
                 return j, out
             time.sleep(0.1)
-        self.fail("run never finished")
+        raise self.failureException("run never finished")
 
     def gate(self):
         g = os.path.join(self.tmp, "gate")

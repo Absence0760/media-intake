@@ -168,9 +168,14 @@ def cmd_add(a):
 
 
 # ---------------------------------------------------------------- run
+def _private(path, flags):
+    """open() opener: create the file owner-only (0600)."""
+    return os.open(path, flags, 0o600)
+
+
 def run_cmd(cmd, log):
     """Run one step; its output goes to the step log, never the terminal. Returns the exit code."""
-    with open(os.open(log, os.O_WRONLY | os.O_CREAT | os.O_APPEND, 0o600), "a") as f:
+    with open(log, "a", opener=_private) as f:
         f.write(f"== {now()} {' '.join(cmd[:6])}{' ...' if len(cmd) > 6 else ''}\n")
         f.flush()
         return subprocess.run(cmd, stdout=f, stderr=subprocess.STDOUT, stdin=subprocess.DEVNULL).returncode
@@ -255,7 +260,7 @@ def wrapper_lock_busy():
     except BlockingIOError:
         return True
     except OSError:
-        pass
+        pass  # lock file unreadable: treat as not held
     return False
 
 
@@ -311,7 +316,7 @@ def run_queue(a):
                         ch["error"] = f"low disk: {gb(free_bytes())} free, chunk needs {gb(need)}, keep {gb(MIN_FREE)}"
                         save(QFILE, q)
                         sys.exit(f"[{label}] stopped: {ch['error']}")
-                    with open(os.open(listfile, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600), "w") as f:
+                    with open(listfile, "w", opener=_private) as f:
                         f.write("".join(r + "\n" for r, _ in files))
                 ok, note = do_step(step, src, ch, batch, listfile, log)
                 if not ok:

@@ -1,0 +1,12 @@
+# zizmor configuration, read by supply-chain-scan.yml (zizmor-action) and by a
+# local `zizmor --persona regular .github/`. Every entry names the rule, the
+# files it is waived in, and why (estate standard: threkir's zizmor.yml).
+rules:
+  # self-repository asks for GitHub's `$/` same-repository `uses:` syntax in
+  # place of `./`. Not adopted yet: actionlint rejects `$/…` as an action
+  # reference missing its `@ref`. Waived per file, not disabled, so a `./`
+  # reference anywhere else is still reported. Re-measure when actionlint
+  # supports `$/`, then switch and delete this entry.
+  self-repository:
+    ignore:
+      - gitleaks-sweep.yml

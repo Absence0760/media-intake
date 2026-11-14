@@ -54,7 +54,8 @@ class Stub(http.server.BaseHTTPRequestHandler):
         body = json.loads(self.rfile.read(int(self.headers["Content-Length"])))
         Stub.requests.append(body)
         if "prompt" not in body:  # unload
-            return self._send({"done": True})
+            self._send({"done": True})
+            return
         r = Stub.reply(body) if callable(Stub.reply) else Stub.reply
         self._send(r)
 
@@ -185,7 +186,8 @@ class VlmTrash(unittest.TestCase):
         self.assertEqual(ai(erased), [])
 
     def test_stops_when_model_not_on_gpu(self):
-        files = [img(os.path.join(self.lib, "2026", f"{i}.jpg")) for i in range(3)]
+        for i in range(3):
+            img(os.path.join(self.lib, "2026", f"{i}.jpg"))
         Stub.vram = 0.0
         code, c, _ = self.run_v("--all")
         self.assertEqual((code, c["stopped-not-on-gpu"], len(self.gens())), (0, 1, 1))
@@ -337,7 +339,8 @@ class VlmTrash(unittest.TestCase):
         self.assertEqual((c["already"], c["todo"], c["keep"]), (4, 1, 1))
 
     def test_kill_midway_keeps_progress(self):
-        files = [img(os.path.join(self.lib, "2026", f"{i:02}.jpg"), color=(i * 9, 10, 10)) for i in range(30)]
+        for i in range(30):
+            img(os.path.join(self.lib, "2026", f"{i:02}.jpg"), color=(i * 9, 10, 10))
         n = [0]
 
         def slow(body):

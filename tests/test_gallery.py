@@ -50,7 +50,7 @@ def vid(p):
 def tags_of(p):
     x = p + ".xmp"
     if not os.path.exists(x):
-        return [], []
+        return [], [], None
     r = subprocess.run(["exiftool", "-j", "-q", "-HierarchicalSubject", "-XMP-dc:Subject", "-XMP-tiff:Orientation",
                         "-n", x], capture_output=True, text=True)
     row = json.loads(r.stdout)[0]
@@ -249,7 +249,7 @@ class GalleryTest(unittest.TestCase):
             if j["done"]:
                 return j
             time.sleep(0.1)
-        self.fail("job never finished")
+        raise self.failureException("job never finished")
 
     def test_security(self):
         s = self.start()

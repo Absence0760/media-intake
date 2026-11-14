@@ -124,7 +124,7 @@ def unload(host):
     try:
         _call(host, "/api/generate", {"model": MODEL, "keep_alive": 0}, timeout=60)
     except (OSError, ValueError):
-        pass
+        pass  # best effort: Ollama evicts the model on its own timeout anyway
 
 
 BAD = ("KEEP", None, None)
@@ -171,7 +171,7 @@ def _pil():
         from pillow_heif import register_heif_opener
         register_heif_opener()
     except Exception:
-        pass
+        pass  # optional: HEIC support only; other formats still open
     return Image, ImageOps
 
 

@@ -210,6 +210,10 @@ class IntakeE2E(unittest.TestCase):
         released = self.L("2026", "2026-10", "20261022_090000.jpg")
         self.assertIn(released, out)
         self.assertTrue(os.path.isfile(released))
+        um = os.umask(0)
+        os.umask(um)
+        # the mode a normal intake copy gets (umask-based), not a fixed 0644
+        self.assertEqual(stat.S_IMODE(os.stat(released).st_mode), 0o666 & ~um)
         index = jload(os.path.join(self.state, "index.json"))
         self.assertIsNotNone(index[released]["dhash"])
         # ---- purge-review
@@ -473,7 +477,7 @@ class EraseEverywhere(unittest.TestCase):
         self.assertTrue(os.path.exists(repo_copy), "exact copies in git repos are not deleted")
         self.assertIn(f"1 exact copies inside git repos, not deleted: {repo_copy}", out)
         self.assertTrue(os.path.exists(unrelated))
-        self.assertIn(f"1 near-duplicates", out)
+        self.assertIn("1 near-duplicates", out)
         self.assertIn(f"erase near-{batch}", out)
         # recent files: only the unrelated bookmark is left, and the file still parses
         import xml.etree.ElementTree as ET
@@ -754,7 +758,7 @@ class Trash(unittest.TestCase):
             json.dump(labels, fh)
         with open(py, "w") as fh:
             fh.write(f"#!/bin/sh\ncat >/dev/null\ncat '{lj}'\n")
-        os.chmod(py, 0o755)
+        os.chmod(py, 0o700)
 
     def subjects(self, media):
         r = subprocess.run(["exiftool", "-j", "-q", "-XMP-dc:Subject", media + ".xmp"], capture_output=True, text=True)
@@ -914,6 +918,37 @@ class RealScan(unittest.TestCase):
         subprocess.run([PY, "-c", code, os.path.join(self.phone, "DCIM/Camera/licence.png")], check=True)
         _, flags = self.scan("pdf417-test")
         self.assertIn("id-barcode", flags.get("DCIM/Camera/licence.png", []), flags)
+
+
+class BarcodeFailClosed(unittest.TestCase):
+    """A barcode decoder error means "not checked", never "no barcode"."""
+
+    def setUp(self):
+        sys.path.insert(0, HERE)
+        import scan_sensitive
+        self.mod = scan_sensitive
+        self.saved = sys.modules.get("zxingcpp")
+        self.addCleanup(self.restore)
+
+    def restore(self):
+        if self.saved is None:
+            sys.modules.pop("zxingcpp", None)
+        else:
+            sys.modules["zxingcpp"] = self.saved
+
+    def stub(self, read):
+        sys.modules["zxingcpp"] = type(sys)("zxingcpp")
+        sys.modules["zxingcpp"].read_barcodes = read
+
+    def test_decoder_error_is_flagged(self):
+        def boom(_):
+            raise RuntimeError("decoder crashed")
+        self.stub(boom)
+        self.assertEqual(self.mod.barcode_flags(Image.new("RGB", (8, 8))), ["unscanned-barcode"])
+
+    def test_no_barcode_is_clean(self):
+        self.stub(lambda _: [])
+        self.assertEqual(self.mod.barcode_flags(Image.new("RGB", (8, 8))), [])
 
 
 if __name__ == "__main__":

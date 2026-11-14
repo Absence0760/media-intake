@@ -213,7 +213,8 @@ def main(argv=None):
         return doctor()
     if cmd == "queue":
         import drive_queue
-        return drive_queue.main(rest, prog="media-intake queue")
+        drive_queue.main(rest, prog="media-intake queue")
+        return 0
     if cmd == "review":
         import review_ui
         return review_ui.main(rest)
@@ -224,7 +225,8 @@ def main(argv=None):
             sys.exit(f"no venv at {vp}: run bash setup.sh first")
         os.execv(vp, [vp, "-I", os.path.join(HERE, script), *pre, *rest])
     import intake
-    return intake.main(argv, prog="media-intake")
+    intake.main(argv, prog="media-intake")
+    return 0
 
 
 if __name__ == "__main__":

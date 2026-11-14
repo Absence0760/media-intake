@@ -9,7 +9,7 @@ web page or another local user reach the review page or gallery are welcome.
 Please **do not** open a public issue. Report it privately through GitHub's
 private vulnerability reporting: the repository's **Security** tab, then
 **Report a vulnerability**
-(`/security/advisories/new` under the repository URL).
+(<https://github.com/Absence0760/media-intake/security/advisories/new>).
 Only the maintainers see the report, and the fix is coordinated in that draft
 advisory.
 

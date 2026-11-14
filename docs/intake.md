@@ -494,6 +494,8 @@ any plugin's `after_tag` hook ([plugins.md](plugins.md)).
   quarantined, or anything in the erase log (`label.refused()`, used by
   `label.py` itself, exit 3, and by every tagging command). A released false
   positive therefore stays untagged; tag it by hand if you want.
+- **Released files get the normal library mode**: the same umask-based mode an
+  ordinary intake copy gets, not a fixed world-readable `0644`.
 - **Sidecars travel with their file**: `release` creates none (tag later);
   `erase`, `forget` and the HOME/drive sweep delete the sidecar of every file
   they delete, and delete orphaned sidecars (`<file>.<media ext>.xmp` whose
@@ -705,6 +707,8 @@ Rejected:
 - HEVC videos: Fedora's `ffmpeg-free` can't decode them, so `scan` labels such
   videos `unscanned-video` for you to check (a GStreamer hardware decoder is
   used for frames where available; `media-intake doctor` reports it).
+  Likewise a barcode decoder error on a readable image gives
+  `unscanned-barcode` rather than no flag: "not checked" is never "clean".
 
 ## Tests
 
@@ -712,5 +716,5 @@ Rejected:
 a hermetic config), or one module: `python3 -I -m unittest discover -s tests -p test_intake.py`
 (also `test_dates`, `test_devices`, `test_sources`, `test_tagging`, `test_config`, and `test_device_case`: offload,
 erase and trash on fake MTP, gphoto2 and drive trees with case-only collisions; `test_library_lock`: the
-CLI, a gallery write and a job contending for the library lock). Run long jobs under your
+CLI, a gallery write and a job contending for the library lock; `test_offline_guard`). Run long jobs under your
 own memory cap if you like.

@@ -94,6 +94,10 @@ close the PR.
 - Run what you touched: `python3 -I -m unittest discover -s tests -p "test_<area>.py"`; the full
   suite is `python3 -I -m unittest discover -s tests`. Tests that need the
   venv, the models or Ollama skip themselves when those are missing.
+- `tests/test_offline_guard.py` enforces "nothing leaves the machine" from the
+  source: network clients only in `vlm_trash.py`, HTTP servers bound to
+  `127.0.0.1`, no runtime downloaders. A new legitimate use changes its
+  allow-list in the same PR, so it gets reviewed.
 - Those model tests skip in `ci.yml` (no venv or models there).
   `.github/workflows/models.yml` runs them nightly and on demand ("Run
   workflow" in the Actions tab) in a Fedora 43 container, after `setup.sh`,

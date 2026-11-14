@@ -76,7 +76,7 @@ def flagged(state=STATE):
             for m in re.finditer(r"sha256:([0-9a-f]{64}) size:(\d+)", f.read()):
                 sig[m.group(1)] = int(m.group(2))
     except FileNotFoundError:
-        pass
+        pass  # no erase log yet: nothing erased
     return sig
 
 
@@ -95,7 +95,7 @@ def refused(paths, state=STATE):
             if os.path.getsize(p) in sizes and sig.get(_sha(p)) == os.path.getsize(p):
                 out.append(p)
         except OSError:
-            pass
+            pass  # vanished since listing: not a match
     return out
 
 
@@ -164,7 +164,7 @@ def frame_image(path, np):
         from pillow_heif import register_heif_opener
         register_heif_opener()
     except Exception:
-        pass
+        pass  # optional: HEIC support only; other formats still open
     try:
         with Image.open(path) as im:
             im.draft("RGB", (SIZE * 2, SIZE * 2))

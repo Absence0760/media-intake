@@ -1,0 +1,97 @@
+name: gitleaks weekly sweep
+
+# The weekly FULL-HISTORY secret scan, and the thing that says so when it fails
+# (estate standard: threkir's gitleaks-sweep.yml).
+#
+# gitleaks.yml scans each push and PR; this cron is the only scan that reads
+# the whole of main's history, which catches a secret that landed on a
+# forgotten branch and was merged later. It runs on no PR and feeds no
+# `CI gate`, so a failing sweep would otherwise reach nobody: the `report` job
+# opens (or updates) a `secret-scan` issue, and closes it on the next clean
+# sweep. Findings are never quoted in the issue; the repository is public.
+
+on:
+  schedule:
+    # 06:00 UTC Monday, with the other weekly security sweeps.
+    - cron: '0 6 * * 1'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  sweep:
+    name: Full-history secret scan
+    # A called workflow's job may not request more than its caller grants:
+    # gitleaks.yml's scan job asks for all three.
+    permissions:
+      contents: read
+      pull-requests: read
+      security-events: write
+    uses: ./.github/workflows/gitleaks.yml
+
+  report:
+    name: Surface a failed weekly sweep
+    needs: sweep
+    if: always()
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      issues: write
+    steps:
+      - name: Open or update the tracking issue
+        if: needs.sweep.result != 'success'
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          REPO: ${{ github.repository }}
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+        run: |
+          set -euo pipefail
+          gh label create secret-scan --repo "$REPO" \
+            --color B60205 \
+            --description "Findings from the weekly full-history gitleaks sweep" \
+            2>/dev/null || true
+
+          {
+            echo "The weekly full-history \`gitleaks\` sweep did not pass."
+            echo ""
+            echo "- Run: $RUN_URL"
+            echo "- Scope: the whole of \`main\`'s history, which no other scan reads."
+            echo ""
+            echo "**Findings are deliberately not quoted here — this repository is public.**"
+            echo "Open the run above to see them."
+            echo ""
+            echo "If a finding is real: rotate the credential FIRST, then purge it from history."
+            echo "If it is a false positive: add it to \`.gitleaks.toml\`, scoped to the"
+            echo "matched value rather than the file, so a genuine key in the same source"
+            echo "still fails."
+            echo ""
+            echo "This issue closes itself on the next clean sweep."
+          } > body.md
+
+          existing=$(gh issue list --repo "$REPO" --state open \
+            --label secret-scan --json number --jq '.[0].number // empty')
+          if [ -n "$existing" ]; then
+            gh issue edit "$existing" --repo "$REPO" --body-file body.md
+            gh issue comment "$existing" --repo "$REPO" \
+              --body "Still failing as of $(date -u +%Y-%m-%d). Run: $RUN_URL"
+          else
+            gh issue create --repo "$REPO" \
+              --title "Weekly secret scan is failing" \
+              --body-file body.md \
+              --label secret-scan
+          fi
+
+      - name: Close the tracking issue on a clean sweep
+        if: needs.sweep.result == 'success'
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          REPO: ${{ github.repository }}
+        run: |
+          set -euo pipefail
+          existing=$(gh issue list --repo "$REPO" --state open \
+            --label secret-scan --json number --jq '.[0].number // empty')
+          if [ -n "$existing" ]; then
+            gh issue close "$existing" --repo "$REPO" \
+              --comment "Sweep clean as of $(date -u +%Y-%m-%d) — closing automatically."
+          fi

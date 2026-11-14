@@ -6,7 +6,7 @@ name: pr-mergeable
 # (`refs/pull/N/merge`). GitHub cannot compute a merge ref for a PR with
 # conflicts, so no CI run is created at all: not queued, not skipped, not
 # failed. Nothing. What remains visible are the `pull_request_target`
-# workflows (this one, labeler, pr-title-lint, dependabot-auto-merge), which
+# workflows (this one, labeler, dependabot-auto-merge), which
 # build the head ref and go green, so a conflicted PR looks tested when
 # nothing tested it.
 #
@@ -38,7 +38,10 @@ name: pr-mergeable
 # main, to run two API calls.
 
 on:
-  pull_request_target:
+  # pull_request_target on purpose: `pull_request` fires no run at all for a
+  # conflicted PR, which is the case this check exists to report. The `pr` job
+  # checks out nothing, runs no PR code and holds only pull-requests: read.
+  pull_request_target: # zizmor: ignore[dangerous-triggers]
     types: [opened, reopened, synchronize]
   push:
     branches: [main]
