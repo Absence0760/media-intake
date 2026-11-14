@@ -52,11 +52,11 @@ media-intake apply BATCH                # moves files; prints a summary
 media-intake quarantine BATCH           # counts + the folder to open
 media-intake release BATCH FILE...      # false positive -> library
 media-intake erase BATCH [--phone ROOT [--keep-phone-thumbnails]] [--drive MOUNT [--no-wipe-free]]
-media-intake forget LIBRARY_FILE... [--drive MOUNT]
+media-intake forget LIBRARY_FILE... [--drive MOUNT] [--yes]   # asks (type ERASE) before anything moves
 media-intake verify-gone [BATCH] [--drive MOUNT]
 media-intake wipe-free MOUNT
 media-intake offload BATCH --phone ROOT [--yes]   # refused for a --kind folder batch
-media-intake purge-review BATCH
+media-intake purge-review BATCH        # a batch name, never a path
 media-intake trash [BATCH] FILE... [--phone ROOT]
 media-intake trash --from-digikam [--yes]
 media-intake suggest-trash [--batch B] [--phone ROOT]
@@ -122,7 +122,15 @@ run and a CLI `apply` never interleave (`media_intake/library_lock.py`):
 `share-copy` writes copies with no GPS or metadata, for sending or posting:
 exiftool `-all=` for images (orientation and ICC profile kept), an ffmpeg
 stream copy without data streams or metadata for videos. exiftool cannot write
-GoPro GPMF tags, so the GPS track is removed by dropping the stream.
+GoPro GPMF tags, so the GPS track is removed by dropping the stream; a video's
+attached picture (cover art, a JPEG with its own EXIF) and subtitle streams
+are dropped too, so a copy holds only its video and audio streams. It checks
+everything before copying anything, and refuses (writing nothing) when `--out`
+is inside a library root or the state folder (the gallery's Share-safe copy
+has the same rule: a copy there would be taken for a library file, and could
+replace an original of the same name), when a copy would land on its own
+source, when two files share a name (the second copy would replace the
+first), or when a file is missing. Sidecars never go with a copy.
 
 ## Dates
 
@@ -313,6 +321,12 @@ marks any later copy "delete" with why "trashed before", so it never comes
 back from another device or a backup. Anything private goes through `erase`
 (or `forget` for files already in the library). The review page offers Trash
 (T) on every item.
+
+`forget FILE...` checks every file first: one missing (or a symlink, or not a
+regular file) refuses the whole command, and without `--yes` it asks (type
+ERASE) before anything moves. A refusal or a "no" leaves every file, sidecar
+and `index.json` entry where it was; nothing is left half-forgotten in
+quarantine. A file named twice is forgotten once.
 
 ## Erasing, and what it can't reach
 
@@ -721,5 +735,6 @@ Rejected:
 a hermetic config), or one module: `python3 -I -m unittest discover -s tests -p test_intake.py`
 (also `test_dates`, `test_devices`, `test_sources`, `test_tagging`, `test_config`, and `test_device_case`: offload,
 erase and trash on fake MTP, gphoto2 and drive trees with case-only collisions; `test_library_lock`: the
-CLI, a gallery write and a job contending for the library lock; `test_offline_guard`). Run long jobs under your
+CLI, a gallery write and a job contending for the library lock; `test_library_ops_media_kinds`: every
+library-side command on a photo, an mp4 and a .mov, alone and mixed; `test_offline_guard`). Run long jobs under your
 own memory cap if you like.
