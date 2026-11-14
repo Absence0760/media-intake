@@ -236,6 +236,29 @@ class DeviceCase(unittest.TestCase):
         self.assert_refused(out, self.gphoto, self.g_upper, os.path.join(os.path.dirname(self.g_upper), "Img_0001.Jpg"))
         self.assertTrue(os.path.isfile(kept[0]), "nothing trashed when a phone delete is refused")
 
+    @unittest.skipIf(hasattr(os, "geteuid") and os.geteuid() == 0, "root lists a folder whatever its mode")
+    def test_erase_refused_when_the_live_listing_fails(self):
+        """A real erase run: the camera folder can't be listed, so nothing is erased anywhere."""
+        os.remove(self.m_lower)
+        rel = os.path.relpath(self.m_plain, self.mtp)
+        self.filed(self.mtp, "2026-11-13-mtp", {rel: ["nudity"]})
+        quar = os.path.join(self.state, "quarantine", "2026-11-13-mtp", rel)
+        self.assertTrue(os.path.isfile(quar))
+        cam = os.path.dirname(self.m_plain)
+        # Search but no read: the files are still there (lexists, getsize) but the folder can't be listed,
+        # the way an MTP folder fails mid-session. Mode 000 would hide the files, and erase skip them as gone.
+        os.chmod(cam, 0o300)
+        try:  # restored before tearDown, which couldn't remove a folder it can't list
+            out = self.intake("erase", "2026-11-13-mtp", "--phone", self.mtp, "--yes", code=1)
+        finally:
+            os.chmod(cam, 0o755)
+        self.assertIn("refused: nothing deleted from the device", out)
+        self.assertIn("could not list", out)
+        self.assertIn("can't be ruled out", out)
+        self.assert_on_device(self.m_upper, self.m_plain)
+        self.assertTrue(os.path.isfile(quar), "the quarantined copy stays until a real erase")
+        self.assertFalse(os.path.exists(os.path.join(self.state, "erase-log.txt")))
+
 
 class LiveListing(unittest.TestCase):
     """device_targets with a fake device lister (sources.list_dir): fail closed, never the manifests alone."""
