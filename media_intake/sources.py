@@ -1,4 +1,4 @@
-"""Which files on a phone or camera the media-intake tools may touch.
+"""Which files on a phone, camera, drive or laptop folder the media-intake tools may touch.
 
 Allowlist first: only the camera/gallery folders below are ever listed, and only
 photo/video extensions inside them are copied. A deny list then rejects any path
@@ -74,6 +74,9 @@ def walk(root, kind="phone"):
     """Yield (abs_path, rel) for every allowed media file. Lists allowed folders only."""
     if kind == "drive":
         yield from walk_drive(root)
+        return
+    if kind == "folder":
+        yield from walk_folder(root)
         return
     allow = PHONE_ALLOW + PHONE_ALLOW_EXTRA if kind == "phone" else GOPRO_ALLOW
     for top in allow:
@@ -243,10 +246,24 @@ def walk_drive(root):
     """Yield (abs_path, rel) for every media file under root (check_drive_root first)."""
     root = os.path.abspath(root)
     check_drive_root(root)
+    yield from _walk_tree(root)
+
+
+def walk_folder(root):
+    """Yield (abs_path, rel) for every media file under a laptop folder (check_folder_root first).
+    A git working tree found inside it (a subfolder holding .git) is skipped whole."""
+    root = os.path.abspath(root)
+    check_folder_root(root)
+    yield from _walk_tree(root, skip_repos=True)
+
+
+def _walk_tree(root, skip_repos=False):
+    """Every file check_drive accepts under root; hidden, system, denied and symlinked folders are not entered."""
     for dirpath, dirs, names in os.walk(root, followlinks=False):
         dirs[:] = sorted(d for d in dirs
                          if not d.startswith(".") and d.lower() not in DRIVE_SYSTEM_DIRS
-                         and not DENY_ANYWHERE.search(d) and not os.path.islink(os.path.join(dirpath, d)))
+                         and not DENY_ANYWHERE.search(d) and not os.path.islink(os.path.join(dirpath, d))
+                         and not (skip_repos and os.path.lexists(os.path.join(dirpath, d, ".git"))))
         for n in sorted(names):
             path = os.path.join(dirpath, n)
             try:
@@ -257,7 +274,7 @@ def walk_drive(root):
 
 
 def drive_category(rel):
-    """photo / video / screenshot / messaging:WhatsApp for a file from an external drive
+    """photo / video / screenshot / messaging:WhatsApp for a file from an external drive or laptop folder
     (WhatsApp's IMG-YYYYMMDD-WA0001 names are recognised without any config)."""
     name = os.path.basename(rel)
     ext = os.path.splitext(name)[1].lower()
@@ -266,3 +283,84 @@ def drive_category(rel):
     if SCREENSHOT_NAME.match(name) and ext in _IMG_EXT:
         return "screenshot"
     return "photo" if ext in _IMG_EXT else "video"
+
+
+# ---------------------------------------------------------------- laptop folders (kind "folder")
+# A folder of photos and videos on the laptop's own disk. Same per-file rules as a drive
+# (check_drive, _walk_tree), plus git working trees inside it skipped. The tool never deletes
+# a folder source's originals: offload refuses kind folder; you delete the folder yourself.
+# Folders directly under HOME a folder source may not be, be inside, or contain: app data,
+# keys, and common code and SDK trees. Hidden folders are refused separately (any of them).
+FOLDER_DENY_HOME = (".local", ".config", ".cache", ".var", ".ssh", ".gnupg",
+                    "github", "gitlab", "repos", "src", "code", "development", "go", "Android",
+                    "sdk", "flutter", "snap")  # compared case-insensitively
+# Where external drives mount: a folder there is a drive (--kind drive), not a laptop folder.
+FOLDER_DRIVE_PREFIXES = ("/run/media", "/media", "/mnt", "/Volumes")
+
+
+def _home():
+    return os.path.realpath(os.path.expanduser("~"))
+
+
+def _within(p, base, fold=False):
+    """p is base or under it. fold: compare case-insensitively (stricter on a case-insensitive disk)."""
+    if fold:
+        p, base = p.casefold(), base.casefold()
+    return p == base or p.startswith(base.rstrip(os.sep) + os.sep)
+
+
+def folder_deny_roots():
+    """(path, why) pairs a folder source may not be, be inside, or contain, from config and HOME."""
+    home, cfg = _home(), config.get()
+    out = [(cfg["state"], "the media-intake state (batches, quarantine)"),
+           (cfg["library"], "the photo library"), (cfg["videos"], "the videos library")]
+    out += [(p["folder"], f"the {p['name']} project folder") for p in cfg["projects"].values()]
+    for var, why in (("XDG_CONFIG_HOME", "app settings"), ("XDG_DATA_HOME", "app data"),
+                     ("XDG_CACHE_HOME", "app caches"), ("XDG_STATE_HOME", "app state")):
+        if os.environ.get(var):
+            out.append((os.environ[var], f"{why} (${var})"))
+    out += [(os.path.join(home, d), f"~/{d}") for d in FOLDER_DENY_HOME]
+    return [(os.path.realpath(p), why) for p, why in out]
+
+
+def check_folder_root(root):
+    """Raise Denied unless root is a real folder under HOME that is safe to read photos from.
+
+    Fails closed: anything it cannot check is refused. Returns the folder's real path.
+    """
+    try:
+        return _check_folder_root(root)
+    except Denied:
+        raise
+    except (OSError, ValueError) as e:
+        raise Denied(f"{root}: could not check it ({e})") from None
+
+
+def _check_folder_root(root):
+    if os.path.islink(root) or not os.path.isdir(root):
+        raise Denied(f"not a folder (or a symlink): {root}")
+    rp, home = os.path.realpath(root), _home()
+    if home in ("", os.sep) or not os.path.isdir(home):
+        raise Denied(f"cannot tell your home folder (HOME={home!r}), so no laptop folder is accepted")
+    if any(_within(rp, d, fold=True) for d in FOLDER_DRIVE_PREFIXES):
+        raise Denied(f"{root} is on an external drive: use --kind drive")
+    if _within(home, rp, fold=True):
+        raise Denied(f"{root} is (or contains) your whole home folder: name the photo folder itself")
+    if not _within(rp, home):
+        raise Denied(f"{root} is outside your home folder; only folders under {home} (or a drive: --kind drive)")
+    for d, why in folder_deny_roots():
+        if _within(rp, d, fold=True) or _within(d, rp, fold=True):
+            raise Denied(f"{root} is, is inside, or contains {why} ({d}): not a source folder")
+    rel = os.path.relpath(rp, home)
+    if any(p.startswith(".") for p in rel.split(os.sep)):
+        raise Denied(f"{root} is a hidden folder (app data): copy the photos somewhere visible first")
+    if DENY_ANYWHERE.search(rel):
+        raise Denied(f"denied name (password manager or keys): {root}")
+    up = rp
+    while True:  # erase's home sweep never looks inside a git working tree, so a source never sits in one
+        if os.path.lexists(os.path.join(up, ".git")):
+            raise Denied(f"{root} is inside a git repository ({up}): not a source folder")
+        if up == home:
+            break
+        up = os.path.dirname(up)
+    return rp

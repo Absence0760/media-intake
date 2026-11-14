@@ -1,10 +1,13 @@
 #!/usr/bin/env python3
-"""Process queue for an external (non-backup) drive of photos and videos.
+"""Process queue for folders of photos and videos: on an external (non-backup) drive or on the laptop.
 
-  drive_queue.py add PATH --label NAME     register a folder on a drive (counts, size, free-space check)
+  drive_queue.py add PATH --label NAME [--kind drive|folder] [--event [PROJECT/]SLUG@YYYY-MM-DD ...]
+                                           register a folder (counts, size, free-space check);
+                                           --kind folder = a folder on the laptop's own disk
   drive_queue.py run [--chunk 2000] [--inhibit]   process every source in chunks (resumable)
   drive_queue.py status                    progress, and what waits for you
   drive_queue.py offload NAME [--yes]      delete the drive originals of finished, reviewed chunks
+                                           (refused for --kind folder: you delete the folder yourself)
 
 Run as `media-intake queue <add|run|status|offload>`.
 
@@ -26,7 +29,16 @@ killed run continues at the step it was in; a finished step is never redone.
 The run STOPS before every decision that is yours: quarantine review, trash
 suggestions and offload (status prints the commands).
 
-Refused: a root on the laptop's own disk, a drive that looks like the backup
+--event days are passed to every chunk's plan (plan --event): Event|SLUG tags, and with
+a project, that day's camera files go to the project's folder.
+
+Kind folder (sources.check_folder_root): a real folder under HOME, never HOME itself,
+anything outside HOME, the media-intake state, the library, videos or a project folder,
+~/.local, ~/.config, ~/.cache, ~/.var, ~/.ssh, ~/.gnupg, common code and SDK trees, a
+hidden folder, a password-manager name or a git repository (nor inside or containing
+one); git trees inside it are skipped. No mount, no UUID. Its originals are never deleted.
+
+Refused for kind drive: a root on the laptop's own disk, a drive that looks like the backup
 drive (<mount>/.media-intake-backup, or a [drive] backup_markers folder at its
 mount root, unless <mount>/.media-intake-source-ok exists), a drive without a filesystem UUID, a source
 that would leave the laptop under 50 GB free once copied, and offload when the
@@ -127,26 +139,43 @@ def chunks_of(src):
 
 
 # ---------------------------------------------------------------- add
+def check_event(t):
+    """Exit unless t is plan's --event form, [PROJECT/]SLUG@YYYY-MM-DD, with a known project."""
+    spec, _, day = t.partition("@")
+    key, _, ev = spec.rpartition("/")
+    if not re.fullmatch(r"\d{4}-\d\d-\d\d", day) or not config.SLUG.match(ev):
+        sys.exit(f"refused: --event wants [PROJECT/]SLUG@YYYY-MM-DD (slug: lowercase, digits, dashes), got {t}")
+    if key and key not in CFG["projects"]:
+        sys.exit(f"refused: --event {t}: no project {key!r} in {CFG['path']} "
+                 f"(known: {', '.join(CFG['projects']) or 'none'})")
+
+
 def cmd_add(a):
     if not LABEL.match(a.label):
         sys.exit("refused: --label is lowercase letters, digits and dashes (e.g. old-drive)")
+    for t in a.event or []:
+        check_event(t)
     root = os.path.abspath(a.path)
     try:
-        mount = sources.check_drive_root(root)
+        if a.kind == "folder":  # its real path; no mount, no UUID (offload never runs for it)
+            root, mount, uuid = sources.check_folder_root(root), None, None
+        else:
+            mount = sources.check_drive_root(root)
+            uuid = sources.drive_uuid(root)
     except sources.Denied as e:
         sys.exit(f"refused: {e}")
-    uuid = sources.drive_uuid(root)
-    if not uuid:
+    if a.kind == "drive" and not uuid:
         sys.exit(f"refused: {mount} has no filesystem UUID, so offload could not check it is the same drive")
     q = load_q()
     if a.label in q["sources"]:
         sys.exit(f"refused: {a.label} is already queued ({q['sources'][a.label]['root']})")
     for other in q["sources"].values():
         r1, r2 = root + os.sep, other["root"] + os.sep
-        if other["uuid"] == uuid and (r1.startswith(r2) or r2.startswith(r1)):
+        if other.get("kind", "drive") == a.kind and other["uuid"] == uuid \
+                and (r1.startswith(r2) or r2.startswith(r1)):
             sys.exit(f"refused: overlaps queued source {other['label']} ({other['root']})")
     files = []
-    for path, rel in sources.walk(root, "drive"):
+    for path, rel in sources.walk(root, a.kind):
         files.append([rel, os.path.getsize(path)])
     total = sum(s for _, s in files)
     free = free_bytes()
@@ -158,7 +187,8 @@ def cmd_add(a):
     if not files:
         sys.exit(f"refused: no photos or videos under {root}")
     save(os.path.join(sdir(a.label), "files.json"), files)
-    q["sources"][a.label] = dict(label=a.label, root=root, mount=mount, uuid=uuid, added=now(),
+    q["sources"][a.label] = dict(label=a.label, kind=a.kind, root=root, mount=mount, uuid=uuid, added=now(),
+                                 events=list(a.event or []),
                                  files=len(files), bytes=total, chunk=None, chunks={}, offloaded=[])
     save(QFILE, q)
     by = collections.Counter(sources.drive_category(r).split(":")[0] for r, _ in files)
@@ -196,8 +226,11 @@ def maybe_trash(batch):
 
 def step_cmd(step, src, batch, listfile):
     if step == "stage":
-        return [PY, "-I", INTAKE, "stage", src["root"], "--kind", "drive", "--batch", batch, "--only", listfile]
-    if step in ("plan", "scan", "apply", "tag"):
+        return [PY, "-I", INTAKE, "stage", src["root"], "--kind", src.get("kind", "drive"), "--batch", batch,
+                "--only", listfile]
+    if step == "plan":
+        return [PY, "-I", INTAKE, "plan", batch] + [x for t in src.get("events") or [] for x in ("--event", t)]
+    if step in ("scan", "apply", "tag"):
         return [PY, "-I", INTAKE, step, batch]
     if step == "index":
         return [VENV_PY, "-I", SEMANTIC, "index"]
@@ -307,7 +340,14 @@ def run_queue(a):
                 if step in ch["steps"]:
                     continue
                 if step == "stage":
-                    if not os.path.isdir(src["root"]) or sources.drive_uuid(src["root"]) != src["uuid"]:
+                    if src.get("kind") == "folder":  # checked again: the folder may have moved or changed
+                        try:
+                            sources.check_folder_root(src["root"])
+                        except sources.Denied as e:
+                            ch["error"] = f"folder refused now: {e}"
+                            save(QFILE, q)
+                            sys.exit(f"[{label}] stopped: {ch['error']}")
+                    elif not os.path.isdir(src["root"]) or sources.drive_uuid(src["root"]) != src["uuid"]:
                         ch["error"] = "drive not mounted (or a different drive at that path)"
                         save(QFILE, q)
                         sys.exit(f"[{label}] stopped: {ch['error']}: {src['root']}")
@@ -362,7 +402,10 @@ def cmd_status(a):
             mt = src["chunks"][str(n)].get("summary", {}).get("maybe_trash", 0)
             if qn or near or rv or mt:
                 wait.append((n, batch, qn, near, rv, mt))
-        if not wait and done and len(done) == len(chunks) and len(src["offloaded"]) < len(done):
+        if not wait and done and len(done) == len(chunks) and src.get("kind") == "folder":
+            print(f"  waiting for you: everything is reviewed; check the library, then delete the source "
+                  f"folder yourself (the tool never does): {src['root']}")
+        elif not wait and done and len(done) == len(chunks) and len(src["offloaded"]) < len(done):
             print(f"  waiting for you: OK to offload (delete the drive originals): {me} offload {label} --yes")
         for n, batch, qn, near, rv, mt in wait:
             print(f"  waiting for you, chunk {n} ({batch}): quarantine {qn}, near and messaging copies {near}, "
@@ -381,6 +424,9 @@ def cmd_offload(a):
     if not src:
         sys.exit(f"no queued source {a.name}")
     root = src["root"]
+    if src.get("kind") == "folder":
+        sys.exit(f"refused: {a.name} is a folder on this laptop ({root}); the tool never deletes its originals. "
+                 "Check the import, then delete the folder yourself.")
     try:
         sources.check_drive_root(root)
     except sources.Denied as e:
@@ -416,6 +462,10 @@ def main(argv=None, prog=None):
     ap = argparse.ArgumentParser(prog=prog, description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     sp = ap.add_subparsers(dest="cmd", required=True)
     s = sp.add_parser("add"); s.add_argument("path"); s.add_argument("--label", required=True)
+    s.add_argument("--kind", choices=["drive", "folder"], default="drive",
+                   help="drive = an external drive (default); folder = a folder on the laptop's own disk")
+    s.add_argument("--event", action="append", metavar="[PROJECT/]SLUG@YYYY-MM-DD",
+                   help="an event (shoot day) in this source, passed to every chunk's plan --event")
     s = sp.add_parser("run"); s.add_argument("--chunk", type=int, default=2000); s.add_argument("--inhibit", action="store_true")
     sp.add_parser("status")
     s = sp.add_parser("offload"); s.add_argument("name"); s.add_argument("--yes", action="store_true")

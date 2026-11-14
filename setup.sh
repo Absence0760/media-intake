@@ -4,7 +4,7 @@
 #   bash setup.sh                 venv, SigLIP vision model, GeoNames, ~/.local/bin/media-intake launcher
 #   bash setup.sh --refresh-geo   accept a new GeoNames snapshot (rewrites <state>/geo-pins.txt)
 #   bash setup.sh --build-labels  also fetch the text model + tokenizer (semantic search, and
-#                                 regenerating media_intake/labels.npz when labels.yaml changes)
+#                                 regenerating media_intake/labels.npz when labels.yaml or the SigLIP pin changes)
 #   bash setup.sh --no-launcher   don't write ~/.local/bin/media-intake
 # System packages need sudo, so install them yourself first (README, Install). The last
 # step runs `media-intake doctor`, which prints the exact `sudo dnf install` line for

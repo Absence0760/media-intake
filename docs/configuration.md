@@ -21,6 +21,11 @@ Paths take `~` and `$VARS`.
 | `projects.<key>` | none | See below. |
 | `plugins.paths`, `plugins.modules` | none | Plugin modules and where to import them from: [plugins.md](plugins.md). |
 
+`state`, `library`, `videos` and every project's `folder` (as resolved, env
+vars included) are never accepted as a laptop folder source, nor any folder
+inside or containing one: `stage --kind folder` and `queue add --kind folder`
+refuse them ([queue.md](queue.md), "Laptop folders").
+
 Environment variables win over the file: `MEDIA_INTAKE_STATE`, `PHOTO_LIBRARY`,
 `PERSONAL_FOOTAGE`, and `MEDIA_QUEUE_WRAPPER` (space-separated) for
 `queue.wrapper`. `MEDIA_INTAKE_LOCK_WAIT` (seconds, default 10, `0` to refuse

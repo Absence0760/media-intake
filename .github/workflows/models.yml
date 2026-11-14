@@ -87,8 +87,10 @@ jobs:
           log="$RUNNER_TEMP/model-tests.log"
           runuser -u "$TESTER" -- env HOME="$TESTER_HOME" TZ="$TZ" \
             python3 -I -m unittest discover -s tests -v 2>&1 | tee "$log"
-          # Every venv/model test must have run; only the real-Ollama test may skip.
-          if grep "skipped '" "$log" | grep -v "VLM_REAL"; then
+          # Every venv/model test must have run. Allowed skips: the real-Ollama
+          # test (needs a GPU) and the browser tests (tests/browser/, which need
+          # Playwright and run in ci.yml's `browser` job instead).
+          if grep "skipped '" "$log" | grep -v -e "VLM_REAL" -e "(browser\.test_browser_"; then
             echo "::error::tests above skipped although setup.sh ran"
             exit 1
           fi

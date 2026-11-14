@@ -59,7 +59,7 @@ The goal: someone else can install it on Fedora, import a phone, and trust it.
 - [x] Device identity from Make/Model/serial: tag `Source|<model>` and name batches by it;
       two GoPros with the same file numbers go to separate device folders, never `_1`.
 - [x] GoPro chapters (GX01xxxx, GX02xxxx...) dated and grouped by the first chapter.
-- [ ] Source kind `folder` for laptop folders (refuse HOME itself, hidden/config dirs, repos,
+- [x] Source kind `folder` for laptop folders (refuse HOME itself, hidden/config dirs, repos,
       the state dir, library roots, password-manager paths; offload refuses folder sources).
 
 ### Tag precedence (who writes what)
@@ -83,12 +83,16 @@ The goal: someone else can install it on Fedora, import a phone, and trust it.
 - [ ] **HEVC in the browser:** Firefox/Chromium often can't play HEVC. Make an on-demand
       H.264 proxy (GStreamer GPU decode → x264), cached by sha256 in the private cache
       and cleaned by erase/trash/forget/verify-gone like thumbnails.
-- [ ] Burst groups: show bursts as one stack, pick the best, trash the rest.
-- [ ] Albums/events as first-class views (from `Event|` tags), with rename and merge.
+- [x] Burst groups: show bursts as one stack, pick the best, trash the rest (review page;
+      the gallery's stacks wait for a later round).
+- [x] Albums/events as first-class views (from `Event|` tags), with rename and merge.
+- [ ] Burst stacks in the gallery (the review page has them; `media_intake/bursts.py` is shared).
+- [ ] Record a camera's `BurstUUID` as `burst_id` in plan entries (`bursts.py` reads it;
+      intake doesn't write it yet).
 - [ ] Map view without leaking locations: offline vector tiles (or none); never fetch
       tiles for private photos from a third-party server.
-- [ ] Bulk edits on a selection: add/remove tags, set event, rotate.
-- [ ] A "share-safe export" button in the gallery (the CLI has `media-intake share-copy`:
+- [x] Bulk edits on a selection: add/remove tags, set event, rotate.
+- [x] A "share-safe export" button in the gallery (the CLI has `media-intake share-copy`:
       copy with all metadata and GPS stripped).
 
 ## Milestone 0.3: better classification

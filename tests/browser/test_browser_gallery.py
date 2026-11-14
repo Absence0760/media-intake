@@ -7,7 +7,9 @@ Covers what the HTTP tests in tests/test_gallery.py can't: keys, tile selection 
 shift-click), the bottom selection bar (shown only while something is selected), the sidebar's
 views, the confirm dialogs (Trash; Erase with ERASE typed; the Close button's native confirm),
 the lightbox video playing by itself, Space pausing and resuming it, HTTP Range while the video
-loads and seeks, and the detached-job dialog, including re-attaching to a running job after a reload.
+loads and seeks, the detached-job dialog, including re-attaching to a running job after a reload,
+and the Events list (filter, Rename), Set event on a selection and a Share-safe copy (the real
+intake.py share-copy, which only reads the originals).
 
 Trash and Erase run a fake intake.py (MEDIA_REVIEW_INTAKE, tests/test_gallery.py's GATED) that
 deletes the files it is given; with a FIFO at FAKE_GATE it first waits until the test opens it,
@@ -19,8 +21,10 @@ items has rendered; each grid item's [data-item] (its file name) and its checkbo
 the confirm/job dialog as [data-dialog=confirm] (role=dialog) with [data-job] =
 running/done/failed/crashed, its job status as role=status (shown while a job runs, hidden when it ends)
 and its output as its <pre>; the textbox named "Type ERASE"; the selection bar as role=toolbar
-named "Selection actions"; buttons by their names (Confirm, Cancel, Apply…, Trash suggestions,
-Possible child, Library, Clear selection, Close).
+named "Selection actions"; the event bar as role=toolbar named "Event"; each sidebar event as
+#evlist [data-ev=<name>]; the dialog's text field by its label; buttons by their names (Confirm,
+Cancel, Apply…, Trash suggestions, Possible child, Library, Clear selection, Close, Rename…, Set event…,
+Share-safe copy).
 """
 import json, os, re, shutil, signal, sys, tempfile, unittest
 
@@ -367,6 +371,73 @@ class GalleryBrowserTest(B.BrowserCase):
         B.expect(out).to_contain_text("done: 1 of 1 gone from the library")
         B.expect(status).to_be_hidden()
         self.assertFalse(os.path.exists(self.b))
+
+    # ------------------------------------------------------------ events, a bulk event and a share-safe copy
+    def test_events_rename_bulk_event_and_share(self):
+        self.env.pop("MEDIA_REVIEW_INTAKE")  # share-copy runs the real intake.py, which only reads the originals
+        G.write_tags(self.b, ["Event|picnic"])
+        G.write_tags(self.c, ["Event|picnic"])
+        s = self.start()
+        page = self.new_page()
+        self.open(page, s)
+        ev = lambda n: page.locator(f'#evlist [data-ev="{n}"]')  # noqa: E731
+        dlg = self.confirm(page)
+        # the sidebar's Events list: one click filters to the event and shows its Rename / Merge bar
+        B.expect(ev("picnic")).to_contain_text("2")
+        ev("picnic").click()
+        B.expect(page.locator("[data-item]")).to_have_count(2)
+        self.assertEqual(sorted(self.tiles(page)), ["b.jpg", "c.png"])
+        B.expect(page.locator("#vtitle")).to_have_text("Event: picnic")
+        evbar = page.get_by_role("toolbar", name="Event", exact=True)
+        evbar.get_by_role("button", name="Rename…").click()
+        B.expect(dlg.get_by_role("heading")).to_have_text("Rename the event picnic?")
+        field = dlg.get_by_label("New name")
+        B.expect(field).to_have_value("picnic")
+        field.fill("Not A Slug")  # refused: the dialog stays open with the reason, nothing written
+        dlg.get_by_role("button", name="Confirm").click()
+        B.expect(dlg.locator("pre")).to_contain_text("Refused:")
+        self.assertIn("Event|picnic", G.tags_of(self.b)[0])
+        field.fill("park-day")
+        with page.expect_response(lambda r: r.url.endswith("/api/event/rename")) as resp:
+            dlg.get_by_role("button", name="Confirm").click()
+        self.assertEqual(resp.value.status, 200)
+        B.expect(dlg).to_be_hidden()
+        B.expect(page.locator("#vtitle")).to_have_text("Event: park-day")
+        B.expect(ev("park-day")).to_contain_text("2")
+        B.expect(ev("picnic")).to_have_count(0)
+        for p in (self.b, self.c):
+            self.assertEqual([t for t in G.tags_of(p)[0] if t.startswith("Event|")], ["Event|park-day"], p)
+        # bulk: two items picked in the Library get the event through the selection bar
+        page.get_by_role("button", name="Library").click()
+        B.expect(page.locator("[data-item]")).to_have_count(4)
+        page.get_by_role("checkbox", name="select a.jpg").click()
+        page.get_by_role("checkbox", name="select d.jpg").click()
+        bar = page.get_by_role("toolbar", name="Selection actions")
+        bar.get_by_role("button", name="Set event…").click()
+        B.expect(dlg.get_by_role("heading")).to_have_text("Set the event on 2 items?")
+        dlg.get_by_label("Event (a slug").fill("park-day")
+        with page.expect_response(lambda r: r.url.endswith("/api/event/set")) as resp:
+            dlg.get_by_role("button", name="Confirm").click()
+        self.assertEqual(resp.value.status, 200)
+        B.expect(ev("park-day")).to_contain_text("4")
+        for p in (self.a, self.d):
+            self.assertIn("Event|park-day", G.tags_of(p)[0], p)
+        self.assertIn("Review|maybe-trash", G.tags_of(self.a)[0])  # every other tag stays
+        # a share-safe copy: the dialog names the destination folder and shows share-copy's own lines
+        before = G.sha(self.d)
+        page.get_by_role("checkbox", name="select d.jpg").click()
+        bar.get_by_role("button", name="Share-safe copy").click()
+        B.expect(dlg.get_by_role("heading")).to_have_text("Make share-safe copies of 1 item?")
+        B.expect(dlg).to_contain_text("~/Pictures/share-safe")
+        dlg.get_by_role("button", name="Confirm").click()
+        B.expect(dlg).to_have_attribute("data-job", "done")
+        B.expect(dlg.get_by_role("heading")).to_have_text(
+            re.compile(r"^Done: share-safe copies in ~/Pictures/share-safe/\d{4}-\d\d-\d\d-\d{6}$"))
+        B.expect(dlg.locator("pre")).to_contain_text("d.jpg  gps=none")
+        share = os.path.join(self.home, "Pictures/share-safe")
+        (sub,) = os.listdir(share)
+        self.assertEqual(os.listdir(os.path.join(share, sub)), ["d.jpg"])
+        self.assertEqual(G.sha(self.d), before)  # the original is only read
 
     def test_crashed_job_is_shown(self):
         os.mkfifo(self.gate)

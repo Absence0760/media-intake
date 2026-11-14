@@ -56,7 +56,7 @@ def pattern(seed, size=(1200, 900)):
 def exif_for(dt, gps=False):
     ex = Image.Exif()
     ex[0x0110] = "SyntheticCam"
-    ex.get_ifd(0x8769)[36867] = dt
+    ex[0x8769] = {36867: dt}  # Pillow 10.2 (Ubuntu 24.04) drops writes made through get_ifd()
     if gps:
         g = ex.get_ifd(0x8825)
         g[1], g[2] = "N", (37.0, 32.0, 10.0)

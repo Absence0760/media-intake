@@ -6,7 +6,8 @@
 FILES.json is a JSON list of paths. The output maps each path to
 {"labels": {label: score}, "review": [flag, ...]}: label names and sigmoid
 scores only, never pixels or text. Thresholds and prompts: labels.yaml; text
-embeddings: labels.npz (build_label_embeddings.py). --all reports every score
+embeddings: labels.npz (build_label_embeddings.py), refused unless it matches
+labels.yaml and records pins.json's SigLIP revision. --all reports every score
 (for calibrating thresholds), not just those over the threshold.
 
 Model: google/siglip-base-patch16-224 (Apache-2.0), Xenova's ONNX export,
@@ -31,6 +32,8 @@ with open(os.path.join(HERE, "pins.json")) as _f:
 REV = PINS["siglip"]["revision"]
 MODEL = os.path.join(STATE, "models", f"siglip-base-patch16-224-{REV[:7]}", "vision_model_quantized.onnx")
 MODEL_SHA = PINS["siglip"]["files"]["onnx/vision_model_quantized.onnx"]
+LABELS_NPZ = os.path.join(HERE, "labels.npz")
+NPZ_REV_KEY = "siglip_revision"  # labels.npz records the REV it was built with (build_label_embeddings.py)
 # google/siglip-base-patch16-224 model.safetensors at 7fd15f0689c79d79e38b1c2e2e2370a7bf2761ed
 LOGIT_SCALE, LOGIT_BIAS = 4.7649970054626465, -12.9324369430542
 SIZE, MEAN, STD = 224, 0.5, 0.5  # preprocessor_config.json at REV (bicubic resize, no crop)
@@ -115,6 +118,23 @@ def label_config():
     return names, prompts, owner, thr, review
 
 
+def text_embeddings(prompts, np, path=LABELS_NPZ):
+    """labels.npz's text embeddings (float32), or exit when the file doesn't match labels.yaml's
+    prompts or was built with a SigLIP revision other than pins.json's (or records none): text
+    embeddings from another revision load fine but score wrong, so they are refused."""
+    rebuild = "run bash setup.sh --build-labels"
+    with np.load(path) as z:
+        if list(z["prompts"]) != prompts:
+            sys.exit(f"label.py: labels.npz doesn't match labels.yaml; {rebuild}")
+        built = str(z[NPZ_REV_KEY]) if NPZ_REV_KEY in z.files else None
+        if built is None:
+            sys.exit(f"label.py: labels.npz records no SigLIP revision; {rebuild}")
+        if built != REV:
+            sys.exit(f"label.py: labels.npz was built with SigLIP revision {built[:12]}, "
+                     f"pins.json pins {REV[:12]}; {rebuild}")
+        return z["emb"].astype(np.float32)
+
+
 def frames_video(path, np):
     """Up to MAX_FRAMES RGB frames at SIZE x SIZE, spread over the whole video, or None."""
     r = subprocess.run(["ffprobe", "-v", "quiet", "-of", "json", "-show_entries", "format=duration", path],
@@ -191,10 +211,7 @@ def main():
         print(f"label.py: refusing {len(bad)} quarantined/flagged/staging files; nothing labelled", file=sys.stderr)
         sys.exit(3)
     names, prompts, owner, thr, review = label_config()
-    emb = np.load(os.path.join(HERE, "labels.npz"))
-    if list(emb["prompts"]) != prompts:
-        sys.exit("label.py: labels.npz doesn't match labels.yaml; run bash setup.sh --build-labels")
-    txt = emb["emb"].astype(np.float32)
+    txt = text_embeddings(prompts, np)
     if not os.path.exists(MODEL) or _sha(MODEL) != MODEL_SHA:
         sys.exit(f"label.py: model missing or checksum wrong ({MODEL}); run bash setup.sh")
     so = ort.SessionOptions()

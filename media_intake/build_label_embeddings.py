@@ -4,8 +4,9 @@
   bash setup.sh --build-labels     (fetches what this needs, then runs it)
   venv/bin/python -I media_intake/build_label_embeddings.py BUILD_DIR
 
-Only when labels.yaml changes; the runtime (label.py) needs just the vision
-encoder and this file. BUILD_DIR holds text_model.onnx and tokenizer.json from
+Only when labels.yaml or the SigLIP pin changes (the file records pins.json's
+revision, and label.py refuses one built with another); the runtime (label.py)
+needs just the vision encoder and this file. BUILD_DIR holds text_model.onnx and tokenizer.json from
 Xenova/siglip-base-patch16-224 at the pinned revision (sha256-checked by setup.sh)
 and site/ with the hash-pinned tokenizers wheel (requirements-labels.txt).
 
@@ -48,9 +49,10 @@ def main():
         feed["attention_mask"] = np.ones_like(ids)
     emb = sess.run(["pooler_output"], feed)[0].astype(np.float32)
     emb /= np.linalg.norm(emb, axis=1, keepdims=True)
-    out = os.path.join(HERE, "labels.npz")
-    np.savez(out, emb=emb, prompts=np.array(prompts))
-    print(f"wrote {out}: {len(prompts)} prompts x {emb.shape[1]}")
+    out = label.LABELS_NPZ
+    # The revision comes from pins.json (label.REV); label.py refuses a file built with another one.
+    np.savez(out, emb=emb, prompts=np.array(prompts), **{label.NPZ_REV_KEY: np.array(label.REV)})
+    print(f"wrote {out}: {len(prompts)} prompts x {emb.shape[1]}, SigLIP revision {label.REV[:12]}")
 
 
 if __name__ == "__main__":
