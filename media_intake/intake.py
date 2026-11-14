@@ -216,11 +216,10 @@ def category(rel, kind):
     app = sources.extra_app(rel)
     if app:
         return f"messaging:{app}"
+    if p[0] in ("DCIM", "Pictures") and sub == "Screenshots":  # Pixel and stock Android use Pictures/
+        return "screenrec" if ext in VID else "screenshot"  # some phones save screen recordings there too
     if p[0] == "DCIM":
-        return {"Screenshots": "screenshot", "Videocaptures": "screenrec",
-                "Screen recordings": "screenrec"}.get(sub, "video" if ext in VID else "photo")
-    if p[0] == "Pictures" and sub == "Screenshots":  # Pixel and stock Android
-        return "screenshot"
+        return {"Videocaptures": "screenrec", "Screen recordings": "screenrec"}.get(sub, "video" if ext in VID else "photo")
     if p[0] == "Pictures" and sub:
         return f"messaging:{sub}"
     return "photo"
@@ -336,6 +335,7 @@ def cmd_plan(a):
                          cat=category(rel, kind), dhash=dh, w=w, h=h, ext=ext))
 
     pref = {"photo": 5, "video": 5, "gopro": 5, "screenshot": 3, "screenrec": 3}
+    CAMERA = ("photo", "gopro")  # camera originals: one is never a near-duplicate of another
     def rank(r):
         return (pref.get(r["cat"], 1), "/Restored/" not in r["rel"], r["w"] * r["h"], r["size"])
 
@@ -362,13 +362,13 @@ def cmd_plan(a):
         for y in imgs[i + 1:]:
             if y["rel"] in action or bin(x["dhash"] ^ y["dhash"]).count("1") > 2:
                 continue
-            if (x["w"] >= x["h"]) != (y["w"] >= y["h"]) or (x["cat"] == y["cat"] == "photo"):
-                continue  # burst shots in the camera roll are never merged
+            if (x["w"] >= x["h"]) != (y["w"] >= y["h"]) or (x["cat"] in CAMERA and y["cat"] in CAMERA):
+                continue  # burst shots and time-lapse frames (phone or GoPro) are never merged
             keep, drop = (x, y) if rank(x) >= rank(y) else (y, x)
             action[drop["rel"]] = ("review", f"near-duplicate of {keep['rel']}")
             if drop is x:
                 break
-        if x["rel"] not in action and x["cat"] != "photo":
+        if x["rel"] not in action and x["cat"] not in CAMERA:
             for k, v in lib_imgs:
                 if bin(x["dhash"] ^ v["dhash"]).count("1") <= 2:
                     action[x["rel"]] = ("review", f"near-duplicate of library {k}")
@@ -1177,6 +1177,13 @@ def cmd_erase(a):
     pthumb_items = phone_thumbnail_items(root) if do_pthumbs else []
     known = [m["src"] for m in man["files"].values() if m.get("src")] + [p for p, _ in pthumb_items]
     phone_todo = device_targets(root, phone_items, known) if root else []
+    # A GoPro's .LRV (a low-resolution copy) and .THM beside an erased chapter hold the same footage. Only
+    # beside a chapter the gate passed: one skipped (size changed, denied, gone) keeps its previews too.
+    prev_items = [(os.path.join(os.path.dirname(src), n), NO_SIZE_CHECK)
+                  for src in phone_todo for n in devices.previews(os.path.basename(src))]
+    listed = {os.path.join(d, n) for d in {os.path.dirname(p) for p, _ in prev_items} if os.path.isdir(d)
+              for n in os.listdir(d)}  # never staged, so not in the manifest: the folder's own listing
+    prev_todo = device_targets(root, prev_items, known + sorted(listed), sources.check_preview) if root else []
     # Anything unexpected in a thumbnail folder (a symlink, a path resolving elsewhere) refuses erase:
     # the yes was given for folders of thumbnails, so a folder that isn't one is for you to look at.
     pthumb_todo = device_targets(root, pthumb_items, known, phone_thumbnail_check, skip_denied=False,
@@ -1194,10 +1201,11 @@ def cmd_erase(a):
         if q[rel]["sha"] in shas:
             thumbs += gallery_thumb_forget(q[rel]["sha"])
     if root:
-        for src, _ in phone_items:
+        for src, _ in phone_items + prev_items:
             thumbs += thumb_forget(src)
             gone.add(src)
     phone = len(device_remove(phone_todo))
+    previews = len(device_remove(prev_todo))
     pthumbs, prefused = phone_thumbnails(pthumb_todo)
     # Identical copies already in the library (filed by an earlier batch) are the
     # same picture: erase them too.
@@ -1247,6 +1255,8 @@ def cmd_erase(a):
         print(f"{len(in_git)} exact copies inside git repos, not deleted: " + ", ".join(in_git))
     if orphans:
         print(f"orphan sidecars deleted (.xmp left by a deleted file): {sum(orphans.values())}")
+    if previews:
+        print(f"camera previews removed: {previews} (.LRV/.THM beside the erased videos)")
     if do_pthumbs:
         print(f"phone thumbnail folders removed ({pthumbs} files; Android rebuilds them)"
               + (f"; {prefused} the phone refused to delete (held open by Android's media service)" if prefused else ""))

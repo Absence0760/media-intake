@@ -48,8 +48,8 @@ class Denied(Exception):
     pass
 
 
-def check(root, path):
-    """Raise Denied unless path is a media file under an allowed folder of root."""
+def check(root, path, exts=MEDIA_EXT):
+    """Raise Denied unless path is a media file (exts) under an allowed folder of root."""
     rel = os.path.relpath(path, root)
     parts = rel.split(os.sep)
     if rel.startswith("..") or os.path.isabs(rel):
@@ -66,8 +66,13 @@ def check(root, path):
             raise Denied(f"denied folder: {rel}")
     if DENY_ANYWHERE.search(rel):
         raise Denied(f"denied name: {rel}")
-    if os.path.splitext(parts[-1])[1].lower() not in MEDIA_EXT:
+    if os.path.splitext(parts[-1])[1].lower() not in exts:
         raise Denied(f"not media: {rel}")
+
+
+def check_preview(root, path):
+    """Raise Denied unless path is a camera preview (.LRV/.THM) that check's folder rules allow."""
+    check(root, path, CAMERA_JUNK_EXT)
 
 
 def walk(root, kind="phone"):

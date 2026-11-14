@@ -33,7 +33,9 @@ Fedora Linux first. Python, no service, no account.
   and only files with a verified copy in the library. A device delete is
   refused when its path differs from another path on the device only by
   letter case (case-insensitive storage may hold them as one file), and
-  nothing on a device is ever renamed or moved.
+  nothing on a device is ever renamed or moved. Erasing a GoPro chapter
+  from the card also removes its `.LRV`/`.THM` previews (unstaged copies of
+  the same footage), behind the same `--yes` and path checks.
 - The state folder (staging, quarantine, index, erase log, `jobs/`: each
   detached job's status, log and lock, `locks/`: the library lock, and
   `device-salt`) is `0700`. So are `jobs/` and `locks/`, whose files are
