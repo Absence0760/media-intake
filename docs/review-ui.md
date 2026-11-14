@@ -158,7 +158,10 @@ thumbnails written), with Range for video seeking. HEIC/DNG show "no
 preview"; open those in your file manager. A card whose file the browser can't
 decode says so instead of an empty box: a picture it can't show, or a video it
 can't play, including one whose sound plays but whose picture doesn't (an
-iPhone HEVC `.mov` in Chromium); open those in your file manager too.
+iPhone HEVC `.mov` in Chromium); open those in your file manager too. This
+page makes no H.264 proxy (quarantined files must not gain a cached copy);
+the gallery makes one once a video is filed ([gallery.md](gallery.md), "Video
+proxies").
 
 An AI assistant may start the server for you but must never open the page or
 its media.

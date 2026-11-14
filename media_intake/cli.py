@@ -32,9 +32,13 @@ SYSTEM_MODULES = {"zxingcpp": "python3-zxing-cpp", "PIL": "python3-pillow", "num
                   "yaml": "python3-pyyaml"}
 TESSERACT_ENG = "tesseract-langpack-eng"
 HEVC_DECODERS, HEVC_PACKAGE = ("vah265dec", "vulkanh265dec"), "gstreamer1-plugins-bad-free"
+# The gallery's H.264 proxy of an HEVC video (gallery.proxy_commands): a GStreamer H.264 encoder after the GPU
+# decoder, or ffmpeg alone when it has both an HEVC decoder and an H.264 encoder (not Fedora's ffmpeg-free).
+GST_H264_ENCODERS, H264_PACKAGE = ("x264enc", "openh264enc", "vah264enc"), "gstreamer1-plugin-openh264"
+FFMPEG_H264_ENCODERS = ("libx264", "libopenh264")
 MTP_BACKEND, MTP_PACKAGE = "/usr/libexec/gvfsd-mtp", "gvfs-mtp"
 XDG_OPEN, XDG_PACKAGE = "xdg-open", "xdg-utils"  # the gallery's "Open in the system player" (POST /api/open)
-OPTIONAL = {"gstreamer1", HEVC_PACKAGE, MTP_PACKAGE, XDG_PACKAGE}  # Fedora packages, as in the maps above
+OPTIONAL = {"gstreamer1", HEVC_PACKAGE, H264_PACKAGE, MTP_PACKAGE, XDG_PACKAGE}  # Fedora packages, as in the maps above
 
 
 def venv_python():
@@ -122,6 +126,18 @@ def doctor(probe=None, out=print):
             report("ok", "GStreamer HEVC decoder")
         else:
             missing(HEVC_PACKAGE, "GStreamer HEVC decoder (vah265dec / vulkanh265dec; most phone video)")
+    h264 = None
+    if probe.which("ffmpeg"):
+        encs = probe.output(["ffmpeg", "-hide_banner", "-encoders"])
+        if " hevc " in probe.output(["ffmpeg", "-hide_banner", "-decoders"]):
+            h264 = next((f"ffmpeg {e}" for e in FFMPEG_H264_ENCODERS if f" {e} " in encs), None)
+    if not h264 and probe.which("gst-inspect-1.0"):
+        h264 = next((e for e in GST_H264_ENCODERS if e in plugins), None)
+    if h264:
+        report("ok", f"H.264 encoder for the gallery's HEVC proxies ({h264})")
+    else:
+        missing(H264_PACKAGE, "H.264 encoder for the gallery's HEVC proxies (x264enc / openh264enc / vah264enc, "
+                              "or ffmpeg with an HEVC decoder and libx264)")
     if probe.exists(MTP_BACKEND):
         report("ok", "gvfs MTP backend")
     else:

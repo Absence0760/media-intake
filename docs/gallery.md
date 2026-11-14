@@ -264,12 +264,19 @@ and serves that instead; every other video is served as it is.
 - **How**: ffmpeg first (`libx264`, else `libopenh264`), which needs an HEVC
   decoder; Fedora's `ffmpeg-free` has none, so then GStreamer's GPU decoder
   (`vah265dec` or Vulkan, as for thumbnails) into `x264enc`, `openh264enc` or
-  `vah264enc`, with the sound when it is AAC, then without. Paths go to ffmpeg
-  as `file:` paths and to `gst-launch-1.0` as one quoted location. Nothing is
-  fetched; the original is only read.
+  `vah264enc`, with the sound when it is AAC, then without. `media-intake
+  doctor` lists an H.264 encoder as optional (`gstreamer1-plugin-openh264`).
+  Nothing is fetched; the original is only read.
+- **File names never reach a pipeline.** ffmpeg gets the original as a
+  `file:` path. `gst-launch-1.0` re-parses its arguments as one pipeline, so a
+  name holding `!`, quotes or spaces could add elements: it reads the
+  original through a link `in` in a private work folder
+  (`proxies/.work-*`, 0700) and writes `out.mp4` beside it, both paths made
+  by the tool; if that folder's path holds anything but letters, digits and
+  `._/+-` (an unusual HOME), GStreamer is not tried.
 - **Cached** in `~/.cache/media-intake/proxies/<sha256>.mp4` (folder 0700,
-  files 0600), written to a private temporary file first and kept only when
-  ffprobe reads it back as H.264. They are copies of video content, so
+  files 0600), written in the work folder first (removed afterwards) and kept
+  only when ffprobe reads it back as H.264. They are copies of video content, so
   `trash`, `forget` and `erase` delete them by sha256 with the thumbnail,
   `verify-gone` reports one that is still there as STILL PRESENT, and one
   finished after its video was trashed or erased mid-transcode is deleted.
@@ -342,9 +349,16 @@ AAC proxy, 0600 in a 0700 folder, with Range, made once (a second request and a
 restarted server reuse it), an H.264 .mp4 served as it is with no proxy, and
 the originals unchanged; a failing ffmpeg (a fake first on PATH) serves the
 original, tries once, leaves no partial file, and Keep still works; the
-GStreamer fallback's two `gst-launch-1.0` runs (with and without sound), its
-path with a space as one location; Trash from the gallery deleting the proxy;
-and `trash`, `forget` and `verify-gone` on planted proxies.
+GStreamer fallback's two `gst-launch-1.0` runs (with and without sound) for a
+file named with `!`, spaces and double quotes: two `location=` arguments, the
+work folder's link (resolving to the original) and output, and no part of the
+name in any argument; `proxy_commands` in-process with a hostile name, and
+skipping GStreamer for an unsafe work path; the race where a video is trashed
+while its proxy is made (a gated ffmpeg that has written the proxy waits on a
+FIFO): with the trash job still running the fresh proxy is deleted and the
+original served, and after the trash ends it is deleted and nothing served,
+leaving the cache empty either way; Trash from the gallery deleting the
+proxy; and `trash`, `forget` and `verify-gone` on planted proxies.
 
 In headless Chromium (`tests/browser/test_browser_gallery.py`, see
 CONTRIBUTING.md, Tests): keys, click and shift-click selection, the bottom

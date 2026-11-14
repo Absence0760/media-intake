@@ -9,7 +9,8 @@ H.264 encoder) and an H.264 .mp4. The real gallery server serves them; trash, fo
 verify-gone run the real intake.py. Failure paths put fake ffmpeg / GStreamer tools first on the
 server's PATH (ffprobe stays the real one), which record their arguments and fail.
 """
-import json, os, shutil, stat, subprocess, sys, tempfile, unittest
+import json, os, shutil, stat, subprocess, sys, tempfile, threading, unittest
+import unittest.mock as mock
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import support  # noqa: E402  (hermetic config)
@@ -45,19 +46,41 @@ def streams(path):
     return {s["codec_type"]: s["codec_name"] for s in json.loads(r.stdout)["streams"]}
 
 
-# A stand-in tool: records its arguments (one JSON line per run) and exits with FAKE_RC (default 1).
-# gst-inspect-1.0 says yes only to the element names in FAKE_GST_HAS.
+# A stand-in tool: records its arguments (one JSON line per run) and fails.
+# gst-inspect-1.0 says yes only to the element names in FAKE_GST_HAS; gst-launch-1.0 also records
+# where each location= path resolves to (["gst-where", ...]), while its work folder still exists.
 FAKE_TOOL = r'''#!/usr/bin/env python3
 import json, os, sys
 name = os.path.basename(sys.argv[0])
 with open(os.environ["FAKE_TOOL_LOG"], "a") as f:
     f.write(json.dumps([name, *sys.argv[1:]]) + "\n")
+    if name == "gst-launch-1.0":
+        f.write(json.dumps(["gst-where"] + [os.path.realpath(a[9:]) for a in sys.argv[1:]
+                                            if a.startswith("location=")]) + "\n")
 if name == "gst-inspect-1.0":
     sys.exit(0 if len(sys.argv) == 1 or sys.argv[1] in os.environ.get("FAKE_GST_HAS", "").split() else 1)
 if name == "ffmpeg" and "-encoders" in sys.argv:  # it claims an H.264 encoder, then fails every transcode
     print(" V....D libx264              fake")
     sys.exit(0)
 sys.exit(1)
+'''
+
+# ffmpeg whose transcode is held before it exits: it runs the real ffmpeg (the proxy is written, the original
+# read), says so (a file, renamed into place), then blocks opening the FIFO at FFMPEG_GATE until the test opens
+# it, and exits as the real one did. So the video can be trashed after it was read and before the gallery keeps
+# the proxy. Other runs go straight to the real ffmpeg.
+GATED_FFMPEG = r'''#!/usr/bin/env python3
+import os, subprocess, sys
+real = os.environ["REAL_FFMPEG"]
+if "-movflags" not in sys.argv:
+    os.execv(real, [real, *sys.argv[1:]])
+rc = subprocess.run([real, *sys.argv[1:]]).returncode
+with open(os.environ["FFMPEG_STARTED"] + ".tmp", "w") as f:
+    f.write(str(rc))
+os.replace(os.environ["FFMPEG_STARTED"] + ".tmp", os.environ["FFMPEG_STARTED"])
+with open(os.environ["FFMPEG_GATE"]) as g:
+    g.read()
+sys.exit(rc)
 '''
 
 
@@ -88,14 +111,14 @@ class ProxyTest(unittest.TestCase):
         if not H264:
             self.skipTest("this ffmpeg has no H.264 encoder (libx264 / libopenh264) to make a proxy with")
 
-    def fakes(self, *names, has=()):
+    def fakes(self, *names, has=(), script=FAKE_TOOL):
         """Fake tools first on the server's PATH; returns a reader of their recorded runs."""
         d = os.path.join(self.tmp, "fakebin")
         os.makedirs(d, exist_ok=True)
         for n in names:
             p = os.path.join(d, n)
             with open(p, "w") as f:
-                f.write(FAKE_TOOL)
+                f.write(script)
             os.chmod(p, 0o755)
         log = os.path.join(self.tmp, "fake-tools.log")
         self.env.update(PATH=d + os.pathsep + self.env.get("PATH", ""), FAKE_TOOL_LOG=log, FAKE_GST_HAS=" ".join(has))
@@ -188,26 +211,116 @@ class ProxyTest(unittest.TestCase):
         code, j = s.post("/api/keep", {"ids": [i]})
         self.assertEqual(code, 200, j)
 
-    def test_gstreamer_fallback_is_tried_with_quoted_paths(self):
-        """Where ffmpeg can't decode HEVC (Fedora's ffmpeg-free), GStreamer's GPU decoder is tried, with sound
-        and then without; when that fails too the original is served."""
+    def test_gstreamer_fallback_never_puts_the_file_name_in_the_pipeline(self):
+        """Where ffmpeg can't decode HEVC (Fedora's ffmpeg-free), GStreamer's GPU decoder is tried, with sound and
+        then without; when that fails too the original is served. gst-launch-1.0 re-parses its arguments as one
+        pipeline, so a name holding "!", a space and a double quote must not reach it: it reads a link in a work
+        folder under the cache, which resolves to the original, and writes beside it."""
         self.need_hevc()
-        hv = os.path.join(self.vids, "2026/2026-11/two words/IMG_0003.MOV")
+        name = 'a ! fakesink "x" y.MOV'
+        hv = os.path.join(self.vids, "2026/2026-11/b ! c", name)
         mkclip(hv, "hevc")
+        orig = G.sha(hv)
         runs = self.fakes("ffmpeg", "gst-inspect-1.0", "gst-launch-1.0", has=("vah265dec", "x264enc"))
         s = self.start()
-        r, body = s.req("GET", f"/m/{self.ids(s)['IMG_0003.MOV']}")
+        r, body = s.req("GET", f"/m/{self.ids(s)[name]}")
         with open(hv, "rb") as f:
             self.assertEqual((r.status, body), (200, f.read()))
-        launches = runs("gst-launch-1.0")
+        launches, where = runs("gst-launch-1.0"), runs("gst-where")
         self.assertEqual(len(launches), 2, launches)
-        for a in launches:
-            self.assertIn("location=" + hv, a)  # one argument, spaces and all
-            self.assertTrue(any(x.startswith("location=" + self.proxies + os.sep) for x in a), a)
-            for el in ("vah265dec", "vapostproc", "x264enc", "mp4mux"):
-                self.assertIn(el, a)
+        for a, (src, out) in zip(launches, where):
+            locs = [x[9:] for x in a if x.startswith("location=")]
+            self.assertEqual(len(locs), 2, a)  # filesrc and filesink, nothing more
+            work = os.path.dirname(locs[0])
+            self.assertEqual(os.path.dirname(work), self.proxies)
+            self.assertTrue(os.path.basename(work).startswith(".work-"), work)
+            self.assertEqual(locs, [os.path.join(work, "in"), os.path.join(work, "out.mp4")])
+            self.assertEqual(src, os.path.realpath(hv))  # the link reads the original
+            self.assertEqual(out, os.path.realpath(os.path.join(work, "out.mp4")))
+            for x in a:  # no part of the name in any argument
+                for bit in ("!" + " fakesink", '"', "y.MOV", "b ! c"):
+                    self.assertNotIn(bit, x, a)
+            self.assertEqual(a.count("fakesink"), 0, a)
+            for el in ("vah265dec", "vapostproc", "x264enc", "mp4mux", "filesink"):
+                self.assertEqual(a.count(el), 1, (el, a))
         self.assertIn("aacparse", launches[0])
         self.assertNotIn("aacparse", launches[1])
+        self.assertEqual(os.listdir(self.proxies), [])  # work folder gone
+        self.assertEqual(G.sha(hv), orig)
+
+    # ------------------------------------------------------------ trashed or erased while its proxy is made
+    def held_transcode(self, name):
+        """A server whose transcode of <name> (an HEVC clip) is held by the gated ffmpeg once it has written it.
+        Returns (server, id, the clip, its proxy path, release(), result()): release lets the transcode run on,
+        result() waits for the /m/ request and gives (status, body)."""
+        self.need_hevc()
+        hv = os.path.join(self.vids, "2026/2026-11", name)
+        mkclip(hv, "hevc")
+        px = self.proxy_of(hv)
+        gate, started = os.path.join(self.tmp, "ffmpeg-gate"), os.path.join(self.tmp, "ffmpeg-started")
+        os.mkfifo(gate)
+        real = shutil.which("ffmpeg")
+        self.fakes("ffmpeg", script=GATED_FFMPEG)
+        self.env.update(REAL_FFMPEG=real, FFMPEG_GATE=gate, FFMPEG_STARTED=started)
+        s = self.start()
+        i = self.ids(s)[name]
+        got = {}
+        t = threading.Thread(target=lambda: got.update(r=s.req("GET", f"/m/{i}")))
+        t.start()
+        self.addCleanup(t.join, 120)
+        G.until(lambda: os.path.exists(started), "the transcode to be written")
+        with open(started) as f:
+            self.assertEqual(f.read(), "0")  # the real ffmpeg made it
+
+        def release():
+            with open(gate, "w") as g:  # the gated ffmpeg is blocked opening it: this pairs at once
+                g.write("go")
+
+        def result():
+            t.join(120)
+            self.assertFalse(t.is_alive(), "the /m/ request never returned")
+            r, body = got["r"]
+            return r.status, body
+        return s, i, hv, px, release, result
+
+    def test_proxy_finished_while_its_video_is_in_a_job_is_dropped(self):
+        """The video's trash job is still running (a gated fake intake.py) when the transcode ends: the fresh
+        proxy is deleted at once and the original is served, as before proxies."""
+        gate = os.path.join(self.tmp, "intake-gate")
+        os.mkfifo(gate)
+        fake = os.path.join(self.tmp, "gated_intake.py")
+        with open(fake, "w") as f:
+            f.write(G.GATED)
+        self.env.update(MEDIA_REVIEW_INTAKE=fake, FAKE_GATE=gate)
+        s, i, hv, px, release, result = self.held_transcode("IMG_0006.MOV")
+        code, j = s.post("/api/trash", {"ids": [i], "confirm": True})
+        self.assertEqual(code, 200, j)
+        G.until(lambda: any("waiting at the gate" in x for x in s.get("/api/job")["lines"]), "the trash to start")
+        release()
+        status, body = result()
+        with open(hv, "rb") as f:
+            self.assertEqual((status, body), (200, f.read()))
+        self.assertFalse(os.path.lexists(px))
+        self.assertEqual(os.listdir(self.proxies), [])
+        with open(gate, "w") as g:  # let the trash finish
+            g.write("go")
+        j = G.until(lambda: (lambda j: j if j["done"] else None)(s.get("/api/job")), "the trash to end")
+        self.assertFalse(os.path.lexists(hv))
+        self.assertEqual(os.listdir(self.proxies), [])
+
+    def test_proxy_finished_after_its_video_was_trashed_is_dropped(self):
+        """The real trash ends while the transcode is held (it found no proxy to delete yet): when the transcode
+        ends, the proxy it wrote is deleted, nothing is left in the cache, and nothing is served."""
+        s, i, hv, px, release, result = self.held_transcode("IMG_0007.MOV")
+        code, j = s.post("/api/trash", {"ids": [i], "confirm": True})
+        self.assertEqual(code, 200, j)
+        j = G.until(lambda: (lambda j: j if j["done"] else None)(s.get("/api/job")), "the trash to end")
+        self.assertTrue(j["ok"], j["lines"])
+        self.assertFalse(os.path.lexists(hv))
+        release()
+        status, _ = result()
+        self.assertEqual(status, 404)  # the original is gone, and its proxy is never served
+        self.assertFalse(os.path.lexists(px))
         self.assertEqual(os.listdir(self.proxies), [])
 
     # ------------------------------------------------------------ clean-up: trash, forget, erase, verify-gone
@@ -260,6 +373,38 @@ class ProxyTest(unittest.TestCase):
         r = subprocess.run([G.PY, "-I", G.INTAKE, "verify-gone"], env=self.env, capture_output=True, text=True)
         self.assertEqual(r.returncode, 1, r.stdout)
         self.assertIn("gallery video proxies", r.stdout)
+
+
+class ProxyCommandsTest(unittest.TestCase):
+    """gallery.proxy_commands in-process, with the tool lookups patched: no tool runs."""
+
+    def setUp(self):
+        import gallery
+        import scan_sensitive
+        self.g = gallery
+        for target, value in ((gallery, ("ffmpeg_encoder", lambda names: "libx264")),
+                              (gallery, ("gst_element", lambda names: "x264enc")),
+                              (scan_sensitive, ("_gst_hevc_decoder", lambda: "vah265dec"))):
+            p = mock.patch.object(target, value[0], value[1])
+            p.start()
+            self.addCleanup(p.stop)
+
+    def test_a_hostile_name_stays_out_of_the_pipeline(self):
+        src = '/lib/a ! filesink location=/tmp/x "q" b.MOV'
+        work = "/home/u/.cache/media-intake/proxies/.work-abc123"
+        cmds = self.g.proxy_commands(src, work)
+        self.assertEqual([c[0] for c in cmds], ["ffmpeg", "gst-launch-1.0", "gst-launch-1.0"])
+        ff = cmds[0]
+        self.assertEqual((ff[ff.index("-i") + 1], ff[-1]), ("file:" + src, "file:" + work + "/out.mp4"))
+        for c in cmds[1:]:
+            self.assertEqual([x for x in c if x.startswith("location=")],
+                             ["location=" + work + "/in", "location=" + work + "/out.mp4"])
+            self.assertEqual(c.count("filesink"), 1)
+            self.assertFalse([x for x in c if '"' in x or " " in x or "b.MOV" in x], c)
+
+    def test_an_unsafe_work_path_skips_gstreamer(self):
+        for work in ('/home/a b/.cache/media-intake/proxies/.work-1', "/home/a!b/.work-1", '/h/"q"/.work-1'):
+            self.assertEqual([c[0] for c in self.g.proxy_commands("/lib/v.MOV", work)], ["ffmpeg"], work)
 
 
 if __name__ == "__main__":
