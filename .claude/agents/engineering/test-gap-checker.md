@@ -30,7 +30,7 @@ Tests are stdlib `unittest` in `tests/`, one `test_<area>.py` per area, every on
 | Source | Test file |
 |---|---|
 | `media_intake/intake.py` (stage, plan, scan, apply, quarantine, release, erase, trash, offload) | `tests/test_intake.py` |
-| `media_intake/label.py`, `geocode.py`, tag / find paths | `tests/test_tagging.py` |
+| `media_intake/label.py`, `geocode.py`, tag / find paths | `tests/test_tagging.py` (labels.npz checks: `tests/test_labels.py`) |
 | `media_intake/scan_sensitive.py` | `tests/test_intake.py` (driven through `scan`) |
 | `media_intake/sources.py` | `tests/test_sources.py` |
 | `media_intake/config.py`, `config.example.toml` | `tests/test_config.py` |

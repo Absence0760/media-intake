@@ -15,7 +15,8 @@ review files it prints `nothing to review for BATCH` and exits 0.
   chain (`near-BATCH`, `near-near-BATCH`, ...; see below), with
   the scanner's labels; Keep (release to the library) or Erase. **Review**
   tab: `batches/BATCH/review` with plan.json's `why`; Keep or Delete. Keys: K
-  keep, E (or D) erase/delete, T trash, arrows move. Submit unlocks when every
+  keep, E (or D) erase/delete, T trash, X opens or closes a burst stack,
+  arrows move. Submit unlocks when every
   item is decided, shows a summary and needs ERASE typed.
 - **Near-duplicates** (in either tab) show their original beside them:
   "Original (kept)" left, "This copy" right, each with resolution, size, date
@@ -53,6 +54,31 @@ review files it prints `nothing to review for BATCH` and exits 0.
   sidecar: [intake.md](intake.md), "Owner decisions"). With no BATCH,
   decisions go to `maybe-trash-decisions.json`. The confirm summary shows
   keep / erase / trash per tab.
+- **Burst stacks** (in each tab): shots from one device a moment apart show as
+  one stack with a count badge ("Burst: 4 shots, 2 undecided"); "Show all"
+  (or X) opens it and every shot follows the first. On an open stack each shot
+  has "Keep this one, trash the rest" ("... erase the rest" in Quarantine): it
+  sets Keep on that shot and Trash on the others, or Erase in Quarantine,
+  where every shot is flagged and so takes the erase-everywhere path, never
+  plain trash. Nothing more: they run with the rest at submit, after the same
+  ERASE confirm, guards and job as any decision (no endpoint of its own):
+  Trash is `media-intake trash` (the sha256 goes in `trashed.json`), Keep is
+  the tab's Keep (Maybe trash: `not-trash`, so `Owner|keep`; Quarantine:
+  `release`; Review: stays in `review/`). A closed stack's buttons decide the
+  first shot only, and Submit stays locked until every shot is decided.
+  Grouping (`media_intake/bursts.py`, pure functions, runnable on a JSON list
+  of records): same device (an unknown one groups only with unknown ones),
+  images only, each shot at most `GAP` (2 s, inclusive) after the one before,
+  and, when both have a dHash, at most `DHASH_MAX` (10 of 64) bits apart. A
+  burst marker wins over the clock: the same marker is one burst whatever the
+  gap, two different markers never are. Markers come from the file name
+  (`IMG_20261108_071500_BURST001.jpg`, Pixel's `..._BURST<start time>...jpg`)
+  or a `burst_id` in the plan entry (a camera's BurstUUID; intake does not
+  record one yet). The date, device and dHash come from `plan.json` (this
+  batch's quarantine and review items; a maybe-trash library file by its
+  `dst`, plus `index.json` for its dHash), so near- and xcheck- items, and
+  library files with no plan entry, are never stacked. Stacks never cross a
+  tab or a quarantine batch. No file is opened to group them.
 - **On submit** it writes `batches/BATCH/review-decisions.json` (0600,
   relative paths and decisions) first, then runs: review deletions
   (`purge-review` when all are deleted, else file by file plus its
@@ -139,7 +165,8 @@ its media.
 `intake.py` via `MEDIA_REVIEW_INTAKE` records its argv, so a real erase never
 runs; its erase can wait on a FIFO so the tests kill the server or the worker
 mid-run). The job module itself: `python3 -I -m unittest discover -s tests -p
-test_jobs.py`.
+test_jobs.py`. Burst grouping: `python3 -I -m unittest discover -s tests -p
+test_bursts.py`.
 
 In headless Chromium (`tests/browser/test_browser_review.py`, see
 CONTRIBUTING.md, Tests): the keys and arrows, Submit unlocking, the ERASE
@@ -147,4 +174,6 @@ panel, a card's video seeking by Range, and the run's progress and re-attach
 after a reload.
 
 Not verified: the crash message in a real browser (the HTTP tests cover the
-crash itself), layout, and any browser but Chromium.
+crash itself), burst stacks in a real browser (opening, X, keep-one; the HTTP
+tests cover the grouping, the page code being served and the submit it leads
+to), layout, and any browser but Chromium.

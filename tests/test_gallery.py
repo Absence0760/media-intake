@@ -9,7 +9,9 @@ at the real ~/.local/share/media-intake, ~/Pictures or ~/Videos. A toy plugin
 checks the gallery_views() seam (plugins.py). The job tests swap in a fake intake.py
 (MEDIA_REVIEW_INTAKE) whose trash waits on a FIFO the test opens, so a job is held
 mid-step without a sleep while servers are killed and restarted. The system-player action
-runs a fake xdg-open put first on PATH, which only records its arguments.
+runs a fake xdg-open put first on PATH, which only records its arguments. Events (rename, merge, set
+on a selection) and the share-safe export are tested through the HTTP API; ViewsEndpointsTest covers their
+guards and the 409 while the library is locked with hand-written sidecars, so it needs no exiftool.
 """
 import errno, hashlib, http.client, json, os, re, shutil, signal, stat, subprocess, sys, tempfile, time
 import unittest, urllib.parse
@@ -720,12 +722,396 @@ class GalleryTest(unittest.TestCase):
         self.assertIn("Owner|trash", s.get(f"/api/item/{idc}")["tags"])
         self.assertEqual(s.get("/api/facets")["counts"]["suggest"], len(names))
 
+    # ------------------------------------------------------------ events: the sidebar list, rename, merge
+    def test_events_rename_and_merge(self):
+        """Events come from Event| tags; rename and merge rewrite only Event| (and XMP-iptcExt:Event) in the
+        sidecars that have it: Owner| and every other tag stay, originals are never written."""
+        write_tags(self.b, ["Event|beach", "Trips|beach"])  # a tag of mine with the same leaf
+        write_tags(self.k, ["Project|Personal", "Review|maybe-trash", "Owner|keep", "Event|beach"],
+                   extra=["-XMP-iptcExt:Event=beach"])
+        write_tags(self.lo, ["Project|Personal", "AI|vlm/m1/trash/dark", "AI|vlm/m1/conf/0.5", "Event|hike"])
+        self.originals.update({p: sha(p) for p in (self.k, self.lo, self.clip)})
+        s = self.start()
+        ev = dict(map(tuple, s.get("/api/facets")["facets"]["event"]))
+        self.assertEqual(ev, {"beach": 2, "hike": 1, "city-expo": 1})
+        self.assertEqual(sorted(self.names(s, event="beach")[0]), ["b.jpg", "k.jpg"])
+        # rename: a slug, a new name, an event that exists
+        for body in ({"from": "beach", "to": "Not A Slug"}, {"from": "beach", "to": ""},
+                     {"from": "beach", "to": "hike"}, {"from": "nope", "to": "coast"}, {"from": "beach", "to": "beach"}, {"from": None, "to": "coast"},
+                     {"from": "beach", "to": "-x"}):
+            code, j = s.post("/api/event/rename", body)
+            self.assertEqual(code, 400, (body, j))
+        self.assertIn("Event|beach", tags_of(self.k)[0])  # nothing written by a refusal
+        code, j = s.post("/api/event/rename", {"from": "beach", "to": "coast"})
+        self.assertEqual(code, 200, j)
+        self.assertIn("2 sidecars", j["result"])
+        h, dc, _ = tags_of(self.k)
+        self.assertIn("Event|coast", h)
+        self.assertNotIn("Event|beach", h)
+        for t in ("Owner|keep", "Project|Personal", "Review|maybe-trash"):
+            self.assertIn(t, h)
+        self.assertIn("coast", dc)
+        self.assertNotIn("beach", dc)  # no other tag of k.jpg uses the leaf
+        r = subprocess.run(["exiftool", "-s3", "-XMP-iptcExt:Event", self.k + ".xmp"], capture_output=True, text=True)
+        self.assertEqual(r.stdout.strip(), "coast")
+        h, dc, _ = tags_of(self.b)
+        self.assertEqual(sorted(h), ["Event|coast", "Trips|beach"])
+        self.assertIn("beach", dc)  # still used by Trips|beach
+        ev = dict(map(tuple, s.get("/api/facets")["facets"]["event"]))
+        self.assertEqual(ev, {"coast": 2, "hike": 1, "city-expo": 1})
+        self.assertEqual(sorted(self.names(s, event="coast")[0]), ["b.jpg", "k.jpg"])
+        self.assertEqual(self.names(s, event="beach")[0], [])
+        # merge: into an existing event only, never into itself
+        for body in ({"from": ["coast"], "into": "nope"}, {"from": ["coast"], "into": "coast"},
+                     {"from": ["nope"], "into": "hike"}, {"from": [], "into": "hike"}, {"from": [3], "into": "hike"},
+                     {"from": ["coast"], "into": None}):
+            code, j = s.post("/api/event/merge", body)
+            self.assertEqual(code, 400, (body, j))
+        code, j = s.post("/api/event/merge", {"from": ["coast", "city-expo"], "into": "hike"})
+        self.assertEqual(code, 200, j)
+        ev = dict(map(tuple, s.get("/api/facets")["facets"]["event"]))
+        self.assertEqual(ev, {"hike": 4})
+        self.assertEqual(sorted(self.names(s, event="hike")[0]), ["b.jpg", "clip.mp4", "k.jpg", "lo.jpg"])
+        h = tags_of(self.clip)[0]
+        self.assertIn("Event|hike", h)
+        self.assertNotIn("Event|city-expo", h)
+        self.assertIn("Project|Demo", h)
+        self.assertIn("Owner|keep", tags_of(self.k)[0])
+        self.assertEqual(tags_of(self.a)[0].count("Event|hike"), 0)  # never in an event: untouched
+        for p, h0 in self.originals.items():
+            self.assertEqual(sha(p), h0, p)
+
+    # ------------------------------------------------------------ bulk edits on a selection
+    def test_bulk_edits(self):
+        """Tags, event and rotate on several items at once, through the same endpoints as one item."""
+        s = self.start()
+        ida, idb, idk = self.id_of(s, "a.jpg"), self.id_of(s, "b.jpg"), self.id_of(s, "k.jpg")
+        sel = [ida, idb, idk]
+        code, j = s.post("/api/tag", {"ids": sel, "tag": "Trips|Spain", "op": "add"})
+        self.assertEqual(code, 200, j)
+        for p in (self.a, self.b, self.k):
+            self.assertIn("Trips|Spain", tags_of(p)[0], p)
+        self.assertIn(["Trips|Spain", 3], s.get("/api/facets")["facets"]["mine"])
+        code, j = s.post("/api/tag", {"ids": sel, "tag": "Trips|Spain", "op": "remove"})
+        self.assertEqual(code, 200, j)
+        for p in (self.a, self.b, self.k):
+            self.assertNotIn("Trips|Spain", tags_of(p)[0], p)
+        # set event: replaces each item's other events; refused for a non-slug; "" takes them out of every event
+        code, _ = s.post("/api/event/set", {"ids": sel, "event": "Picnic Day"})
+        self.assertEqual(code, 400)
+        code, _ = s.post("/api/event/set", {"ids": sel})
+        self.assertEqual(code, 400)
+        idc = self.id_of(s, "clip.mp4")
+        code, j = s.post("/api/event/set", {"ids": sel + [idc], "event": "picnic"})
+        self.assertEqual(code, 200, j)
+        for p in (self.a, self.b, self.k, self.clip):
+            h = [t for t in tags_of(p)[0] if t.startswith("Event|")]
+            self.assertEqual(h, ["Event|picnic"], p)
+        self.assertIn("Owner|keep", tags_of(self.k)[0])
+        self.assertIn("Label|food", tags_of(self.a)[0])
+        self.assertEqual(sorted(self.names(s, event="picnic")[0]), ["a.jpg", "b.jpg", "clip.mp4", "k.jpg"])
+        code, j = s.post("/api/event/set", {"ids": [ida, idc], "event": ""})
+        self.assertEqual(code, 200, j)
+        self.assertFalse([t for t in tags_of(self.a)[0] if t.startswith("Event|")])
+        self.assertEqual(s.get(f"/api/item/{idc}")["event"], "")
+        self.assertEqual(sorted(self.names(s, event="picnic")[0]), ["b.jpg", "k.jpg"])
+        # rotate the selection: each one's own orientation, sidecar only
+        code, j = s.post("/api/rotate", {"ids": [ida, idb], "dir": "cw"})
+        self.assertEqual(code, 200, j)
+        self.assertEqual((tags_of(self.a)[2], tags_of(self.b)[2]), (6, 6))
+        code, j = s.post("/api/rotate", {"ids": [ida], "dir": "ccw"})
+        self.assertEqual(code, 200, j)
+        code, j = s.post("/api/rotate", {"ids": [ida, idb], "dir": "ccw"})
+        self.assertEqual((tags_of(self.a)[2], tags_of(self.b)[2]), (8, 1))
+        code, _ = s.post("/api/event/set", {"ids": [ida, 999], "event": "x"})
+        self.assertEqual(code, 400)  # one unknown id refuses the whole selection
+        for p, h0 in self.originals.items():
+            self.assertEqual(sha(p), h0, p)
+
+    # ------------------------------------------------------------ share-safe export
+    def test_share_safe_export(self):
+        """share-copy (exiftool here) on the selection into a new folder under ~/Pictures/share-safe."""
+        g = os.path.join(self.lib, "2026/2026-07/g.jpg")
+        os.makedirs(os.path.dirname(g))
+        ex = Image.Exif()
+        ex[0x0110] = "SyntheticCam"
+        Image.new("RGB", (64, 48), (10, 120, 200)).save(g, exif=ex)
+        subprocess.run(["exiftool", "-q", "-overwrite_original", "-GPSLatitude=37.536", "-GPSLatitudeRef=N",
+                        "-GPSLongitude=77.4347", "-GPSLongitudeRef=W", g], check=True)
+        write_tags(g, ["Event|trip"])
+        before = {p: sha(p) for p in (g, g + ".xmp")}
+        s = self.start()
+        idg = self.id_of(s, "g.jpg")
+        code, j = s.post("/api/share", {"ids": [idg]})
+        self.assertEqual(code, 200, j)
+        self.assertRegex(j["dest"], r"^~/Pictures/share-safe/\d{4}-\d\d-\d\d-\d{6}$")
+        out = os.path.join(self.home, j["dest"][2:])
+        j = self.wait_job(s)
+        self.assertTrue(j["ok"], j)
+        self.assertTrue(any(ln.strip() == f"{out}/g.jpg  gps=none" for ln in j["lines"]), j["lines"])
+        r = subprocess.run(["exiftool", "-j", "-q", "-n", "-GPSLatitude", "-Model", os.path.join(out, "g.jpg")],
+                           capture_output=True, text=True)
+        row = json.loads(r.stdout)[0]
+        self.assertNotIn("GPSLatitude", row)
+        self.assertNotIn("Model", row)
+        self.assertEqual({p: sha(p) for p in before}, before)  # the original and its sidecar only read
+        self.assertFalse(out.startswith(self.lib + os.sep))  # never a library file
+
     # ------------------------------------------------------------ close
     def test_close_button(self):
         s = self.start()
         code, _ = s.post("/api/close", {})
         self.assertEqual(code, 200)
         self.assertEqual(s.p.wait(timeout=10), 0)
+
+
+def raw_xmp(p, hier, event=None):
+    """A sidecar written as plain XMP text (the gallery reads sidecars with stdlib XML): for the tests that
+    never write a sidecar themselves, so they need no exiftool."""
+    li = lambda xs: "".join(f"<rdf:li>{x}</rdf:li>" for x in xs)  # noqa: E731
+    ev = f"<Iptc4xmpExt:Event>{event}</Iptc4xmpExt:Event>" if event else ""
+    with open(p + ".xmp", "w", encoding="utf-8") as f:
+        f.write("<?xpacket begin='﻿' id='W5M0MpCehiHzreSzNTczkc9d'?>\n<x:xmpmeta xmlns:x='adobe:ns:meta/'>\n"
+                "<rdf:RDF xmlns:rdf='http://www.w3.org/1999/02/22-rdf-syntax-ns#'>\n"
+                "<rdf:Description rdf:about='' xmlns:lr='http://ns.adobe.com/lightroom/1.0/' "
+                "xmlns:dc='http://purl.org/dc/elements/1.1/' "
+                "xmlns:Iptc4xmpExt='http://iptc.org/std/Iptc4xmpExt/2008-02-29/'>\n"
+                f"<lr:hierarchicalSubject><rdf:Bag>{li(hier)}</rdf:Bag></lr:hierarchicalSubject>\n"
+                f"<dc:subject><rdf:Bag>{li(h.split('|')[-1] for h in hier)}</rdf:Bag></dc:subject>{ev}\n"
+                "</rdf:Description>\n</rdf:RDF>\n</x:xmpmeta>\n<?xpacket end='w'?>\n")
+
+
+class ViewsEndpointsTest(unittest.TestCase):
+    """Events, bulk event and share-safe export endpoints: the guards, 409 while the library is locked, and the
+    export itself. No step here writes a sidecar, so these run without exiftool (share-copy then re-encodes with
+    Pillow; with exiftool it strips with exiftool: both leave no metadata)."""
+
+    def setUp(self):
+        self.tmp = tempfile.mkdtemp(prefix="gallery-views-test-")
+        self.addCleanup(shutil.rmtree, self.tmp, True)
+        self.home = os.path.join(self.tmp, "home")
+        self.state = os.path.join(self.home, ".local/share/media-intake")
+        self.lib = os.path.join(self.home, "Pictures/library")
+        os.makedirs(self.state)
+        self.env = dict(os.environ, HOME=self.home, MEDIA_INTAKE_STATE=self.state, PHOTO_LIBRARY=self.lib,
+                        PERSONAL_FOOTAGE=os.path.join(self.home, "Videos/personal"),
+                        MEDIA_INTAKE_CONFIG=support.write_config(os.path.join(self.home, "Videos/demo-footage")))
+        self.env.pop("MEDIA_REVIEW_INTAKE", None)
+        self.a = os.path.join(self.lib, "2026/2026-11/a.jpg")
+        self.b = os.path.join(self.lib, "2026/2026-10/b.jpg")
+        self.b2 = os.path.join(self.lib, "2026/2026-09/b.jpg")  # the same file name as b.jpg, another folder
+        os.makedirs(os.path.dirname(self.a))
+        ex = Image.Exif()
+        ex[0x0110] = "SyntheticCam"
+        g = ex.get_ifd(0x8825)
+        g[1], g[2], g[3], g[4] = "N", (37.0, 32.0, 10.0), "W", (77.0, 26.0, 5.0)
+        Image.new("RGB", (64, 48), (200, 30, 30)).save(self.a, exif=ex)
+        img(self.b, (30, 200, 30))
+        img(self.b2, (30, 30, 200))
+        raw_xmp(self.a, ["Project|Personal", "Owner|keep", "Event|beach"], event="beach")
+        raw_xmp(self.b, ["Event|hike", "Trips|beach"])
+        self.share_root = os.path.join(self.home, "Pictures/share-safe")
+        self.servers = []
+        self.addCleanup(lambda: [s.stop() for s in self.servers])
+
+    def start(self):
+        s = Server(self.env)
+        self.servers.append(s)
+        return s
+
+    def ids(self, s):
+        return {(i["n"], i["d"][:7]): i["id"] for i in s.get("/api/list?limit=500")["items"]}
+
+    def files(self):
+        out = {}
+        for p in (self.a, self.b, self.b2):
+            for q in (p, p + ".xmp"):
+                if os.path.exists(q):
+                    out[q] = sha(q)
+        return out
+
+    def bodies(self, s):
+        """A valid body for every new POST endpoint (each would change something if it got through)."""
+        ids = self.ids(s)
+        ida, idb = ids[("a.jpg", "2026-11")], ids[("b.jpg", "2026-10")]
+        return {"/api/event/set": {"ids": [ida, idb], "event": "picnic"},
+                "/api/event/rename": {"from": "beach", "to": "coast"},
+                "/api/event/merge": {"from": ["hike"], "into": "beach"},
+                "/api/share": {"ids": [ida]}}
+
+    def test_events_listed_and_filtered(self):
+        s = self.start()
+        f = s.get("/api/facets")
+        self.assertEqual(f["facets"]["event"], [["beach", 1], ["hike", 1]])
+        self.assertEqual(f["share_out"], "~/Pictures/share-safe")
+        j = s.get("/api/list?event=beach")
+        self.assertEqual([i["n"] for i in j["items"]], ["a.jpg"])
+        self.assertEqual(s.get("/api/list?event=hike")["total"], 1)
+        r, page = s.req("GET", "/")
+        for needle in (b'id="evlist"', b'id="evbar"', b'id="bevent"', b'id="bshare"', b'id="mfield"'):
+            self.assertIn(needle, page)
+
+    def test_new_posts_refuse_a_bad_token_origin_host_or_type(self):
+        s = self.start()
+        before = self.files()
+        for path, body in self.bodies(s).items():
+            data = json.dumps(body).encode()
+            for kw in (dict(token=False, headers={"X-CSRF": s.csrf()}),                        # no token or cookie
+                       dict(headers={"X-CSRF": s.csrf(), "X-Token": "wrong"}),                # a wrong token
+                       dict(headers={}),                                                      # no CSRF value
+                       dict(headers={"X-CSRF": "wrong"}),                                     # a wrong CSRF value
+                       dict(headers={"X-CSRF": s.csrf(), "Origin": "http://evil.example"}),   # another Origin
+                       dict(headers={"X-CSRF": s.csrf()}, host=f"evil.example:{s.port}")):    # DNS rebinding
+                r, _ = s.req("POST", path, raw=data, **kw)
+                self.assertEqual(r.status, 403, (path, kw))
+            r, _ = s.req("POST", path, headers={"X-CSRF": s.csrf(), "Content-Type": "text/plain"}, raw=data)
+            self.assertEqual(r.status, 415, path)
+        self.assertEqual(self.files(), before)
+        self.assertFalse(os.path.exists(self.share_root))
+        self.assertEqual(s.get("/api/job")["id"], None)  # no job started
+
+    def test_rename_and_merge_refuse_an_unsafe_old_name_from_metadata(self):
+        """An event name read from a file's metadata (not typed here) can look like an exiftool option; it is
+        refused before any exiftool argument is built, and no sidecar changes."""
+        raw_xmp(self.b, ["Trips|beach"], event="-o")
+        s = self.start()
+        self.assertIn(["-o", 1], s.get("/api/facets")["facets"]["event"])
+        before = self.files()
+        for path, body in (("/api/event/rename", {"from": "-o", "to": "coast"}),
+                           ("/api/event/merge", {"from": ["-o"], "into": "beach"})):
+            code, j = s.post(path, body)
+            self.assertEqual(code, 400, (path, j))
+            self.assertIn("can't be rewritten", j["error"], path)
+        self.assertEqual(self.files(), before)
+
+    def test_new_posts_get_409_while_the_library_is_locked(self):
+        fake, gate = os.path.join(self.tmp, "gated_intake.py"), os.path.join(self.tmp, "gate")
+        with open(fake, "w") as f:
+            f.write(GATED)
+        os.mkfifo(gate)
+        self.env.update(MEDIA_REVIEW_INTAKE=fake, FAKE_GATE=gate)
+        s = self.start()
+        idb2 = self.ids(s)[("b.jpg", "2026-09")]
+        code, j = s.post("/api/trash", {"ids": [idb2], "confirm": True})
+        self.assertEqual(code, 200, j)
+        until(lambda: any("waiting at the gate" in x for x in s.get("/api/job")["lines"]), "the trash to start")
+        before = self.files()
+        for path, body in self.bodies(s).items():
+            code, j = s.post(path, body)
+            self.assertEqual(code, 409, (path, j))
+            self.assertRegex(j["error"], r"the library is busy: job gallery|still running", path)
+        self.assertEqual(self.files(), before)
+        self.assertEqual(os.listdir(self.share_root), [])  # the export's folder went with the refusal
+        fd = os.open(gate, os.O_WRONLY)  # the fake is waiting on it: this returns at once
+        os.write(fd, b"go")
+        os.close(fd)
+        self.assertTrue(self.wait_job(s)["ok"])
+
+    def wait_job(self, s):
+        return until(lambda: (lambda j: j if j["done"] else None)(s.get("/api/job")), "the job to end")
+
+    def test_share_safe_export(self):
+        s = self.start()
+        ids = self.ids(s)
+        ida, idb, idb2 = ids[("a.jpg", "2026-11")], ids[("b.jpg", "2026-10")], ids[("b.jpg", "2026-09")]
+        before = self.files()
+        for bad in ([], None, [999], [ida, "1"], [idb, idb2]):  # idb, idb2: one name, two files
+            code, j = s.post("/api/share", {"ids": bad})
+            self.assertEqual(code, 400, (bad, j))
+        self.assertFalse(os.path.exists(self.share_root))
+        code, j = s.post("/api/share", {"ids": [ida, idb]})
+        self.assertEqual(code, 200, j)
+        self.assertEqual(set(j), {"result", "dest"})  # the destination folder, nothing of the copies
+        self.assertRegex(j["dest"], r"^~/Pictures/share-safe/\d{4}-\d\d-\d\d-\d{6}$")
+        out = os.path.join(self.home, j["dest"][2:])
+        self.assertEqual(stat.S_IMODE(os.stat(out).st_mode), 0o700)
+        job = self.wait_job(s)
+        self.assertTrue(job["ok"], job)
+        self.assertEqual(job["ids"], [])  # nothing was held busy: a copy deletes nothing
+        self.assertIn("$ intake.py share-copy 'a.jpg' 'b.jpg' --out '" + os.path.basename(out) + "'", job["lines"])
+        for n in ("a.jpg", "b.jpg"):
+            self.assertIn(f"  {out}/{n}  gps=none", job["lines"])
+        self.assertEqual(job["lines"][-1], "done: 0 of 2 gone from the library")
+        self.assertEqual(sorted(os.listdir(out)), ["a.jpg", "b.jpg"])  # no sidecar goes with them
+        with Image.open(os.path.join(out, "a.jpg")) as im:
+            ex = im.getexif()
+            self.assertIsNone(ex.get(0x0110))
+            self.assertFalse(ex.get_ifd(0x8825))
+        self.assertEqual(self.files(), before)  # originals and sidecars only read
+        self.assertEqual(s.req("GET", f"/t/{ida}")[0].status, 200)  # still served: never busy
+        # a second export gets its own folder; a flagged file is refused like Open refuses it
+        code, j2 = s.post("/api/share", {"ids": [idb2]})
+        self.assertEqual(code, 200, j2)
+        self.assertNotEqual(j2["dest"], j["dest"])
+        self.assertTrue(self.wait_job(s)["ok"])
+        with open(os.path.join(self.state, "erase-log.txt"), "a") as f:
+            f.write(f"2026-11-02 10:00 b0 sha256:{sha(self.b)} size:{os.path.getsize(self.b)}\n")
+        code, _ = s.post("/api/share", {"ids": [idb]})
+        self.assertEqual(code, 400)
+
+
+class EventBlockTest(unittest.TestCase):
+    """The exiftool blocks events and tags build (no exiftool runs): only Event| goes, leaves are spared."""
+
+    def setUp(self):
+        import gallery
+        self.g = gallery
+        self.tmp = tempfile.mkdtemp(prefix="gallery-block-test-")
+        self.addCleanup(shutil.rmtree, self.tmp, True)
+        self.app = gallery.App([])
+
+    def item(self, tags, xevent="", tagslist=()):
+        p = os.path.join(self.tmp, f"i{len(os.listdir(self.tmp))}.jpg")
+        open(p, "wb").close()
+        return dict(path=p, tags=list(tags), tagslist=list(tagslist), xevent=xevent, gone=False)
+
+    def test_rename_moves_only_event_tags(self):
+        it = self.item(["Owner|keep", "Event|beach", "Trips|beach", "Event|other"], xevent="beach")
+        b = self.app.event_block(it, "coast", {"beach"})
+        self.assertIn("-XMP-lr:HierarchicalSubject-=Event|beach", b)
+        self.assertIn("-XMP-lr:HierarchicalSubject+=Event|coast", b)
+        self.assertIn("-XMP-iptcExt:Event=coast", b)
+        self.assertNotIn("-XMP-dc:Subject-=beach", b)  # Trips|beach still uses the leaf
+        self.assertFalse([x for x in b if "-=" in x and ("Owner|" in x or "Event|other" in x or "Trips|" in x)])
+        self.assertEqual(b[-1], it["path"] + ".xmp")
+        self.assertTrue(os.path.exists(b[-1]))  # created from the empty template when adding
+
+    def test_set_and_clear(self):
+        it = self.item(["Event|a", "Event|b", "Owner|not-trash"], xevent="a")
+        b = self.app.event_block(it, "c", None)  # set: out of every other event
+        for t in ("-XMP-lr:HierarchicalSubject-=Event|a", "-XMP-lr:HierarchicalSubject-=Event|b",
+                  "-XMP-dc:Subject-=a", "-XMP-dc:Subject-=b", "-XMP-lr:HierarchicalSubject+=Event|c",
+                  "-XMP-iptcExt:Event=c"):
+            self.assertIn(t, b)
+        b = self.app.event_block(it, "", None)  # clear
+        self.assertIn("-XMP-iptcExt:Event=", b)
+        self.assertFalse([x for x in b if "+=" in x])
+        self.assertIsNone(self.app.event_block(self.item(["Event|c"], xevent="c"), "c", None))  # already there
+        self.assertIsNone(self.app.event_block(self.item(["Owner|keep"]), "", None))  # in no event
+
+    def test_events_of_and_filter(self):
+        two = self.item(["Event|a", "Event|b"])
+        x = self.item([], xevent="iptc-only")
+        self.assertEqual(self.app.events_of(two), ["a", "b"])
+        self.assertEqual(self.app.events_of(x), ["iptc-only"])
+        for it in (two, x):
+            it.update(media="photo", date="2026-01-01 00:00", project="", source="", place="", labels=[], mine=[],
+                      used=[], ai_trash=None, ai_keep=False)
+        self.assertTrue(self.app.matches(two, {"event": "b"}))  # an item in two events shows in both
+        self.assertFalse(self.app.matches(two, {"event": "iptc-only"}))
+        self.assertTrue(self.app.matches(x, {"event": "iptc-only"}))
+
+    def test_share_folder_never_in_the_library(self):
+        inside = [self.g.LIBRARY, os.path.join(self.g.LIBRARY, "share"), os.path.join(self.g.STATE, "x")]
+        inside += [os.path.join(r, "share") for r in self.g.ROOTS]  # videos and every project folder too
+        os.makedirs(self.g.LIBRARY, exist_ok=True)
+        link = os.path.join(self.tmp, "looks-elsewhere")
+        os.symlink(self.g.LIBRARY, link)
+        inside.append(os.path.join(link, "share"))  # a symlink that leads into the library
+        for d in inside:
+            with self.assertRaises(ValueError, msg=d):
+                self.g.App([], share_out=d).share_dir()
+        self.assertFalse(os.path.exists(os.path.join(self.g.LIBRARY, "share")), "nothing created on refusal")
 
 
 class AddedFilterTest(unittest.TestCase):

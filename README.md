@@ -28,7 +28,8 @@ Fedora Linux first. Python, no service, no account.
 - **Originals are never modified.** Tags live in XMP sidecars
   (`<file>.<ext>.xmp`, digiKam's naming), so sha256 stays stable for dedupe
   and erase.
-- **Nothing is deleted from a device or drive without your explicit `--yes`**,
+- **Nothing is deleted from a device or drive without your explicit `--yes`**
+  (a laptop folder source is never offloaded: you delete it yourself),
   and only files with a verified copy in the library. A device delete is
   refused when its path differs from another path on the device only by
   letter case (case-insensitive storage may hold them as one file), and
@@ -60,7 +61,7 @@ media-intake doctor      # what's installed, checksums, and the dnf line for wha
 
 `setup.sh` is safe to re-run (it only re-verifies checksums). Options:
 `--build-labels` (text model for semantic search, and to rebuild
-`labels.npz` after editing `labels.yaml`), `--refresh-geo` (accept a new
+`labels.npz` after editing `labels.yaml` or moving the SigLIP pin), `--refresh-geo` (accept a new
 GeoNames snapshot), `--no-launcher`. For HEVC video (most phones) Fedora's
 `ffmpeg-free` has no decoder; the tool uses GStreamer's VA-API (`vah265dec`)
 or Vulkan decoder when one is installed. The optional trash second opinion
@@ -99,15 +100,15 @@ media-intake offload phone-1 --phone <device root> --yes   # after a backup: fre
 | `migrate-tags` | One-shot: rewrite the legacy `Review\|not-trash` tag as `Owner\|not-trash` |
 | `index`, `search`, `similar` | Local semantic search (SigLIP) |
 | `vlm-trash` | Local vision-model second opinion on trash candidates |
-| `gallery` | Local web gallery: browse, keep, trash, erase, tag, rotate |
-| `queue add/run/status/offload` | Process an old external drive in resumable chunks |
+| `gallery` | Local web gallery: browse, keep, trash, erase, tag, rotate, events, bulk edits, share-safe copies |
+| `queue add/run/status/offload` | Process an old external drive or a laptop folder in resumable chunks |
 | `share-copy` | Copy files with GPS and metadata stripped, for posting |
 | `doctor` | Check the install |
 
 `media-intake <command> --help` for options. Details:
 [intake](docs/intake.md), [review page](docs/review-ui.md),
 [gallery](docs/gallery.md), [search and VLM](docs/search.md),
-[drive queue](docs/queue.md), [configuration](docs/configuration.md),
+[drive and folder queue](docs/queue.md), [configuration](docs/configuration.md),
 [plugins](docs/plugins.md), [releases](docs/release.md).
 
 ## Tested devices
@@ -115,7 +116,7 @@ media-intake offload phone-1 --phone <device root> --yes   # after a backup: fre
 - Android phones over MTP (GNOME's gvfs mount)
 - iPhone over gphoto2 (gvfs), photos and videos under `DCIM/`
 - GoPro (SD card or USB mass storage, `DCIM/1xxGOPRO`)
-- External drives, through the drive queue
+- External drives and laptop folders, through the queue (`--kind folder`)
 
 ## Limits
 

@@ -297,6 +297,108 @@ class Queue(unittest.TestCase):
         with self.assertRaises(SystemExit):
             self.qrun("offload", "d", "--yes")  # nothing left
 
+    # ------------------------------------------------------------ kind folder (a laptop folder)
+    def make_folder(self):
+        f = os.path.join(self.home, "Pictures", "From old laptop")
+        for i in range(3):
+            picture(os.path.join(f, "2018", f"P_{i:04d}.jpg"), i + 20, f"2018:0{i + 1}:10 12:00:00")
+        picture(os.path.join(f, ".hidden", "h.jpg"), 40, "2018:05:05 05:05:05")
+        picture(os.path.join(f, "site", "img", "logo.jpg"), 41, "2018:06:06 06:06:06")
+        os.makedirs(os.path.join(f, "site", ".git"))  # a git tree inside the folder: skipped
+        os.symlink(os.path.join(self.root, "2019", "IMG_0000.jpg"), os.path.join(f, "2018", "link.jpg"))
+        return f
+
+    def test_folder_end_to_end_and_never_offloaded(self):
+        os.environ.pop("MEDIA_INTAKE_TEST_MOUNT")  # no drive anywhere: a folder needs no mount or UUID
+        f = self.make_folder()
+        out = self.qrun("add", f, "--label", "old-folder", "--kind", "folder", "--event", "demo/test-shoot@2018-01-10")
+        self.assertIn("3 files", out)
+        src = self.state_q()["sources"]["old-folder"]
+        self.assertEqual((src["kind"], src["uuid"], src["mount"], src["events"]),
+                         ("folder", None, None, ["demo/test-shoot@2018-01-10"]))
+        self.qrun("run", "--chunk", "2")
+        src = self.state_q()["sources"]["old-folder"]
+        self.assertTrue(src.get("finished"))
+        self.assertIn(("plan", src["chunks"]["1"]["batch"]), self.calls)
+        man = jload(os.path.join(self.state, "batches", src["chunks"]["1"]["batch"], "manifest.json"))
+        self.assertEqual(man["kind"], "folder")
+        shoot = os.path.join(self.home, "Videos/demo-footage/originals/2018-01-10-test-shoot/phone")
+        self.assertEqual([x for x in os.listdir(shoot) if x.endswith(".jpg")], ["P_0000.jpg"],
+                         "an --event day with a project goes to the project's folder")
+        filed = [x for r, _, fs in os.walk(self.lib) for x in fs if x.endswith(".jpg")]
+        self.assertEqual(sorted(filed), ["P_0001.jpg", "P_0002.jpg"])
+        st = self.qrun("status")
+        self.assertIn("trash suggestions 1", st)
+        self.assertNotIn("delete the source folder", st, "not while you still have decisions")
+        q = self.state_q()
+        for ch in q["sources"]["old-folder"]["chunks"].values():
+            ch["summary"]["maybe_trash"] = 0  # the owner went through the suggestions
+        jsave(os.path.join(self.state, "queue.json"), q)
+        st = self.qrun("status")
+        self.assertIn("delete the source folder yourself", st)
+        self.assertNotIn("offload old-folder", st)
+        before = sorted(os.listdir(os.path.join(f, "2018")))
+        with self.assertRaises(SystemExit) as e:
+            self.qrun("offload", "old-folder", "--yes")
+        self.assertIn("never deletes", str(e.exception))
+        r = subprocess.run([sys.executable, "-I", os.path.join(HERE, "intake.py"), "offload",
+                            src["chunks"]["1"]["batch"], "--phone", f, "--yes"], capture_output=True, text=True)
+        self.assertNotEqual(r.returncode, 0)
+        self.assertIn("never deletes", r.stderr)
+        # erase --phone and trash --phone reach the same device-delete path: a folder laid out
+        # like a phone must not pass the phone allowlist into deleting its originals.
+        intake_py = os.path.join(HERE, "intake.py")
+        b1 = src["chunks"]["1"]["batch"]
+        one = next(os.path.join(r_, x) for r_, _, fs in os.walk(self.lib) for x in fs if x.endswith(".jpg"))
+        for args in (["erase", b1, "--phone", f, "--yes"], ["trash", "--batch", b1, one, "--phone", f, "--yes"]):
+            r = subprocess.run([sys.executable, "-I", intake_py, *args], capture_output=True, text=True)
+            self.assertNotEqual(r.returncode, 0, args)
+            self.assertIn("never deletes", r.stderr, args)
+        self.assertTrue(os.path.exists(one), "a refused trash trashes nothing")
+        # Without a named batch, the folder batch is simply not a device source.
+        r = subprocess.run([sys.executable, "-I", intake_py, "trash", one, "--phone", f, "--yes"],
+                           capture_output=True, text=True)
+        self.assertEqual(r.returncode, 0, r.stderr)
+        self.assertIn("phone 0", r.stdout)
+        self.assertEqual(sorted(os.listdir(os.path.join(f, "2018"))), before, "originals untouched")
+
+    def test_folder_refused_roots(self):
+        f = self.make_folder()
+        os.makedirs(os.path.join(self.home, "repos", "x"))
+        for bad in (self.home, self.state, os.path.join(self.state, "quarantine"), self.lib,
+                    os.path.join(self.home, "Pictures"), os.path.join(self.home, ".var/app/x"),
+                    os.path.join(self.home, "repos/x"), os.path.join(self.home, ".ssh"),
+                    os.path.join(self.home, "Videos/demo-footage/originals"), os.path.join(f, "site"), self.root):
+            os.makedirs(bad, exist_ok=True)
+            with self.assertRaises(SystemExit, msg=bad) as e:
+                self.qrun("add", bad, "--label", "x", "--kind", "folder")
+            self.assertIn("refused", str(e.exception))
+        self.assertFalse(os.path.exists(os.path.join(self.state, "queue.json")))
+        for ev in ("Bad Event", "shoot@2018-1-1", "nope/shoot@2018-01-10"):
+            with self.assertRaises(SystemExit, msg=ev) as e:
+                self.qrun("add", f, "--label", "x", "--kind", "folder", "--event", ev)
+            self.assertIn("refused: --event", str(e.exception))
+        self.qrun("add", f, "--label", "x", "--kind", "folder")
+        with self.assertRaises(SystemExit) as e:
+            self.qrun("add", os.path.join(f, "2018"), "--label", "y", "--kind", "folder")
+        self.assertIn("overlaps", str(e.exception))
+
+    def test_folder_refused_at_run_time(self):
+        f = self.make_folder()
+        self.qrun("add", f, "--label", "x", "--kind", "folder")
+        os.makedirs(os.path.join(f, ".git"))  # it became a repository after it was queued
+        with self.assertRaises(SystemExit) as e:
+            self.qrun("run")
+        self.assertIn("folder refused now", str(e.exception))
+        self.assertEqual(self.calls, [])
+
+    def test_stage_kind_folder_refuses_directly(self):
+        r = subprocess.run([sys.executable, "-I", os.path.join(HERE, "intake.py"), "stage", self.home,
+                            "--kind", "folder", "--batch", "b"], capture_output=True, text=True)
+        self.assertNotEqual(r.returncode, 0)
+        self.assertIn("home folder", r.stderr)
+        self.assertFalse(os.path.exists(os.path.join(self.state, "batches", "b", "manifest.json")))
+
 
 if __name__ == "__main__":
     unittest.main()

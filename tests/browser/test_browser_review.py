@@ -186,6 +186,30 @@ class ReviewBrowserTest(B.BrowserCase):
         self.assertIn("erase", json.dumps(saved))
 
     # ------------------------------------------------------------ video: Range while loading and seeking
+    def test_quarantine_burst_keep_one_erases_the_rest(self):
+        """In Quarantine every shot is flagged, so "keep one" erases the rest (erase everywhere), never Trash."""
+        plan = os.path.join(self.state, "batches", BATCH, "plan.json")
+        with open(plan) as f:
+            rows = json.load(f)
+        rows += [{"rel": "DCIM/Camera/a.jpg", "action": "file", "why": "", "date": "2026-11-08T07:15:00",
+                  "device": "cam-a"},
+                 {"rel": "DCIM/Camera/b.png", "action": "file", "why": "", "date": "2026-11-08T07:15:01",
+                  "device": "cam-a"}]
+        R.write_json(plan, rows)
+        s = self.start()
+        page = self.new_page()
+        self.open(page, s)
+        q = self.cards(page)
+        self.assertIn("DCIM/Camera/a.jpg", q)
+        self.assertNotIn("DCIM/Camera/b.png", q, "a closed stack shows only its cover")
+        cover = self.card(page, "DCIM/Camera/a.jpg")
+        cover.click()
+        page.keyboard.press("x")
+        B.expect(self.card(page, "DCIM/Camera/b.png")).to_be_visible()
+        cover.get_by_role("button", name="Keep this one, erase the rest").click()
+        self.pressed(page, "DCIM/Camera/a.jpg", "Keep")
+        self.pressed(page, "DCIM/Camera/b.png", "Erase")
+
     def test_video_seeks_by_range(self):
         size = os.path.getsize(self.video)
         s = self.start()

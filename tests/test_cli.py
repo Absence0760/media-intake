@@ -256,6 +256,26 @@ class KillByPid(unittest.TestCase):
         self.assertTrue(self.offends("a.sh", "pgrep -f media-intake  # never"))
 
 
+class GalleryArgs(unittest.TestCase):
+    """`media-intake gallery` passes its flags on to gallery.main."""
+
+    def argv_for(self, *args):
+        import intake
+        a = intake.build_parser().parse_args(["gallery", *args])
+        fake = type(sys)("gallery")
+        fake.main = mock.Mock(return_value=0)
+        with mock.patch.dict(sys.modules, {"gallery": fake}), self.assertRaises(SystemExit):
+            intake.cmd_gallery(a)
+        return fake.main.call_args[0][0]
+
+    def test_share_out_passed_on(self):
+        self.assertEqual(self.argv_for("--share-out", "/tmp/x", "--port", "5"),
+                         ["--port", "5", "--share-out", "/tmp/x"])
+
+    def test_default_omits_share_out(self):
+        self.assertNotIn("--share-out", self.argv_for())
+
+
 class Version(unittest.TestCase):
     """docs/release.md: the version lives only in media_intake/__init__.py."""
 

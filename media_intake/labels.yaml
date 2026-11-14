@@ -4,7 +4,8 @@
 #
 # Changing a prompt or adding a label means regenerating the text embeddings:
 #   bash setup.sh --build-labels
-# label.py refuses to run while labels.npz doesn't match this file.
+# label.py refuses to run while labels.npz doesn't match this file, or was built
+# with a SigLIP revision other than the one pinned in pins.json.
 #
 # Thresholds are first guesses, not calibrated on real photos.
 # review: true makes the tag Review|<label> (a flag for a human look), not Label|<label>.
