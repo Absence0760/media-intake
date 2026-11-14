@@ -50,6 +50,10 @@ Fedora Linux first. Python, no service, no account.
   argument list, no shell) on one library file, for media the browser can't
   play, and only from its "Open in the system player" button's POST (token,
   CSRF and Origin checked); a quarantined or flagged file is refused.
+- The gallery's H.264 copies of HEVC videos live in
+  `~/.cache/media-intake/proxies` (`0700`, files `0600`); `erase`, `forget`
+  and `trash` delete them, `verify-gone` reports any left, and quarantine and
+  review files never get one.
 
 ## Install (Fedora)
 
@@ -69,7 +73,8 @@ GeoNames snapshot), `--no-launcher`. For HEVC video (most phones) Fedora's
 `ffmpeg-free` has no decoder; the tool uses GStreamer's VA-API (`vah265dec`)
 or Vulkan decoder when one is installed, also to make the H.264 copy the
 gallery plays HEVC from (with an H.264 encoder: `x264enc`, `openh264enc` or
-`vah264enc`; [docs/gallery.md](docs/gallery.md), "Video proxies"). The optional trash second opinion
+`vah264enc`, which `doctor` reports as optional; [docs/gallery.md](docs/gallery.md),
+"Video proxies"). The optional trash second opinion
 needs [Ollama](https://ollama.com/) and `ollama pull qwen3-vl:2b`. Every model
 pin (SigLIP file sha256s, the Ollama model digest) lives in
 `media_intake/pins.json`; `doctor` checks the files on disk and the local

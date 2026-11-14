@@ -34,8 +34,7 @@ random port, random token swapped for an HttpOnly SameSite=Strict cookie, Host
 check, CSRF value on every POST, no-store + strict CSP, media by opaque id only.
 Originals are never written: sidecars (<file>.<ext>.xmp) only. docs/gallery.md.
 """
-import argparse, contextlib, datetime, html, http.server, io, json, os, re, secrets, shlex, shutil, subprocess, sys
-import tempfile
+import argparse, contextlib, datetime, html, http.server, io, json, os, re, secrets, shutil, subprocess, sys, tempfile
 import threading, time
 import xml.etree.ElementTree as ET
 
@@ -387,12 +386,17 @@ def gst_element(names):
     return None
 
 
-def proxy_commands(src, out):
-    """Commands that each write an H.264 MP4 of src to out, in the order to try them. ffmpeg first (where it has
-    an HEVC decoder); then GStreamer's GPU HEVC decoder (Fedora's ffmpeg-free has none) into an H.264 encoder,
-    with the sound when it is AAC, then without. Paths go as file: (ffmpeg) or as one quoted location
-    (gst-launch), so a name is never read as an option or a protocol. Nothing is fetched."""
-    cmds = []
+SAFE_GST_PATH = re.compile(r"[A-Za-z0-9._/+-]+")  # what may stand as a location= value in a gst-launch pipeline
+
+
+def proxy_commands(src, work):
+    """Commands that each write an H.264 MP4 of src to <work>/out.mp4, in the order to try them. ffmpeg first
+    (where it has an HEVC decoder), src as a file: path; then GStreamer's GPU HEVC decoder (Fedora's ffmpeg-free
+    has none) into an H.264 encoder, with the sound when it is AAC, then without. gst-launch-1.0 re-parses its
+    arguments as one pipeline, so a file name with "!", quotes or spaces could add elements: it reads
+    <work>/in, a link to src that make_proxy makes, and both of its paths are checked against SAFE_GST_PATH
+    (else GStreamer is not tried). The argv is built as a list, never split from a string. Nothing is fetched."""
+    cmds, out, link = [], os.path.join(work, "out.mp4"), os.path.join(work, "in")
     enc = ffmpeg_encoder(("libx264", "libopenh264"))
     if enc:
         q = ["-preset", "veryfast", "-crf", "23"] if enc == "libx264" else ["-b:v", "6M"]
@@ -401,40 +405,44 @@ def proxy_commands(src, out):
         cmds.append(["ffmpeg", "-v", "error", "-nostdin", "-y", "-i", "file:" + src, "-map", "0:v:0", "-map", "0:a:0?",
                      "-map_metadata", "-1", "-vf", vf, "-c:v", enc, *q, "-c:a", "aac", "-b:a", "160k",
                      "-movflags", "+faststart", "-f", "mp4", "file:" + out])
+    if not SAFE_GST_PATH.fullmatch(work):
+        return cmds
     import scan_sensitive  # the GPU HEVC decoder thumbnails and scans use
     dec = scan_sensitive._gst_hevc_decoder()
     genc = gst_element(("x264enc", "openh264enc", "vah264enc")) if dec else None
     if dec and genc:
-        post = "vapostproc ! " if dec == "vah265dec" else "vulkandownload ! "
-        pipe = (f"filesrc location={shlex.quote(src)} ! qtdemux name=d d.video_0 ! queue ! h265parse ! {dec} ! "
-                f"{post}videoconvert ! {genc} ! h264parse ! mp4mux name=mux ! filesink location={shlex.quote(out)}")
-        for sound in (" d.audio_0 ! queue ! aacparse ! mux.", ""):
-            cmds.append(["gst-launch-1.0", "-q", *shlex.split(pipe + sound)])
+        post = ["vapostproc"] if dec == "vah265dec" else ["vulkandownload"]
+        video = ["filesrc", "location=" + link, "!", "qtdemux", "name=d", "d.video_0", "!", "queue", "!", "h265parse",
+                 "!", dec, "!", *post, "!", "videoconvert", "!", genc, "!", "h264parse", "!", "mp4mux", "name=mux",
+                 "!", "filesink", "location=" + out]
+        for sound in (["d.audio_0", "!", "queue", "!", "aacparse", "!", "mux."], []):
+            cmds.append(["gst-launch-1.0", "-q", *video, *sound])
     return cmds
 
 
 def make_proxy(src, dst):
-    """Write an H.264 MP4 of src to dst (0600, in the 0700 cache), trying each of proxy_commands in turn.
-    True once one gave a file ffprobe reads as H.264; False, with nothing left behind, when none did.
-    The original is only read."""
-    tmp = f"{dst}.{os.getpid()}.{threading.get_ident()}.tmp"
+    """Write an H.264 MP4 of src to dst (0600, in the 0700 cache), trying each of proxy_commands in turn, in a
+    private work folder beside dst (the output, and the link GStreamer reads src through). True once one gave a
+    file ffprobe reads as H.264; False, with nothing left behind, when none did. The original is only read."""
+    work = tempfile.mkdtemp(prefix=".work-", dir=os.path.dirname(dst))  # 0700
+    out = os.path.join(work, "out.mp4")
     try:
-        for argv in proxy_commands(src, tmp):
+        os.symlink(os.path.abspath(src), os.path.join(work, "in"))
+        for argv in proxy_commands(src, work):
             with contextlib.suppress(FileNotFoundError):
-                os.remove(tmp)
-            os.close(os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600))  # the tools keep its mode
+                os.remove(out)
+            os.close(os.open(out, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600))  # the tools keep its mode
             try:
                 r = subprocess.run(argv, capture_output=True, timeout=PROXY_TIMEOUT, stdin=subprocess.DEVNULL)
             except (OSError, subprocess.SubprocessError):
                 continue
-            if r.returncode == 0 and os.path.getsize(tmp) and video_codec(tmp) == "h264":
-                os.chmod(tmp, 0o600)
-                os.replace(tmp, dst)
+            if r.returncode == 0 and os.path.getsize(out) and video_codec(out) == "h264":
+                os.chmod(out, 0o600)
+                os.replace(out, dst)
                 return True
         return False
     finally:
-        with contextlib.suppress(OSError):
-            os.remove(tmp)
+        shutil.rmtree(work, ignore_errors=True)
 
 
 # ---------------------------------------------------------------- app
