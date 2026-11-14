@@ -35,7 +35,11 @@ Only the latest commit on `main` (and the latest tag, once there are tags).
 ## Scope
 
 In scope: everything in this repository, including `setup.sh` and the
-download pins. Out of scope: bugs in dependencies alone (report upstream),
+download pins; the gallery's local-app launch (`/api/open`, which runs the
+desktop's default app on one library file); and the state folder's lock and
+salt files (`locks/`, whose holder note must never name a file, and
+`device-salt`, which keeps device ids from revealing camera serial numbers).
+Out of scope: bugs in dependencies alone (report upstream),
 detector misses (NudeNet, OCR and the label model are hints, not
 guarantees; see README), and attacks that need a compromised account on the
 same machine.

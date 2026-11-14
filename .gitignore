@@ -19,6 +19,7 @@ __pycache__/
 *.py[cod]
 *$py.class
 .venv/
+.venv-browser/
 venv/
 env/
 .eggs/

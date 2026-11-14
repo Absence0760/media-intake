@@ -17,6 +17,32 @@ click.
 `--drive` is your backup drive's mount, passed to `forget` when you Erase, so
 copies there go too.
 
+## Layout
+
+- **Left sidebar** (its own scroll; the menu button collapses it to an icon
+  rail, remembered per browser; at phone width it is a rail by default and
+  opens as a drawer): the views with counts (Library, Trash suggestions, any
+  plugin tab; quick views Recently added = filed in the last 30 days, by the
+  file's inode change time, Possible child = `Review|child-in-shot`,
+  Untagged), the search box (a one-line hint when semantic search is off, the
+  full reason under "why"), then the filters as collapsible sections with
+  counts (open / closed remembered per section) and "Clear filters (N)".
+  Counts are for the whole library, not narrowed by the other filters.
+- **Main area**: a slim header (view, item count, thumbnail-size slider,
+  Close), the active filters as removable chips, the month grid. The
+  selection actions sit in a bar at the bottom that appears only while
+  something is selected (Trash suggestions keeps its Apply bar there).
+- **Large view**: the photo or video fills everything left of the info pane.
+  A video starts playing on open (muted, with an Unmute button, if the
+  browser refuses sound), Space plays / pauses, Prev / Next play the next one,
+  Esc stops it and releases the file. When the browser can't decode it (often
+  HEVC), the thumbnail shows large with **Open in the system player**, which
+  runs `xdg-open` on that one file (below; `xdg-open` comes from Fedora's
+  `xdg-utils`, which `media-intake doctor` lists as optional).
+
+The sidebar rail, open sections and tile size live in the browser's
+`localStorage` (a per-browser convenience; the page works without it).
+
 ## What it shows
 
 - Every photo and video under the library, videos and project folders
@@ -25,13 +51,16 @@ copies there go too.
   hidden folder, or a file whose sha256 `scan` flagged, quarantine holds or
   the erase log lists (`label.flagged()`).
 - **Library**: a timeline grid by month, newest first, 240 items per page with
-  infinite scroll; thumbnails load lazily. Click opens the large view (the
-  image, or `<video controls>`; HEIC/DNG get a 1600 px JPEG made in memory)
-  with tags, date, place, event, project, source, folder, resolution and size.
-  Arrow keys go to the previous/next item, Esc closes.
-- **Trash suggestions**: `Review|maybe-trash`, or an `AI|vlm/<model>/trash/*`
+  infinite scroll; thumbnails load lazily. Click (or Enter on a focused tile)
+  opens the large view (the image, or `<video controls>`, which starts playing
+  by itself; HEIC/DNG get a 1600 px JPEG made in memory) with tags, date,
+  place, event, project, source, folder, resolution and size. Arrow keys go to
+  the previous/next item, Esc closes, `/` jumps to the search box.
+- **Trash suggestions**: `Review|maybe-trash`, an `AI|vlm/<model>/trash/*`
   verdict with that model's `conf` >= 0.7 (or the older `Review|vlm-trash/*`),
-  never a file with `Owner|not-trash`, `Owner|keep`, digiKam Accepted,
+  or `Owner|trash` (a copy of content you trashed elsewhere, chip "trashed
+  copy"); never a file with `Owner|not-trash` (or the legacy
+  `Review|not-trash`), `Owner|keep`, digiKam Accepted,
   `Used|*` or a protected project's `Project|<name>`. Most confident first,
   big tiles. K / T mark the outlined tile, arrows move, Enter opens it;
   nothing changes until **Apply**, which shows the counts and needs a confirm.
@@ -48,7 +77,14 @@ else the file time. Project and source fall back to where the file sits
 Project, Source, Event, Place, year or month, any `Label|*`, my tags, Review
 (maybe-trash, child-in-shot, untagged = `Review|untagged-*` or no tags), AI
 (trash with confidence >= N, keep, not judged), Used (used; or unused in the
-last N days, blank = never used), photos / videos.
+last N days, blank = never used), photos / videos, and added in the last N
+days (`added=N` on `/api/list`, what Recently added sets).
+
+`GET /api/facets` gives the sidebar its options and counts: `facets` (per
+project, source, event, place, label, month and year, my tag), `counts`
+(`kind:photo`, `kind:video`, `review:<flag>`, `ai:trash|keep|none`,
+`used:used|unused`, `suggest`, `recent`), `recent_days` and the search
+status. Like every route it needs the session cookie or token.
 
 The search box runs `semantic.py search` (local SigLIP text model, through the
 media-intake venv). When the venv, the embeddings or the text model are
@@ -58,21 +94,69 @@ folders. **Similar** on any item runs `semantic.py similar`. Both need
 
 ## Actions (one item, or a selection)
 
-Tick the box on a tile (shift-click a second box selects the range between),
-then the bar's buttons or keys: **K** Keep, **T** Trash, **E** Erase. In the
-large view the keys act on the item shown; **R** / **Shift+R** rotate.
+Tick the box on a tile (shift-click a second box selects the range between;
+Space on a focused tile ticks it), then the bottom bar's buttons or keys:
+**K** Keep, **T** Trash, **E** Erase; Esc or **Clear selection** clears it.
+In the large view the keys act on the item shown; **R** / **Shift+R** rotate.
 
 | Action | What it writes |
 |---|---|
-| Keep | sidecar: `Owner\|keep` and `Owner\|not-trash` added, `Review\|maybe-trash` removed (its `maybe-trash` leaf only when no other tag uses it). Nothing else. |
-| Trash | `media-intake trash FILE...`: plain delete of the file, its sidecar, thumbnails (freedesktop and the gallery's) and index entry; the sha goes in `trashed.json` so intake never takes it in again. Summary + confirm. |
+| Keep | sidecar: `Owner\|keep` and `Owner\|not-trash` added; `Review\|maybe-trash`, an older `Owner\|trash` and the legacy `Review\|not-trash` removed (each leaf only when no other tag uses it). Nothing else. The same rule as the review page's Keep (`intake.keep_args`). |
+| Trash | `media-intake trash FILE...`: plain delete of the file, its sidecar, thumbnails (freedesktop and the gallery's) and index entry; the sha goes in `trashed.json` (the durable `Owner\|trash`) so intake never takes it in again, and library copies of it left on disk get `Owner\|trash` in their sidecar. The same command the review page's Trash runs. Summary + confirm. |
 | Erase | `media-intake forget FILE... --yes [--drive]`: the erase-everywhere path (quarantine, sweep of HOME, sidecars, thumbnails, recent files, erase log, verify-gone). Summary + type ERASE. For anything private. |
 | My tag + / - | sidecar `HierarchicalSubject` + its `dc:Subject` leaf. Refused for the tools' namespaces (`Project\|`, `Source\|`, `Event\|`, `Place\|`, `Label\|`, `Review\|`, `AI\|`, `Used\|`, `Owner\|`); removal only touches your tags, and keeps a leaf another tag still uses. |
 | Rotate | sidecar `XMP-tiff:Orientation` only (1/6/3/8). The original is never re-encoded or written; digiKam reads the same field. |
+| Open in the system player | nothing: `POST /api/open` with one id (`{"ids": [id]}`) runs `xdg-open <file>` (an argument list, no shell, detached) for the one item, only on that button's POST, and only for a regular file inside a library root after resolving links, not in a running job and not flagged, quarantined or erased (else 400). |
+
+Every action holds the library lock ([intake.md](intake.md), "One writer at
+a time"): Keep, my tags, Rotate and a plugin view's POST for the write
+([plugins.md](plugins.md)), Trash and Erase for their whole job. While a CLI command (`apply`, `erase`, ...), a review run or
+another gallery's job holds it, the action gets 409 naming the holder and
+nothing is written; browsing is never locked.
 
 The summary before Trash or Erase lists the names and warns when any were
 used or kept before. Trash and Erase run one at a time with their output
 streamed into the dialog.
+
+Trash and Erase run as a detached job (`media_intake/jobs.py`, the same module
+as the review page), so closing the page or stopping the server never stops
+one that has started:
+
+- The dialog shows what the job is doing from the moment it starts, before
+  any output exists (Erase: "Erasing… looking for copies in your home folder.
+  This can take a few minutes; you can close this page, it keeps running.",
+  since the sweep of HOME can print nothing for minutes), then polls the job
+  and shows its step and output as it arrives. When it ends the status goes
+  and the title says "Done" or "Finished with problems", with the summary
+  line last in the output. A page opened (or
+  reloaded) while one runs, from this server or a restarted one, opens the
+  dialog on the running job; the files it acts on stay hidden from thumbnails
+  and media until it ends.
+- One at a time across every gallery page and server: an `flock` on
+  `<state>/jobs/gallery.lock`, so a second Trash or Erase gets 409 and the
+  page shows the running one. The job also holds the library lock, so it
+  can't start while a review run or a CLI command is changing the library
+  (409, naming it), and they can't start while it runs.
+- When a job ends, the gallery re-reads the sidecars of the other items that
+  could be copies of what it deleted (same size), so a copy `trash` just
+  marked `Owner|trash` shows as "trashed copy" in Trash suggestions without a
+  restart, and a copy `forget` deleted drops out.
+- A job whose worker PID is gone (checked by PID and its `/proc` start time) is
+  reported as crashed, at its step, not as running; its files stay busy while
+  the step it started is still running, and nothing re-runs by itself.
+
+Status `<state>/jobs/gallery.json`, output `gallery.log`, lock `gallery.lock`
+(and `gallery.mutex`): files 0600 in a 0700 folder, replaced by the next job.
+The paths go to the worker on a pipe and are never written; the status names
+the files only by device and inode, with a count, the step and ok. An Erase
+also logs its command without paths (`forget [2 files] --yes --drive [path]`),
+and when it ends (done or crashed) every line of `forget`'s own output is
+replaced in place by `[output removed when the run ended: it may name a file]`,
+so, as with `forget` on the command line, no name of an erased file is left in
+the state folder (the erase log keeps sha256 and size). The dialog that was
+watching still has the whole output; a page opened later sees the scrubbed
+log. Trash is for junk that isn't private and keeps its output, names
+included, until the next job.
 
 **No crop.** The original's sha256 drives dedupe and erase, so it is never
 edited; make a crop as a copy in another editor.
@@ -116,15 +200,29 @@ cold read from disk will be slower.
 ## Test
 
 `python3 -I -m unittest discover -s tests -p test_gallery.py`: synthetic media in a throwaway
-HOME, the real `intake.py` for trash and forget, and a demo plugin view.
+HOME, the real `intake.py` for trash and forget, and a demo plugin view; the
+job tests swap in a fake `intake.py` whose trash waits on a FIFO, then kill
+the server or the worker mid-job, and a plugin POST gets 409 while such a job
+holds the library lock (a view declared `post_read_only` does not). Also: the sidebar counts against their
+filters, the added-in-N-days filter, a trashed file's copy showing as
+"trashed copy" at once, and Open in the system player through a fake
+`xdg-open` on PATH (its refusals included).
+
+In headless Chromium (`tests/browser/test_browser_gallery.py`, see
+CONTRIBUTING.md, Tests): keys, click and shift-click selection, the bottom
+selection bar appearing only while something is selected, a sidebar quick
+view and its chip, the Trash, Erase (ERASE typed) and Close confirms, the
+lightbox video playing by itself, Space pausing and resuming it, seeking by
+Range, and the job dialog's progress, re-attach after a reload and crash
+message, and Erase's status line shown while its output is still empty (a
+fake `intake.py` that prints nothing until the test opens a FIFO).
 
 ## Not verified
 
-- A full click-through in a real browser (layout, keys, selection, dialogs,
-  infinite scroll, video playback, HEVC posters through GStreamer); the tests
-  drive the HTTP API. Checked: the inline script parses (`node --check`) and
-  headless Chromium renders the first page of the synthetic library (240
-  tiles, month headings, filters filled).
+- The layout by eye (sidebar, drawer and rail at phone width, light and
+  dark), infinite scroll and HEVC posters through GStreamer in a real
+  browser, the "can't decode" fallback in a browser that really can't play a
+  file, a real `xdg-open`, and any browser but Chromium.
 - Semantic search and Similar through the venv: tested only as "unavailable,
   falls back", not with the real model.
 - Start-up time on a large real library read from disk.

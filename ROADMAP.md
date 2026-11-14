@@ -19,54 +19,61 @@ The goal: someone else can install it on Fedora, import a phone, and trust it.
 - [x] `pyproject.toml` entry point `media-intake` with every subcommand (`media_intake/cli.py`).
 - [x] `media-intake doctor`: system tools, tesseract `eng`, zxing-cpp, GStreamer HEVC decoder,
       venv, model files, GeoNames, Ollama version.
-- [ ] `media-intake doctor`: also verify model checksums and the pinned Ollama model digest,
-      and print the exact `dnf install` line for what's missing.
+- [x] `media-intake doctor`: also verify model checksums and the pinned Ollama model digest,
+      and print the exact `dnf install` line for what's missing (pins in `media_intake/pins.json`).
 - [x] `config.toml` schema with validation and documented defaults (library, videos,
       project folders, state dir, phone allowlist extras); env vars still override
       (`media_intake/config.py`, `docs/configuration.md`).
-- [ ] One script that regenerates hash-pinned requirements and model pins (7-day minimum
-      age), so pins are bumped, not hand-edited.
+- [x] One script that regenerates hash-pinned requirements and model pins (7-day minimum
+      age), so pins are bumped, not hand-edited (`scripts/update-pins.py`).
 - [x] GitHub Actions: unit tests on synthetic data with model-dependent tests skipped
       (`.github/workflows/ci.yml`, `CI gate`).
-- [ ] A nightly or manual job that runs the model tests (needs the venv and model cache).
-- [ ] Release process: tagged releases; consumers pin by tag + commit SHA.
+- [x] A nightly or manual job that runs the model tests (needs the venv and model cache)
+      (`.github/workflows/models.yml`, Fedora 43 container; not a required check).
+- [x] Release process: tagged releases; consumers pin by tag + commit SHA ([docs/release.md](docs/release.md)).
 
 ### Safety gaps found on real devices
-- [ ] **Case-insensitive device storage:** Android's emulated storage ignores case, so a
+- [x] **Case-insensitive device storage:** Android's emulated storage ignores case, so a
       case-only rename leaves what looks like a duplicate and deleting it deletes the real
       file. Refuse any device delete whose path differs from another manifest path only
       by case; never rename by case on a device.
-- [ ] **Long actions survive the page:** release/erase/trash started from the review page
+- [x] **Long actions survive the page:** release/erase/trash started from the review page
       or gallery must run as a detached, resumable job with a status file. Today stopping
       the page does not stop an erase already started, and a second page can show stale
       state. Show progress in the page; refuse a second submit for the same batch.
-- [ ] **Near-duplicate chains:** each erase can surface near-copies of the erased item,
+- [x] **Near-duplicate chains:** each erase can surface near-copies of the erased item,
       then near-copies of those (`near-`, `near-near-`, ...). Bound the depth, merge them
       into one review, and show the matched original whenever it still exists.
-- [ ] **Kill by PID, never `pkill -f`/`pgrep -f`:** they match their own shell's command
-      line. Audit scripts and docs.
-- [ ] Don't move library files while a scan/tag/apply job runs: take a lock per library.
+- [x] **Kill by PID, never `pkill -f`/`pgrep -f`:** they match their own shell's command
+      line. Audited scripts and docs: none found. `tests/test_cli.py` guards every `.py`,
+      `.sh`, workflow, `.claude/` file and the Markdown at the repo root and in `docs/`
+      (code comments and Markdown lines that say "never" state the rule, so they pass).
+- [x] Don't move library files while a scan/tag/apply job runs: take a lock per library.
 
 ### Dates and devices
-- [ ] Implausible camera dates (GoPro with an unset clock writes 2015-12-31/2016-01-01):
+- [x] Implausible camera dates (GoPro with an unset clock writes 2015-12-31/2016-01-01):
       use the GPS date (`GPSDateTime` / `GPSDateStamp`) automatically, record the source.
-- [ ] iPhone exports without EXIF dates: use the `DCIM/YYYYMM__` folder month, not mtime.
-- [ ] QuickTime UTC vs local time; EXIF `OffsetTimeOriginal`; a `--clock-offset DEVICE=±Nh`
+- [x] iPhone exports without EXIF dates: use the `DCIM/YYYYMM__` folder month, not mtime.
+- [x] QuickTime UTC vs local time; EXIF `OffsetTimeOriginal`; a `--clock-offset DEVICE=±Nh`
       option for cameras that were simply wrong. Corrected dates go to the sidecar only.
-- [ ] Device identity from Make/Model/serial: tag `Source|<model>` and name batches by it;
+- [x] Device identity from Make/Model/serial: tag `Source|<model>` and name batches by it;
       two GoPros with the same file numbers go to separate device folders, never `_1`.
-- [ ] GoPro chapters (GX01xxxx, GX02xxxx...) dated and grouped by the first chapter.
+- [x] GoPro chapters (GX01xxxx, GX02xxxx...) dated and grouped by the first chapter.
+- [ ] Source kind `folder` for laptop folders (refuse HOME itself, hidden/config dirs, repos,
+      the state dir, library roots, password-manager paths; offload refuses folder sources).
 
 ### Tag precedence (who writes what)
-- [ ] Review page writes `Owner|keep` and `Owner|trash` (the gallery's Keep already writes
-      `Owner|keep`); nothing writes `Owner|trash` yet.
-- [ ] All tools honour `Owner|not-trash`; drop the legacy `Review|not-trash`.
-- [ ] Tests that a re-tag replaces only its own namespace and never an owner tag.
+- [x] Review page and gallery record owner decisions: Keep writes `Owner|keep`; trash
+      records the sha256 in `trashed.json` (the durable `Owner|trash`, so it never comes
+      back) and marks surviving library copies `Owner|trash` in their sidecars.
+- [x] All tools honour `Owner|not-trash`; drop the legacy `Review|not-trash`.
+- [x] Tests that a re-tag replaces only its own namespace and never an owner tag.
 
 ### Tests that still don't exist
-- [ ] Real-browser tests (Playwright, synthetic media) for the gallery and review page:
-      keys, selection, dialogs, video autoplay, Range seeking.
-- [ ] End-to-end on a fake MTP and gphoto2 tree with case-only collisions.
+- [x] Real-browser tests (Playwright, synthetic media) for the gallery and review page:
+      keys, selection, dialogs, video autoplay, Range seeking, job progress and re-attach
+      (`tests/browser/`, the `browser` CI job).
+- [x] End-to-end on a fake MTP and gphoto2 tree with case-only collisions.
 
 ---
 

@@ -7,9 +7,12 @@ Images are drawn with Pillow and the video is an ffmpeg test pattern: no real
 photo is read. intake.py is replaced (MEDIA_REVIEW_INTAKE) by a fake that
 records its argv and mimics release/erase/purge-review on the fake state, so
 the real erase never runs. Nothing points at the real ~/.local/share/media-intake,
-~/Pictures, ~/Videos or /run/user/*/gvfs.
+~/Pictures, ~/Videos or /run/user/*/gvfs. With FAKE_GATE (a FIFO) the fake's first
+erase waits until the test opens the FIFO, so a run can be held mid-step without
+a sleep: the tests then kill servers or the job's worker and check what the next
+page shows.
 """
-import http.client, json, os, re, shutil, stat, subprocess, sys, tempfile, time, unittest
+import errno, http.client, json, os, re, shutil, signal, stat, subprocess, sys, tempfile, time, unittest
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import support  # noqa: E402,F401  (hermetic config)
@@ -27,6 +30,12 @@ state = os.environ["MEDIA_INTAKE_STATE"]
 with open(os.environ["FAKE_LOG"], "a") as f:
     f.write(json.dumps(sys.argv[1:]) + "\n")
 cmd, batch = sys.argv[1], sys.argv[2]
+gate = os.environ.get("FAKE_GATE")
+if gate and cmd == "erase" and os.path.exists(gate):  # hold the first erase until the test opens the FIFO
+    print("erase: waiting at the gate", flush=True)
+    with open(gate) as f:
+        f.read()
+    os.remove(gate)
 quar = os.path.join(state, "quarantine", batch)
 man = os.path.join(quar, "quarantine.json")
 if cmd == "release":
@@ -36,7 +45,7 @@ if cmd == "release":
         if q.get(rel, {}).get("dst"):
             os.remove(p)
             del q[rel]
-            print("released -> library")
+            print(f"released {p} -> library")  # names the file, as real output can: scrubbed at the end
     json.dump(q, open(man, "w"))
 elif cmd == "erase":
     print(f"erased {len(json.load(open(man)))} files; library copies 0; phone 0; drive 0")
@@ -64,6 +73,17 @@ def write_json(p, obj):
     os.makedirs(os.path.dirname(p), exist_ok=True)
     with open(p, "w") as f:
         json.dump(obj, f)
+
+
+def until(pred, what, timeout=30):
+    """Poll a real condition (the status file, the progress API) until it holds."""
+    end = time.monotonic() + timeout
+    while time.monotonic() < end:
+        v = pred()
+        if v:
+            return v
+        time.sleep(0.05)
+    raise AssertionError(f"timed out waiting for {what}")
 
 
 def img(p, color, size=(64, 48)):
@@ -198,6 +218,43 @@ class ReviewUITest(unittest.TestCase):
             time.sleep(0.1)
         self.fail("run never finished")
 
+    def gate(self):
+        g = os.path.join(self.tmp, "gate")
+        os.mkfifo(g)
+        self.env["FAKE_GATE"] = g
+        return g
+
+    def open_gate(self, g):
+        def w():
+            try:
+                fd = os.open(g, os.O_WRONLY | os.O_NONBLOCK)
+            except OSError as e:
+                if e.errno == errno.ENXIO:  # the fake has not opened it yet
+                    return False
+                raise
+            os.write(fd, b"go")
+            os.close(fd)
+            return True
+        until(w, "the fake erase to wait at the gate")
+
+    def job(self):
+        with open(os.path.join(self.state, "jobs", f"review-{BATCH}.json")) as f:
+            return json.load(f)
+
+    def progress(self, s, since=0):
+        r, b = s.req("GET", f"/api/progress?since={since}")
+        return json.loads(b)
+
+    def names_left(self, names):
+        """(file, name) for every file under <state>/jobs/ whose name or content holds one of names."""
+        d = os.path.join(self.state, "jobs")
+        hits = []
+        for f in os.listdir(d):
+            with open(os.path.join(d, f), "rb") as fh:
+                data = fh.read()
+            hits += [(f, n) for n in names if n.encode() in data or n in f]
+        return hits
+
     def originals(self):
         """Review items that are near-duplicates: of a filed batch item, of a library video, and of
         originals that must never be served (outside the roots, another batch's quarantine, a symlink out)."""
@@ -302,6 +359,11 @@ class ReviewUITest(unittest.TestCase):
         self.assertEqual(r.status, 403)
         r, _ = s.req("GET", "/m/0", token=False)
         self.assertEqual(r.status, 403)
+        for path in ("/api/job", "/api/progress", "/api/progress?since=0"):  # the run's routes too
+            r, _ = s.req("GET", path, token=False)
+            self.assertEqual(r.status, 403, path)
+            r, _ = s.req("GET", path, token=False, headers={"X-Token": "wrong"})
+            self.assertEqual(r.status, 403, path)
         # host (DNS rebinding)
         for host in ("evil.example:%d" % s.port, "127.0.0.1:1", "127.0.0.1", "localhost.evil.example:%d" % s.port):
             r, _ = s.req("GET", "/api/items", host=host)
@@ -415,6 +477,17 @@ class ReviewUITest(unittest.TestCase):
         self.assertTrue(os.path.exists(os.path.join(rv, "Pictures/Screenshots/r2.png")))
         self.assertTrue(any("no command to file them yet" in x for x in out))
         self.assertTrue(any("verify-gone: no copies remain" in x for x in out))
+        self.assertIn(f"  released {os.path.join(quar, 'DCIM/Camera/a.jpg')} -> library", out)  # the page saw it all
+        # ...but once the run ended, no name of any file it acted on is left in <state>/jobs/.
+        self.assertEqual(self.names_left(["a.jpg", "b.png", "c.mp4", "n.jpg", "r1.jpg", "r2.png", "DCIM",
+                                          self.state, self.home]), [])
+        st = self.job()
+        self.assertEqual((st["state"], st["ok"], st["spec"]), ("done", True, {"batch": BATCH, "items": 6}))
+        self.assertEqual(st["label"], f"verify-gone {BATCH}")
+        with open(os.path.join(self.state, "jobs", f"review-{BATCH}.log")) as f:
+            log = f.read().splitlines()
+        self.assertIn(f"$ intake.py release {BATCH} [1 file]", log)
+        self.assertIn(f"$ intake.py erase {BATCH} --yes --phone [path] --drive [path]", log)
         # decisions file: 0600, rel paths + decision only
         dp = os.path.join(self.state, "batches", BATCH, "review-decisions.json")
         self.assertEqual(stat.S_IMODE(os.stat(dp).st_mode), 0o600)
@@ -598,6 +671,108 @@ class ReviewUITest(unittest.TestCase):
         self.assertNotIn(["erase", BATCH, "--yes"], self.calls())
         self.assertTrue(os.path.exists(os.path.join(quar, "DCIM/Camera/a.jpg")))
         self.assertEqual(s.p.wait(timeout=30), 1)
+
+    # ------------------------------------------------------------ the run is a detached job (jobs.py)
+    def test_run_survives_the_server_and_is_picked_up(self):
+        self.quarantine()
+        g = self.gate()
+        s1 = self.start()
+        items = self.items(s1)
+        dec = {str(i["id"]): "erase" for i in items}
+        r, b = s1.req("POST", "/api/submit", headers={"X-CSRF": s1.csrf()}, body={"decisions": dec, "confirm": "ERASE"})
+        self.assertEqual(r.status, 202, b)
+        until(lambda: any("waiting at the gate" in x for x in self.progress(s1)["lines"]), "the first erase")
+        st = self.job()
+        self.assertEqual(st["state"], "running")
+        jd = os.path.join(self.state, "jobs")
+        self.assertEqual(stat.S_IMODE(os.stat(jd).st_mode), 0o700)
+        for f in os.listdir(jd):
+            self.assertEqual(stat.S_IMODE(os.stat(os.path.join(jd, f)).st_mode), 0o600, f)
+        # The page server dies (closing the tab is the same: nothing in the page holds the run).
+        s1.p.send_signal(signal.SIGKILL)
+        s1.p.wait()
+        os.kill(st["pid"], 0)  # by PID: raises if the worker died with its server
+        # A restarted server shows the running job from the status file, from its first line.
+        s2 = self.start()
+        self.assertIn("still going", s2.note)
+        r, b = s2.req("GET", "/api/items")
+        j = json.loads(b)
+        self.assertTrue(j["watching"])
+        self.assertEqual(j["job"]["state"], "running")
+        self.assertNotIn("spec", j["job"])
+        self.assertEqual(s2.req("GET", f"/m/{items[0]['id']}")[0].status, 404)  # nothing served mid-run
+        p = self.progress(s2)
+        self.assertFalse(p["done"])
+        self.assertEqual(p["lines"][:2], [f"near-{BATCH}: keep 0, erase 1, trash 0", f"$ intake.py erase near-{BATCH} --yes"])
+        self.assertEqual((p["job"]["step"], p["job"]["label"]), (1, f"erase near-{BATCH}"))
+        # A second submit for the batch is refused, on this server and on another one started now.
+        r, b = s2.req("POST", "/api/submit", headers={"X-CSRF": s2.csrf()}, body={"decisions": dec, "confirm": "ERASE"})
+        self.assertEqual(r.status, 409, b)
+        s3 = self.start()
+        r, b = s3.req("POST", "/api/submit", headers={"X-CSRF": s3.csrf()}, body={"decisions": dec, "confirm": "ERASE"})
+        self.assertEqual(r.status, 409, b)
+        self.assertTrue(json.loads(b)["watching"])  # the page switches to the running job's progress
+        self.open_gate(self.env["FAKE_GATE"])
+        j, out = self.wait_done(s2)
+        self.assertTrue(j["ok"], out)
+        self.assertEqual(j["job"]["state"], "done")
+        self.assertIn("done: all steps succeeded", out)
+        self.assertEqual([c[:2] for c in self.calls()], [["erase", f"near-{BATCH}"], ["verify-gone", f"near-{BATCH}"],
+                                                        ["erase", BATCH], ["verify-gone", BATCH]])  # each once
+        self.assertEqual(s2.p.wait(timeout=30), 0)
+        self.assertFalse(os.path.exists(g))
+
+    def test_page_older_than_the_last_run_cannot_submit(self):
+        """Two pages of one batch: run 1 ends (and can write a fresh near-<batch>); page 2, loaded before,
+        must not submit decisions for a list it read before that run."""
+        self.quarantine()
+        s1, s2 = self.start(), self.start()
+        dec = {str(i["id"]): "erase" for i in self.items(s1)}
+        csrf2 = s2.csrf()
+        r, b = s1.req("POST", "/api/submit", headers={"X-CSRF": s1.csrf()}, body={"decisions": dec, "confirm": "ERASE"})
+        self.assertEqual(r.status, 202, b)
+        j, out = self.wait_done(s1)
+        self.assertTrue(j["ok"], out)
+        n = len(self.calls())
+        r, b = s2.req("POST", "/api/submit", headers={"X-CSRF": csrf2}, body={"decisions": dec, "confirm": "ERASE"})
+        self.assertEqual(r.status, 409, b)
+        k = json.loads(b)
+        self.assertEqual(k["error"], "a run finished since this page loaded; open the review again")
+        self.assertFalse(k["watching"])
+        self.assertEqual(len(self.calls()), n)  # nothing ran
+        self.assertEqual(self.job()["id"], j["job"]["id"])  # and no new job was started
+
+    def test_crashed_run_is_reported(self):
+        quar, _ = self.quarantine()
+        g = self.gate()
+        s = self.start()
+        dec = {str(i["id"]): "erase" for i in self.items(s)}
+        r, _ = s.req("POST", "/api/submit", headers={"X-CSRF": s.csrf()}, body={"decisions": dec, "confirm": "ERASE"})
+        self.assertEqual(r.status, 202)
+        until(lambda: any("waiting at the gate" in x for x in self.progress(s)["lines"]), "the first erase")
+        os.kill(self.job()["pid"], signal.SIGKILL)  # the worker dies mid-run
+        j, out = self.wait_done(s)
+        self.assertFalse(j["ok"])
+        self.assertEqual(j["job"]["state"], "crashed")
+        self.assertEqual(j["job"]["label"], f"erase near-{BATCH}")
+        self.assertTrue(j["job"]["step_running"])  # the erase it started is still going
+        self.assertEqual(self.job()["state"], "crashed")
+        self.assertEqual(self.names_left(["a.jpg", "b.png", "c.mp4", "n.jpg", "DCIM", self.state, self.home]), [])
+        self.assertEqual(s.p.wait(timeout=30), 1)
+        # A new page sees the crash, not a run that goes on forever; submit waits for the orphaned step.
+        s2 = self.start()
+        r, b = s2.req("GET", "/api/items")
+        k = json.loads(b)
+        self.assertFalse(k["watching"])
+        self.assertEqual((k["job"]["state"], k["job"]["done"]), ("crashed", True))
+        r, b = s2.req("POST", "/api/submit", headers={"X-CSRF": s2.csrf()}, body={"decisions": dec, "confirm": "ERASE"})
+        self.assertEqual(r.status, 409, b)
+        self.open_gate(g)
+        until(lambda: not json.loads(s2.req("GET", "/api/job")[1])["job"]["step_running"], "the orphaned step to end")
+        self.assertEqual(json.loads(s2.req("GET", "/api/job")[1])["job"]["state"], "crashed")  # never re-run by itself
+        self.assertEqual([c[0] for c in self.calls()], ["erase"])
+        r, page = s2.req("GET", "/")
+        self.assertIn(b"crashed", page)
 
 
 if __name__ == "__main__":

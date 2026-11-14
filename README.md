@@ -13,8 +13,11 @@ Fedora Linux first. Python, no service, no account.
 
 - **Everything runs locally.** No cloud API, no telemetry, no remote model.
   The only network traffic is `setup.sh` downloading pinned files once
-  (Python wheels, the SigLIP model, GeoNames), each checked by sha256, and the
-  optional vision-model check talking to Ollama on `127.0.0.1`.
+  (Python wheels, the SigLIP model, GeoNames), each checked by sha256, and
+  Ollama on `127.0.0.1`: the optional vision-model check and `media-intake
+  doctor`'s digest check. `scripts/update-pins.py` is a maintainer tool, not
+  part of the tool you run: it reads metadata (never model weights) from
+  PyPI, Hugging Face and the Ollama registry to bump the pins.
 - **Every detector is local**: NudeNet (nudity), Tesseract (text on IDs and
   cards), zxing-cpp (QR and barcodes), SigLIP (labels and search), an optional
   Qwen3-VL model through your own Ollama (trash second opinion).
@@ -26,9 +29,23 @@ Fedora Linux first. Python, no service, no account.
   (`<file>.<ext>.xmp`, digiKam's naming), so sha256 stays stable for dedupe
   and erase.
 - **Nothing is deleted from a device or drive without your explicit `--yes`**,
-  and only files with a verified copy in the library.
-- The state folder (staging, quarantine, index, erase log) is `0700`; the
-  review page and gallery listen on `127.0.0.1` only, behind a random token.
+  and only files with a verified copy in the library. A device delete is
+  refused when its path differs from another path on the device only by
+  letter case (case-insensitive storage may hold them as one file), and
+  nothing on a device is ever renamed or moved.
+- The state folder (staging, quarantine, index, erase log, `jobs/`: each
+  detached job's status, log and lock, `locks/`: the library lock, and
+  `device-salt`) is `0700`. So are `jobs/` and `locks/`, whose files are
+  `0600`; the lock's holder note names the command and its PID, never a file
+  name. `device-salt` is `0600`.
+- **Raw camera serial numbers are never written anywhere** (folder names,
+  tags, plans, logs). A device id is a salted HMAC pseudonym of make, model
+  and serial, keyed by `device-salt`.
+- The review page and gallery listen on `127.0.0.1` only, behind a random
+  token. The gallery can launch the desktop's default app (`xdg-open`, an
+  argument list, no shell) on one library file, for media the browser can't
+  play, and only from its "Open in the system player" button's POST (token,
+  CSRF and Origin checked); a quarantined or flagged file is refused.
 
 ## Install (Fedora)
 
@@ -38,7 +55,7 @@ sudo dnf install perl-Image-ExifTool tesseract tesseract-langpack-eng python3-zx
 git clone https://github.com/Absence0760/media-intake.git
 cd media-intake
 bash setup.sh            # venv, SigLIP vision model, GeoNames, ~/.local/bin/media-intake
-media-intake doctor      # what's installed, what's missing
+media-intake doctor      # what's installed, checksums, and the dnf line for what's missing
 ```
 
 `setup.sh` is safe to re-run (it only re-verifies checksums). Options:
@@ -47,7 +64,10 @@ media-intake doctor      # what's installed, what's missing
 GeoNames snapshot), `--no-launcher`. For HEVC video (most phones) Fedora's
 `ffmpeg-free` has no decoder; the tool uses GStreamer's VA-API (`vah265dec`)
 or Vulkan decoder when one is installed. The optional trash second opinion
-needs [Ollama](https://ollama.com/) and `ollama pull qwen3-vl:2b`.
+needs [Ollama](https://ollama.com/) and `ollama pull qwen3-vl:2b`. Every model
+pin (SigLIP file sha256s, the Ollama model digest) lives in
+`media_intake/pins.json`; `doctor` checks the files on disk and the local
+Ollama (on `127.0.0.1` only) against it.
 
 Configuration is optional: copy [`config.example.toml`](config.example.toml) to
 `~/.config/media-intake/config.toml` to change folders, allow a messaging
@@ -60,7 +80,8 @@ A phone import, start to finish:
 
 ```sh
 media-intake stage /run/user/$UID/gvfs/mtp:host=.../Internal\ shared\ storage --kind phone --batch phone-1
-media-intake plan phone-1 [--event park-race@2026-05-01]
+                                   # --batch is optional; default <device id>-<YYYYMMDD>
+media-intake plan phone-1 [--event park-race@2026-05-01] [--clock-offset DEVICE=±Nh]
 media-intake scan phone-1          # local detectors; flags only
 media-intake apply phone-1         # file, dedupe, quarantine
 media-intake review phone-1        # local page: release false positives, erase the rest
@@ -75,6 +96,7 @@ media-intake offload phone-1 --phone <device root> --yes   # after a backup: fre
 | `erase`, `forget`, `verify-gone`, `wipe-free` | Erase everywhere, check, overwrite free space on a drive |
 | `trash`, `suggest-trash`, `not-trash`, `purge-review` | Plain deletes of junk, with suggestions |
 | `tag`, `tag-files`, `mark-used`, `find` | Sidecar tags and searching them |
+| `migrate-tags` | One-shot: rewrite the legacy `Review\|not-trash` tag as `Owner\|not-trash` |
 | `index`, `search`, `similar` | Local semantic search (SigLIP) |
 | `vlm-trash` | Local vision-model second opinion on trash candidates |
 | `gallery` | Local web gallery: browse, keep, trash, erase, tag, rotate |
@@ -86,7 +108,7 @@ media-intake offload phone-1 --phone <device root> --yes   # after a backup: fre
 [intake](docs/intake.md), [review page](docs/review-ui.md),
 [gallery](docs/gallery.md), [search and VLM](docs/search.md),
 [drive queue](docs/queue.md), [configuration](docs/configuration.md),
-[plugins](docs/plugins.md).
+[plugins](docs/plugins.md), [releases](docs/release.md).
 
 ## Tested devices
 

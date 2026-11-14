@@ -9,6 +9,7 @@ never read.
 """
 import os
 import re
+import unicodedata
 
 import config
 
@@ -92,6 +93,38 @@ def walk(root, kind="phone"):
                 except Denied:
                     continue
                 yield path, os.path.relpath(path, root)
+
+
+def case_key(path):
+    """What a case-insensitive device sees in path: Unicode NFC, then case-folded."""
+    return unicodedata.normalize("NFC", path).casefold()
+
+
+class CaseCollision(Denied):
+    """Device paths that differ only by letter case: on the device they may be one file."""
+
+    def __init__(self, groups):
+        self.groups = groups
+        super().__init__("paths differ only by letter case: "
+                         + "; ".join(" | ".join(g) for g in groups))
+
+
+def check_case(targets, known):
+    """Raise CaseCollision unless every target's path is unique on a case-insensitive device.
+
+    Android's emulated storage (and exFAT/FAT on cameras and drives) ignores case: after
+    a case-only rename the listing can show both names, and they are one file there, so
+    deleting the "duplicate" deletes the real one. known is every path the device listed
+    (the batch manifests' src); a target colliding with any other known path or target
+    is refused, whether or not the other name is a target too. Each group in the error
+    lists the colliding paths, sorted.
+    """
+    by_key = {}
+    for p in (*known, *targets):
+        by_key.setdefault(case_key(p), set()).add(p)
+    groups = sorted({tuple(sorted(by_key[case_key(t)])) for t in targets if len(by_key[case_key(t)]) > 1})
+    if groups:
+        raise CaseCollision([list(g) for g in groups])
 
 
 # The only folders erase --phone-thumbnails may remove (Android rebuilds them).
