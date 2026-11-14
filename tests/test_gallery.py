@@ -659,7 +659,7 @@ class GalleryTest(unittest.TestCase):
         opener = os.path.join(fdir, "xdg-open")
         with open(opener, "w") as f:
             f.write(FAKE_OPENER)
-        os.chmod(opener, 0o755)
+        os.chmod(opener, 0o700)
         log = os.path.join(self.tmp, "opened.json")
         self.env.update(PATH=fdir + os.pathsep + self.env["PATH"], FAKE_OPEN_LOG=log)
         s = self.start()
@@ -679,9 +679,10 @@ class GalleryTest(unittest.TestCase):
         code, j = s.post("/api/open", {"ids": [idv]})
         self.assertEqual(code, 200, j)
         def opened():
-            if os.path.exists(log):
-                with open(log) as f:
-                    return json.load(f)
+            if not os.path.exists(log):
+                return None
+            with open(log) as f:
+                return json.load(f)
         self.assertEqual(until(opened, "the fake opener to record its arguments"), [self.v])
         os.remove(log)
         # swapped for a symlink after the scan, or flagged since: refused like the media routes refuse it

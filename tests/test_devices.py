@@ -9,7 +9,7 @@ batch name, plan.json, a sidecar or the command output. Cases needing exiftool o
 when it is missing.
 """
 import datetime, errno, glob, json, os, re, shutil, stat, subprocess, sys, tempfile, unittest
-from unittest import mock
+import unittest.mock as mock
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import support  # noqa: E402,F401  (hermetic config)
