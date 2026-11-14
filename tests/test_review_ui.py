@@ -196,7 +196,7 @@ class ReviewUITest(unittest.TestCase):
             if j["done"]:
                 return j, out
             time.sleep(0.1)
-        self.fail("run never finished")
+        raise self.failureException("run never finished")
 
     def originals(self):
         """Review items that are near-duplicates: of a filed batch item, of a library video, and of

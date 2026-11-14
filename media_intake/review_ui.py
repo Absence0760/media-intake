@@ -165,10 +165,11 @@ def video_size(path):
 
 
 def human(n):
-    for unit in ("B", "KB", "MB", "GB"):
-        if n < 1024 or unit == "GB":
+    for unit in ("B", "KB", "MB"):
+        if n < 1024:
             return f"{n:.0f} {unit}" if unit == "B" else f"{n:.1f} {unit}"
         n /= 1024
+    return f"{n:.1f} GB"
 
 
 def meta(path, kind, date=None):
@@ -565,15 +566,18 @@ class Handler(http.server.BaseHTTPRequestHandler):
         elif m := re.fullmatch(r"/m/([0-9]{1,9})", path):
             i = int(m.group(1))
             if i >= len(app.items) or app.submitted:
-                return self.reply(404, "404\n")
+                self.reply(404, "404\n")
+                return
             self.media(app.items[i])
         elif m := re.fullmatch(r"/o/([0-9]{1,9})", path):
             i = int(m.group(1))
             if i >= len(app.origs) or app.submitted:
-                return self.reply(404, "404\n")
+                self.reply(404, "404\n")
+                return
             o = app.origs[i]
             if not original_allowed(app.batch, o["path"]):  # re-checked: it may have moved since start-up
-                return self.reply(404, "404\n")
+                self.reply(404, "404\n")
+                return
             self.media(o)
         else:
             self.reply(404, "404\n")
@@ -583,7 +587,8 @@ class Handler(http.server.BaseHTTPRequestHandler):
         try:
             f = open(p, "rb")
         except OSError:
-            return self.reply(404, "404\n")
+            self.reply(404, "404\n")
+            return
         with f:
             size = os.fstat(f.fileno()).st_size
             start, end, code = 0, size - 1, 200
@@ -591,14 +596,16 @@ class Handler(http.server.BaseHTTPRequestHandler):
             if rng:
                 m = re.fullmatch(r"bytes=(\d*)-(\d*)", rng.strip())
                 if not m or (m.group(1) == m.group(2) == ""):
-                    return self.reply(416, "", headers=[("Content-Range", f"bytes */{size}")])
+                    self.reply(416, "", headers=[("Content-Range", f"bytes */{size}")])
+                    return
                 if m.group(1) == "":
                     start = max(0, size - int(m.group(2)))
                 else:
                     start = int(m.group(1))
                     end = min(int(m.group(2)), size - 1) if m.group(2) else size - 1
                 if start >= size or start > end:
-                    return self.reply(416, "", headers=[("Content-Range", f"bytes */{size}")])
+                    self.reply(416, "", headers=[("Content-Range", f"bytes */{size}")])
+                    return
                 code = 206
             self.send_response(code)
             self.send_header("Content-Type", it["mime"])
@@ -633,23 +640,29 @@ class Handler(http.server.BaseHTTPRequestHandler):
         csrf = self.headers.get("X-CSRF", "")
         if (origin and origin not in (f"http://127.0.0.1:{p}", f"http://localhost:{p}")) \
                 or not secrets.compare_digest(csrf.encode(), app.csrf.encode()):
-            return self.reply(403, "403\n")
+            self.reply(403, "403\n")
+            return
         if path != "/api/submit":
-            return self.reply(404, "404\n")
+            self.reply(404, "404\n")
+            return
         if not self.headers.get("Content-Type", "").startswith("application/json"):
-            return self.reply(415, "415\n")
+            self.reply(415, "415\n")
+            return
         try:
             n = int(self.headers.get("Content-Length", "0"))
         except ValueError:
             n = -1
         if not 0 < n <= 1 << 20:
-            return self.reply(400, "400\n")
+            self.reply(400, "400\n")
+            return
         try:
             body = json.loads(self.rfile.read(n))
         except ValueError:
-            return self.json(400, {"error": "bad json"})
+            self.json(400, {"error": "bad json"})
+            return
         if not isinstance(body, dict):
-            return self.json(400, {"error": "bad json"})
+            self.json(400, {"error": "bad json"})
+            return
         code, msg = app.submit(body)
         self.json(code, {"result" if code == 202 else "error": msg})
 

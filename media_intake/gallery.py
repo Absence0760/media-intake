@@ -21,7 +21,7 @@ check, CSRF value on every POST, no-store + strict CSP, media by opaque id only.
 Originals are never written: sidecars (<file>.<ext>.xmp) only. docs/gallery.md.
 """
 import argparse, datetime, html, http.server, io, json, os, re, secrets, shutil, subprocess, sys, tempfile
-import threading, time, urllib.parse
+import threading, time
 import xml.etree.ElementTree as ET
 
 HERE = os.path.dirname(os.path.abspath(__file__))
@@ -149,7 +149,7 @@ def facts(it):
             try:
                 confs[m.group(1)] = float(m.group(2))
             except ValueError:
-                pass
+                pass  # malformed confidence in a sidecar: ignore that one tag
     ai = max((confs.get(mo, 0.0) for mo in trash_models), default=None)
     if any(t.startswith("Review|vlm-trash/") for t in tags):
         ai = max(ai or 0.0, SUGGEST_MIN)
@@ -811,45 +811,53 @@ class Handler(R.Handler):
         elif m := re.fullmatch(r"/api/item/([0-9]{1,9})", path):
             i = int(m.group(1))
             if not app.live(i):
-                return self.reply(404, "404\n")
+                self.reply(404, "404\n")
+                return
             with app.lock:
                 self.json(200, app.detail(i))
         elif m := re.fullmatch(r"/([tmp])/([0-9]{1,9})", path):
             i = int(m.group(2))
             if not app.live(i) or app.items[i].get("busy"):
-                return self.reply(404, "404\n")
+                self.reply(404, "404\n")
+                return
             it = app.items[i]
             if not os.path.isfile(it["path"]) or os.path.islink(it["path"]) or under_state(it["path"]):
-                return self.reply(404, "404\n")
+                self.reply(404, "404\n")
+                return
             if m.group(1) == "t":
                 try:
                     t = app.thumb(it)
                 except OSError:
                     t = None
                 if not t:
-                    return self.reply(404, "404\n")
+                    self.reply(404, "404\n")
+                    return
                 self.media(dict(path=t, mime="image/jpeg"))
             elif m.group(1) == "m":
                 if it["show"] not in ("image", "video"):
-                    return self.reply(404, "404\n")
+                    self.reply(404, "404\n")
+                    return
                 self.media(dict(path=it["path"], mime=it["mime"]))
             else:
                 data = image_jpeg(it["path"], PREVIEW_PX, 0) if it["media"] == "photo" else None
                 if not data:
-                    return self.reply(404, "404\n")
+                    self.reply(404, "404\n")
+                    return
                 self.reply(200, data, "image/jpeg")
         elif m := re.fullmatch(r"/plugin/([a-z0-9-]{1,32})/media/([^?#]{1,512})", path):
             v = app.views.get(m.group(1))
             got = v["media"](m.group(2)) if v and callable(v.get("media")) else None
             if not got or not os.path.isfile(got["path"]) or os.path.islink(got["path"]) \
                     or under_state(got["path"]) or label.refused([got["path"]], STATE):
-                return self.reply(404, "404\n")
+                self.reply(404, "404\n")
+                return
             self.media(dict(path=got["path"], mime=got["mime"]))
         elif m := re.fullmatch(r"/plugin/([a-z0-9-]{1,32})/([^?#]{1,512})", path):
             v = app.views.get(m.group(1))
             got = v["get"](m.group(2), f) if v and callable(v.get("get")) else None
             if got is None:
-                return self.reply(404, "404\n")
+                self.reply(404, "404\n")
+                return
             self.json(*got)
         else:
             self.reply(404, "404\n")
@@ -864,21 +872,26 @@ class Handler(R.Handler):
         csrf = self.headers.get("X-CSRF", "")
         if (origin and origin not in (f"http://127.0.0.1:{p}", f"http://localhost:{p}")) \
                 or not secrets.compare_digest(csrf.encode(), app.csrf.encode()):
-            return self.reply(403, "403\n")
+            self.reply(403, "403\n")
+            return
         if not self.headers.get("Content-Type", "").startswith("application/json"):
-            return self.reply(415, "415\n")
+            self.reply(415, "415\n")
+            return
         try:
             n = int(self.headers.get("Content-Length", "0"))
         except ValueError:
             n = -1
         if not 0 < n <= 1 << 20:
-            return self.reply(400, "400\n")
+            self.reply(400, "400\n")
+            return
         try:
             body = json.loads(self.rfile.read(n))
         except ValueError:
-            return self.json(400, {"error": "bad json"})
+            self.json(400, {"error": "bad json"})
+            return
         if not isinstance(body, dict):
-            return self.json(400, {"error": "bad json"})
+            self.json(400, {"error": "bad json"})
+            return
         acts = {
             "/api/keep": lambda: app.keep(body.get("ids")),
             "/api/tag": lambda: app.tag(body.get("ids"), body.get("tag"), body.get("op")),
@@ -894,15 +907,22 @@ class Handler(R.Handler):
         if m := re.fullmatch(r"/plugin/([a-z0-9-]{1,32})/([^?#]{1,512})", path):
             v = app.views.get(m.group(1))
             got = v["post"](m.group(2), body) if v and callable(v.get("post")) else None
-            return self.json(*got) if got is not None else self.reply(404, "404\n")
+            if got is not None:
+                self.json(*got)
+            else:
+                self.reply(404, "404\n")
+            return
         if path not in acts:
-            return self.reply(404, "404\n")
+            self.reply(404, "404\n")
+            return
         try:
             msg = acts[path]()
         except ValueError as e:
-            return self.json(400, {"error": str(e)})
+            self.json(400, {"error": str(e)})
+            return
         except RuntimeError as e:
-            return self.json(409, {"error": str(e)})
+            self.json(409, {"error": str(e)})
+            return
         self.json(200, {"result": msg})
 
 

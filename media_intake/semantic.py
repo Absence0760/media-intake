@@ -24,7 +24,7 @@ Filters read the XMP sidecars: --project P (Project|P), --unused-since Nd (no
 Used|<YYYY-MM-DD-slug> in the last N days, like intake.py find), --clean (no
 Review|child-in-shot, Review|maybe-trash, AI|vlm/*/trash/*).
 """
-import argparse, datetime, hashlib, json, math, os, re, shutil, string, subprocess, sys, tempfile, time
+import argparse, datetime, json, os, re, shutil, string, subprocess, sys, tempfile, time
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, HERE)

@@ -79,6 +79,13 @@ def private_dir(p):
     return p
 
 
+def _umask():
+    """The process umask (os has no read-only getter, so set and restore it)."""
+    u = os.umask(0)
+    os.umask(u)
+    return u
+
+
 def bdir(batch):
     return os.path.join(STATE, "batches", batch)
 
@@ -180,7 +187,7 @@ def media_date(path):
             if dt:
                 return datetime.datetime.strptime(dt.strip()[:19], "%Y:%m:%d %H:%M:%S"), "exif"
         except Exception:
-            pass
+            pass  # missing or malformed EXIF date: fall through to the next source
     if ext in VID:
         r = subprocess.run(["ffprobe", "-v", "quiet", "-of", "json", "-show_entries",
                             "format_tags=creation_time", path], capture_output=True, text=True)
@@ -390,8 +397,6 @@ def cmd_plan(a):
                                   else None)))
     save(os.path.join(b, "plan.json"), plan)
     c = collections.Counter(p["action"] for p in plan)
-    dests = collections.Counter(os.path.relpath(p["dst"], HOME).split("/")[:3][-1] if p["action"] == "file" else p["action"]
-                                for p in plan)
     print(f"plan: {len(plan)} files  file {c['file']}  delete(exact dup) {c['delete']}  review {c['review']}")
     print("dates from", dict(collections.Counter(p["date_src"] for p in plan)))
     for k in sorted({os.path.dirname(os.path.relpath(p["dst"], HOME)) for p in plan if p["action"] == "file"}):
@@ -496,7 +501,9 @@ def cmd_release(a):
         dst = q[rel]["dst"]
         os.makedirs(os.path.dirname(dst), exist_ok=True)
         shutil.move(os.path.join(quar, rel), dst)
-        os.chmod(dst, 0o644)
+        # Same mode a normal intake copy gets (shutil.copyfile honours the
+        # umask), not a fixed world-readable 0644.
+        os.chmod(dst, 0o666 & ~_umask())
         if os.path.isfile(sidecar(os.path.join(quar, rel))):  # a near-duplicate's own tags; none are created
             shutil.move(sidecar(os.path.join(quar, rel)), sidecar(dst))
         dh = dhash(dst)[0] if os.path.splitext(dst)[1].lower() in IMG else None
@@ -625,7 +632,7 @@ def drive_purge(mount, shas):
                 drop_sidecar(p)
                 n += 1
         except OSError:
-            pass
+            pass  # vanished or unreadable since listing: not counted, left alone
     return n
 
 
@@ -845,7 +852,7 @@ def wipe_free(mount):
                 try:
                     os.fsync(fd)
                 except OSError:
-                    pass
+                    pass  # some filesystems (exFAT, FUSE) reject fsync; the write itself succeeded
             finally:
                 os.close(fd)
             if full or (cap and total >= cap):
@@ -861,7 +868,11 @@ def wipe_free(mount):
     dev = os.path.basename(src)
     pk = subprocess.run(["lsblk", "-no", "PKNAME", src], capture_output=True, text=True).stdout.strip() if src.startswith("/dev/") else ""
     rot = os.path.join("/sys/block", pk or dev, "queue", "rotational")
-    if src.startswith("/dev/") and os.path.exists(rot) and open(rot).read().strip() == "0":
+    flash = False
+    if src.startswith("/dev/") and os.path.exists(rot):
+        with open(rot) as fh:
+            flash = fh.read().strip() == "0"
+    if flash:
         note = "flash drive: wear-levelling keeps spare blocks, so an overwrite is not a guarantee"
         if not override:
             r = subprocess.run(["fstrim", mount], capture_output=True, text=True)
@@ -888,7 +899,7 @@ def erase_log_sigs(batch=None):
                 else:
                     sig[m.group(2)] = int(m.group(3))
     except FileNotFoundError:
-        pass
+        pass  # no erase log yet: nothing erased
     return sig, nosize
 
 
@@ -1196,7 +1207,7 @@ def trash_files(files, batch=None, phone=None):
         for src, ssize in srcs:
             th += thumb_forget(src)
             if not src.startswith(root + os.sep):
-                print(f"skip phone delete, path outside --phone root")
+                print("skip phone delete, path outside --phone root")
                 continue
             try:
                 sources.check(root, src)

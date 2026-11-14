@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Offline reverse geocoding: GPS -> nearest GeoNames place within MAX_KM.
+"""Offline reverse geocoding (GPS -> nearest GeoNames place within MAX_KM).
 
   venv/bin/python -I media_intake/geocode.py [GEO_DIR] < [[lat, lon], ...] > [place or null, ...]
 

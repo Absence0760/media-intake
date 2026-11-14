@@ -4,8 +4,8 @@
   <state>/venv/bin/python -I media_intake/scan_sensitive.py DIR OUT.json
 
 For each file it records reason labels only, such as "nudity", "passport-mrz",
-"id-barcode", "payment-card", "2fa-qr", "secret-words:<category>" or
-"unscanned-video". It never writes or prints any OCR text, barcode contents or
+"id-barcode", "payment-card", "2fa-qr", "secret-words:<category>",
+"unscanned-video" or "unscanned-barcode". It never writes or prints any OCR text, barcode contents or
 image data, so the report can be read in an AI assistant session without leaking
 what the image shows. An assistant must never open the flagged files themselves;
 you review them in your own image viewer.
@@ -28,7 +28,7 @@ try:
     from pillow_heif import register_heif_opener  # optional
     register_heif_opener()
 except Exception:
-    pass
+    pass  # optional: without it HEIC files open as "unreadable" and are flagged
 
 IMG = {".jpg", ".jpeg", ".png", ".webp", ".gif", ".heic", ".heif", ".dng"}
 VID = {".mp4", ".mov", ".3gp", ".mkv", ".webm"}
@@ -113,7 +113,9 @@ def barcode_flags(im):
             elif "QR" in fmt and re.search(r"bitcoin:|ethereum:|wallet", txt, re.I):
                 out.append("wallet-qr")
     except Exception:
-        pass
+        # Fail closed like the nudity and video checks: a decoder error means
+        # "not checked", not "no barcode", so the file goes to review.
+        out.append("unscanned-barcode")
     return out
 
 
@@ -188,7 +190,7 @@ def main():
             with open(out_path) as fh:
                 flags = json.load(fh)
         except FileNotFoundError:
-            pass
+            pass  # no earlier scan to merge into: start empty
         for f in files:
             flags.pop(os.path.relpath(f, src), None)
     try:

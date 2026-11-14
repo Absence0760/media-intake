@@ -8,7 +8,7 @@ the real intake.py (trash / forget) against the throwaway HOME only; nothing poi
 at the real ~/.local/share/media-intake, ~/Pictures or ~/Videos. A toy plugin
 checks the gallery_views() seam (plugins.py).
 """
-import datetime, hashlib, http.client, json, os, re, shutil, subprocess, sys, tempfile, time, unittest, urllib.parse
+import hashlib, http.client, json, os, re, shutil, subprocess, sys, tempfile, time, unittest, urllib.parse
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import support  # noqa: E402,F401  (hermetic config)
@@ -46,7 +46,7 @@ def vid(p):
 def tags_of(p):
     x = p + ".xmp"
     if not os.path.exists(x):
-        return [], []
+        return [], [], None
     r = subprocess.run(["exiftool", "-j", "-q", "-HierarchicalSubject", "-XMP-dc:Subject", "-XMP-tiff:Orientation",
                         "-n", x], capture_output=True, text=True)
     row = json.loads(r.stdout)[0]
@@ -205,7 +205,7 @@ class GalleryTest(unittest.TestCase):
             if j["done"]:
                 return j
             time.sleep(0.1)
-        self.fail("job never finished")
+        raise self.failureException("job never finished")
 
     def test_security(self):
         s = self.start()

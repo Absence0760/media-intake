@@ -8,7 +8,7 @@ Geocoding and labeler cases use the real venv (and the real model, read-only)
 and skip when setup.sh hasn't run; geocoding runs on a small fixture of
 GeoNames-format lines, not the downloaded file.
 """
-import hashlib, io, json, os, shutil, subprocess, sys, tempfile, time, unittest, zipfile
+import hashlib, json, os, shutil, subprocess, sys, tempfile, time, unittest, zipfile
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import support  # noqa: E402,F401  (hermetic config)
