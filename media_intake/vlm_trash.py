@@ -18,8 +18,8 @@ The raw verdict is written; consumers (suggest-trash) take trash with conf >= 0.
 A re-run replaces only tags under AI|vlm/<this model>/; another model writes
 beside them; no other keyword is added or removed. Videos: 3 sampled frames,
 trash only when at least 2 of the 3 say TRASH >= 0.7 (conf: the lowest of those).
-Skipped, never sent or tagged: files whose sidecar has Owner|not-trash,
-Owner|keep, Owner|trash, legacy Review|not-trash or a digiKam pick label. Files tagged
+Skipped, never sent or tagged: files you decided on (owner.decided: Owner|keep,
+Owner|not-trash or its legacy spelling, Owner|trash, a digiKam pick label). Files tagged
 Used|* or a protected project's Project|<name> (config.toml) are not sent either and get .../keep (never trash).
 Nothing else is stored: no description, no model text. Output is counts only.
 
@@ -38,10 +38,12 @@ import urllib.error, urllib.parse, urllib.request
 HERE = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, HERE)
 import label  # noqa: E402  (read-only: refused(), STATE, IMG/VID)
+import owner  # noqa: E402  (owner decisions: kept / decided)
 
 HOME = os.path.expanduser("~")
 STATE = label.STATE
 import config  # noqa: E402
+import library_lock  # noqa: E402  (stdlib only)
 ROOTS = config.library_roots()
 PROTECTED = config.protected_tags()
 IMG = label.IMG | {".dng"}
@@ -50,8 +52,8 @@ VID = label.VID
 # qwen3-vl:2b = Qwen3-VL-2B-Thinking Q4_K_M, Apache-2.0. Not qwen2.5vl:7b (too big for an 8 GB GPU),
 # not qwen2.5vl:3b (Qwen Research License: non-commercial). Ollama 0.21.2 can't pull the newer
 # qwen3-vl:*-instruct / gemma3 manifests (registry answers 412). docs/search.md.
-MODEL = "qwen3-vl:2b"
-DIGEST = "0635d9d857d497aeadba3d7d27485746c50554446f9f6ec01ef39788221adbe8"  # ollama list ID 0635d9d857d4
+MODEL = label.PINS["ollama"]["model"]    # media_intake/pins.json
+DIGEST = label.PINS["ollama"]["digest"]  # `ollama list` shows its first 12 hex digits as the ID
 HOST = "http://127.0.0.1:11434"
 NUM_CTX = 8192          # Ollama's 4096 default truncates silently
 KEEP_ALIVE = "2m"       # between requests; the last one sends 0
@@ -77,8 +79,6 @@ EMPTY_XMP = ("<?xpacket begin='﻿' id='W5M0MpCehiHzreSzNTczkc9d'?>\n"
              "<rdf:RDF xmlns:rdf='http://www.w3.org/1999/02/22-rdf-syntax-ns#'>\n"
              "</rdf:RDF>\n</x:xmpmeta>\n<?xpacket end='w'?>\n")
 NS = "AI|vlm/" + MODEL.replace(":", "-") + "/"   # AI|vlm/qwen3-vl-2b/
-NOT_TRASH = {"Owner|not-trash", "Review|not-trash"}  # Review|not-trash: legacy spelling
-OWNER_SKIP = NOT_TRASH | {"Owner|keep", "Owner|trash"}
 _OPENER = urllib.request.build_opener(urllib.request.ProxyHandler({}))  # never via a proxy
 
 
@@ -107,7 +107,7 @@ def check_digest(host):
         if m.get("name") == MODEL or m.get("model") == MODEL:
             if m.get("digest") != DIGEST:
                 raise Refused(f"{MODEL} digest is {str(m.get('digest'))[:12]}, pinned {DIGEST[:12]}; "
-                              "re-check the model and update DIGEST deliberately")
+                              "re-check the model and update media_intake/pins.json with scripts/update-pins.py")
             return
     raise Refused(f"{MODEL} not installed in the local Ollama")
 
@@ -260,14 +260,16 @@ def read_tags(paths):
     for row in json.loads(r.stdout or "[]"):
         v = row.get("HierarchicalSubject")
         t = [] if v is None else [str(x) for x in (v if isinstance(v, list) else [v])]
-        if row.get("PickLabel") not in (None, 0, "0", ""):
-            t.append(f"digiKam|pick/{row['PickLabel']}")
+        if owner.pick_label(row.get("PickLabel")) not in ("", "0"):
+            t.append(f"digiKam|pick/{owner.pick_label(row['PickLabel'])}")
         out[row["SourceFile"][:-4]] = t
     return out
 
 
 def owner_decided(t):
-    return any(x in OWNER_SKIP or x.startswith("digiKam|pick/") for x in t)
+    """t: read_tags() output, where a pick label shows as digiKam|pick/<n>."""
+    pick = next((x.split("/", 1)[1] for x in t if x.startswith("digiKam|pick/")), "")
+    return owner.decided(t, pick)
 
 
 def protected(t):
@@ -286,7 +288,7 @@ def candidates():
         v = row.get("HierarchicalSubject")
         tags = [] if v is None else [str(x) for x in (v if isinstance(v, list) else [v])]
         media = row["SourceFile"][:-4]
-        if "Review|maybe-trash" in tags and not NOT_TRASH & set(tags) and os.path.isfile(media):
+        if "Review|maybe-trash" in tags and not owner.kept(tags) and os.path.isfile(media):
             out.append(media)
     return sorted(out)
 
@@ -300,7 +302,17 @@ def verdict_tags(verdict, reason, conf):
 
 def write_verdicts(items, tags):
     """items: [(path, verdict, reason, conf)]. Sidecar only. Removes this model's previous
-    AI|vlm/<model>/ tags, adds the new ones; no other keyword is touched."""
+    AI|vlm/<model>/ tags, adds the new ones; no other keyword is touched. Under the library lock
+    (library_lock.py), so a gallery erase or a CLI apply never runs in between; a file that went
+    away while it was judged gets no sidecar."""
+    try:
+        with library_lock.hold("vlm_trash.py", wait=library_lock.cli_wait(), out=sys.stderr):
+            _write_verdicts([it for it in items if os.path.lexists(it[0])], tags)
+    except library_lock.Busy as e:
+        sys.exit(f"vlm_trash: refused: {e}")
+
+
+def _write_verdicts(items, tags):
     blocks = []
     for path, verdict, reason, conf in items:
         x = path + ".xmp"

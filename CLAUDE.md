@@ -45,3 +45,7 @@ no force-push.
   The full suite (`python3 -I -m unittest discover -s tests`) is CI's job.
 - Fix bugs at the source; never inflate a timeout, add a sleep, loosen an
   assertion or skip a failing test to get green.
+
+## Claude tooling
+
+Agents, commands and hooks: `.claude/README.md`. Run `/check` before a non-trivial commit.

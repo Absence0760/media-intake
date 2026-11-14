@@ -3,6 +3,7 @@
   "permissions": {
     "allow": [
       "Bash(python3 -I -m unittest:*)",
+      "Bash(heavy python3 -I -m unittest:*)",
       "Bash(bash setup.sh)",
       "Bash(python3 -I media_intake/cli.py --help)",
       "Bash(git status)",
@@ -24,12 +25,12 @@
       "Bash(git merge-base:*)",
       "Bash(git worktree list)",
       "Bash(git worktree list:*)",
-      "Bash(git stash list)",
       "Bash(gh pr view:*)",
       "Bash(gh pr list:*)",
       "Bash(gh pr diff:*)",
       "Bash(gh pr checks:*)",
       "Bash(gh pr status)",
+      "Bash(gh pr create:*)",
       "Bash(gh issue view:*)",
       "Bash(gh issue list:*)",
       "Bash(gh run list:*)",

@@ -238,9 +238,14 @@ def summary(batch):
 
 
 def pending(batch):
-    """What in this batch waits for you: quarantine (and near-) counts, review folder files."""
-    q = len(load(os.path.join(STATE, "quarantine", batch, "quarantine.json"), {}) or {})
-    near = len(load(os.path.join(STATE, "quarantine", f"near-{batch}", "quarantine.json"), {}) or {})
+    """What in this batch waits for you: (its own quarantine, every other quarantine its review page shows,
+    review folder files). The second is review_ui.sub_batches, the one definition of what one review covers:
+    each near- level of <batch> and of xcheck-<batch>, and xcheck-<batch> itself."""
+    import review_ui  # the review page's module; imported here, as jobs.py does, only when it is needed
+    qd = os.path.join(STATE, "quarantine")
+    count = lambda n: len(load(os.path.join(qd, n, "quarantine.json"), {}) or {})  # noqa: E731
+    q = count(batch)
+    near = sum(count(n) for n in review_ui.sub_batches(batch) if n != batch)
     rv = sum(len(fs) for _, _, fs in os.walk(os.path.join(bdir(batch), "review")))
     return q, near, rv
 
@@ -360,7 +365,7 @@ def cmd_status(a):
         if not wait and done and len(done) == len(chunks) and len(src["offloaded"]) < len(done):
             print(f"  waiting for you: OK to offload (delete the drive originals): {me} offload {label} --yes")
         for n, batch, qn, near, rv, mt in wait:
-            print(f"  waiting for you, chunk {n} ({batch}): quarantine {qn}, near-copies {near}, "
+            print(f"  waiting for you, chunk {n} ({batch}): quarantine {qn}, near and messaging copies {near}, "
                   f"review folder {rv}, trash suggestions {mt}")
             print(f"    review page: media-intake review {batch}")
             if qn:
@@ -390,7 +395,7 @@ def cmd_offload(a):
     blocked = [b for b in blocked if b[1] or b[2]]
     if blocked:
         sys.exit("refused: the quarantine review is not finished for "
-                 + ", ".join(f"chunk {n} (quarantine {x}, near-copies {y})" for n, x, y in blocked))
+                 + ", ".join(f"chunk {n} (quarantine {x}, near and messaging copies {y})" for n, x, y in blocked))
     if not a.yes:
         print(f"{len(done)} finished chunks of {a.name} would have their drive originals deleted "
               "(only files with a verified copy here). Only if you are sure about this drive: add --yes")

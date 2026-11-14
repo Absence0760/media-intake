@@ -7,12 +7,12 @@
   media-intake search "TEXT" ...         semantic search                             (venv)
   media-intake similar FILE ...          nearest neighbours of a file                (venv)
   media-intake vlm-trash ...             local vision-model second opinion on trash  (venv, Ollama)
-  media-intake doctor                    check system packages, venv, models, config
+  media-intake doctor                    check system packages, venv, model checksums, Ollama digest, config
 
 `media-intake <command> --help` shows each command's options. Commands marked
 (venv) run in the venv setup.sh builds; the rest need only the system Python.
 """
-import os, shutil, subprocess, sys
+import importlib, os, shutil, subprocess, sys
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 if HERE not in sys.path:
@@ -22,61 +22,183 @@ import config  # noqa: E402
 
 VENV_SCRIPTS = {"index": ("semantic.py", ["index"]), "search": ("semantic.py", ["search"]),
                 "similar": ("semantic.py", ["similar"]), "vlm-trash": ("vlm_trash.py", [])}
-SYSTEM_TOOLS = ("exiftool", "tesseract", "ffmpeg", "ffprobe", "gio", "findmnt", "gst-inspect-1.0")
+# Each thing doctor checks, with the Fedora package that provides it: the one source for the
+# `sudo dnf install ...` lines doctor prints. Required unless listed in OPTIONAL.
+SYSTEM_TOOLS = {"exiftool": "perl-Image-ExifTool", "tesseract": "tesseract", "ffmpeg": "ffmpeg-free",
+                "ffprobe": "ffmpeg-free", "gio": "glib2", "findmnt": "util-linux-core",
+                "gst-inspect-1.0": "gstreamer1"}
+SYSTEM_MODULES = {"zxingcpp": "python3-zxing-cpp", "PIL": "python3-pillow", "numpy": "python3-numpy",
+                  "yaml": "python3-pyyaml"}
+TESSERACT_ENG = "tesseract-langpack-eng"
+HEVC_DECODERS, HEVC_PACKAGE = ("vah265dec", "vulkanh265dec"), "gstreamer1-plugins-bad-free"
+MTP_BACKEND, MTP_PACKAGE = "/usr/libexec/gvfsd-mtp", "gvfs-mtp"
+XDG_OPEN, XDG_PACKAGE = "xdg-open", "xdg-utils"  # the gallery's "Open in the system player" (POST /api/open)
+OPTIONAL = {"gstreamer1", HEVC_PACKAGE, MTP_PACKAGE, XDG_PACKAGE}  # Fedora packages, as in the maps above
 
 
 def venv_python():
     return os.path.join(config.get()["state"], "venv", "bin", "python")
 
 
-def doctor():
-    """Report what is installed; exit 1 if something required is missing."""
-    ok = True
+class Probe:
+    """What doctor looks at on this machine. Tests pass a fake with the same methods."""
+
+    def which(self, tool):
+        return shutil.which(tool)
+
+    def output(self, cmd):
+        r = subprocess.run(cmd, capture_output=True, text=True)
+        return r.stdout + r.stderr
+
+    def importable(self, module):
+        try:
+            importlib.import_module(module)
+            return True
+        except ImportError:
+            return False
+
+    def exists(self, path):
+        return os.path.exists(path)
+
+    def sha256(self, path):
+        import label
+        return label._sha(path)
+
+    def ollama_tags(self):
+        """GET /api/tags from the local Ollama: loopback only, no proxy (vlm_trash's client)."""
+        import vlm_trash
+        return vlm_trash._call(vlm_trash.HOST, "/api/tags", timeout=5)
+
+
+def _short(h):
+    return str(h)[:12]
+
+
+def doctor(probe=None, out=print):
+    """Report what is installed; exit 1 if something required is missing or a pinned file is wrong."""
+    probe = probe or Probe()
+    ok, need, want = True, [], []   # need/want: Fedora packages missing (required / optional)
+
+    def report(status, text):
+        out(f"{status:8} {text}")
+
+    def missing(package, text):
+        nonlocal ok
+        optional = package in OPTIONAL
+        (want if optional else need).append(package)
+        ok &= optional
+        report("optional" if optional else "MISSING", f"{text} ({package})")
+
     try:
         cfg = config.load()
-        print(f"ok       config {cfg['path']}" + ("" if os.path.isfile(cfg["path"]) else " (absent: defaults)"))
+        report("ok", f"config {cfg['path']}" + ("" if os.path.isfile(cfg["path"]) else " (absent: defaults)"))
     except config.ConfigError as e:
-        print(f"BAD      config: {e}")
+        report("BAD", f"config: {e}")
         return 1
     for k in ("library", "videos", "state"):
-        print(f"{'ok' if os.path.isdir(cfg[k]) else 'absent':8} {k} {cfg[k]}")
+        report("ok" if os.path.isdir(cfg[k]) else "absent", f"{k} {cfg[k]}")
     for p in cfg["projects"].values():
-        print(f"{'ok' if os.path.isdir(p['folder']) else 'absent':8} project {p['name']} {p['folder']}")
-    for t in SYSTEM_TOOLS:
-        have = shutil.which(t)
-        ok &= bool(have) or t == "gst-inspect-1.0"
-        print(f"{'ok' if have else 'MISSING':8} {t}")
-    try:
-        import zxingcpp  # noqa: F401
-        print("ok       python3-zxing-cpp")
-    except ImportError:
-        ok = False
-        print("MISSING  python3-zxing-cpp")
-    if shutil.which("tesseract"):
-        r = subprocess.run(["tesseract", "--list-langs"], capture_output=True, text=True)
-        have = "eng" in r.stdout.split()
-        ok &= have
-        print(f"{'ok' if have else 'MISSING':8} tesseract eng language data")
-    if shutil.which("gst-inspect-1.0"):
-        r = subprocess.run(["gst-inspect-1.0"], capture_output=True, text=True)
-        dec = "vah265dec" in r.stdout or "vulkanh265" in r.stdout
-        print(f"{'ok' if dec else 'optional':8} GStreamer HEVC decoder (vah265dec / vulkanh265dec)")
-    vp = venv_python()
-    print(f"{'ok' if os.path.exists(vp) else 'MISSING':8} venv {vp}" + ("" if os.path.exists(vp) else " (bash setup.sh)"))
-    ok &= os.path.exists(vp)
-    import label
-    have = os.path.exists(label.MODEL)
-    print(f"{'ok' if have else 'MISSING':8} SigLIP vision model" + ("" if have else " (bash setup.sh)"))
-    ok &= have
-    geo = os.path.join(cfg["state"], "geo", "cities1000.zip")
-    print(f"{'ok' if os.path.exists(geo) else 'MISSING':8} GeoNames data" + ("" if os.path.exists(geo) else " (bash setup.sh)"))
-    ok &= os.path.exists(geo)
-    if shutil.which("ollama"):
-        r = subprocess.run(["ollama", "--version"], capture_output=True, text=True)
-        print(f"optional {((r.stdout or r.stderr).strip().splitlines() or ['ollama, version unknown'])[-1]}")
+        report("ok" if os.path.isdir(p["folder"]) else "absent", f"project {p['name']} {p['folder']}")
+
+    for tool, package in SYSTEM_TOOLS.items():
+        if probe.which(tool):
+            report("ok", tool)
+        else:
+            missing(package, tool)
+    for module, package in SYSTEM_MODULES.items():
+        if probe.importable(module):
+            report("ok", package)
+        else:
+            missing(package, f"python module {module}")
+    if probe.which("tesseract"):
+        if "eng" in probe.output(["tesseract", "--list-langs"]).split():
+            report("ok", "tesseract eng language data")
+        else:
+            missing(TESSERACT_ENG, "tesseract eng language data")
+    if probe.which("gst-inspect-1.0"):
+        plugins = probe.output(["gst-inspect-1.0"])
+        if any(d in plugins for d in HEVC_DECODERS):
+            report("ok", "GStreamer HEVC decoder")
+        else:
+            missing(HEVC_PACKAGE, "GStreamer HEVC decoder (vah265dec / vulkanh265dec; most phone video)")
+    if probe.exists(MTP_BACKEND):
+        report("ok", "gvfs MTP backend")
     else:
-        print("optional ollama not installed (only vlm-trash needs it)")
+        missing(MTP_PACKAGE, "gvfs MTP backend (Android phones)")
+    if probe.which(XDG_OPEN):
+        report("ok", XDG_OPEN)
+    else:
+        missing(XDG_PACKAGE, f"{XDG_OPEN} (the gallery's Open in the system player button)")
+
+    vp = venv_python()
+    have = probe.exists(vp)
+    report("ok" if have else "MISSING", f"venv {vp}" + ("" if have else " (bash setup.sh)"))
+    ok &= have
+    ok &= _check_models(probe, report)
+    geo = os.path.join(cfg["state"], "geo", "cities1000.zip")
+    have = probe.exists(geo)
+    report("ok" if have else "MISSING", "GeoNames data" + ("" if have else " (bash setup.sh)"))
+    ok &= have
+    ok &= _check_ollama(probe, report)
+
+    if need:
+        out("Install what's missing:  sudo dnf install " + " ".join(dict.fromkeys(need)))
+    if want:
+        out("Optional:  sudo dnf install " + " ".join(dict.fromkeys(want)))
     return 0 if ok else 1
+
+
+def _check_models(probe, report):
+    """Each pinned SigLIP file against media_intake/pins.json. The vision encoder is required;
+    the text model and tokenizer (setup.sh --build-labels, semantic search) only when present.
+    A present file with the wrong sha256 always fails."""
+    import label, semantic
+    files = label.PINS["siglip"]["files"]
+    checks = [("SigLIP vision model", label.MODEL, files["onnx/vision_model_quantized.onnx"], True),
+              ("SigLIP text model", os.path.join(semantic.BUILD, "text_model.onnx"), files["onnx/text_model.onnx"], False),
+              ("SigLIP tokenizer", os.path.join(semantic.BUILD, "tokenizer.json"), files["tokenizer.json"], False)]
+    ok = True
+    for name, path, pinned, required in checks:
+        if not probe.exists(path):
+            ok &= not required
+            report("MISSING" if required else "optional",
+                   f"{name}" + (" (bash setup.sh)" if required else " not built (bash setup.sh --build-labels: semantic search)"))
+            continue
+        got = probe.sha256(path)
+        if got == pinned:
+            report("ok", f"{name} sha256:{_short(pinned)}")
+        else:
+            ok = False
+            report("BAD", f"{name} {path}: sha256 {_short(got)}, pinned {_short(pinned)} "
+                          "(bash setup.sh deletes it; run it again to fetch the pinned file)")
+    return ok
+
+
+def _check_ollama(probe, report):
+    """The pinned vision model in the local Ollama (127.0.0.1 only). Optional: absent Ollama,
+    stopped Ollama or a model not pulled is reported, not failed; a different digest fails."""
+    import label
+    model, pinned = label.PINS["ollama"]["model"], label.PINS["ollama"]["digest"]
+    if not probe.which("ollama"):
+        report("optional", "ollama not installed (only vlm-trash needs it; https://ollama.com/)")
+        return True
+    version = (probe.output(["ollama", "--version"]).strip().splitlines() or ["ollama, version unknown"])[-1]
+    report("ok", version)
+    try:
+        tags = probe.ollama_tags()
+    except (OSError, ValueError) as e:
+        report("optional", f"ollama not answering on 127.0.0.1 ({type(e).__name__}); can't check the {model} digest")
+        return True
+    for m in tags.get("models", []):
+        if m.get("name") == model or m.get("model") == model:
+            if m.get("digest") == pinned:
+                report("ok", f"ollama {model} digest {_short(pinned)}")
+                return True
+            report("BAD", f"ollama {model} digest {_short(m.get('digest'))}, pinned {_short(pinned)} "
+                          "(vlm-trash refuses it; see CONTRIBUTING.md, Pins)")
+            return False
+    report("optional", f"ollama {model} not pulled (ollama pull {model}; only vlm-trash needs it)")
+    return True
 
 
 def main(argv=None):

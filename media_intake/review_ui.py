@@ -10,24 +10,34 @@ to 127.0.0.1 on a random port, a random token on every request, a Host check
 against DNS rebinding, a CSRF value on every POST, no-store on every response.
 Media are served as-is from the quarantine/review files by an opaque id (an
 index into the list built at start-up), never by path; nothing is written to
-disk except batches/<batch>/review-decisions.json (0600).
+disk except batches/<batch>/review-decisions.json (0600) and the run's job
+files in <state>/jobs/ (jobs.py: dir 0700, files 0600). The run is an erase: its
+paths and decisions reach the worker on a pipe, and once it ends no file name is
+left in <state>/jobs/ (jobs.py redact).
 
 A near-duplicate is shown beside its original (display only, its own opaque id
 under /o/): the plan's `why` names it, and it is served only if it resolves to
 a file under the library roots or this batch's raw/ or review/. A near-copy of
-an erased photo (quarantine/near-<batch>) gets a note with the erase date; the
-erased file is never looked for. quarantine/xcheck-<batch> (quarantine-only: no
+an erased photo (any level of quarantine/near-<batch>, near-near-<batch>, ...,
+all reviewed on this one page) is shown beside the original its erased photo
+was a copy of when one survives in the library (`root_of`), else gets a note
+with the erase date; the erased file is never looked for. quarantine/xcheck-<batch> (quarantine-only: no
 plan or manifest) holds messaging copies of library photos; each entry's `of`
 is shown as the original, same roots check, and its erase gets no --phone.
 Every item can also be trashed (`intake.py trash`: plain delete for junk that
 isn't private, remembered so it never comes back). --maybe-trash adds a tab of
 library files `suggest-trash` listed (maybe-trash.json): Keep runs `not-trash`.
 
-On submit (every item decided, ERASE typed) it runs, as subprocesses of the
-same Python: deletions of review items, then for quarantine/near-<batch> and
-quarantine/<batch>: `release` for kept files, `erase --yes` for the rest,
-`verify-gone`. Their output is streamed to the page, then the server exits.
-An assistant may start this; only you open the page.
+On submit (every item decided, ERASE typed) it starts a detached job
+(jobs.py, key review-<batch>; one at a time per batch, taken with flock) that
+runs, as subprocesses of the same Python: deletions of review items, then for
+each near- level (deepest first), xcheck-<batch> and <batch>: `release` for kept files,
+`erase --yes` for the rest, `verify-gone`. Closing the page or stopping the
+server never stops it; the page polls the job's status and log, a restarted
+server (or a second one) shows it again, and a worker that died is reported as
+crashed. The server exits once the page has read the end. A page whose list is
+older than the batch's last run (another page's run finished since it loaded) is
+refused at submit. An assistant may start this; only you open the page.
 """
 import argparse, datetime, hashlib, html, http.server, json, mimetypes, os, re, secrets, shutil, struct
 import subprocess, sys, threading, time, urllib.parse
@@ -35,11 +45,10 @@ import subprocess, sys, threading, time, urllib.parse
 HERE = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, HERE)
 import config  # noqa: E402
+import jobs  # noqa: E402  (detached, re-attachable runs: <state>/jobs/)
 
 HOME = os.path.expanduser("~")
 STATE = config.get()["state"]
-# Tests point this at a fake that records its argv, so a real erase never runs there.
-INTAKE = os.environ.get("MEDIA_REVIEW_INTAKE", os.path.join(HERE, "intake.py"))
 BATCH_RE = re.compile(r"^[A-Za-z0-9_][A-Za-z0-9._-]*$")
 # What a browser can show; anything else (HEIC, DNG, GPR) gets a "no preview" card.
 SHOW_IMG = {".jpg": "image/jpeg", ".jpeg": "image/jpeg", ".png": "image/png", ".gif": "image/gif",
@@ -202,10 +211,19 @@ def attach_originals(batch, items):
     origs = []
     for it in items:
         it["orig"], it["meta"] = None, None
-        if it["qbatch"] == f"near-{batch}":
+        if (it["qbatch"] or "").startswith("near-"):  # any level of a near chain: near-, near-near-, ...
             v = load(os.path.join(STATE, "quarantine", it["qbatch"], "quarantine.json"), {}).get(it["rel"], {})
-            it["orig"] = dict(erased=True, date=v.get("erased_on"))
             it["meta"] = meta(it["path"], it["kind"])
+            date = v.get("erased_on") if isinstance(v.get("erased_on"), str) else None
+            root = v.get("root_of")  # the surviving original the erased photo was a copy of, if any
+            if isinstance(root, str) and os.path.isabs(root) and os.path.isfile(root) and original_allowed(batch, root):
+                k, mime = kind_of(root)
+                origs.append(dict(path=root, kind=k, mime=mime))
+                it["orig"] = dict(id=len(origs) - 1, kind=k, meta=meta(root, k),
+                                  label="Near-copy of a photo you erased" + (f" on {date}" if date else "")
+                                  + "; the original it was copied from is still in your library")
+            else:
+                it["orig"] = dict(erased=True, date=date)
             continue
         why = it["why"] or ""
         if it.get("of"):  # xcheck-<batch>: a messaging copy of a library photo
@@ -247,10 +265,30 @@ def attach_originals(batch, items):
     return origs
 
 
+def near_chain(root):
+    """The near-duplicate chain of quarantine/<root> on disk, deepest level first: near-near-<root>, near-<root>.
+    Erasing a level writes the next one down (intake.py near_dups, up to its NEAR_DEPTH), so the deepest goes first."""
+    try:
+        names = os.listdir(os.path.join(STATE, "quarantine"))
+    except FileNotFoundError:
+        return []
+    chain = []
+    for n in names:
+        b, k = n, 0
+        while b.startswith("near-"):
+            b, k = b[len("near-"):], k + 1
+        if k and b == root and os.path.isdir(os.path.join(STATE, "quarantine", n)):
+            chain.append((k, n))
+    return [n for _, n in sorted(chain, reverse=True)]
+
+
 def sub_batches(batch):
-    """Quarantine batches reviewed together, in run order: near-copies of erased photos first
-    (erasing the others can write a fresh near-<batch>), then messaging cross-check copies, then the batch."""
-    return (f"near-{batch}", f"xcheck-{batch}", batch)
+    """Quarantine batches reviewed together, in run order: every level of the near-copy chains first, deepest
+    first (erasing any batch can write a fresh near-<it>, so each level runs before the one that feeds it),
+    then messaging cross-check copies, then the batch. None (a maybe-trash-only page) has none."""
+    if not batch:
+        return []
+    return [*near_chain(batch), *near_chain(f"xcheck-{batch}"), f"xcheck-{batch}", batch]
 
 
 def collect(batch):
@@ -299,37 +337,28 @@ def collect_maybe():
     return items
 
 
-class App:
-    def __init__(self, batch, items, phone, drive, keep_phone_thumbnails=False, no_wipe_free=False, origs=()):
-        self.batch, self.items = batch, items
-        self.origs = list(origs)  # display-only originals, served by id under /o/
-        self.phone, self.drive = phone, drive
-        self.keep_phone_thumbnails, self.no_wipe_free = keep_phone_thumbnails, no_wipe_free
-        self.token = secrets.token_urlsafe(24)
-        self.csrf = secrets.token_urlsafe(24)
-        self.lock = threading.Lock()
-        self.submitted = False
-        self.lines, self.done, self.ok = [], False, None
-        self.done_seen = threading.Event()
-        self.finished = threading.Event()
-        self.port = None
+def job_key(batch):
+    """One job per batch (its quarantine, near- and xcheck- batches, review folder); one for maybe-trash alone."""
+    return f"review-{batch}" if batch else "maybe-trash"
 
-    # ------------------------------------------------------------ run
-    def log(self, s):
-        with self.lock:
-            self.lines.append(s)
-        print(s, flush=True)
+
+class Runner:
+    """Runs the decisions inside the detached job worker (jobs.py run -> run_job)."""
+
+    def __init__(self, job, spec):
+        self.job = job
+        self.batch = spec["batch"]
+        self.items = spec["items"]  # [{tab, qbatch, rel, path}], the server's list, same order
+        self.dec = {int(k): v for k, v in spec["decisions"].items()}
+        self.phone, self.drive = spec.get("phone"), spec.get("drive")
+        self.keep_phone_thumbnails, self.no_wipe_free = spec.get("keep_phone_thumbnails"), spec.get("no_wipe_free")
+
+    def log(self, s, safe=True):
+        """The runner's own lines: counts, batch names and its decisions file, never a file name (safe)."""
+        self.job.log(s, safe=safe)
 
     def run(self, args, label):
-        cmd = [sys.executable, "-I", "-u", INTAKE] + args
-        self.log(f"$ intake.py {' '.join(a if not a.startswith(STATE) else '<state>' + a[len(STATE):] for a in args)}")
-        p = subprocess.Popen(cmd, stdin=subprocess.DEVNULL, stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
-                             text=True, cwd=HERE)
-        for line in p.stdout:
-            self.log("  " + line.rstrip("\n"))
-        rc = p.wait()
-        self.log(f"  [{label}: exit {rc}]")
-        return rc
+        return self.job.run(args, label)  # a redact job: jobs.py renders the command line without paths
 
     def device_args(self, verify=False, phone=True):
         a = []
@@ -343,25 +372,24 @@ class App:
                 a.append("--no-wipe-free")
         return a
 
-    def execute(self, dec):
+    def execute(self):
         ok = True
         try:
-            ok = self._execute(dec)
+            ok = self._execute(self.dec)
         except Exception as e:  # report, never leave the page hanging
-            self.log(f"error: {type(e).__name__}: {e}")
+            self.log(f"error: {type(e).__name__}: {e}", safe=False)  # an OSError names its file
             ok = False
-        with self.lock:
-            self.done, self.ok = True, ok
         where = f"batches/{self.batch}/review-decisions.json" if self.batch else "maybe-trash-decisions.json"
         self.log("done: " + ("all steps succeeded" if ok else f"something failed, see above; decisions are in {where}"))
-        self.finished.set()
+        return ok
 
     def phone_args(self, qb=None):
         return ["--phone", self.phone] if self.phone and not (qb or "").startswith("xcheck-") else []
 
     def _execute(self, dec):
         ok = True
-        # 0. Maybe-trash suggestions: Keep marks them not-trash, Trash deletes.
+        # 0. Maybe-trash suggestions. Keep: `not-trash` (Owner|keep + Owner|not-trash, as the gallery's
+        # Keep). Trash: `trash` (sha256 into trashed.json, the durable Owner|trash; copies marked).
         mb = [(i, it) for i, it in enumerate(self.items) if it["tab"] == "maybe"]
         keep = [it["path"] for i, it in mb if dec[i] == "keep"]
         trash = [it["path"] for i, it in mb if dec[i] == "trash"]
@@ -393,7 +421,8 @@ class App:
                 self.log(f"review: deleted {n} of {len(gone)} files ({t} thumbnails)")
             if kept:
                 self.log(f"review: {len(kept)} kept items stay in review/ — no command to file them yet")
-        # 2. Quarantine: near-<batch> first (erasing <batch> can write a fresh near-<batch>).
+        # 2. Quarantine: the near chains deepest first, then xcheck-, then the batch (erasing a batch can
+        # write a fresh near-<it>, which then waits for the next review).
         for qb in sub_batches(self.batch):
             q_items = [(i, it) for i, it in enumerate(self.items) if it["tab"] == "quarantine" and it["qbatch"] == qb]
             if not q_items:
@@ -422,12 +451,75 @@ class App:
                 dev = self.device_args(phone=not qb.startswith("xcheck-"))
                 ok &= self.run(["erase", qb, "--yes"] + dev, f"erase {qb}") == 0
                 ok &= self.run(["verify-gone", qb] + self.device_args(verify=True), f"verify-gone {qb}") == 0
-        for qb, again in ((f"near-{self.batch}", self.batch), (f"near-near-{self.batch}", self.batch),
-                          (f"near-xcheck-{self.batch}", f"xcheck-{self.batch}")):
-            q = load(os.path.join(STATE, "quarantine", qb, "quarantine.json"), {})
+        # Near-copies this run's erases found (and any kept file that could not be released): one review of
+        # the batch shows every level of its chains.
+        for qb in sub_batches(self.batch):
+            q = load(os.path.join(STATE, "quarantine", qb, "quarantine.json"), {}) if qb.startswith("near-") else None
             if q:
-                self.log(f"{len(q)} near-duplicates now in quarantine/{qb}: run the review again for {again}")
+                self.log(f"{len(q)} near-duplicates now in quarantine/{qb}: review {self.batch} again to decide them")
         return ok
+
+
+
+def run_job(job):
+    """jobs.py's entry point for runner "review_ui"."""
+    return Runner(job, job.spec).execute()
+
+
+class App:
+    def __init__(self, batch, items, phone, drive, keep_phone_thumbnails=False, no_wipe_free=False, origs=()):
+        self.batch, self.items = batch, items
+        self.origs = list(origs)  # display-only originals, served by id under /o/
+        self.phone, self.drive = phone, drive
+        self.keep_phone_thumbnails, self.no_wipe_free = keep_phone_thumbnails, no_wipe_free
+        self.token = secrets.token_urlsafe(24)
+        self.csrf = secrets.token_urlsafe(24)
+        self.lock = threading.Lock()
+        self.key = job_key(batch)
+        self.job_id = None  # the job this server shows (started here, or found running)
+        self.tail = None  # its log, followed through an open descriptor (jobs.Tail)
+        self.ok = None
+        self.done_seen = threading.Event()
+        self.finished = threading.Event()
+        self.port = None
+        st = self.current()
+        # The batch's last run when this list was read. A run that ends after this (from another page) can
+        # change what is on disk, e.g. write a fresh near-<batch>, so this page may no longer submit.
+        self.loaded_id = st.get("id") if st else None
+
+    @property
+    def submitted(self):
+        return self.job_id is not None
+
+    # ------------------------------------------------------------ the job (jobs.py)
+    def current(self):
+        """The key's job status; a live job started elsewhere (another page or server) is adopted."""
+        st = jobs.status(self.key)
+        with self.lock:
+            if st and not st["done"] and self.job_id is None:
+                self._watch(st["id"])
+        return st
+
+    def _watch(self, jid, tail=None):
+        self.job_id = jid
+        self.tail = tail or jobs.Tail(self.key, jid)
+        threading.Thread(target=self._wait, args=(jid,), daemon=True).start()
+
+    def _wait(self, jid):
+        st = jobs.wait(self.key, jid)
+        self.ok = bool(st and st.get("id") == jid and st.get("ok"))
+        self.finished.set()
+
+    def progress(self, since):
+        st = jobs.status(self.key) if self.job_id else None
+        if not st or st.get("id") != self.job_id:
+            gone = self.job_id is not None
+            return dict(lines=[], next=since, done=gone, ok=None if not gone else False,
+                        job=jobs.public(st), replaced=gone)
+        ls, nxt = self.tail.lines(since, st["done"])  # after the status: a done job has written every line
+        if st["done"] and nxt <= since + len(ls):
+            self.done_seen.set()
+        return dict(lines=ls, next=nxt, done=st["done"], ok=st.get("ok"), job=jobs.public(st))
 
     # ------------------------------------------------------------ submit
     def submit(self, body):
@@ -447,10 +539,24 @@ class App:
             dec[i] = d
         if set(raw) - {str(i) for i in range(len(self.items))}:
             return 400, "unknown item"
+        if self.current() and self.submitted:
+            return 409, "already submitted"
         with self.lock:
             if self.submitted:
                 return 409, "already submitted"
-            self.submitted = True
+            try:
+                claim = jobs.claim(self.key)  # atomic: a second submit for this batch is refused here
+            except jobs.Busy as e:  # this batch's own job, or the library lock held by another writer
+                return 409, str(e)
+            with claim:
+                # Under the claim no run can start or end, so this is the last word on staleness.
+                st = jobs.status(self.key)
+                if (st.get("id") if st else None) != self.loaded_id:
+                    return 409, "a run finished since this page loaded; open the review again"
+                self._start(claim, dec)
+        return 202, "started"
+
+    def _start(self, claim, dec):
         bd = os.path.join(STATE, "batches", self.batch) if self.batch else STATE
         os.makedirs(bd, mode=0o700, exist_ok=True)
         rec = {"batch": self.batch, "submitted": f"{datetime.datetime.now():%Y-%m-%d %H:%M:%S}",
@@ -463,8 +569,14 @@ class App:
             else:
                 rec["review"][it["rel"]] = dec[i]
         write_private(os.path.join(bd, "review-decisions.json" if self.batch else "maybe-trash-decisions.json"), rec)
-        threading.Thread(target=self.execute, args=(dec,), daemon=True).start()
-        return 202, "started"
+        # Paths and decisions go to the worker on a pipe, never into <state>/jobs/ (the run erases).
+        private = dict(batch=self.batch, decisions={str(i): d for i, d in dec.items()},
+                       items=[dict(tab=it["tab"], qbatch=it["qbatch"], rel=it["rel"], path=it["path"])
+                              for it in self.items],
+                       phone=self.phone, drive=self.drive, keep_phone_thumbnails=self.keep_phone_thumbnails,
+                       no_wipe_free=self.no_wipe_free)
+        st = claim.spawn("review_ui", dict(batch=self.batch, items=len(self.items)), private=private, redact=True)
+        self._watch(st["id"], claim.tail)
 
     def public_items(self):
         return [dict(id=i, tab=it["tab"], batch=it["qbatch"] or self.batch, rel=it["rel"], reasons=it["reasons"],
@@ -552,17 +664,18 @@ class Handler(http.server.BaseHTTPRequestHandler):
             self.reply(200, PAGE.replace("__CSRF__", html.escape(app.csrf)), "text/html; charset=utf-8")
         elif path == "/api/items":
             dev = {"phone": app.phone, "drive": app.drive}
-            self.json(200, {"batch": app.batch, "items": app.public_items(), "devices": dev})
+            st = app.current()
+            self.json(200, {"batch": app.batch, "items": app.public_items(), "devices": dev,
+                            "job": jobs.public(st), "watching": app.submitted})
+        elif path == "/api/job":  # cheap check the page makes while you decide: did a run start elsewhere?
+            st = app.current()
+            self.json(200, {"job": jobs.public(st), "watching": app.submitted})
         elif path == "/api/progress":
             try:
                 since = max(0, int(q.get("since", ["0"])[0]))
             except ValueError:
                 since = 0
-            with app.lock:
-                lines, done, ok = app.lines[since:], app.done, app.ok
-            if done and since + len(lines) >= len(app.lines):
-                app.done_seen.set()
-            self.json(200, {"lines": lines, "next": since + len(lines), "done": done, "ok": ok})
+            self.json(200, app.progress(since))
         elif m := re.fullmatch(r"/m/([0-9]{1,9})", path):
             i = int(m.group(1))
             if i >= len(app.items) or app.submitted:
@@ -664,7 +777,7 @@ class Handler(http.server.BaseHTTPRequestHandler):
             self.json(400, {"error": "bad json"})
             return
         code, msg = app.submit(body)
-        self.json(code, {"result" if code == 202 else "error": msg})
+        self.json(code, {"result" if code == 202 else "error": msg, "watching": app.submitted})
 
 
 def serve(app, port=0):
@@ -701,26 +814,34 @@ def main(argv=None):
     for flag, v in (("--phone", a.phone), ("--drive", a.drive)):
         if v and not os.path.isdir(v):
             sys.exit(f"{flag} {v}: not a directory")
+    jobs.sweep()  # a run that died while no page watched: marked crashed, its output scrubbed
     items = collect(a.batch) if a.batch else []
     origs = attach_originals(a.batch, items) if a.batch else []
     if a.maybe_trash:
         items += collect_maybe()
-    if not items:
-        print(f"nothing to review for {a.batch or 'maybe-trash'}")
-        return 0
     app = App(a.batch, items, os.path.abspath(a.phone) if a.phone else None,
               os.path.abspath(a.drive) if a.drive else None, a.keep_phone_thumbnails, a.no_wipe_free, origs)
+    if not items and not app.submitted:  # a run still going is shown even when nothing is left to decide
+        print(f"nothing to review for {a.batch or 'maybe-trash'}")
+        return 0
     httpd, url = serve(app, a.port)
     nq = sum(it["tab"] == "quarantine" for it in items)
     print(f"xdg-open '{url}'", flush=True)
     nm = sum(it["tab"] == "maybe" for it in items)
-    print(f"({nq} quarantined, {len(items) - nq - nm} in review, {nm} maybe trash. A private browser window keeps it out of history. "
-          "Ctrl-C quits without changing anything.)", flush=True)
+    if app.submitted:
+        print(f"(a run for {a.batch or 'maybe-trash'} is still going; the page shows its progress. "
+              "A private browser window keeps it out of history. Ctrl-C stops only the page server.)", flush=True)
+    else:
+        print(f"({nq} quarantined, {len(items) - nq - nm} in review, {nm} maybe trash. A private browser window "
+              "keeps it out of history. Ctrl-C quits without changing anything.)", flush=True)
     try:
         httpd.serve_forever(poll_interval=0.2)
     except KeyboardInterrupt:
         if not app.submitted:
             print("stopped; nothing was changed")
+        elif not app.finished.is_set():
+            print(f"page server stopped; the run keeps going on its own (<state>/jobs/{app.key}.json). "
+                  "Run the same review command again to watch it.")
         return 130
     finally:
         httpd.server_close()
@@ -790,8 +911,9 @@ pre{white-space:pre-wrap;word-break:break-all;font-size:15px;background:var(--bg
   <input id="typed" autocomplete="off" spellcheck="false" aria-label="Type ERASE">
   <div><button id="go" disabled>Run</button><button id="back">Back</button></div>
  </section>
- <section id="run" class="panel"><h2 id="runh">Running…</h2><pre id="out"></pre></section>
+ <section id="run" class="panel"><h2 id="runh">Running…</h2><p id="runs" class="help"></p><pre id="out"></pre></section>
  <div id="lists">
+  <p class="note" id="last" hidden></p>
   <p class="help" id="helpq">K = keep (back to the library), E = erase everywhere, T = trash (plain delete for junk that isn't private). ← → or ↑ ↓ move between items.</p>
   <p class="help" id="helpr" hidden>K = keep, E or D = delete (near-duplicates and junk), T = trash (delete, and never take it in again). ← → or ↑ ↓ move between items.</p>
   <p class="help" id="helpm" hidden>Suggested junk from your library. K = keep (never suggested again), T = trash. Nothing is deleted until you submit. ← → or ↑ ↓ move between items.</p>
@@ -820,7 +942,7 @@ function render(){
  const its=itemsOf(tab);
  if(!its.length)L.append(el("p","help","Nothing here."));
  its.forEach((it,n)=>{
-  const c=el("div","card");c.id="c"+it.id;c.dataset.n=n;
+  const c=el("div","card");c.id="c"+it.id;c.dataset.n=n;c.dataset.item=it.rel;
   const m=mediaEl(it.kind,"/m/"+it.id,it.rel),o=it.orig;
   if(o&&o.label)c.append(el("div","note",o.label));
   if(o&&o.meta){const p=el("div","pair");
@@ -843,7 +965,7 @@ function render(){
 function paint(scroll){
  itemsOf(tab).forEach((it,n)=>{const c=$("#c"+it.id);if(!c)return;
   const d=dec[it.id],e=c.querySelector(".e");
-  c.classList.toggle("focus",n===cur[tab]);c.classList.toggle("keep",d==="keep");c.classList.toggle("erase",d==="erase"||d==="delete");c.classList.toggle("trash",d==="trash");
+  c.classList.toggle("focus",n===cur[tab]);c.setAttribute("aria-current",n===cur[tab]);c.classList.toggle("keep",d==="keep");c.classList.toggle("erase",d==="erase"||d==="delete");c.classList.toggle("trash",d==="trash");
   c.querySelector(".k").setAttribute("aria-pressed",d==="keep");if(e)e.setAttribute("aria-pressed",d==="erase"||d==="delete");c.querySelector(".t").setAttribute("aria-pressed",d==="trash");
   if(scroll&&n===cur[tab])c.scrollIntoView({block:"center",behavior:"smooth"});});
  const left=data.items.filter(i=>!dec[i.id]).length,und=t=>itemsOf(t).filter(i=>!dec[i.id]).length;
@@ -879,17 +1001,35 @@ $("#typed").oninput=()=>{$("#go").disabled=$("#typed").value!=="ERASE"};
 $("#go").onclick=async()=>{
  $("#go").disabled=true;const d={};data.items.forEach(i=>d[i.id]=dec[i.id]);
  const r=await fetch("/api/submit",{method:"POST",credentials:"same-origin",headers:{"Content-Type":"application/json","X-CSRF":CSRF},body:JSON.stringify({decisions:d,confirm:$("#typed").value})});
- if(r.status!==202){const j=await r.json().catch(()=>({}));alert("Refused: "+(j.error||r.status));$("#go").disabled=false;return}
- $("#confirm").style.display="none";$("#run").style.display="block";document.querySelectorAll("header button").forEach(b=>b.disabled=true);
- $("#list").replaceChildren();poll(0);
+ if(r.status!==202){const j=await r.json().catch(()=>({}));if(j.watching){attach();return}alert("Refused: "+(j.error||r.status));$("#go").disabled=false;return}
+ attach();
 };
+/* The run is a detached job (jobs.py): closing this tab or stopping the server never stops it, and any
+   page of this batch (a reload, a second tab, a restarted server) shows it from the status file. */
+let attached=false;
+function attach(){if(attached)return;attached=true;$("#confirm").style.display="none";$("#lists").hidden=true;$("#run").style.display="block";
+ document.querySelectorAll("header button").forEach(b=>b.disabled=true);$("#list").replaceChildren();$("#out").textContent="";poll(0)}
+function stepText(jb){return jb&&jb.step?`Step ${jb.step}${jb.total?" of "+jb.total:""}: ${jb.label}`:""}
 async function poll(since){
- let j;try{j=await (await fetch("/api/progress?since="+since,{credentials:"same-origin"})).json()}catch(e){$("#runh").textContent="Server stopped";return}
+ let j;try{j=await (await fetch("/api/progress?since="+since,{credentials:"same-origin"})).json()}
+ catch(e){$("#runh").textContent="Page server stopped";$("#runs").textContent="If the run had not finished it keeps going on its own; run the same review command again to watch it.";return}
  if(j.lines.length)$("#out").textContent+=j.lines.join("\n")+"\n";$("#out").scrollTop=1e9;
- if(j.done){$("#runh").textContent=j.ok?"Done. You can close this tab.":"Finished with problems (see below). You can close this tab.";return}
+ const jb=j.job||{};$("#run").dataset.job=!j.done?"running":j.replaced?"replaced":jb.state==="crashed"?"crashed":j.ok?"done":"failed";$("#runs").textContent=stepText(jb)+(jb.started?` (started ${jb.started})`:"");
+ if(j.done){
+  if(j.replaced)$("#runh").textContent="Another page started a newer run of this batch; open the review again to see it.";
+  else if(jb.state==="crashed"){$("#runh").textContent="The run stopped unexpectedly (crashed)";
+   $("#runs").textContent=`It died at ${stepText(jb)||"start-up"}. Nothing more will run by itself`+(jb.step_running?"; the step it had started is still running, so a new submit is refused until it ends.":". Open the review again: it shows what is left.")}
+  else $("#runh").textContent=j.ok?"Done. You can close this tab.":"Finished with problems (see below). You can close this tab.";return}
+ $("#runh").textContent="Running… (closing this tab does not stop it)";
  setTimeout(()=>poll(j.next),700);
 }
-fetch("/api/items",{credentials:"same-origin"}).then(r=>r.json()).then(j=>{data=j;tab=TABS.find(t=>itemsOf(t).length)||"quarantine";render()});
+function lastRun(jb){if(!jb||!jb.done)return;const L=$("#last");L.hidden=false;
+ L.textContent=`Last run of this batch (started ${jb.started}): `+(jb.state==="crashed"?`crashed at ${stepText(jb)||"start-up"}`+(jb.step_running?"; the step it started is still running, so submit is refused until it ends.":"."):jb.ok?"finished OK.":"finished with problems.")}
+fetch("/api/items",{credentials:"same-origin"}).then(r=>r.json()).then(j=>{data=j;tab=TABS.find(t=>itemsOf(t).length)||"quarantine";
+ if(j.watching){attach();document.body.dataset.ready="1";return}render();lastRun(j.job);document.body.dataset.ready="1";
+ /* a run started from another page or server of this batch: show it instead of stale items */
+ const watch=async()=>{if(attached)return;try{const k=await (await fetch("/api/job",{credentials:"same-origin"})).json();if(k.watching){attach();return}}catch(e){return}setTimeout(watch,4000)};
+ setTimeout(watch,4000)});
 </script></body></html>
 """
 

@@ -6,9 +6,13 @@
 Images are drawn with Pillow, videos are ffmpeg test patterns. Trash and Erase run
 the real intake.py (trash / forget) against the throwaway HOME only; nothing points
 at the real ~/.local/share/media-intake, ~/Pictures or ~/Videos. A toy plugin
-checks the gallery_views() seam (plugins.py).
+checks the gallery_views() seam (plugins.py). The job tests swap in a fake intake.py
+(MEDIA_REVIEW_INTAKE) whose trash waits on a FIFO the test opens, so a job is held
+mid-step without a sleep while servers are killed and restarted. The system-player action
+runs a fake xdg-open put first on PATH, which only records its arguments.
 """
-import hashlib, http.client, json, os, re, shutil, subprocess, sys, tempfile, time, unittest, urllib.parse
+import errno, hashlib, http.client, json, os, re, shutil, signal, stat, subprocess, sys, tempfile, time
+import unittest, urllib.parse
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import support  # noqa: E402,F401  (hermetic config)
@@ -64,15 +68,55 @@ def write_tags(p, hier, extra=()):
     subprocess.run(["exiftool", "-q", "-m", "-overwrite_original", *args, *extra, x], check=True)
 
 
+GATED = r'''
+import os, sys
+gate = os.environ["FAKE_GATE"]
+if os.path.exists(gate):
+    print("trash: waiting at the gate", flush=True)
+    with open(gate) as f:
+        f.read()
+    os.remove(gate)
+for p in sys.argv[2:]:
+    if os.path.isabs(p) and os.path.lexists(p):
+        os.remove(p)
+        print("trashed 1")
+'''
+
+
+def until(pred, what, timeout=60):
+    """Poll a real condition (the job API) until it holds."""
+    end = time.monotonic() + timeout
+    while time.monotonic() < end:
+        v = pred()
+        if v:
+            return v
+        time.sleep(0.05)
+    raise AssertionError(f"timed out waiting for {what}")
+
+
+FAKE_OPENER = r'''#!/usr/bin/env python3
+import json, os, sys
+with open(os.environ["FAKE_OPEN_LOG"] + ".tmp", "w") as f:
+    json.dump(sys.argv[1:], f)
+os.replace(os.environ["FAKE_OPEN_LOG"] + ".tmp", os.environ["FAKE_OPEN_LOG"])
+'''
+
+
 TOY_PLUGIN = """
 import os
 SECRET = os.path.join(os.environ["PHOTO_LIBRARY"], "2026/2026-11/secret.jpg")
+POSTS = []  # every body a toy post handler ran with: a handler refused at the lock never runs
+def post(rest, body):
+    POSTS.append(body)
+    return 200, dict(got=body)
 def gallery_views():
     return [dict(id="toy", title="Toy", script="window.mediaIntakeViews.toy={render(el,api){}};",
-                 get=lambda rest, q: (200, dict(rest=rest, **q)) if rest == "hello" else None,
-                 post=lambda rest, body: (200, dict(got=body)),
+                 get=lambda rest, q: (200, dict(rest=rest, **q)) if rest == "hello"
+                 else (200, dict(posts=len(POSTS))) if rest == "posts" else None,
+                 post=post,
                  media=lambda rest: dict(path="__CLIP__", mime="video/mp4") if rest == "clip"
-                 else dict(path=SECRET, mime="image/jpeg") if rest == "secret" else None)]
+                 else dict(path=SECRET, mime="image/jpeg") if rest == "secret" else None),
+            dict(id="ro", title="Read-only", post_read_only=True, post=post)]
 """
 
 
@@ -214,6 +258,11 @@ class GalleryTest(unittest.TestCase):
         self.assertEqual(r.status, 403)
         r, _ = s.req("GET", "/api/list", host=f"evil.example:{s.port}")
         self.assertEqual(r.status, 403)
+        for path in ("/api/facets", "/api/job", "/api/job?since=0", "/api/progress"):  # every API route
+            r, _ = s.req("GET", path, token=False)
+            self.assertEqual(r.status, 403, path)
+            r, _ = s.req("GET", path, token=False, headers={"X-Token": "wrong"})
+            self.assertEqual(r.status, 403, path)
         r, _ = s.req("GET", f"/?t={s.token}", token=False)
         self.assertEqual(r.status, 303)
         ck = r.getheader("Set-Cookie")
@@ -384,8 +433,25 @@ class GalleryTest(unittest.TestCase):
         j = self.wait_job(s)
         out = "\n".join(j["lines"])
         self.assertTrue(j["ok"], out)
-        self.assertIn("$ intake.py forget", out)
+        self.assertIn("$ intake.py forget [1 file] --yes", out)
         self.assertFalse(os.path.exists(self.b) or os.path.exists(tb))
+        # Once the erase ended, no name or path of what it erased is left in <state>/jobs/ (the erase log keeps
+        # only sha256 and size); the job keeps counts, its step label and ok.
+        jd = os.path.join(self.state, "jobs")
+        for f in os.listdir(jd):
+            with open(os.path.join(jd, f), "rb") as fh:
+                data = fh.read()
+            for n in ("b.jpg", self.b, self.lib, self.home):
+                self.assertNotIn(n.encode(), data, (f, n))
+        with open(os.path.join(jd, "gallery.json")) as f:
+            st = json.load(f)
+        self.assertEqual((st["state"], st["ok"], st["step"], st["total"]), ("done", True, 1, 1))
+        self.assertEqual((st["spec"]["label"], st["spec"]["count"], len(st["spec"]["files"])), ("erase", 1, 1))
+        # a server started now sees the scrubbed output only, but still the summary line
+        s2 = self.start()
+        j2 = s2.get("/api/job")
+        self.assertNotIn("b.jpg", json.dumps(j2))
+        self.assertEqual(j2["lines"][-1], "done: 1 of 1 gone from the library")
         with open(os.path.join(self.state, "erase-log.txt")) as f:
             self.assertIn(self.originals[self.b], f.read())
         os.remove(self.secret)  # the fixture's own erase-log entry (planted, not erased)
@@ -414,8 +480,89 @@ class GalleryTest(unittest.TestCase):
         self.assertFalse(os.path.exists(tk))
         self.assertTrue(os.path.exists(other))  # only those shas
 
+    def test_job_survives_restart_and_refuses_a_second_action(self):
+        fake, gate = os.path.join(self.tmp, "gated_intake.py"), os.path.join(self.tmp, "gate")
+        with open(fake, "w") as f:
+            f.write(GATED)
+        os.mkfifo(gate)
+        self.env.update(MEDIA_REVIEW_INTAKE=fake, FAKE_GATE=gate)
+        s1 = self.start()
+        ida, idb = self.id_of(s1, "a.jpg"), self.id_of(s1, "b.jpg")
+        code, j = s1.post("/api/trash", {"ids": [ida], "confirm": True})
+        self.assertEqual(code, 200, j)
+        until(lambda: any("waiting at the gate" in x for x in s1.get("/api/job")["lines"]), "the trash to start")
+        j = s1.get("/api/job")
+        self.assertEqual((j["done"], j["state"], j["ids"], j["step"], j["total"]), (False, "running", [ida], 1, 1))
+        self.assertNotIn("spec", j)
+        self.assertEqual(s1.req("GET", f"/t/{ida}")[0].status, 404)  # busy while it runs
+        code, j = s1.post("/api/erase", {"ids": [idb], "confirm": "ERASE"})
+        self.assertEqual(code, 409, j)  # one action at a time
+        jd = os.path.join(self.state, "jobs")
+        for f in ("gallery.json", "gallery.log", "gallery.lock"):
+            self.assertEqual(stat.S_IMODE(os.stat(os.path.join(jd, f)).st_mode), 0o600, f)
+        self.assertEqual(stat.S_IMODE(os.stat(jd).st_mode), 0o700)
+        # The server dies; a new one (and its page) picks the job up from the status file.
+        s1.p.send_signal(signal.SIGKILL)
+        s1.p.wait()
+        s2 = self.start()
+        self.assertIn("still running", s2.p.stdout.readline())
+        ida2, idb2 = self.id_of(s2, "a.jpg"), self.id_of(s2, "b.jpg")
+        j = s2.get("/api/job")
+        self.assertEqual((j["done"], j["ids"]), (False, [ida2]))
+        self.assertEqual(j["lines"][0], "$ intake.py trash 'a.jpg'")
+        self.assertEqual(s2.req("GET", f"/m/{ida2}")[0].status, 404)
+        code, j = s2.post("/api/trash", {"ids": [idb2], "confirm": True})
+        self.assertEqual(code, 409, j)
+        def w():
+            try:
+                fd = os.open(gate, os.O_WRONLY | os.O_NONBLOCK)
+            except OSError as e:
+                if e.errno == errno.ENXIO:
+                    return False
+                raise
+            os.write(fd, b"go")
+            os.close(fd)
+            return True
+        until(w, "the fake to wait at the gate")
+        j = self.wait_job(s2)
+        self.assertTrue(j["ok"], j)
+        self.assertEqual(j["lines"][-1], "done: 1 of 1 gone from the library")
+        self.assertFalse(os.path.exists(self.a))
+        self.assertNotIn("a.jpg", self.names(s2)[0])
+        self.assertEqual(s2.req("GET", f"/m/{ida2}")[0].status, 404)
+        # finished: the next action starts at once
+        code, j = s2.post("/api/trash", {"ids": [idb2], "confirm": True})
+        self.assertEqual(code, 200, j)
+        self.assertTrue(self.wait_job(s2)["ok"])
+        self.assertFalse(os.path.exists(self.b))
+
+    def test_crashed_job_is_reported(self):
+        fake, gate = os.path.join(self.tmp, "gated_intake.py"), os.path.join(self.tmp, "gate")
+        with open(fake, "w") as f:
+            f.write(GATED)
+        os.mkfifo(gate)
+        self.env.update(MEDIA_REVIEW_INTAKE=fake, FAKE_GATE=gate)
+        s = self.start()
+        ida = self.id_of(s, "a.jpg")
+        code, j = s.post("/api/trash", {"ids": [ida], "confirm": True})
+        self.assertEqual(code, 200, j)
+        until(lambda: any("waiting at the gate" in x for x in s.get("/api/job")["lines"]), "the trash to start")
+        with open(os.path.join(self.state, "jobs", "gallery.json")) as f:
+            os.kill(json.load(f)["pid"], signal.SIGKILL)
+        j = self.wait_job(s)
+        self.assertEqual((j["state"], j["ok"], j["step_running"]), ("crashed", False, True))
+        code, _ = s.post("/api/trash", {"ids": [self.id_of(s, "b.jpg")], "confirm": True})
+        self.assertEqual(code, 409)  # the step the dead worker started still holds the lock
+        self.assertEqual(s.req("GET", f"/t/{ida}")[0].status, 404)  # and its files stay busy meanwhile
+        fd = os.open(gate, os.O_WRONLY)  # the fake is waiting on it: this returns at once
+        os.write(fd, b"go")
+        os.close(fd)
+        until(lambda: not s.get("/api/job")["step_running"], "the orphaned step to end")
+        self.assertEqual(s.get("/api/job")["state"], "crashed")
+        self.assertNotIn("a.jpg", self.names(s)[0])  # the orphaned step did finish; the listing follows the disk
+
     # ------------------------------------------------------------ plugin views
-    def test_plugin_view(self):
+    def with_toy_plugin(self):
         pdir = os.path.join(self.tmp, "plugins")
         os.makedirs(pdir)
         with open(os.path.join(pdir, "toy_plugin.py"), "w") as f:
@@ -426,6 +573,9 @@ class GalleryTest(unittest.TestCase):
         with open(cfg, "w") as f:
             f.write(base + f'\n[plugins]\npaths = ["{pdir}"]\nmodules = ["toy_plugin"]\n')
         self.env["MEDIA_INTAKE_CONFIG"] = cfg
+
+    def test_plugin_view(self):
+        self.with_toy_plugin()
         s = self.start()
         r, page = s.req("GET", "/")
         self.assertEqual(r.status, 200)
@@ -443,12 +593,152 @@ class GalleryTest(unittest.TestCase):
         r, _ = s.req("GET", "/plugin/toy/hello", token=False)  # the gallery's guard runs first
         self.assertNotEqual(r.status, 200)
 
+    def test_plugin_post_takes_the_library_lock(self):
+        """A plugin POST runs under the library lock (as Keep does): 409 naming the holder while a job holds it,
+        unless the view declares post_read_only."""
+        self.with_toy_plugin()
+        fake, gate = os.path.join(self.tmp, "gated_intake.py"), os.path.join(self.tmp, "gate")
+        with open(fake, "w") as f:
+            f.write(GATED)
+        os.mkfifo(gate)
+        self.env.update(MEDIA_REVIEW_INTAKE=fake, FAKE_GATE=gate)
+        s = self.start()
+        code, j = s.post("/api/trash", {"ids": [self.id_of(s, "a.jpg")], "confirm": True})
+        self.assertEqual(code, 200, j)
+        until(lambda: any("waiting at the gate" in x for x in s.get("/api/job")["lines"]), "the trash to start")
+        code, j = s.post("/plugin/toy/write", {"a": 1})
+        self.assertEqual(code, 409, j)
+        self.assertIn("the library is busy: job gallery", j["error"])
+        self.assertEqual(s.get("/plugin/toy/posts"), {"posts": 0})  # the handler never ran
+        code, j = s.post("/plugin/ro/look", {"b": 2})  # declared read-only: not locked
+        self.assertEqual((code, j), (200, {"got": {"b": 2}}))
+        fd = os.open(gate, os.O_WRONLY)  # the fake is waiting on it: this returns at once
+        os.write(fd, b"go")
+        os.close(fd)
+        self.assertTrue(self.wait_job(s)["ok"])
+        code, j = s.post("/plugin/toy/write", {"a": 1})  # the job is over: the lock is free
+        self.assertEqual((code, j), (200, {"got": {"a": 1}}))
+        self.assertEqual(s.get("/plugin/toy/posts"), {"posts": 2})
+
+    # ------------------------------------------------------------ page layout and the sidebar's counts
+    def test_page_layout_and_facet_counts(self):
+        """Left sidebar (views, search, filters), bottom action bar, lightbox info pane; nothing external."""
+        s = self.start()
+        r, b = s.req("GET", "/")
+        self.assertEqual(r.status, 200)
+        for needle in (b'<aside id="sidebar"', b'<nav id="views"', b'id="filters"', b'id="q"', b'id="chips"',
+                       b'id="tsize"', b'id="actionbar" hidden', b'aria-label="Selection actions"', b'<aside id="info"',
+                       b'data-v="recent"', b'data-v="child"', b'data-v="untagged"', b'data-dialog="confirm"'):
+            self.assertIn(needle, b)
+        self.assertNotIn(b"://", b)  # no URL of any kind, so nothing loads from anywhere else
+        for bad in (b"<link", b"@import", b"url(", b"<iframe", b"@font-face"):
+            self.assertNotIn(bad, b)
+        self.assertEqual(re.findall(rb"<(?:script|img|video|source)[^>]*\bsrc=", b), [])
+        f = s.get("/api/facets")
+        c = f["counts"]
+        self.assertEqual(f["total"], 7)
+        self.assertEqual((c["kind:photo"], c["kind:video"]), (5, 2))
+        self.assertEqual(c["review:maybe-trash"], 3)
+        for k, flt in (("review:child-in-shot", dict(review="child-in-shot")),
+                       ("review:untagged", dict(review="untagged")),
+                       ("ai:trash", dict(ai="trash", aimin="0")), ("ai:none", dict(ai="none")),
+                       ("used:used", dict(used="used")), ("suggest", dict(view="suggest"))):
+            self.assertEqual(c.get(k, 0), len(self.names(s, **flt)[0]), k)  # each count is what its filter lists
+        self.assertEqual(c["used:used"] + c["used:unused"], f["total"])
+        # Recently added: every file in this fresh HOME was filed (its inode changed) just now
+        self.assertEqual(f["recent_days"], 30)
+        self.assertEqual(c["recent"], f["total"])
+        self.assertEqual(len(self.names(s, added=str(f["recent_days"]))[0]), f["total"])
+        for bad in ("0", "-3", "x", ""):  # not a positive day count: no filter
+            self.assertEqual(len(self.names(s, added=bad)[0]), f["total"], bad)
+
+    # ------------------------------------------------------------ the system player (xdg-open)
+    def test_open_in_system_player(self):
+        fdir = os.path.join(self.tmp, "fakebin")
+        os.makedirs(fdir)
+        opener = os.path.join(fdir, "xdg-open")
+        with open(opener, "w") as f:
+            f.write(FAKE_OPENER)
+        os.chmod(opener, 0o700)
+        log = os.path.join(self.tmp, "opened.json")
+        self.env.update(PATH=fdir + os.pathsep + self.env["PATH"], FAKE_OPEN_LOG=log)
+        s = self.start()
+        idv, idb, idk = self.id_of(s, "v.mp4"), self.id_of(s, "b.jpg"), self.id_of(s, "k.jpg")
+        # a POST from the page only: no token, no CSRF or another Origin never runs it
+        r, _ = s.req("POST", "/api/open", token=False, headers={"X-CSRF": s.csrf()}, body={"ids": [idv]})
+        self.assertEqual(r.status, 403)
+        r, _ = s.req("POST", "/api/open", body={"ids": [idv]})
+        self.assertEqual(r.status, 403)
+        r, _ = s.req("POST", "/api/open", headers={"X-CSRF": s.csrf(), "Origin": "http://evil.example"},
+                     body={"ids": [idv]})
+        self.assertEqual(r.status, 403)
+        for bad in ([], [idv, idb], [999], ["0"], [True], None, "0"):
+            code, _ = s.post("/api/open", {"ids": bad})
+            self.assertEqual(code, 400, bad)
+        self.assertFalse(os.path.exists(log))
+        code, j = s.post("/api/open", {"ids": [idv]})
+        self.assertEqual(code, 200, j)
+        def opened():
+            if not os.path.exists(log):
+                return None
+            with open(log) as f:
+                return json.load(f)
+        self.assertEqual(until(opened, "the fake opener to record its arguments"), [self.v])
+        os.remove(log)
+        # swapped for a symlink after the scan, or flagged since: refused like the media routes refuse it
+        os.remove(self.b)
+        os.symlink(os.path.join(self.tmp, "outside.jpg"), self.b)
+        code, _ = s.post("/api/open", {"ids": [idb]})
+        self.assertEqual(code, 400)
+        self.assertEqual(s.req("GET", f"/m/{idb}")[0].status, 404)
+        with open(os.path.join(self.state, "erase-log.txt"), "a") as f:
+            f.write(f"2026-11-02 10:00 b0 sha256:{sha(self.k)} size:{os.path.getsize(self.k)}\n")
+        code, _ = s.post("/api/open", {"ids": [idk]})
+        self.assertEqual(code, 400)
+        self.assertFalse(os.path.exists(log))
+
+    # ------------------------------------------------------------ a trash job's surviving copies
+    def test_trash_refreshes_copies_tags(self):
+        """trash marks other library copies Owner|trash; the gallery shows that without a restart."""
+        copy = os.path.join(self.lib, "2026/2026-08/a-copy.jpg")
+        os.makedirs(os.path.dirname(copy))
+        shutil.copyfile(self.a, copy)
+        h = sha(self.a)
+        with open(os.path.join(self.state, "index.json"), "w") as f:
+            json.dump({p: {"sha": h, "size": os.path.getsize(p)} for p in (self.a, copy)}, f)
+        s = self.start()
+        ida, idc = self.id_of(s, "a.jpg"), self.id_of(s, "a-copy.jpg")
+        self.assertNotIn("a-copy.jpg", self.names(s, view="suggest")[0])
+        code, j = s.post("/api/trash", {"ids": [ida], "confirm": True})
+        self.assertEqual(code, 200, j)
+        j = self.wait_job(s)
+        self.assertTrue(j["ok"], j)
+        self.assertIn("Owner|trash", tags_of(copy)[0])  # what intake wrote
+        names, lst = self.names(s, view="suggest")
+        self.assertIn("a-copy.jpg", names)
+        self.assertIn("trashed copy", next(i for i in lst["items"] if i["id"] == idc)["f"])
+        self.assertIn("Owner|trash", s.get(f"/api/item/{idc}")["tags"])
+        self.assertEqual(s.get("/api/facets")["counts"]["suggest"], len(names))
+
     # ------------------------------------------------------------ close
     def test_close_button(self):
         s = self.start()
         code, _ = s.post("/api/close", {})
         self.assertEqual(code, 200)
         self.assertEqual(s.p.wait(timeout=10), 0)
+
+
+class AddedFilterTest(unittest.TestCase):
+    """The "added in the last N days" filter on items whose inode changed long ago (no test can set a ctime)."""
+
+    def test_added_days(self):
+        import gallery
+        app = gallery.App([])
+        old = dict(gone=False, tags=[], media="photo", date="2026-01-01 00:00", ctime=time.time() - 40 * 86400)
+        new = dict(old, ctime=time.time() - 86400)
+        for it, f, want in ((old, {"added": "30"}, False), (new, {"added": "30"}, True), (old, {"added": "41"}, True),
+                            (old, {"added": "0"}, True), (old, {"added": "x"}, True), (old, {}, True)):
+            self.assertEqual(app.matches(it, f), want, (it["ctime"], f))
 
 
 if __name__ == "__main__":

@@ -1,0 +1,18 @@
+{
+  "_comment": "The one place model pins live: setup.sh, label.py, semantic.py, vlm_trash.py and `media-intake doctor` read them. Regenerate with scripts/update-pins.py (7-day minimum age); don't hand-edit. CONTRIBUTING.md, Pins.",
+  "siglip": {
+    "repo": "Xenova/siglip-base-patch16-224",
+    "revision": "4649052661e53c7000355844105f8a1792088239",
+    "revision_date": "2025-07-08",
+    "files": {
+      "onnx/vision_model_quantized.onnx": "ef14a954f3d57e1806666432bd9785004c1dc27100aa260eee0cb0f10a5de058",
+      "onnx/text_model.onnx": "3aa7fdbd20eaa8740cce17bf82913de641fcb632a768fed59f661cdcd0c32553",
+      "tokenizer.json": "4a17c975210be5ab4c36b47d8dae4eefb866dbfb1e676e394aad85dc30a3ae08"
+    }
+  },
+  "ollama": {
+    "model": "qwen3-vl:2b",
+    "digest": "0635d9d857d497aeadba3d7d27485746c50554446f9f6ec01ef39788221adbe8",
+    "candidate": null
+  }
+}

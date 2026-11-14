@@ -262,7 +262,7 @@ class VlmTrash(unittest.TestCase):
         p = img(os.path.join(self.lib, "2026", "a.jpg"))
         before = sha(p)
         others = ["Review|maybe-trash", "Review|child-in-shot", "Label|runner", "Place|Riverton, Eastland, US",
-                  "AI|vlm/llava-13b/trash/dark", "AI|other-tool/x"]
+                  "AI|vlm/llava-13b/trash/dark", "AI|other-tool/x", "pasta", "Event|x"]  # incl. your own keyword
         for t in others:
             add_tag(p, t)
         subprocess.run(["exiftool", "-q", "-overwrite_original", "-XMP-dc:Subject+=runner", p + ".xmp"], check=True)
@@ -291,8 +291,9 @@ class VlmTrash(unittest.TestCase):
                 subprocess.run(["exiftool", "-q", "-overwrite_original", "-XMP-digiKam:PickLabel=1", p + ".xmp"],
                                check=True)
             decided.append(p)
-        # candidate scan never lists Owner|not-trash / Review|not-trash files; --all and explicit lists see all 5
-        for mode, n in (((), 3), (("--all",), 5), (tuple(decided), 5)):
+        # candidate scan never lists kept files (Owner|not-trash, Owner|keep, legacy Review|not-trash: owner.kept);
+        # --all and explicit lists see all 5, and every one is owner-decided (never sent)
+        for mode, n in (((), 2), (("--all",), 5), (tuple(decided), 5)):
             code, c, _ = self.run_v(*mode)
             self.assertEqual((code, c["owner-decided"], c["todo"]), (0, n, 0), mode)
         self.assertEqual(self.gens(), [])

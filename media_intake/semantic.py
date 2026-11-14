@@ -22,13 +22,15 @@ there read-only, sha256-checked; without it only `similar` works.
 similar: nearest neighbours of FILE by cosine (FILE is embedded on the fly if new).
 Filters read the XMP sidecars: --project P (Project|P), --unused-since Nd (no
 Used|<YYYY-MM-DD-slug> in the last N days, like intake.py find), --clean (no
-Review|child-in-shot, Review|maybe-trash, AI|vlm/*/trash/*).
+Review|child-in-shot, no Owner|trash, and no Review|maybe-trash or AI|vlm/*/trash/*
+unless you kept the file: owner.kept, so Owner|not-trash outranks a trash flag).
 """
 import argparse, datetime, json, os, re, shutil, string, subprocess, sys, tempfile, time
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, HERE)
 import label  # noqa: E402  (read-only: encoder path/sha, preprocessing, refusals)
+import owner  # noqa: E402  (owner decisions outrank AI trash flags)
 
 HOME = os.path.expanduser("~")
 STATE = label.STATE
@@ -37,8 +39,8 @@ ROOTS = config.library_roots()
 IMG, VID = label.IMG, label.VID
 STORE = os.path.join(STATE, "embeddings.npz")
 BUILD = os.environ.get("MEDIA_INTAKE_BUILD", f"{HOME}/.cache/media-intake-build")
-TEXT_SHA = "3aa7fdbd20eaa8740cce17bf82913de641fcb632a768fed59f661cdcd0c32553"  # setup.sh pin
-TOK_SHA = "4a17c975210be5ab4c36b47d8dae4eefb866dbfb1e676e394aad85dc30a3ae08"
+TEXT_SHA = label.PINS["siglip"]["files"]["onnx/text_model.onnx"]  # media_intake/pins.json
+TOK_SHA = label.PINS["siglip"]["files"]["tokenizer.json"]
 MAX_LEN, PAD = 64, 1   # as build_label_embeddings.py
 VIDEO_FRAMES = 8
 POST_SLUG = re.compile(r"^(\d{4}-\d\d-\d\d)-[a-z0-9][a-z0-9-]*$")
@@ -219,8 +221,8 @@ def passes(tags, a, cutoff):
             m = POST_SLUG.match(t[5:]) if t.startswith("Used|") else None
             if m and datetime.date.fromisoformat(m.group(1)) >= cutoff:
                 return False
-    if a.clean and any(t in ("Review|child-in-shot", "Review|maybe-trash")
-                       or re.match(r"AI\|vlm/[^/]+/trash/", t) for t in tags):
+    if a.clean and ("Review|child-in-shot" in tags or owner.trashed(tags) or not owner.kept(tags) and any(
+            t == "Review|maybe-trash" or re.match(r"AI\|vlm/[^/]+/trash/", t) for t in tags)):
         return False
     return True
 

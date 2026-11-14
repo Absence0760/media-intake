@@ -13,13 +13,14 @@ default; all of them come from `~/.config/media-intake/config.toml`
   swimwear, screenshots of forms).
 - **Library by date, events optionally by project.** Photos go to
   `~/Pictures/library/<YYYY>/<YYYY-MM>/`, videos (GoPro included) to
-  `~/Videos/personal/<YYYY>/<YYYY-MM>/`, screenshots to
+  `~/Videos/personal/<YYYY>/<YYYY-MM>/` (a dedicated camera's files in a
+  `<device id>/` folder there, see "Devices" below), screenshots to
   `~/Pictures/library/Screenshots/<YYYY>/`, screen recordings to
   `~/Videos/personal/Screen recordings/<YYYY>/`, messaging-app media to
   `~/Pictures/library/Messaging/<app>/<YYYY>/`. An event routed to a configured
   project goes to `<project folder>/<date>-<slug>/{phone,gopro}/` (see
   "Events" below). Original file names are kept: GoPro chapters (`GX01xxxx`,
-  `GX02xxxx`) only line up by name.
+  `GX02xxxx`) only line up by name, and are dated by their first chapter.
 - **Only camera folders are read on a device** (`DCIM/`, `Pictures/`, media
   extensions only; `media_intake/sources.py` and `tests/test_sources.py`).
   App data (`Android/`), downloads, documents and anything named like a
@@ -44,8 +45,8 @@ default; all of them come from `~/.config/media-intake/config.toml`
 ## Commands
 
 ```
-media-intake stage SRC_ROOT --kind phone|gopro|drive --batch NAME [--only LISTFILE]
-media-intake plan BATCH [--event [PROJECT/]SLUG@YYYY-MM-DD ...]
+media-intake stage SRC_ROOT --kind phone|gopro|drive [--batch NAME] [--only LISTFILE]
+media-intake plan BATCH [--event [PROJECT/]SLUG@YYYY-MM-DD ...] [--clock-offset DEVICE=±Nh ...]
 media-intake scan BATCH                 # local detectors; labels only
 media-intake apply BATCH                # moves files; prints a summary
 media-intake quarantine BATCH           # counts + the folder to open
@@ -60,6 +61,7 @@ media-intake trash [BATCH] FILE... [--phone ROOT]
 media-intake trash --from-digikam [--yes]
 media-intake suggest-trash [--batch B] [--phone ROOT]
 media-intake not-trash FILE...
+media-intake migrate-tags [--dry-run]
 media-intake share-copy FILE... --out DIR     # alias: social-copy
 media-intake tag BATCH [--no-labels]
 media-intake tag-files FILE... [--event SLUG] [--no-labels]
@@ -72,16 +74,201 @@ media-intake gallery [--drive MOUNT]
 `media-intake review BATCH` ([review-ui.md](review-ui.md)), the web gallery
 [gallery.md](gallery.md), the external-drive queue [queue.md](queue.md),
 semantic search and the VLM trash check [search.md](search.md). `media-intake
-doctor` checks system packages, the venv, models and the config.
+doctor` checks system packages (and prints the `sudo dnf install` line for
+what's missing), the venv, the model files' sha256 and the local Ollama
+model's digest against `media_intake/pins.json`, and the config.
 
 A typical phone batch: `stage` the phone's storage root, `plan` (add
 `--event` for a shoot), `scan`, `apply`, open the review page, `tag`, then,
 once the library is backed up, `offload` to free the phone.
 
+### One writer at a time: the library lock
+
+Anything that moves, deletes or rewrites library files, sidecars or
+`index.json` holds one lock per library first, so a gallery Erase, a review
+run and a CLI `apply` never interleave (`media_intake/library_lock.py`):
+
+- **The lock:** an `flock` on `<state>/locks/library-<id>.lock` (folder 0700,
+  file 0600), `<id>` from the sha256 of the library root's real path. It dies
+  with its holder, so a crashed or killed process never leaves the library
+  locked. The file notes who holds it (a command or job key and a PID, never a
+  file name).
+- **CLI:** `intake.py main()` takes it for every subcommand in
+  `intake.LOCKED` (stage, plan, scan, apply, release, erase, forget, offload,
+  purge-review, trash, not-trash, suggest-trash, tag, tag-files, mark-used,
+  migrate-tags).
+  The read-only ones in `intake.READ_ONLY` (quarantine, verify-gone, wipe-free,
+  share-copy, find, gallery) never do; a new subcommand counts as locked until
+  it is listed there, and `tests/test_library_lock.py` fails on one in neither.
+  `vlm-trash` takes it around each batch of verdicts it writes.
+- **Jobs** (the review page's run, the gallery's Trash and Erase) take it with
+  their job lock at submit and hold it until their last step is over; each
+  `intake.py` step inherits it from the worker (descriptor plus
+  `MEDIA_INTAKE_LIBRARY_LOCK_FD`) and checks it really is this library's lock,
+  already held through that descriptor, so a step never waits on its own job
+  and an unrelated process can't set the variable to skip the lock. A review
+  run and a gallery job lock each other out, whatever their batch.
+- **The gallery's own writes** (Keep, my tags, Rotate) take it per request.
+- **When it is busy:** the one refused is told who holds it ("job gallery
+  (PID 4242)", "intake.py apply (PID 77)", and when a job's worker has died
+  while its step still runs, that too). The CLI waits up to
+  `MEDIA_INTAKE_LOCK_WAIT` seconds (default 10, `0` refuses at once), printing
+  that it waits, then exits 75 (try again later); 10 s covers a gallery Keep,
+  and a job can run for an hour, so waiting longer is opt-in. The pages never
+  wait: Submit, Trash, Erase, Keep, a tag or Rotate get 409 with the holder.
+
 `share-copy` writes copies with no GPS or metadata, for sending or posting:
 exiftool `-all=` for images (orientation and ICC profile kept), an ffmpeg
 stream copy without data streams or metadata for videos. exiftool cannot write
 GoPro GPMF tags, so the GPS track is removed by dropping the stream.
+
+## Dates
+
+Each file's date picks its library folder and goes into its sidecar
+(`XMP-exif:DateTimeOriginal`, with the UTC offset when it is known). The rules
+live in `media_intake/dates.py`, tests in `tests/test_dates.py`. Sources, in
+order (`date_src` in `plan.json`; `plan` prints a count per source):
+
+| Source | From |
+|---|---|
+| `exif` | `DateTimeOriginal`, else EXIF `CreateDate`, else `ModifyDate`; local time, with `OffsetTimeOriginal` (else `OffsetTime`) as its offset |
+| `video` | Apple's `Keys:CreationDate` (local time with its own offset), else QuickTime `CreateDate` / ffprobe `creation_time`, which is UTC: converted to local time with `OffsetTimeOriginal` when the file has one, else this machine's time zone for that date |
+| `gps` | `GPSDateTime` (EXIF, or a GoPro's GPMF track read with `exiftool -ee`; the start of the locked run, below), else `GPSDateStamp` alone (noon UTC of that day). UTC, converted like `video` |
+| `filename` | a date in the name (`20261108_071502`, `2026-11-08 07.15.02`, `20261108`) |
+| `folder` | an iPhone export's `DCIM/YYYYMM__/` folder: the 1st of that month (day unknown, so `--event` days don't match it) |
+| `mtime` | the file's modification time, last resort |
+| `offset` | any of the above except `gps`, shifted by `--clock-offset`; `date_from` keeps which |
+
+A camera date (`exif`, `video`) is used unless it is **impossible** or **GPS
+overrules it**; then the GPS date wins, and only without one do `filename`,
+`folder` and `mtime` get a turn.
+
+- **Impossible**: before 2000-01-02 (the QuickTime 1904, Unix 1970 and DOS
+  1980 epochs, and the 2000-01-01 many cameras reset to), or more than a day
+  in the future. Applies to every source. The clock was never set, so a GPS
+  date replaces it without a flag.
+- **Contradicted by GPS**: the file has a GPS date and the camera date is more
+  than a day away from it once time zones are allowed for: 24 h between the
+  two instants when the camera's offset is known, else 24 h + 14 h (the widest
+  UTC offset), plus 12 h for a date-only GPS stamp. Smaller errors (a wrong
+  time zone, DST) are left to `--clock-offset`.
+
+A contradiction alone doesn't prove the camera wrong: a GPS stamp is the time
+of the receiver's *last fix*, and a phone's can be days old. So GPS replaces a
+contradicted camera date only when:
+
+- the camera date is a **clock-reset default** (2015-12-31 or 2016-01-01, a
+  GoPro with an unset clock) and no `--clock-offset` applies: the clock was
+  never set, so the GPS date is used without a flag; or
+- **nothing backs the camera date**: the file name carries no date agreeing
+  with it (within 14 h, so a name in UTC agrees; a date-only name agrees over
+  its whole day) and the camera recorded no UTC offset (`OffsetTimeOriginal`
+  / `OffsetTime`, or Apple's `CreationDate` offset; QuickTime's UTC
+  `CreateDate` doesn't count). A camera that records its offset has a
+  network-synced clock. The GPS date is used and the file is **flagged**.
+
+Otherwise the camera date is kept and `date_note` says GPS disagreed: not
+flagged when the file name agrees (two sources against one), flagged when only
+the recorded offset backed it (a camera can record the offset of a clock set
+by hand).
+
+A camera date on a clock-reset default with no GPS date to check it is kept
+but flagged, as is a file where nothing was plausible (it falls back to
+`mtime`). Flagged files have `date_suspect` set in `plan.json`. `plan` lists
+the files whose camera date GPS replaced, the files `--clock-offset` shifted
+and the files to check (first five names each); `date_note` says why.
+
+A GoPro video's GPMF track holds many GPS samples, and those before the
+receiver locks can carry a stale time, so the earliest sample is the one most
+likely to be wrong. The date is the first sample of the unbroken run (no gap
+over 10 minutes) that holds the median sample: the locked run covers nearly
+all of a clip, so the median falls inside it, and its first sample is the
+start of recording. A plain median would land mid-clip.
+
+**`--clock-offset DEVICE=±Nh`** (repeatable) is for a camera whose clock was
+simply wrong: it shifts every date read from that device's own clock (never a
+GPS date) by N hours (a sign is required; decimals up to two places, e.g.
+`-1.5h`; non-zero; at most 30 years). `DEVICE` is the file's EXIF/QuickTime
+`Make`, `Model` or `Make Model`, case-insensitive (`GoPro`, `'HERO11 Black'`),
+its device id ("Devices" below, e.g. `gopro-hero11-black-3fa9c2`, which
+tells two cameras of one model apart), or `all` for every file in the batch.
+Bad syntax exits 2; the same device twice, `all` with another device, two offsets matching one file, or a device
+no file in the batch has, stop `plan` before it writes anything (the message
+lists the devices seen, with their ids). Corrected dates go to the XMP sidecar only: the
+original keeps its own EXIF and its sha256. `tag-files` keeps a
+`DateTimeOriginal` already in a sidecar (it may be a correction from the
+plan) and only fills in a missing one; to recompute it, clear it first
+(`exiftool -XMP-exif:DateTimeOriginal= FILE.xmp`).
+
+Without exiftool, Pillow (images) and ffprobe (videos) read the same tags,
+except a GoPro video's GPMF GPS time and any serial number: ffprobe can't
+read a video's serial, so neither fallback reads one, and a camera's photos
+and videos get the same Make/Model device id (Devices, below).
+
+### GoPro chapters
+
+A GoPro splits a long recording into chapter files of one recording number:
+HERO6 and later `GHccnnnn.MP4` (H.264) or `GXccnnnn.MP4` (HEVC), chapter
+`cc` from `01`; HERO5 and earlier `GOPRnnnn.MP4`, then `GP01nnnn.MP4`,
+`GP02nnnn.MP4`, ... Every later chapter takes the date (and so the folder
+and the `--event` day) of the first chapter of its recording in the batch:
+same folder, same device, same family (`GH`, `GX`, or `GOPR`/`GP`), same
+number. A recording that crosses midnight, an hour or a month stays
+together. `chapter_of` in `plan.json` names the first chapter, `date_note`
+says so, and `plan` lists them. Names are matched exactly as the camera
+writes them (upper case, `.MP4`): chapter `00`, a lower-case copy, other
+digit counts, `.LRV`/`.THM` previews, `.360` files and look-alikes such as
+`DJI_0042.MP4` or `MVI_0042.MP4` are not chapters (`tests/test_devices.py`).
+When the first chapter isn't in the batch, the lowest one present dates the
+rest.
+
+### Devices
+
+Each file's device comes from its EXIF/QuickTime `Make`, `Model` and serial
+number (`media_intake/devices.py`): the **device id** is the slug of "Make
+Model" (`gopro-hero11-black`, `google-pixel-8`), plus a short pseudonym of
+the serial when the file records one (`gopro-hero11-black-3fa9c2`).
+
+- **Tag**: `tag` and `tag-files` add `Source|<model>` (`Source|HERO11
+  Black`, `Source|Pixel 8`) beside `Source|gopro` / `phone camera`.
+- **Folders**: a dedicated camera's files (`--kind gopro`, or a GoPro file
+  name from any source) go to a `<device id>/` folder inside their month
+  (`~/Videos/personal/2026/2026-11/gopro-hero11-black-3fa9c2/GX010042.MP4`)
+  or inside a project event's `gopro/`. Camera file numbers repeat, so two
+  GoPros' `GX010042.MP4` land in two folders, never as `GX010042_1.MP4`.
+  Phone files keep the plain month folder: their names carry a timestamp.
+  Two cameras of one model that record no serial can't be told apart and
+  share a folder (the second file still gets `_1`), as do files with no
+  `Make`/`Model`.
+- **Batches**: `stage` without `--batch` names the batch
+  `<device id>-<YYYYMMDD>` (today) from the most common device among the
+  first 200 files (read only), or `<kind>-<YYYYMMDD>` when none has a
+  device. Re-staging the same root resumes that batch; another root gets
+  `-2`, `-3`, ... `plan` prints the devices it saw.
+- **`--clock-offset`** takes the device id as `DEVICE` (above).
+
+**Serial numbers are personal identifiers** (they tie a file to one
+owner's camera; vendors register them to a name), so no raw serial is ever
+written to a folder or batch name, a tag, `plan.json`, the manifest or any
+output: `read_meta` drops it from the row as soon as the id is made. The
+pseudonym is the first 6 hex digits of HMAC-SHA256 over make, model and
+serial, keyed with a random 32-byte salt made on first use at
+`<state>/device-salt` (0600, in the 0700 state folder; never in the library
+or a backup of it). Without the salt nobody can check a guessed serial
+against a folder name, which an unsalted hash of a short serial would allow.
+An owner-chosen alias in the config was the alternative; the hash needs no
+setup and still separates cameras. Keep the salt with the rest of the state
+folder: a new salt gives every camera a new id (new folders from then on;
+filed files don't move). A corrupt salt file stops `plan` and `stage`
+instead of being replaced. On a filesystem without hard links the salt is
+made with an exclusive create instead of a link (never replacing another
+run's salt). Serials are read from EXIF `SerialNumber`
+(`BodySerialNumber`), `InternalSerialNumber` and GoPro's
+`CameraSerialNumber`, through exiftool only; blank, all-zero and "Unknown"
+values count as none. Without exiftool no serial is read at all, from
+photos or videos (Pillow could read a photo's, ffprobe never a video's, and
+one camera must not get two ids), so ids are Make/Model only and two
+cameras of one model share a folder, as above.
 
 ## Duplicates
 
@@ -99,6 +286,18 @@ GoPro GPMF tags, so the GPS track is removed by dropping the stream.
 - Images under 200 px and empty files go to review as junk.
 - `index.json` in the state folder keeps sha256 and dHash of everything in
   the library, so later batches are checked against it.
+- **A move never replaces a file** (`intake.free_path`). `release` puts a
+  file back at its old place only while that place and its sidecar are free.
+  If another file was filed there since (erase moved `2026-08/IMG_1.jpg` to
+  `near-<batch>`, a later apply filed a different `IMG_1.jpg` there), the
+  released file goes to the first free `IMG_1_<n>.jpg` beside it, with its
+  own sidecar and `index.json` entry, and `release` prints where it went;
+  the file already there keeps its content, sidecar and index entry. `apply`
+  does the same for a planned place filled after `plan` (and rewrites
+  `plan.json`, so `tag` and `offload` find the file), and leaves a flagged
+  file in `raw/` (counted) when its quarantine place is taken. Near-copies
+  moved into quarantine, and `forget`, never land on an existing file or
+  sidecar either.
 
 ## Trash vs erase
 
@@ -143,11 +342,28 @@ back from another device or a backup. Anything private goes through `erase`
   `verify-gone [BATCH]` repeats the sweep read-only and exits 1 if anything is
   left (including orphaned sidecars and gallery thumbnails). `erase` runs it
   last.
+- **Progress while it searches.** The HOME sweep, the drive sweep, the
+  near-duplicate search and verify-gone can take minutes on a big HOME, so
+  each prints a start line (what it searches, how many erased items), then a
+  line every 10,000 files or every 2 s, whichever comes first (`home sweep:
+  12,000 files checked, 0 copies so far`), then its summary. Counts only,
+  never a file name. stdout is line-buffered (and jobs run `python3 -u`), so
+  a gallery Erase or `forget` streams these to its job log as they happen.
+  `MEDIA_INTAKE_PROGRESS_EVERY` / `MEDIA_INTAKE_PROGRESS_SECS` change the
+  two intervals (the tests set a count and `inf` seconds).
 - **Near-duplicates** (a messaging-app recompress, a resized edit) don't match
   by checksum. `erase` takes the dHash of each erased image before deleting it
   and moves any image within 4 bits and with the same orientation to
   `quarantine/near-<batch>`, never deleting it: you look, `release` false
-  matches and erase the rest. It looks only in the media library (library,
+  matches and erase the rest (`media-intake review <batch>` shows every
+  level). Each record keeps the matched image's sha256, the erase date and,
+  when the erased image was a copy of a surviving library original (an xcheck
+  `of`), that original as `root_of`, never the erased file's path. Erasing a
+  near batch can find near-copies again (`near-near-<batch>`); the chain stops
+  at depth 3 (`NEAR_DEPTH`, 12 dHash bits from the first erased photo), past
+  which matches stay where they are and erase prints the count. An existing
+  level is added to, never replaced, and `of`/`root_of` originals are never
+  moved. It looks only in the media library (library,
   videos and project folders, plus batches' `raw/` and `review/`), never in
   caches, app icons, map tiles or git repos, which hold look-alikes that
   aren't your photos. Images under 200 px and featureless hashes are ignored.
@@ -185,8 +401,46 @@ back from another device or a backup. Anything private goes through `erase`
   spare blocks, so an overwrite is no guarantee there. The robust fix is a
   LUKS-encrypted backup drive, or a drive wiped whole.
 - **Phone.** `erase --phone` deletes the originals over MTP and, by default,
-  `DCIM/.thumbnails` and `Pictures/.thumbnails` (exactly those two paths, no
-  symlinks; Android rebuilds them; `--keep-phone-thumbnails` skips).
+  `DCIM/.thumbnails` and `Pictures/.thumbnails` (Android rebuilds them;
+  `--keep-phone-thumbnails` leaves them alone). Exactly those two paths: a
+  symlink inside either, or anything in them that isn't a plain thumbnail
+  path, **refuses the whole erase** before anything is deleted, naming the
+  path. Your yes covered folders of thumbnails, so one that holds something
+  else is for you to look at on the phone, not for erase to work around.
+
+## Device deletes and case-insensitive storage
+
+Every delete on a phone, camera or source drive (`erase --phone` originals and
+phone thumbnails, `offload`, `trash --phone`, the gallery's and review page's
+versions of those, which run the same commands) goes through one gate in
+`intake.py`: `device_targets` checks every path first, then `device_remove`
+runs `gio remove`. It is the only place media-intake changes a device, and it
+never renames or moves a file there. `release`, `forget` and the HOME/drive
+sweep never touch a phone; the sweep and `erase --drive` delete only files
+they have just hashed as an erased item, so the name they delete is the
+content they matched.
+
+Before any delete, the gate checks each target: inside the `--phone` root,
+inside the allowlist (`sources.check`: `erase` and `trash` skip a phone
+original outside it with a line; `offload`, and anything amiss in the phone
+thumbnail folders, refuse the whole command), and the same size as the staged copy
+(a file whose size changed is skipped quietly). A phone original whose
+manifest row records no size refuses the whole command, listing the paths:
+its copy can't be checked, so it is never deleted unchecked; stage the batch
+again. Only the phone thumbnail folders, which have no staged copy, skip the
+size check, and they say so with an explicit marker (`NO_SIZE_CHECK`).
+
+Android's emulated storage, and the FAT/exFAT of cameras and drives, ignore
+letter case. After a case-only rename (`IMG_0001.JPG` to `img_0001.jpg`) a
+listing over MTP or gphoto2 can show both names; on the device they are one
+file, so deleting the "duplicate" deletes the real one. So the gate refuses
+the whole command, before anything is deleted, when any target's path
+differs only by case (Unicode NFC, then case-folded) from another path in the
+batch manifests (every batch's, for `trash` without a batch), or from another
+target, whether or not the other name is being deleted too. The refusal lists
+each group of colliding paths. Look on the device itself, rename or delete by
+hand, then stage the batch again. A collision inside the thumbnail folders
+refuses `erase` too; `--keep-phone-thumbnails` skips them.
 - **What erase can't reach**, and doesn't list: cloud photo services, chat
   apps' own copies and their cloud backups, anyone a file was sent to, a phone
   gallery app's own trash (some keep deleted items for 30 days; whether an MTP
@@ -212,17 +466,20 @@ any plugin's `after_tag` hook ([plugins.md](plugins.md)).
   originals' sha256 are unchanged after tagging and re-tagging.
 - **Fields**: `XMP-lr:HierarchicalSubject` with `|` (`Project|Personal` or
   `Project|<name>`, `Source|gopro` / `phone camera` / `screenshot` /
-  `screen recording` / a messaging app's name in lower case, `Event|<slug>`,
+  `screen recording` / a messaging app's name in lower case, plus
+  `Source|<model>` (see "Devices" above), `Event|<slug>`,
   `Place|<city>, <state>, <country code>`, `Label|<label>`,
   `Review|child-in-shot`, `Review|untagged-video`, `Used|<slug>`),
   `XMP-dc:Subject` with each leaf, `XMP-iptcExt:Event`,
   `XMP-photoshop:City/State/Country`, `XMP-iptcCore:CountryCode`,
   `XMP-exif:GPSLatitude/GPSLongitude` (read from the file: EXIF, QuickTime,
-  GoPro GPMF with `-ee`) and `XMP-exif:DateTimeOriginal`.
+  GoPro GPMF with `-ee`) and `XMP-exif:DateTimeOriginal` (the plan's date,
+  with its UTC offset when known; see "Dates" above).
 - **Events**: `plan --event [PROJECT/]SLUG@YYYY-MM-DD`. With a `PROJECT/`
   prefix, or a slug matching one of a project's `events` fnmatch patterns,
   that day's camera files (photos, videos, GoPro; not screenshots or messaging
-  copies) go to `<project folder>/<date>-<slug>/{phone,gopro}/` and get
+  copies) go to `<project folder>/<date>-<slug>/{phone,gopro}/` (a GoPro's
+  files in `gopro/<device id>/`, see "Devices" above) and get
   `Project|<name>`. Otherwise the event is tags only (`Event|<slug>`) and the
   files still go by date. `tag-files` reads the project and event from
   `<project folder>/<date>-<slug>/`, or takes `--event`.
@@ -275,11 +532,11 @@ time. `bash setup.sh --refresh-geo` accepts a new snapshot.
 [`google/siglip-base-patch16-224`](https://huggingface.co/google/siglip-base-patch16-224)
 (Apache-2.0) through
 [`Xenova/siglip-base-patch16-224`](https://huggingface.co/Xenova/siglip-base-patch16-224)'s
-ONNX export at revision `4649052661e53c7000355844105f8a1792088239`. Runtime
-file `onnx/vision_model_quantized.onnx`, sha256
-`ef14a954f3d57e1806666432bd9785004c1dc27100aa260eee0cb0f10a5de058`,
-downloaded by `setup.sh` into `<state>/models/` and checked again on every
-run; CPU, onnxruntime.
+ONNX export at the revision pinned in `media_intake/pins.json` (with every
+file's sha256; `scripts/update-pins.py` regenerates it). Runtime file
+`onnx/vision_model_quantized.onnx`, downloaded by `setup.sh` into
+`<state>/models/` and checked again on every run and by `media-intake
+doctor`; CPU, onnxruntime.
 
 - Preprocessing from `preprocessor_config.json` at that revision: bicubic
   resize to 224x224 (no crop), rescale 1/255, mean 0.5, std 0.5. Output
@@ -292,11 +549,8 @@ run; CPU, onnxruntime.
 - Labels and prompts: `media_intake/labels.yaml`; text embeddings:
   `media_intake/labels.npz` (embeddings plus the prompt list, so `label.py`
   refuses a stale file), generated by `build_label_embeddings.py` with
-  `onnx/text_model.onnx` (sha256
-  `3aa7fdbd20eaa8740cce17bf82913de641fcb632a768fed59f661cdcd0c32553`) and
-  `tokenizer.json` (sha256
-  `4a17c975210be5ab4c36b47d8dae4eefb866dbfb1e676e394aad85dc30a3ae08`) from the
-  same revision, and `tokenizers` (hash-pinned in `requirements-labels.txt`,
+  `onnx/text_model.onnx` and `tokenizer.json` from the same revision
+  (sha256-pinned in `pins.json`), and `tokenizers` (hash-pinned in `requirements-labels.txt`,
   installed into `~/.cache/media-intake-build/site`, never into the runtime).
   Regenerate after editing `labels.yaml`: `bash setup.sh --build-labels`.
   Text is lower-cased, punctuation-free, `</s>`-terminated and padded to 64
@@ -312,11 +566,12 @@ run; CPU, onnxruntime.
 - `suggest-trash [--batch B]` lists files the VLM called trash
   (`AI|vlm/<model>/trash/*` with that model's confidence >= 0.7, or the older
   `Review|vlm-trash/*`), or with `Review|maybe-trash` and no VLM keep; never
-  ones with `Owner|not-trash`, `Owner|keep`, digiKam Accepted, `Used|*` or a
-  protected project's `Project|<name>`. They show in the review page's "Maybe
-  trash" tab: Keep runs `not-trash` (`Review|maybe-trash` off,
-  `Owner|not-trash` on), Trash runs `trash`. Nothing is deleted without a
-  decision.
+  ones you kept (`Owner|not-trash`, `Owner|keep`, the legacy
+  `Review|not-trash`, digiKam Accepted), `Used|*` or a protected project's
+  `Project|<name>`; plus copies marked `Owner|trash`. They show in the review
+  page's "Maybe trash" tab: Keep runs `not-trash` (`Owner|keep` +
+  `Owner|not-trash` on; `Review|maybe-trash`, `Owner|trash` and the legacy
+  spelling off), Trash runs `trash`. Nothing is deleted without a decision.
 - Videos: up to 30 frames spread over the clip (at most 0.5 fps), max score
   per label. A video the installed ffmpeg can't decode gets
   `Review|untagged-video`.
@@ -331,7 +586,7 @@ own namespace; your tags win.
 
 | Namespace | Written by | Re-tag behaviour |
 |---|---|---|
-| Your keywords (digiKam), digiKam pick labels, `Owner\|keep`, `Owner\|not-trash` | you (digiKam, the gallery, Keep on a suggestion) | never touched by any tool; `trash --from-digikam` acts on Rejected (PickLabel 1) only when you run it |
+| Your keywords (digiKam), digiKam pick labels, `Owner\|keep`, `Owner\|not-trash`, `Owner\|trash` | you (digiKam; Keep and Trash in the gallery and on the review page) | never touched by any tool except your next decision on the same file (Keep drops `Owner\|trash`); `trash --from-digikam` acts on Rejected (PickLabel 1) only when you run it |
 | `Project\|`, `Source\|`, `Event\|`, `Place\|`, dates | `tag`, `tag-files` | a prefix is replaced only when the run has a value for it |
 | `Label\|*`, `Review\|maybe-trash`, `Review\|untagged-*` | SigLIP (`label.py` via `tag`/`tag-files`) | replaced as a set on every labelled run (`--no-labels` leaves them) |
 | `Review\|child-in-shot` | SigLIP | added, never removed by a tool; only you clear it |
@@ -339,7 +594,35 @@ own namespace; your tags win.
 | `Used\|<slug>` | `mark-used` | never removed |
 
 - `Review|maybe-trash` is never added to a file with `Owner|not-trash`,
-  `Owner|keep` (or the legacy `Review|not-trash`) or digiKam Accepted.
+  `Owner|keep`, `Owner|trash` (or the legacy `Review|not-trash`) or digiKam
+  Accepted.
+
+#### Owner decisions
+
+One definition (`media_intake/owner.py`) that every tool reads: tag, tag-files,
+suggest-trash, vlm-trash, semantic `--clean`, the gallery and the review page.
+
+- **Keep** (`not-trash`, the review page's Keep, the gallery's Keep):
+  `Owner|keep` + `Owner|not-trash` in the sidecar; removes `Review|maybe-trash`,
+  an older `Owner|trash` and the legacy `Review|not-trash`. Never suggested as
+  trash again; the VLM never judges it.
+- **Trash** (`trash`, the review page's Trash, the gallery's Trash) deletes the
+  file and its sidecar, so the decision can't live there. Its durable home is
+  the sha256 in `<state>/trashed.json`, written before the delete: `plan`
+  drops that content if it ever comes back. Library copies of the same sha256
+  that `index.json` knows and that stay on disk (`trash` deletes only the paths
+  you name) get `Owner|trash` in their sidecar (only copies `index.json`
+  knows: a copy made outside the tool is not looked for and is not marked), so suggest-trash and the
+  gallery offer them for a confirm and the VLM leaves them alone. A copy with
+  its own keep decision is left as it is. Keep on such a copy later wins (it
+  drops `Owner|trash`; the sha stays in `trashed.json`, where it changes
+  nothing while a library copy exists).
+- **Legacy `Review|not-trash`**: read as `Owner|not-trash` until it is
+  rewritten, never written. `media-intake migrate-tags` rewrites every library
+  sidecar once (idempotent; `--dry-run` counts), and any re-tag of a file
+  (`tag`, `tag-files`) or Keep rewrites it on the way. Reading it stays because
+  a sidecar can come back unmigrated (a restored backup, a digiKam copy), and
+  dropping the read would turn a kept file into a trash suggestion.
 - `dc:Subject` leaves go only with a removed tag, and never a leaf another
   kept tag or digiKam's `TagsList` still uses (your keyword "food" survives
   `Label|food` being replaced).
@@ -390,12 +673,26 @@ Rejected:
 - **Falconsai nsfw_image_detection** (Apache-2.0): only normal/nsfw for the
   whole image, so swimwear would flag; needs torch. **OpenNSFW2**: downloads
   weights at first run with no hash check.
-- **phockup / elodie**: quiet repos; the date logic here is about 40 lines.
+- **phockup / elodie**: quiet repos; the date logic here (`dates.py`) is small and
+  needs rules they don't have (GPS checks, iPhone folders, per-device offsets).
 - Not searched: whether a maintained offline "sensitive documents in a photo
   library" scanner exists. The design doesn't depend on one.
 
 ## Unverified
 
+- Devices on real cameras: which tag a real GoPro's serial is in (photo and
+  video), whether exiftool reads it without `-ee`, and the Make/Model a real
+  GoPro MP4 reports. Tested on synthetic EXIF only. A camera whose serial
+  isn't read gets the model-only id.
+- GoPro chapter naming follows GoPro's documented file naming; it was not
+  checked against a real card, nor were a real long recording's per-chapter
+  timestamps.
+- Dates on real devices: the date rules were tested on synthetic files only. Not
+  checked against a real GoPro (that its GPMF `GPSDateTime` reads as expected
+  with `exiftool -ee`, and whether a GoPro writes UTC or local time into
+  QuickTime `CreateDate`; this code assumes UTC as the spec says, and
+  `--clock-offset` corrects a camera that doesn't) or a real iPhone export's
+  `DCIM/YYYYMM__` tree.
 - NudeNet false-positive rate on real photo libraries (no published numbers).
 - Tesseract on embossed card numbers and cheque MICR lines.
 - `scan` time: about 1-2 s an image on CPU (OCR dominates), estimated.
@@ -417,5 +714,7 @@ Rejected:
 
 `python3 -I -m unittest discover -s tests` (synthetic media, a throwaway HOME,
 a hermetic config), or one module: `python3 -I -m unittest discover -s tests -p test_intake.py`
-(also `test_sources`, `test_tagging`, `test_config`, `test_offline_guard`). Run long jobs under your
+(also `test_dates`, `test_devices`, `test_sources`, `test_tagging`, `test_config`, and `test_device_case`: offload,
+erase and trash on fake MTP, gphoto2 and drive trees with case-only collisions; `test_library_lock`: the
+CLI, a gallery write and a job contending for the library lock; `test_offline_guard`). Run long jobs under your
 own memory cap if you like.
