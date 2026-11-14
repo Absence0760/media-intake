@@ -133,7 +133,7 @@ class GalleryBrowserTest(B.BrowserCase):
             page.keyboard.press("k")
         self.assertEqual(resp.value.status, 200)
         self.assertIn("Owner|keep", G.tags_of(self.b)[0])
-        self.assertEqual(G.tags_of(self.c), ([], []))  # untouched: no sidecar written
+        self.assertEqual(G.tags_of(self.c), ([], [], None))  # untouched: no sidecar written
         # the lightbox: click opens it; arrows move in grid order; R rotates (sidecar only); Esc closes
         page.keyboard.press("Escape")
         viewer = page.get_by_role("dialog", name="Item")
