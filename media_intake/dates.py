@@ -220,8 +220,9 @@ def _pil(path):
     e, g = ex.get_ifd(0x8769), ex.get_ifd(0x8825)
     m = {k: v for k, v in (("DateTimeOriginal", e.get(36867)), ("CreateDate", e.get(36868)),
                            ("ModifyDate", ex.get(306)), ("OffsetTimeOriginal", e.get(36881)),
-                           ("OffsetTime", e.get(36880)), ("Make", ex.get(271)), ("Model", ex.get(272)),
-                           ("SerialNumber", e.get(0xA431))) if v}
+                           ("OffsetTime", e.get(36880)), ("Make", ex.get(271)), ("Model", ex.get(272))) if v}
+    # No serial number: ffprobe can't read one from a video, so a fallback that read it from photos would give
+    # one camera's photos and videos two device ids (two folders). Without exiftool, ids are Make/Model only.
     day, hms = g.get(29), g.get(7)
     if day:
         m["GPSDateStamp"] = str(day)
@@ -252,7 +253,8 @@ def read_meta(paths, use_exiftool=None, state=None, gpmf=True):
     """{path: {tag: value}} for the TAGS above plus "mtime", and Device / DeviceModel / DeviceLabel
     (devices.identify) in place of any serial number, which is dropped from the row. exiftool when
     installed (one run, plus, with gpmf, an -ee run over videos for GoPro's GPMF GPS time), else
-    Pillow / ffprobe. state: the folder holding the device salt (default: the configured state)."""
+    Pillow / ffprobe, which read no serial at all (photos and videos of one camera get one id).
+    state: the folder holding the device salt (default: the configured state)."""
     paths = [os.path.abspath(p) for p in paths]
     use = shutil.which("exiftool") if use_exiftool is None else use_exiftool
     out = {p: {} for p in paths}

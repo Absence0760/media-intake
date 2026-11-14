@@ -3,7 +3,9 @@
 A device id names batches (`stage` without --batch) and a dedicated camera's folders
 (`<YYYY-MM>/<device id>/`), so two GoPros of one model, whose file numbers repeat, never
 collide. The id is the slug of "Make Model" (`gopro-hero11-black`), plus, when the file
-records a serial number, a short pseudonym of it (`gopro-hero11-black-3fa9c2`).
+records a serial number, a short pseudonym of it (`gopro-hero11-black-3fa9c2`). Serials are read
+only through exiftool: the Pillow / ffprobe fallbacks (dates.read_meta) read none, because ffprobe
+can't see a video's serial and one camera's photos and videos must get one id.
 
 Serial numbers are personal identifiers (they tie a file to one owner's camera, and some
 vendors register them to a name), so a raw serial is never written to a folder name, a
@@ -70,14 +72,17 @@ def salt(state):
             v = f.read().strip()
     except FileNotFoundError:
         os.makedirs(state, mode=0o700, exist_ok=True)
+        new = secrets.token_hex(32) + "\n"
         tmp = f"{p}.{os.getpid()}.tmp"
         fd = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
         with os.fdopen(fd, "w") as f:
-            f.write(secrets.token_hex(32) + "\n")
+            f.write(new)
         try:
             os.link(tmp, p)  # atomic, and never replaces a salt another run just made
         except FileExistsError:
             pass  # another run made the salt first; use theirs (read below)
+        except OSError:  # no hard links on this filesystem (vfat, some FUSE and network mounts)
+            _create_once(p, new)
         finally:
             os.remove(tmp)
         return salt(state)
@@ -85,6 +90,19 @@ def salt(state):
         raise ValueError(f"{p} is not a device salt (64 hex digits). Restore it from a backup, or delete it "
                          "to start over (cameras then get new folder names)")
     return v
+
+
+def _create_once(p, text):
+    """Create p with text, 0600, only if it does not exist yet (O_EXCL: never replaces another run's salt).
+    One small write, fsynced, so a reader sees the whole salt."""
+    try:
+        fd = os.open(p, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+    except FileExistsError:
+        return  # another run made the salt first; use theirs
+    with os.fdopen(fd, "w") as f:
+        f.write(text)
+        f.flush()
+        os.fsync(f.fileno())
 
 
 def identify(meta, key=None):

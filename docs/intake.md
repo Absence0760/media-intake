@@ -200,7 +200,9 @@ plan) and only fills in a missing one; to recompute it, clear it first
 (`exiftool -XMP-exif:DateTimeOriginal= FILE.xmp`).
 
 Without exiftool, Pillow (images) and ffprobe (videos) read the same tags,
-except a GoPro video's GPMF GPS time and any serial number in a video.
+except a GoPro video's GPMF GPS time and any serial number: ffprobe can't
+read a video's serial, so neither fallback reads one, and a camera's photos
+and videos get the same Make/Model device id (Devices, below).
 
 ### GoPro chapters
 
@@ -257,9 +259,15 @@ An owner-chosen alias in the config was the alternative; the hash needs no
 setup and still separates cameras. Keep the salt with the rest of the state
 folder: a new salt gives every camera a new id (new folders from then on;
 filed files don't move). A corrupt salt file stops `plan` and `stage`
-instead of being replaced. Serials are read from EXIF `SerialNumber`
+instead of being replaced. On a filesystem without hard links the salt is
+made with an exclusive create instead of a link (never replacing another
+run's salt). Serials are read from EXIF `SerialNumber`
 (`BodySerialNumber`), `InternalSerialNumber` and GoPro's
-`CameraSerialNumber`; blank, all-zero and "Unknown" values count as none.
+`CameraSerialNumber`, through exiftool only; blank, all-zero and "Unknown"
+values count as none. Without exiftool no serial is read at all, from
+photos or videos (Pillow could read a photo's, ffprobe never a video's, and
+one camera must not get two ids), so ids are Make/Model only and two
+cameras of one model share a folder, as above.
 
 ## Duplicates
 
