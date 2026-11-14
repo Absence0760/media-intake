@@ -15,9 +15,9 @@ page shows.
 import errno, http.client, json, os, re, shutil, signal, stat, subprocess, sys, tempfile, time, unittest
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
-import support  # noqa: E402,F401  (hermetic config)
+import support  # noqa: E402  (hermetic config)
 
-HERE = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "media_intake")
+HERE = support.PKG
 UI = os.path.join(HERE, "review_ui.py")
 PY = sys.executable
 BATCH = "phone-2026-11-13"

@@ -99,8 +99,10 @@ run and a CLI `apply` never interleave (`media_intake/library_lock.py`):
   purge-review, trash, not-trash, suggest-trash, tag, tag-files, mark-used,
   migrate-tags).
   The read-only ones in `intake.READ_ONLY` (quarantine, verify-gone, wipe-free,
-  share-copy, find, gallery) never do; a new subcommand counts as locked until
+  share-copy, find) never do; a new subcommand counts as locked until
   it is listed there, and `tests/test_library_lock.py` fails on one in neither.
+  `media-intake gallery` is cli.py's, not intake.py's (gallery.py imports
+  intake.py, never the reverse); it takes the lock itself, per write.
   `vlm-trash` takes it around each batch of verdicts it writes.
 - **Jobs** (the review page's run, the gallery's Trash, Erase and Share-safe copy) take it with
   their job lock at submit and hold it until their last step is over; each
@@ -433,7 +435,12 @@ quarantine. A file named twice is forgotten once.
   previews of each chapter it deletes (one it skips, say because its size
   changed, keeps them) by name, from the same folder, through the same gate (`sources.check_preview`: allowlisted folders, `.LRV`/`.THM` only,
   never a symlink), and prints `camera previews removed: N`. Other chapters'
-  previews stay; `offload` leaves previews on the card.
+  previews stay; `offload` leaves previews on the card. Previews go before
+  their chapter, so an erase stopped by a refused delete leaves the chapter
+  on the card and running erase again finishes the job; once it has, a
+  second run finds the quarantine empty and touches nothing. Without `--yes`
+  erase asks (type ERASE); any other answer, or none (no terminal), erases
+  nothing.
 
 ## Device deletes and case-insensitive storage
 
@@ -765,5 +772,7 @@ erase and trash on fake MTP, gphoto2 and drive trees with case-only collisions, 
 stage, plan, apply, erase, offload and verify-gone with photos, videos and a mix from a phone, a GoPro card,
 a drive, a laptop folder and the drive queue; `test_library_lock`: the
 CLI, a gallery write and a job contending for the library lock; `test_library_ops_media_kinds`: every
-library-side command on a photo, an mp4 and a .mov, alone and mixed; `test_offline_guard`). Run long jobs under your
+library-side command on a photo, an mp4 and a .mov, alone and mixed; `test_detectors_media_kinds`: scan,
+vlm_trash, semantic, label and the plugin hook on photos, videos and mixed batches, and broken videos that
+must be flagged "not checked", never clean; `test_offline_guard`). Run long jobs under your
 own memory cap if you like.

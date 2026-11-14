@@ -6,7 +6,9 @@
 import os, sys, tempfile, unittest
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
-import support  # noqa: E402,F401  (hermetic config)
+import support  # noqa: E402  (hermetic config)
+
+support.check_hermetic()
 import config  # noqa: E402
 
 

@@ -78,6 +78,10 @@ The goal: someone else can install it on Fedora, import a phone, and trust it.
       keys, selection, dialogs, video autoplay, Range seeking, job progress and re-attach
       (`tests/browser/`, the `browser` CI job).
 - [x] End-to-end on a fake MTP and gphoto2 tree with case-only collisions.
+- [x] Every operation (keep, trash, erase, release, tag, rotate, share, events, bulk select,
+      and the device-side stage, plan, apply, erase, offload and verify-gone) on photos,
+      videos (mp4 and .mov) and mixed selections, for phone, GoPro, drive and folder
+      sources (the `*_media_kinds` test files and their browser tests).
 
 ---
 
@@ -158,3 +162,13 @@ The goal: someone else can install it on Fedora, import a phone, and trust it.
   you, never a guarantee.
 - Fedora's `ffmpeg-free` has no HEVC decoder; video scanning and labels need GStreamer's
   VA-API or Vulkan decoders.
+- Tested on synthetic media and fake device trees only: not yet on real HEVC files, real
+  GoPro `.gpr` files and GPS tracks, or real phones over MTP and gphoto2. The real detector
+  models run only in the `models.yml` job.
+- A GoPro's QuickTime creation time is read as UTC, as the spec says; forum reports say
+  some write local time. Unconfirmed on a real file; `--clock-offset` corrects a camera
+  that is off.
+- Gallery thumbnails are cached by content, so rotating one copy also rotates the
+  thumbnail of its identical twin (the twin's sidecar is unchanged).
+- Plain Trash on a quarantined item on the review page trashes that file only; it
+  doesn't sweep copies elsewhere the way Erase does.

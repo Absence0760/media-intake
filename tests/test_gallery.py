@@ -125,7 +125,7 @@ def gallery_views():
 
 class Server:
     def __init__(self, env, *extra):
-        self.p = subprocess.Popen([PY, "-I", INTAKE, "gallery", *extra], env=env, stdout=subprocess.PIPE,
+        self.p = subprocess.Popen([PY, "-I", GALLERY, *extra], env=env, stdout=subprocess.PIPE,
                                   stderr=subprocess.STDOUT, text=True)
         line = self.p.stdout.readline()
         m = re.fullmatch(r"xdg-open 'http://127\.0\.0\.1:(\d+)/\?t=([A-Za-z0-9_-]+)'\n", line)

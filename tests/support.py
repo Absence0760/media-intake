@@ -39,3 +39,12 @@ atexit.register(shutil.rmtree, _d, True)
 os.environ["MEDIA_INTAKE_CONFIG"] = write_config(os.path.join(_d, "no-such-home", "demo-footage"),
                                                  os.path.join(_d, "config.toml"))
 os.environ.pop("XDG_CONFIG_HOME", None)
+CONFIG = os.environ["MEDIA_INTAKE_CONFIG"]
+
+
+def check_hermetic():
+    """Raise unless support's temp config is the one in force. A test module that imports support only
+    for that side effect calls this right after the import: the import is then used, and a module that
+    somehow loads before or around support fails at once instead of reading your real config.toml."""
+    if os.environ.get("MEDIA_INTAKE_CONFIG") != CONFIG or "XDG_CONFIG_HOME" in os.environ:
+        raise RuntimeError("tests/support.py's hermetic config is not in force")

@@ -127,8 +127,11 @@ media-intake offload phone-1 --phone <device root> --yes   # after a backup: fre
 
 Detectors are hints, never guarantees: NudeNet flags exposed regions only,
 OCR misses embossed card numbers, and the zero-shot "child in shot" label
-misses small or distant children. Read [ROADMAP.md](ROADMAP.md), "Known
-limitations", before relying on the tool.
+misses small or distant children. "Not checked" is never "clean": a file a
+detector can't read (an HEVC video without a decoder, a broken or audio-only
+video, a type no detector reads) or that crashes a check is flagged and
+quarantined for you to look at, never filed as clean. Read
+[ROADMAP.md](ROADMAP.md), "Known limitations", before relying on the tool.
 
 ## Roadmap
 

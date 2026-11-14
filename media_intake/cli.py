@@ -1,6 +1,7 @@
 """`media-intake`: one entry point for every tool in this package.
 
-  media-intake <intake command> ...      stage, plan, scan, apply, tag, erase, trash, gallery, ... (intake.py)
+  media-intake <intake command> ...      stage, plan, scan, apply, tag, erase, trash, ... (intake.py)
+  media-intake gallery [--drive MOUNT] [--port N] [--share-out DIR]   local web gallery of the library (gallery.py)
   media-intake queue add|run|status|offload ...   external-drive process queue (drive_queue.py)
   media-intake review BATCH ...          local review page for a batch (review_ui.py)
   media-intake index                     build or update the semantic search index  (venv)
@@ -218,6 +219,9 @@ def main(argv=None):
     if cmd == "review":
         import review_ui
         return review_ui.main(rest)
+    if cmd == "gallery":  # here, not in intake.py: gallery imports intake, so intake never imports gallery
+        import gallery
+        return gallery.main(rest)
     if cmd in VENV_SCRIPTS:
         script, pre = VENV_SCRIPTS[cmd]
         vp = venv_python()

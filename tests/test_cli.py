@@ -257,23 +257,37 @@ class KillByPid(unittest.TestCase):
 
 
 class GalleryArgs(unittest.TestCase):
-    """`media-intake gallery` passes its flags on to gallery.main."""
+    """`media-intake gallery` is cli.py's: its flags go to gallery.main as given, and intake.py never
+    imports gallery.py (gallery imports intake; the other way round is an import cycle)."""
 
     def argv_for(self, *args):
-        import intake
-        a = intake.build_parser().parse_args(["gallery", *args])
         fake = type(sys)("gallery")
         fake.main = mock.Mock(return_value=0)
-        with mock.patch.dict(sys.modules, {"gallery": fake}), self.assertRaises(SystemExit):
-            intake.cmd_gallery(a)
+        with mock.patch.dict(sys.modules, {"gallery": fake}):
+            self.assertEqual(cli.main(["gallery", *args]), 0)
         return fake.main.call_args[0][0]
 
     def test_share_out_passed_on(self):
         self.assertEqual(self.argv_for("--share-out", "/tmp/x", "--port", "5"),
-                         ["--port", "5", "--share-out", "/tmp/x"])
+                         ["--share-out", "/tmp/x", "--port", "5"])
 
     def test_default_omits_share_out(self):
-        self.assertNotIn("--share-out", self.argv_for())
+        self.assertEqual(self.argv_for(), [])
+
+    def test_gallery_flags_parse(self):
+        import gallery
+        with self.assertRaises(SystemExit) as e, mock.patch("sys.stdout", io.StringIO()) as out:
+            gallery.main(["--help"])
+        self.assertEqual(e.exception.code, 0)
+        for flag in ("--drive", "--port", "--share-out"):
+            self.assertIn(flag, out.getvalue())
+
+    def test_intake_never_imports_gallery(self):
+        import intake
+        with open(intake.__file__) as f:
+            src = f.read()
+        self.assertIsNone(re.search(r"^\s*(import gallery|from gallery )", src, re.M))
+        self.assertNotIn("gallery", intake.LOCKED | intake.READ_ONLY)
 
 
 class Version(unittest.TestCase):
