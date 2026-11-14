@@ -9,7 +9,9 @@ Shows everything under the library, videos and project folders (config.toml)
 scan flagged, quarantined or erased: label.flagged()). Timeline grid by month,
 thumbnails made on demand (max 320 px JPEG, ~/.cache/media-intake/thumbs/<sha256>.jpg,
 dir 0700, files 0600; intake.py erase/forget/trash delete them by sha and
-verify-gone checks them), filters, semantic search (semantic.py, local SigLIP),
+verify-gone checks them), an H.264 proxy made on demand for a video the browser
+can't play (HEVC: ~/.cache/media-intake/proxies/<sha256>.mp4, cleaned the same way),
+filters, semantic search (semantic.py, local SigLIP),
 and your actions: Keep, Trash (intake.py trash), Erase (intake.py forget, the
 erase-everywhere path), my tags, Rotate (XMP-tiff:Orientation in the sidecar
 only), Set event, all on one item or a selection, and Share-safe copy (intake.py
@@ -32,7 +34,8 @@ random port, random token swapped for an HttpOnly SameSite=Strict cookie, Host
 check, CSRF value on every POST, no-store + strict CSP, media by opaque id only.
 Originals are never written: sidecars (<file>.<ext>.xmp) only. docs/gallery.md.
 """
-import argparse, contextlib, datetime, html, http.server, io, json, os, re, secrets, shutil, subprocess, sys, tempfile
+import argparse, contextlib, datetime, html, http.server, io, json, os, re, secrets, shlex, shutil, subprocess, sys
+import tempfile
 import threading, time
 import xml.etree.ElementTree as ET
 
@@ -51,10 +54,15 @@ LIBRARY, VIDEOS = intake.LIBRARY, intake.VIDEOS
 ROOTS = list(intake.LIB_ROOTS)
 PROTECTED = intake.config.protected_tags(intake.CFG)
 THUMBS = intake.THUMBS
+PROXIES = intake.PROXIES
 CACHE = os.path.dirname(THUMBS)
 JOB_KEY = "gallery"  # one trash/erase at a time across every gallery page and server
 IMG, VID = intake.IMG, intake.VID
 THUMB_PX, PREVIEW_PX = 320, 1600
+# Video codecs browsers can't play (Chromium on Linux, often Firefox): /m/ serves an H.264 proxy instead.
+PROXY_CODECS = {"hevc"}
+PROXY_PX = 1920  # the proxy's longer side at most (never scaled up)
+PROXY_TIMEOUT = 3600  # one transcode, in seconds; past it the original is served as before
 # Namespaces "my tag" never writes or removes (docs/intake.md, "Tags: who writes what").
 TOOL_PREFIXES = ("project|", "source|", "event|", "place|", "label|", "review|", "ai|", "used|", "owner|")
 TAG_RE = re.compile(r"^[^\x00-\x1f\x7f]{1,64}$")
@@ -245,10 +253,10 @@ def load_sidecar(it):
 
 # ---------------------------------------------------------------- thumbnails / previews
 def private_cache():
-    for d in (os.path.dirname(CACHE), CACHE, THUMBS):
+    for d in (os.path.dirname(CACHE), CACHE, THUMBS, PROXIES):
         os.makedirs(d, mode=0o700, exist_ok=True)
-    os.chmod(CACHE, 0o700)
-    os.chmod(THUMBS, 0o700)
+    for d in (CACHE, THUMBS, PROXIES):
+        os.chmod(d, 0o700)
 
 
 def write_private_bytes(p, data):
@@ -344,6 +352,91 @@ def video_jpeg(path, px, delta):
         shutil.rmtree(d, ignore_errors=True)
 
 
+# ---------------------------------------------------------------- H.264 proxies (HEVC in the browser)
+def video_codec(path):
+    """The first video stream's codec name (ffprobe: "h264", "hevc", ...), or None when it can't be read."""
+    try:
+        r = subprocess.run(["ffprobe", "-v", "error", "-select_streams", "v:0", "-show_entries", "stream=codec_name",
+                            "-of", "csv=p=0", "file:" + path], capture_output=True, text=True, timeout=60,
+                           stdin=subprocess.DEVNULL)
+    except (OSError, subprocess.SubprocessError):
+        return None
+    words = r.stdout.split() if r.returncode == 0 else []
+    return words[0].strip(",").lower() if words else None
+
+
+def ffmpeg_encoder(names):
+    """The first of names that this ffmpeg can encode with, or None."""
+    try:
+        out = subprocess.run(["ffmpeg", "-hide_banner", "-encoders"], capture_output=True, text=True, timeout=60,
+                             stdin=subprocess.DEVNULL).stdout
+    except (OSError, subprocess.SubprocessError):
+        return None
+    return next((n for n in names if f" {n} " in out), None)
+
+
+def gst_element(names):
+    """The first of names that GStreamer has (gst-inspect-1.0 NAME), or None."""
+    for n in names:
+        try:
+            if subprocess.run(["gst-inspect-1.0", n], capture_output=True, timeout=60,
+                              stdin=subprocess.DEVNULL).returncode == 0:
+                return n
+        except (OSError, subprocess.SubprocessError):
+            return None
+    return None
+
+
+def proxy_commands(src, out):
+    """Commands that each write an H.264 MP4 of src to out, in the order to try them. ffmpeg first (where it has
+    an HEVC decoder); then GStreamer's GPU HEVC decoder (Fedora's ffmpeg-free has none) into an H.264 encoder,
+    with the sound when it is AAC, then without. Paths go as file: (ffmpeg) or as one quoted location
+    (gst-launch), so a name is never read as an option or a protocol. Nothing is fetched."""
+    cmds = []
+    enc = ffmpeg_encoder(("libx264", "libopenh264"))
+    if enc:
+        q = ["-preset", "veryfast", "-crf", "23"] if enc == "libx264" else ["-b:v", "6M"]
+        vf = (f"scale='min({PROXY_PX},iw)':'min({PROXY_PX},ih)':force_original_aspect_ratio=decrease:"
+              "force_divisible_by=2,format=yuv420p")
+        cmds.append(["ffmpeg", "-v", "error", "-nostdin", "-y", "-i", "file:" + src, "-map", "0:v:0", "-map", "0:a:0?",
+                     "-map_metadata", "-1", "-vf", vf, "-c:v", enc, *q, "-c:a", "aac", "-b:a", "160k",
+                     "-movflags", "+faststart", "-f", "mp4", "file:" + out])
+    import scan_sensitive  # the GPU HEVC decoder thumbnails and scans use
+    dec = scan_sensitive._gst_hevc_decoder()
+    genc = gst_element(("x264enc", "openh264enc", "vah264enc")) if dec else None
+    if dec and genc:
+        post = "vapostproc ! " if dec == "vah265dec" else "vulkandownload ! "
+        pipe = (f"filesrc location={shlex.quote(src)} ! qtdemux name=d d.video_0 ! queue ! h265parse ! {dec} ! "
+                f"{post}videoconvert ! {genc} ! h264parse ! mp4mux name=mux ! filesink location={shlex.quote(out)}")
+        for sound in (" d.audio_0 ! queue ! aacparse ! mux.", ""):
+            cmds.append(["gst-launch-1.0", "-q", *shlex.split(pipe + sound)])
+    return cmds
+
+
+def make_proxy(src, dst):
+    """Write an H.264 MP4 of src to dst (0600, in the 0700 cache), trying each of proxy_commands in turn.
+    True once one gave a file ffprobe reads as H.264; False, with nothing left behind, when none did.
+    The original is only read."""
+    tmp = f"{dst}.{os.getpid()}.{threading.get_ident()}.tmp"
+    try:
+        for argv in proxy_commands(src, tmp):
+            with contextlib.suppress(FileNotFoundError):
+                os.remove(tmp)
+            os.close(os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600))  # the tools keep its mode
+            try:
+                r = subprocess.run(argv, capture_output=True, timeout=PROXY_TIMEOUT, stdin=subprocess.DEVNULL)
+            except (OSError, subprocess.SubprocessError):
+                continue
+            if r.returncode == 0 and os.path.getsize(tmp) and video_codec(tmp) == "h264":
+                os.chmod(tmp, 0o600)
+                os.replace(tmp, dst)
+                return True
+        return False
+    finally:
+        with contextlib.suppress(OSError):
+            os.remove(tmp)
+
+
 # ---------------------------------------------------------------- app
 class LockBusy(RuntimeError):
     """App.writing() could not take the library lock (an HTTP 409; its message names the holder)."""
@@ -361,6 +454,7 @@ class App:
         self.token, self.csrf = secrets.token_urlsafe(24), secrets.token_urlsafe(24)
         self.lock = threading.RLock()
         self.thumb_sem = threading.BoundedSemaphore(3)
+        self.proxy_lock = threading.Lock()  # one transcode at a time
         self.port = None
         self.reconciled = None  # id of the last finished job whose results are applied to items
         self.tail = None  # the shown job's log, through an open descriptor (jobs.Tail)
@@ -428,6 +522,37 @@ class App:
             private_cache()
             write_private_bytes(dst, data)
         return dst
+
+    def playable(self, it):
+        """(path, mime) that /m/ serves: the original, or for a video whose codec browsers can't play (HEVC) an
+        H.264 proxy, made on demand and cached by sha256 in PROXIES. When no proxy can be made the original is
+        served as before (the page then says the browser can't play it) and this item isn't tried again."""
+        orig = (it["path"], it["mime"])
+        if it["media"] != "video" or it.get("noproxy"):
+            return orig
+        if "vcodec" not in it:
+            it["vcodec"] = video_codec(it["path"])
+        if it["vcodec"] not in PROXY_CODECS:
+            return orig
+        sha = self.sha_of(it)
+        if not re.fullmatch(r"[0-9a-f]{64}", sha):
+            return orig
+        dst = os.path.join(PROXIES, sha + ".mp4")
+        if not os.path.isfile(dst):
+            with self.proxy_lock:  # a second request (the player's Range requests) waits, then finds it made
+                if not os.path.isfile(dst):
+                    try:
+                        private_cache()
+                        made = make_proxy(it["path"], dst)
+                    except OSError:
+                        made = False
+                    if not made:
+                        it["noproxy"] = True
+                        return orig
+            if it.get("busy") or it["gone"] or not os.path.lexists(it["path"]):
+                intake.gallery_thumb_forget(sha)  # trashed or erased while it was being made: no copy stays
+                return orig
+        return dst, "video/mp4"
 
     def drop_thumb(self, it):
         if it.get("sha"):
@@ -927,8 +1052,8 @@ class App:
 
     def drop_gone(self, it):
         it["gone"] = True
-        if it.get("sha") and os.path.exists(os.path.join(THUMBS, it["sha"] + ".jpg")):
-            intake.gallery_thumb_forget(it["sha"])
+        if it.get("sha"):
+            intake.gallery_thumb_forget(it["sha"])  # its thumbnail and video proxy
 
     def reread_copies(self, sizes):
         """After a job deleted files: other library copies of that content changed on disk too. trash marks the
@@ -1154,7 +1279,11 @@ class Handler(R.Handler):
                 if it["show"] not in ("image", "video"):
                     self.reply(404, "404\n")
                     return
-                self.media(dict(path=it["path"], mime=it["mime"]))
+                try:
+                    src, mime = app.playable(it)
+                except OSError:
+                    src, mime = it["path"], it["mime"]
+                self.media(dict(path=src, mime=mime))
             else:
                 data = image_jpeg(it["path"], PREVIEW_PX, 0) if it["media"] == "photo" else None
                 if not data:

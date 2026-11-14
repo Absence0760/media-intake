@@ -67,8 +67,10 @@ VENV_PY = f"{STATE}/venv/bin/python"
 SETUP = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "setup.sh")
 DEPS = ("sudo dnf install perl-Image-ExifTool tesseract tesseract-langpack-eng python3-zxing-cpp "
         "ffmpeg-free (README, Install)")
-# gallery.py's thumbnails (copies of photo content): erase, forget and trash delete them by sha256.
+# gallery.py's thumbnails and H.264 video proxies (copies of photo and video content): erase, forget and
+# trash delete them by sha256 (gallery_thumb_forget), and verify-gone reports any left.
 THUMBS = os.path.join(HOME, ".cache", "media-intake", "thumbs")
+PROXIES = os.path.join(HOME, ".cache", "media-intake", "proxies")
 HERE = os.path.dirname(os.path.abspath(__file__))
 IMG = {".jpg", ".jpeg", ".png", ".heic", ".heif", ".webp", ".gif", ".dng", ".gpr"}
 VID = {".mp4", ".mov", ".3gp", ".mkv", ".webm"}
@@ -149,15 +151,22 @@ def thumb_forget(path):
     return n
 
 
+def gallery_cache_paths(sha):
+    """gallery.py's cached copies of this content (keyed by sha256): its thumbnail and its H.264 video proxy."""
+    return [os.path.join(THUMBS, sha + ".jpg"), os.path.join(PROXIES, sha + ".mp4")]
+
+
 def gallery_thumb_forget(sha):
-    """Delete gallery.py's cached thumbnail of this content (keyed by sha256). Returns 1 if one went."""
+    """Delete gallery.py's cached thumbnail and video proxy of this content (keyed by sha256).
+    Returns how many went (0 to 2)."""
     if not re.fullmatch(r"[0-9a-f]{64}", sha or ""):
         return 0
-    p = os.path.join(THUMBS, sha + ".jpg")
-    if os.path.lexists(p):
-        os.remove(p)
-        return 1
-    return 0
+    n = 0
+    for p in gallery_cache_paths(sha):
+        if os.path.lexists(p):
+            os.remove(p)
+            n += 1
+    return n
 
 
 def sidecar(path):
@@ -1122,6 +1131,9 @@ def verify_gone(sig, drive=None):
     gthumbs = sum(os.path.lexists(os.path.join(THUMBS, s + ".jpg")) for s in sig)
     if gthumbs:
         found["gallery thumbnails (~/.cache/media-intake/thumbs)"] += gthumbs
+    gproxies = sum(os.path.lexists(os.path.join(PROXIES, s + ".mp4")) for s in sig)
+    if gproxies:
+        found["gallery video proxies (~/.cache/media-intake/proxies)"] += gproxies
     if in_git:
         print(f"{len(in_git)} exact copies inside git repos (erase leaves them): " + ", ".join(in_git))
     if found:
