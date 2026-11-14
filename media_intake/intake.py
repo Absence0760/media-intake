@@ -3,7 +3,7 @@
 sensitive files quarantined for you to review, erased everywhere on confirm.
 Run as `media-intake <command>` (cli.py); `python3 -I media_intake/intake.py` works too.
 
-  media-intake stage   SRC_ROOT --kind phone|gopro|drive --batch NAME [--only LISTFILE]
+  media-intake stage   SRC_ROOT --kind phone|gopro|drive [--batch NAME] [--only LISTFILE]  (default name: <device>-<date>)
   media-intake plan    BATCH [--event [PROJECT/]SLUG@YYYY-MM-DD ...] [--clock-offset DEVICE=±Nh ...]
   media-intake scan    BATCH                     (local detectors; labels only)
   media-intake apply   BATCH                     (moves files; prints a summary)
@@ -34,8 +34,8 @@ Layout (docs/intake.md; every path comes from config.toml, docs/configuration.md
   ~/Pictures/library/Screenshots/<YYYY>/
   ~/Videos/personal/Screen recordings/<YYYY>/
   ~/Pictures/library/Messaging/<app>/<YYYY>/
-  ~/Videos/personal/<YYYY>/<YYYY-MM>/                 videos (GoPro included)
-  <project folder>/<date>-<event>/{phone,gopro}/     events routed to a configured project
+  ~/Videos/personal/<YYYY>/<YYYY-MM>/                 videos (GoPro in <YYYY-MM>/<device id>/)
+  <project folder>/<date>-<event>/{phone,gopro/<device id>}/   events routed to a configured project
   ~/.local/share/media-intake/  (0700, never synced or indexed)
     batches/<batch>/raw/          staged copy, deleted once applied
     batches/<batch>/review/       near-duplicates + junk for a glance
@@ -52,6 +52,7 @@ import argparse, collections, datetime, glob, hashlib, json, os, re, shutil, sta
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import config  # noqa: E402
 import dates  # noqa: E402
+import devices  # noqa: E402
 import sources  # noqa: E402
 
 CFG = config.get()
@@ -204,9 +205,33 @@ def category(rel, kind):
 
 
 # ---------------------------------------------------------------- stage
+# stage without --batch reads Make/Model/serial from this many files (walk order) to name the batch.
+NAME_SAMPLE = 200
+
+
+def default_batch(root, kind, files, origin):
+    """'<device id>-<YYYYMMDD>' (devices.batch_name) from a sample of the source files, read only.
+    A batch of that name staged from another root gets -2, -3, ...; one from the same root is resumed."""
+    sample = [p for p, _ in files[:NAME_SAMPLE]]
+    try:
+        metas = dates.read_meta(sample, gpmf=False, state=STATE)
+    except ValueError as e:  # a corrupt device salt
+        sys.exit(str(e))
+    base = devices.batch_name([devices.Device(m["Device"], m["DeviceModel"], m["DeviceLabel"])
+                               if m.get("Device") else None for m in metas.values()], kind, datetime.date.today())
+    name, n = base, 1
+    while True:
+        man = load(os.path.join(bdir(name), "manifest.json"))
+        if man is None or man.get("root") == origin:
+            return name
+        n += 1
+        name = f"{base}-{n}"
+
+
 def cmd_stage(a):
     root = os.path.abspath(a.src)
-    raw = private_dir(os.path.join(private_dir(bdir(a.batch)), "raw"))
+    if a.batch is not None and not BATCH_NAME.match(a.batch):
+        sys.exit(f"--batch {a.batch!r}: letters, digits, '.', '_' and '-' only")
     man = {}
     skipped = collections.Counter()
     extra = {}
@@ -219,9 +244,12 @@ def cmd_stage(a):
     if a.only:  # drive_queue.py chunks: one relative path per line
         with open(a.only) as f:
             only = {l.rstrip("\n") for l in f if l.strip()}
-    for path, rel in sources.walk(root, a.kind):
-        if only is not None and rel not in only:
-            continue
+    files = [(path, rel) for path, rel in sources.walk(root, a.kind) if only is None or rel in only]
+    if a.batch is None:
+        a.batch = default_batch(root, a.kind, files, os.path.abspath(a.origin or root))
+        print(f"batch {a.batch}")
+    raw = private_dir(os.path.join(private_dir(bdir(a.batch)), "raw"))
+    for path, rel in files:
         dst = os.path.join(raw, rel)
         os.makedirs(os.path.dirname(dst), exist_ok=True)
         st = os.stat(path)
@@ -277,6 +305,7 @@ def cmd_plan(a):
         dh, w, h = dhash(p) if ext in IMG else (None, 0, 0)
         rows.append(dict(rel=rel, sha=sha256(p), size=os.path.getsize(p), date=dd.dt.isoformat(), date_src=dd.src,
                          date_tz=dd.tz, date_from=dd.base, date_note=dd.note, date_suspect=dd.suspect,
+                         chapter_of=dd.chapter_of, device=dd.device, device_model=dd.model,
                          cat=category(rel, kind), dhash=dh, w=w, h=h, ext=ext))
 
     pref = {"photo": 5, "video": 5, "gopro": 5, "screenshot": 3, "screenrec": 3}
@@ -340,6 +369,9 @@ def cmd_plan(a):
             folder = os.path.join(LIBRARY, "Messaging", r["cat"].split(":", 1)[1], f"{d:%Y}")
         else:
             folder = os.path.join(LIBRARY, f"{d:%Y}", f"{d:%Y-%m}")
+        if r["device"] and (r["cat"] == "gopro" or devices.gopro_name(base)):
+            # A dedicated camera's numbering repeats across cameras: one folder per device, never _1.
+            folder = os.path.join(folder, r["device"])
         lib_dst = os.path.normpath(os.path.join(folder, base))
         stem, ext = os.path.splitext(lib_dst)
         i = 1
@@ -366,7 +398,12 @@ def cmd_plan(a):
                                 for p in plan)
     print(f"plan: {len(plan)} files  file {c['file']}  delete(exact dup) {c['delete']}  review {c['review']}")
     print("dates from", dict(collections.Counter(p["date_src"] for p in plan)))
-    for label, sel in (("camera dates replaced by GPS", lambda p: p["date_src"] == "gps" and p["date_note"]),
+    devs = collections.Counter(p["device"] for p in plan if p["device"])
+    if devs:
+        print("devices", dict(sorted(devs.items())))
+    for label, sel in (("camera dates replaced by GPS", lambda p: p["date_src"] == "gps" and p["date_note"]
+                        and not p["chapter_of"]),
+                       ("GoPro chapters dated by their first chapter", lambda p: p["chapter_of"]),
                        ("dates shifted by --clock-offset", lambda p: p["date_src"] == "offset"),
                        ("dates to check (clock-reset default, camera and GPS disagree, or nothing plausible; "
                         "--clock-offset fixes a wrong clock)", lambda p: p["date_suspect"])):
@@ -1582,7 +1619,8 @@ def merge_tags(old, new, pick="", relabelled=True, owner_leaves=()):
 
 
 def tag_files(items, labels=True):
-    """items: [(path, project, source, event, datetime or None)]. Writes sidecars; prints counts only."""
+    """items: [(path, project, source, event, datetime or None)]; source a string or a tuple of them
+    (the kind, then the device model: Source|gopro, Source|HERO11 Black). Writes sidecars; prints counts only."""
     need_exiftool()
     lab = guard_label()
     bad = set(lab.refused([i[0] for i in items], STATE))
@@ -1605,8 +1643,9 @@ def tag_files(items, labels=True):
     existing = read_sidecar_tags(paths)
     for path, project, source, event, dt in items:
         hier = [f"Project|{project}"]
-        if source:
-            hier.append(f"Source|{source}")
+        for s in (source if isinstance(source, (list, tuple)) else [source]):  # e.g. ("gopro", "HERO11 Black")
+            if s and not any(h.casefold() == f"source|{s}".casefold() for h in hier):  # Make-only "GoPro"
+                hier.append(f"Source|{s}")
         if event:
             hier.append(f"Event|{event}")
         t = dict(event=event, date=dates.exif_string(dt) if dt else None)
@@ -1657,6 +1696,8 @@ def cmd_tag(a):
         project = p.get("project") or infer(p["dst"])[0]
         cat = p["cat"]
         src = SOURCE.get(cat) or (cat.split(":", 1)[1].lower() if cat.startswith("messaging:") else None)
+        if p.get("device_model"):
+            src = (src, p["device_model"])
         items.append((p["dst"], project, src, p.get("event"),
                       dates.aware(datetime.datetime.fromisoformat(p["date"]), p.get("date_tz"))))
     print(f"{len(items)} filed files to tag" + (f"; {sum(1 for p in plan if p['rel'] in flags)} flagged by scan are never tagged" if flags else ""))
@@ -1686,10 +1727,18 @@ def sidecar_dates(paths):
 def cmd_tag_files(a):
     files = [os.path.abspath(f) for f in a.files]
     keep = sidecar_dates(files)
-    fresh = dates.resolve_all([f for f in files if os.path.isfile(f) and f not in keep])
+    live = [f for f in files if os.path.isfile(f)]
+    try:
+        fresh = dates.resolve_all([f for f in live if f not in keep])
+        model = {f: m.get("DeviceModel") for f, m in dates.read_meta([f for f in live if f in keep], gpmf=False).items()}
+    except ValueError as e:  # a corrupt device salt
+        sys.exit(str(e))
+    model.update({f: d.model for f, d in fresh.items()})
     items = []
     for f in files:
         project, src, event = infer(f)
+        if model.get(f):
+            src = (src, model[f])
         items.append((f, project, src, a.event or event, fresh[f].aware() if f in fresh else None))
     tag_files(items, labels=not a.no_labels)
 
@@ -1805,7 +1854,8 @@ def clock_offset_arg(v):
 def build_parser(prog=None):
     ap = argparse.ArgumentParser(prog=prog, description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     sp = ap.add_subparsers(dest="cmd", required=True)
-    s = sp.add_parser("stage"); s.add_argument("src"); s.add_argument("--kind", choices=["phone", "gopro", "drive"], required=True); s.add_argument("--batch", required=True)
+    s = sp.add_parser("stage"); s.add_argument("src"); s.add_argument("--kind", choices=["phone", "gopro", "drive"], required=True)
+    s.add_argument("--batch", help="batch name (default: <device id>-<YYYYMMDD> from the files' Make/Model/serial)")
     s.add_argument("--only", metavar="LISTFILE", help="stage only these relative paths (one per line; drive_queue.py chunks)")
     s.add_argument("--origin", help="device root the files really came from, if SRC is an earlier copy (for erase --phone)")
     s = sp.add_parser("plan"); s.add_argument("batch")

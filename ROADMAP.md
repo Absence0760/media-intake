@@ -56,9 +56,9 @@ The goal: someone else can install it on Fedora, import a phone, and trust it.
 - [x] iPhone exports without EXIF dates: use the `DCIM/YYYYMM__` folder month, not mtime.
 - [x] QuickTime UTC vs local time; EXIF `OffsetTimeOriginal`; a `--clock-offset DEVICE=±Nh`
       option for cameras that were simply wrong. Corrected dates go to the sidecar only.
-- [ ] Device identity from Make/Model/serial: tag `Source|<model>` and name batches by it;
+- [x] Device identity from Make/Model/serial: tag `Source|<model>` and name batches by it;
       two GoPros with the same file numbers go to separate device folders, never `_1`.
-- [ ] GoPro chapters (GX01xxxx, GX02xxxx...) dated and grouped by the first chapter.
+- [x] GoPro chapters (GX01xxxx, GX02xxxx...) dated and grouped by the first chapter.
 
 ### Tag precedence (who writes what)
 - [ ] Review page writes `Owner|keep` and `Owner|trash` (the gallery's Keep already writes

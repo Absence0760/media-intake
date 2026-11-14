@@ -13,13 +13,14 @@ default; all of them come from `~/.config/media-intake/config.toml`
   swimwear, screenshots of forms).
 - **Library by date, events optionally by project.** Photos go to
   `~/Pictures/library/<YYYY>/<YYYY-MM>/`, videos (GoPro included) to
-  `~/Videos/personal/<YYYY>/<YYYY-MM>/`, screenshots to
+  `~/Videos/personal/<YYYY>/<YYYY-MM>/` (a dedicated camera's files in a
+  `<device id>/` folder there, see "Devices" below), screenshots to
   `~/Pictures/library/Screenshots/<YYYY>/`, screen recordings to
   `~/Videos/personal/Screen recordings/<YYYY>/`, messaging-app media to
   `~/Pictures/library/Messaging/<app>/<YYYY>/`. An event routed to a configured
   project goes to `<project folder>/<date>-<slug>/{phone,gopro}/` (see
   "Events" below). Original file names are kept: GoPro chapters (`GX01xxxx`,
-  `GX02xxxx`) only line up by name.
+  `GX02xxxx`) only line up by name, and are dated by their first chapter.
 - **Only camera folders are read on a device** (`DCIM/`, `Pictures/`, media
   extensions only; `media_intake/sources.py` and `tests/test_sources.py`).
   App data (`Android/`), downloads, documents and anything named like a
@@ -44,7 +45,7 @@ default; all of them come from `~/.config/media-intake/config.toml`
 ## Commands
 
 ```
-media-intake stage SRC_ROOT --kind phone|gopro|drive --batch NAME [--only LISTFILE]
+media-intake stage SRC_ROOT --kind phone|gopro|drive [--batch NAME] [--only LISTFILE]
 media-intake plan BATCH [--event [PROJECT/]SLUG@YYYY-MM-DD ...] [--clock-offset DEVICE=±Nh ...]
 media-intake scan BATCH                 # local detectors; labels only
 media-intake apply BATCH                # moves files; prints a summary
@@ -153,17 +154,77 @@ simply wrong: it shifts every date read from that device's own clock (never a
 GPS date) by N hours (a sign is required; decimals up to two places, e.g.
 `-1.5h`; non-zero; at most 30 years). `DEVICE` is the file's EXIF/QuickTime
 `Make`, `Model` or `Make Model`, case-insensitive (`GoPro`, `'HERO11 Black'`),
-or `all` for every file in the batch. Bad syntax exits 2; the same device
-twice, `all` with another device, two offsets matching one file, or a device
+its device id ("Devices" below, e.g. `gopro-hero11-black-3fa9c2`, which
+tells two cameras of one model apart), or `all` for every file in the batch.
+Bad syntax exits 2; the same device twice, `all` with another device, two offsets matching one file, or a device
 no file in the batch has, stop `plan` before it writes anything (the message
-lists the devices seen). Corrected dates go to the XMP sidecar only: the
+lists the devices seen, with their ids). Corrected dates go to the XMP sidecar only: the
 original keeps its own EXIF and its sha256. `tag-files` keeps a
 `DateTimeOriginal` already in a sidecar (it may be a correction from the
 plan) and only fills in a missing one; to recompute it, clear it first
 (`exiftool -XMP-exif:DateTimeOriginal= FILE.xmp`).
 
 Without exiftool, Pillow (images) and ffprobe (videos) read the same tags,
-except a GoPro video's GPMF GPS time.
+except a GoPro video's GPMF GPS time and any serial number in a video.
+
+### GoPro chapters
+
+A GoPro splits a long recording into chapter files of one recording number:
+HERO6 and later `GHccnnnn.MP4` (H.264) or `GXccnnnn.MP4` (HEVC), chapter
+`cc` from `01`; HERO5 and earlier `GOPRnnnn.MP4`, then `GP01nnnn.MP4`,
+`GP02nnnn.MP4`, ... Every later chapter takes the date (and so the folder
+and the `--event` day) of the first chapter of its recording in the batch:
+same folder, same device, same family (`GH`, `GX`, or `GOPR`/`GP`), same
+number. A recording that crosses midnight, an hour or a month stays
+together. `chapter_of` in `plan.json` names the first chapter, `date_note`
+says so, and `plan` lists them. Names are matched exactly as the camera
+writes them (upper case, `.MP4`): chapter `00`, a lower-case copy, other
+digit counts, `.LRV`/`.THM` previews, `.360` files and look-alikes such as
+`DJI_0042.MP4` or `MVI_0042.MP4` are not chapters (`tests/test_devices.py`).
+When the first chapter isn't in the batch, the lowest one present dates the
+rest.
+
+### Devices
+
+Each file's device comes from its EXIF/QuickTime `Make`, `Model` and serial
+number (`media_intake/devices.py`): the **device id** is the slug of "Make
+Model" (`gopro-hero11-black`, `google-pixel-8`), plus a short pseudonym of
+the serial when the file records one (`gopro-hero11-black-3fa9c2`).
+
+- **Tag**: `tag` and `tag-files` add `Source|<model>` (`Source|HERO11
+  Black`, `Source|Pixel 8`) beside `Source|gopro` / `phone camera`.
+- **Folders**: a dedicated camera's files (`--kind gopro`, or a GoPro file
+  name from any source) go to a `<device id>/` folder inside their month
+  (`~/Videos/personal/2026/2026-11/gopro-hero11-black-3fa9c2/GX010042.MP4`)
+  or inside a project event's `gopro/`. Camera file numbers repeat, so two
+  GoPros' `GX010042.MP4` land in two folders, never as `GX010042_1.MP4`.
+  Phone files keep the plain month folder: their names carry a timestamp.
+  Two cameras of one model that record no serial can't be told apart and
+  share a folder (the second file still gets `_1`), as do files with no
+  `Make`/`Model`.
+- **Batches**: `stage` without `--batch` names the batch
+  `<device id>-<YYYYMMDD>` (today) from the most common device among the
+  first 200 files (read only), or `<kind>-<YYYYMMDD>` when none has a
+  device. Re-staging the same root resumes that batch; another root gets
+  `-2`, `-3`, ... `plan` prints the devices it saw.
+- **`--clock-offset`** takes the device id as `DEVICE` (above).
+
+**Serial numbers are personal identifiers** (they tie a file to one
+owner's camera; vendors register them to a name), so no raw serial is ever
+written to a folder or batch name, a tag, `plan.json`, the manifest or any
+output: `read_meta` drops it from the row as soon as the id is made. The
+pseudonym is the first 6 hex digits of HMAC-SHA256 over make, model and
+serial, keyed with a random 32-byte salt made on first use at
+`<state>/device-salt` (0600, in the 0700 state folder; never in the library
+or a backup of it). Without the salt nobody can check a guessed serial
+against a folder name, which an unsalted hash of a short serial would allow.
+An owner-chosen alias in the config was the alternative; the hash needs no
+setup and still separates cameras. Keep the salt with the rest of the state
+folder: a new salt gives every camera a new id (new folders from then on;
+filed files don't move). A corrupt salt file stops `plan` and `stage`
+instead of being replaced. Serials are read from EXIF `SerialNumber`
+(`BodySerialNumber`), `InternalSerialNumber` and GoPro's
+`CameraSerialNumber`; blank, all-zero and "Unknown" values count as none.
 
 ## Duplicates
 
@@ -340,7 +401,8 @@ any plugin's `after_tag` hook ([plugins.md](plugins.md)).
   originals' sha256 are unchanged after tagging and re-tagging.
 - **Fields**: `XMP-lr:HierarchicalSubject` with `|` (`Project|Personal` or
   `Project|<name>`, `Source|gopro` / `phone camera` / `screenshot` /
-  `screen recording` / a messaging app's name in lower case, `Event|<slug>`,
+  `screen recording` / a messaging app's name in lower case, plus
+  `Source|<model>` (see "Devices" above), `Event|<slug>`,
   `Place|<city>, <state>, <country code>`, `Label|<label>`,
   `Review|child-in-shot`, `Review|untagged-video`, `Used|<slug>`),
   `XMP-dc:Subject` with each leaf, `XMP-iptcExt:Event`,
@@ -351,7 +413,8 @@ any plugin's `after_tag` hook ([plugins.md](plugins.md)).
 - **Events**: `plan --event [PROJECT/]SLUG@YYYY-MM-DD`. With a `PROJECT/`
   prefix, or a slug matching one of a project's `events` fnmatch patterns,
   that day's camera files (photos, videos, GoPro; not screenshots or messaging
-  copies) go to `<project folder>/<date>-<slug>/{phone,gopro}/` and get
+  copies) go to `<project folder>/<date>-<slug>/{phone,gopro}/` (a GoPro's
+  files in `gopro/<device id>/`, see "Devices" above) and get
   `Project|<name>`. Otherwise the event is tags only (`Event|<slug>`) and the
   files still go by date. `tag-files` reads the project and event from
   `<project folder>/<date>-<slug>/`, or takes `--event`.
@@ -521,6 +584,13 @@ Rejected:
 
 ## Unverified
 
+- Devices on real cameras: which tag a real GoPro's serial is in (photo and
+  video), whether exiftool reads it without `-ee`, and the Make/Model a real
+  GoPro MP4 reports. Tested on synthetic EXIF only. A camera whose serial
+  isn't read gets the model-only id.
+- GoPro chapter naming follows GoPro's documented file naming; it was not
+  checked against a real card, nor were a real long recording's per-chapter
+  timestamps.
 - Dates on real devices: the date rules were tested on synthetic files only. Not
   checked against a real GoPro (that its GPMF `GPSDateTime` reads as expected
   with `exiftool -ee`, and whether a GoPro writes UTC or local time into
@@ -546,6 +616,6 @@ Rejected:
 
 `python3 -I -m unittest discover -s tests` (synthetic media, a throwaway HOME,
 a hermetic config), or one module: `python3 -I -m unittest discover -s tests -p test_intake.py`
-(also `test_dates`, `test_sources`, `test_tagging`, `test_config`, and `test_device_case`: offload,
+(also `test_dates`, `test_devices`, `test_sources`, `test_tagging`, `test_config`, and `test_device_case`: offload,
 erase and trash on fake MTP, gphoto2 and drive trees with case-only collisions). Run long jobs under your
 own memory cap if you like.

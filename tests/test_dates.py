@@ -33,7 +33,7 @@ def mtime(d):
     return d.replace(tzinfo=NY).timestamp()
 
 
-def jpg(path, dt=None, gps_day=None, gps_hms=None, offset=None, make=None, model=None, writer="pillow"):
+def jpg(path, dt=None, gps_day=None, gps_hms=None, offset=None, make=None, model=None, writer="pillow", serial=None):
     """A small JPEG with the given EXIF, written by Pillow or (writer="exiftool") by exiftool.
 
     The IFDs are assigned as whole dicts: on Pillow < 11, Exif.get_ifd() on a fresh Exif returns a
@@ -41,14 +41,14 @@ def jpg(path, dt=None, gps_day=None, gps_hms=None, offset=None, make=None, model
     read back with exiftool when installed (else Pillow), and a missing one fails the test loudly."""
     os.makedirs(os.path.dirname(path), exist_ok=True)
     want = {k: v for k, v in (("Make", make), ("Model", model), ("DateTimeOriginal", dt),
-                              ("OffsetTimeOriginal", offset), ("GPSDateStamp", gps_day)) if v}
+                              ("OffsetTimeOriginal", offset), ("GPSDateStamp", gps_day), ("SerialNumber", serial)) if v}
     if gps_hms:
         want["GPSTimeStamp"] = "%02d:%02d:%02d" % tuple(int(x) for x in gps_hms)
     if writer == "exiftool":
         if not HAVE_EXIFTOOL:
             raise unittest.SkipTest("exiftool missing")
         Image.new("RGB", (400, 300), (40, 90, 160)).save(path)
-        args = [f"-{k}={v}" for k, v in want.items()]
+        args = [f"-{'ExifIFD:' if k == 'SerialNumber' else ''}{k}={v}" for k, v in want.items()]
         if gps_day:
             args += ["-GPSLatitude=37.536", "-GPSLatitudeRef=N", "-GPSLongitude=77.435", "-GPSLongitudeRef=W"]
         if args:  # with no assignments exiftool would print every tag instead
@@ -59,7 +59,7 @@ def jpg(path, dt=None, gps_day=None, gps_hms=None, offset=None, make=None, model
             ex[271] = make
         if model:
             ex[272] = model
-        e = {k: v for k, v in ((36867, dt), (36881, offset)) if v}
+        e = {k: v for k, v in ((36867, dt), (36881, offset), (0xA431, serial)) if v}
         if e:
             ex[0x8769] = e
         if gps_day:
@@ -78,13 +78,14 @@ def _written(path):
     """The tags jpg() writes, as read back (exiftool when installed, else Pillow)."""
     if HAVE_EXIFTOOL:
         r = subprocess.run(["exiftool", "-j", "-Make", "-Model", "-DateTimeOriginal", "-OffsetTimeOriginal",
-                            "-GPSDateStamp", "-GPSTimeStamp", path], capture_output=True, text=True, check=True)
+                            "-GPSDateStamp", "-GPSTimeStamp", "-SerialNumber", path],
+                           capture_output=True, text=True, check=True)
         return json.loads(r.stdout)[0]
     with Image.open(path) as im:
         ex = im.getexif()
     e, g = ex.get_ifd(0x8769), ex.get_ifd(0x8825)
     out = {"Make": ex.get(271), "Model": ex.get(272), "DateTimeOriginal": e.get(36867),
-           "OffsetTimeOriginal": e.get(36881), "GPSDateStamp": g.get(29)}
+           "OffsetTimeOriginal": e.get(36881), "GPSDateStamp": g.get(29), "SerialNumber": e.get(0xA431)}
     if 7 in g:
         out["GPSTimeStamp"] = "%02d:%02d:%02d" % tuple(int(float(x)) for x in g[7])
     return out
@@ -297,6 +298,19 @@ class ClockOffset(unittest.TestCase):
             self.assertEqual((d.src, d.base, d.dt), ("offset", "exif", D(2026, 11, 8, 7, 15)), dev)
         d = res(meta, offsets=dates.clock_offsets(["iPhone 15=+3h"]))
         self.assertEqual((d.src, d.offset), ("exif", None))
+
+    def test_shift_matches_the_device_id_too(self):
+        # read_meta puts devices.identify's id in "Device"; DEVICE may name it, old spellings still work.
+        meta = {"DateTimeOriginal": "2026:11:08 04:15:00", "Make": "GoPro", "Model": "HERO11 Black",
+                "Device": "gopro-hero11-black-3fa9c2"}
+        other = dict(meta, Device="gopro-hero11-black-77d01e")
+        offs = dates.clock_offsets(["gopro-hero11-black-3fa9c2=+3h"])
+        d = res(meta, offsets=offs)
+        self.assertEqual((d.src, d.offset, d.dt, d.device), ("offset", "gopro-hero11-black-3fa9c2",
+                                                              D(2026, 11, 8, 7, 15), "gopro-hero11-black-3fa9c2"))
+        self.assertEqual(res(other, offsets=offs).src, "exif", "the other camera of that model keeps its clock")
+        with self.assertRaises(ValueError):  # the model and the id both match: ambiguous, as before
+            res(meta, offsets=dates.clock_offsets(["HERO11 Black=+1h", "gopro-hero11-black-3fa9c2=+2h"]))
 
     def test_two_matching_offsets_are_ambiguous(self):
         with self.assertRaises(ValueError):
