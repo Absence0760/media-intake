@@ -725,9 +725,15 @@ Rejected:
   (lower-casing and punctuation handling were reimplemented).
 - HEVC videos: Fedora's `ffmpeg-free` can't decode them, so `scan` labels such
   videos `unscanned-video` for you to check (a GStreamer hardware decoder is
-  used for frames where available; `media-intake doctor` reports it).
-  Likewise a barcode decoder error on a readable image gives
-  `unscanned-barcode` rather than no flag: "not checked" is never "clean".
+  used for frames where available; `media-intake doctor` reports it). An
+  empty, truncated or audio-only video, or a decoder that is missing or hangs,
+  gets the same label. "Not checked" is never "clean", so these go to
+  quarantine too: a barcode decoder error on a readable image gives
+  `unscanned-barcode`, a NudeNet error on a photo or any frame of a video
+  `unscanned-nudity`, a staged kind no detector reads `unscanned-type`, and a
+  check that crashes on one file `unscanned-error` (the rest of the batch is
+  still scanned and `scan.json` still written). GoPro `.gpr` raw files are
+  read through Pillow; one it can't open is `unreadable`.
 
 ## Tests
 

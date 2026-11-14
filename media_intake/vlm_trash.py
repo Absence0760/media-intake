@@ -16,8 +16,9 @@ file's XMP sidecar (AI never overrides a tag):
   AI|vlm/qwen3-vl-2b/conf/<0.0-1.0>  (the model's confidence, one decimal)
 The raw verdict is written; consumers (suggest-trash) take trash with conf >= 0.7.
 A re-run replaces only tags under AI|vlm/<this model>/; another model writes
-beside them; no other keyword is added or removed. Videos: 3 sampled frames,
-trash only when at least 2 of the 3 say TRASH >= 0.7 (conf: the lowest of those).
+beside them; no other keyword is added or removed. Videos: 3 sampled frames (fewer
+for a clip under about 4 s), trash only when most of them (2 of 3) say TRASH >= 0.7
+(conf: the lowest of those).
 Skipped, never sent or tagged: files you decided on (owner.decided: Owner|keep,
 Owner|not-trash or its legacy spelling, Owner|trash, a digiKam pick label). Files tagged
 Used|* or a protected project's Project|<name> (config.toml) are not sent either and get .../keep (never trash).
@@ -46,7 +47,7 @@ import config  # noqa: E402
 import library_lock  # noqa: E402  (stdlib only)
 ROOTS = config.library_roots()
 PROTECTED = config.protected_tags()
-IMG = label.IMG | {".dng"}
+IMG = label.IMG | {".dng", ".gpr"}
 VID = label.VID
 
 # qwen3-vl:2b = Qwen3-VL-2B-Thinking Q4_K_M, Apache-2.0. Not qwen2.5vl:7b (too big for an 8 GB GPU),

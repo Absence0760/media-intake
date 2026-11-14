@@ -36,7 +36,7 @@ HOME = os.path.expanduser("~")
 STATE = label.STATE
 import config  # noqa: E402
 ROOTS = config.library_roots()
-IMG, VID = label.IMG, label.VID
+IMG, VID = label.IMG | {".dng", ".gpr"}, label.VID  # raw photos too: Pillow reads what it can, the rest count as undecodable
 STORE = os.path.join(STATE, "embeddings.npz")
 BUILD = os.environ.get("MEDIA_INTAKE_BUILD", f"{HOME}/.cache/media-intake-build")
 TEXT_SHA = label.PINS["siglip"]["files"]["onnx/text_model.onnx"]  # media_intake/pins.json

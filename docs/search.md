@@ -49,6 +49,11 @@ media-intake similar ~/Videos/personal/2026/2026-05/GX010123.MP4 -n 20
   sha256-checked) and its 224 px preprocessing; videos average up to 8 frames
   spread over the clip, sampled by `scan_sensitive.video_frames` (ffmpeg, then
   GPU HEVC decode through GStreamer, which Fedora's ffmpeg can't do).
+  A clip shorter than the sampling period still gives its one frame. Raw
+  photos (`.dng`, GoPro `.gpr`) are indexed from what Pillow can read of them.
+  A file nothing decodes (an empty, truncated or audio-only video, a raw Pillow
+  can't open) counts as `undecodable`, gets no vector and is tried again on the
+  next `index`.
   Incremental: a `(path, size, mtime)` cache avoids re-hashing, and only new
   sha256s are embedded; copies share one vector. Files that left the library
   lose their vector.
@@ -115,8 +120,10 @@ Other options: `--redo` (judge again), `--host http://127.0.0.1:PORT`,
   screenshot-junk, duplicate-ish, other) and `confidence` (a number 0..1).
   Anything else, a network error, or a missing or near-limit token count is
   KEEP with no confidence.
-- Videos: 3 frames (`scan_sensitive.video_frames`); trash only when 2 of the
-  3 say TRASH with confidence >= 0.7 (conf: the lowest of those), else keep.
+- Videos: 3 frames (`scan_sensitive.video_frames`; a clip under about 4 s
+  gives 1 or 2); trash only when most of them (2 of 3) say TRASH with
+  confidence >= 0.7 (conf: the lowest of those), else keep. A video nothing
+  decodes counts as `undecodable`: no tag, and it is judged again next run.
 - GPU check: after the first photo it reads `/api/ps` and stops (exit 0,
   `stopped-not-on-gpu` in the counts, model unloaded) when under 90% of the
   model is in VRAM, since a CPU fallback is very slow and holds most of the

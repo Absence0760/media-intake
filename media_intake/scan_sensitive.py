@@ -5,9 +5,11 @@
 
 For each file it records reason labels only, such as "nudity", "passport-mrz",
 "id-barcode", "payment-card", "2fa-qr", "secret-words:<category>",
-"unscanned-video" or "unscanned-barcode". It never writes or prints any OCR text, barcode contents or
-image data, so the report can be read in an AI assistant session without leaking
-what the image shows. An assistant must never open the flagged files themselves;
+"unscanned-video", "unscanned-nudity", "unscanned-barcode", "unscanned-type"
+(an extension no detector reads) or "unscanned-error" (a check crashed on that
+file; the rest of the batch is still scanned). "Not checked" is never "clean".
+It never writes or prints any OCR text, barcode contents or image data, so the
+report can be read in an AI assistant session without leaking what the image shows. An assistant must never open the flagged files themselves;
 you review them in your own image viewer.
 
 Detectors (docs/intake.md has the research and pins):
@@ -18,9 +20,10 @@ Detectors (docs/intake.md has the research and pins):
             prefix + an expiry/network word nearby), keyword families.
   barcodes  zxing-cpp: PDF417 with an AAMVA header (back of a US licence/ID),
             QR codes holding otpauth:// (2FA setup).
-Videos: one frame every 2 s (max 90) through the nudity detector.
+Videos: one frame every 2 s (max 90, at least one for a clip under 2 s) through
+the nudity detector; a detector error on any frame flags "unscanned-nudity".
 """
-import json, os, re, shlex, shutil, subprocess, sys, tempfile
+import contextlib, json, os, re, shlex, shutil, subprocess, sys, tempfile
 
 from PIL import Image, ImageOps
 
@@ -30,7 +33,9 @@ try:
 except Exception:
     pass  # optional: without it HEIC files open as "unreadable" and are flagged
 
-IMG = {".jpg", ".jpeg", ".png", ".webp", ".gif", ".heic", ".heif", ".dng"}
+# Every kind stage copies (sources.MEDIA_EXT) must be here or in VID: a kind left out was
+# filed unchecked (.gpr was). Anything else is flagged "unscanned-type".
+IMG = {".jpg", ".jpeg", ".png", ".webp", ".gif", ".heic", ".heif", ".dng", ".gpr"}
 VID = {".mp4", ".mov", ".3gp", ".mkv", ".webm"}
 NUDE = {"FEMALE_GENITALIA_EXPOSED", "MALE_GENITALIA_EXPOSED", "ANUS_EXPOSED",
         "FEMALE_BREAST_EXPOSED", "BUTTOCKS_EXPOSED"}
@@ -142,14 +147,31 @@ def _gst_hevc_decoder():
 
 
 def video_frames(path, fd, max_frames=90):
-    """Sample frames (every 2 s, spread over at most max_frames) into fd; [] if undecodable."""
+    """Sample frames (every 2 s, spread over at most max_frames) into fd; [] if undecodable.
+
+    A decoder that is missing, crashes or hangs past its timeout also gives [], so every
+    caller treats the clip as "not checked" instead of losing the whole run to one file."""
+    try:
+        return _video_frames(path, fd, max_frames)
+    except (OSError, subprocess.SubprocessError):
+        with contextlib.suppress(OSError):  # partial frames go; a vanished one is no error
+            for f in os.listdir(fd):
+                with contextlib.suppress(OSError):
+                    os.remove(os.path.join(fd, f))
+        return []
+
+
+def _video_frames(path, fd, max_frames):
     try:
         dur = float(subprocess.run(["ffprobe", "-v", "error", "-show_entries", "format=duration",
                                     "-of", "csv=p=0", path], capture_output=True, text=True, timeout=60).stdout or 0)
     except ValueError:
         dur = 0
     every = max(2.0, dur / max_frames) if dur else 2.0
-    r = subprocess.run(["ffmpeg", "-v", "error", "-i", path, "-vf", f"fps=1/{every:.3f},scale=960:-2",
+    # eof_action=pass: without it the fps filter drops the only frame of a clip shorter than
+    # about half the sampling period (a 0.5 s clip gave no frame at all).
+    r = subprocess.run(["ffmpeg", "-v", "error", "-nostdin", "-i", path,
+                        "-vf", f"fps=1/{every:.3f}:eof_action=pass,scale=960:-2",
                         "-frames:v", str(max_frames), os.path.join(fd, "%03d.jpg")],
                        capture_output=True, timeout=900)
     frames = sorted(os.listdir(fd))
@@ -169,6 +191,51 @@ def video_frames(path, fd, max_frames=90):
     r = subprocess.run(["gst-launch-1.0", "-q"] + shlex.split(pipe), capture_output=True, timeout=1800)
     frames = sorted(os.listdir(fd))[:max_frames]
     return frames if r.returncode == 0 and frames else []
+
+
+def scan_file(det, path, tmpdir):
+    """Reason labels for one file ([] = checked and clean)."""
+    ext = os.path.splitext(path)[1].lower()
+    reasons = []
+    if ext in IMG:
+        try:
+            im = Image.open(path)
+            im.load()
+        except Exception:
+            return ["unreadable"]
+        with im:  # a GIF keeps its file open after load(): close it per file, not at GC
+            jpg = path
+            if ext in {".heic", ".heif", ".dng", ".gpr", ".webp", ".gif"}:
+                jpg = os.path.join(tmpdir, "n.jpg")
+                ImageOps.exif_transpose(im).convert("RGB").save(jpg)
+            try:
+                r = nude_flags(det, jpg)
+            finally:
+                if jpg != path:
+                    os.remove(jpg)
+            reasons += ["unscanned-nudity"] if r is None else r
+            reasons += barcode_flags(im)
+            reasons += ocr_flags(im, tmpdir)
+    elif ext in VID:
+        fd = os.path.join(tmpdir, "frames")
+        shutil.rmtree(fd, ignore_errors=True)  # never judge an earlier clip's frames
+        os.makedirs(fd)
+        try:
+            frames = video_frames(path, fd)
+            if not frames:
+                reasons.append("unscanned-video")
+            for f in frames:
+                r = nude_flags(det, os.path.join(fd, f))
+                if r is None:  # the detector failed on this frame: not checked, never clean
+                    reasons.append("unscanned-nudity")
+                elif r:
+                    reasons.append("nudity")
+                    break
+        finally:
+            shutil.rmtree(fd, ignore_errors=True)
+    else:
+        reasons.append("unscanned-type")  # staged as media, but no detector here reads it
+    return reasons
 
 
 def main():
@@ -196,37 +263,12 @@ def main():
     try:
         for path in files:
             rel = os.path.relpath(path, src)
-            ext = os.path.splitext(path)[1].lower()
-            reasons = []
-            if ext in IMG:
-                try:
-                    im = Image.open(path)
-                    im.load()
-                except Exception:
-                    flags[rel] = ["unreadable"]
-                    continue
-                jpg = path
-                if ext in {".heic", ".heif", ".dng", ".webp", ".gif"}:
-                    jpg = os.path.join(tmpdir, "n.jpg")
-                    ImageOps.exif_transpose(im).convert("RGB").save(jpg)
-                r = nude_flags(det, jpg)
-                reasons += ["unscanned-nudity"] if r is None else r
-                if jpg != path:
-                    os.remove(jpg)
-                reasons += barcode_flags(im)
-                reasons += ocr_flags(im, tmpdir)
-            elif ext in VID:
-                fd = os.path.join(tmpdir, "frames")
-                os.makedirs(fd, exist_ok=True)
-                frames = video_frames(path, fd)
-                if not frames:
-                    reasons.append("unscanned-video")
-                else:
-                    for f in frames:
-                        if nude_flags(det, os.path.join(fd, f)):
-                            reasons.append("nudity")
-                            break
-                shutil.rmtree(fd)
+            try:
+                reasons = scan_file(det, path, tmpdir)
+            except Exception:
+                # Fail closed and keep going: one file a check crashes on must not lose the
+                # batch's scan.json (apply refuses without it) nor be filed as clean.
+                reasons = ["unscanned-error"]
             if reasons:
                 flags[rel] = sorted(set(reasons))
             n += 1
