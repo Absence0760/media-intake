@@ -251,7 +251,7 @@ class DeviceCase(unittest.TestCase):
         try:  # restored before tearDown, which couldn't remove a folder it can't list
             out = self.intake("erase", "2026-11-13-mtp", "--phone", self.mtp, "--yes", code=1)
         finally:
-            os.chmod(cam, 0o755)
+            os.chmod(cam, 0o700)
         self.assertIn("refused: nothing deleted from the device", out)
         self.assertIn("could not list", out)
         self.assertIn("can't be ruled out", out)

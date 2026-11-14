@@ -555,7 +555,7 @@ class GoPro(Base):
         os.makedirs(stub)
         with open(os.path.join(stub, "gio"), "w") as f:  # refuses any .LRV, like a busy or read-only file
             f.write(f'#!/bin/sh\ncase "$2" in *.LRV) exit 1;; esac\nexec "{gio}" "$@"\n')
-        os.chmod(os.path.join(stub, "gio"), 0o755)
+        os.chmod(os.path.join(stub, "gio"), 0o700)
         env = dict(self.env, PATH=stub + os.pathsep + self.env.get("PATH", ""))
         out = self.intake("erase", b, "--phone", self.card, "--yes", code=1, env=env)
         self.assertIn("gio remove failed", out)

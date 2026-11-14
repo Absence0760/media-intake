@@ -119,7 +119,7 @@ class ProxyTest(unittest.TestCase):
             p = os.path.join(d, n)
             with open(p, "w") as f:
                 f.write(script)
-            os.chmod(p, 0o755)
+            os.chmod(p, 0o700)
         log = os.path.join(self.tmp, "fake-tools.log")
         self.env.update(PATH=d + os.pathsep + self.env.get("PATH", ""), FAKE_TOOL_LOG=log, FAKE_GST_HAS=" ".join(has))
 
@@ -304,7 +304,7 @@ class ProxyTest(unittest.TestCase):
         self.assertEqual(os.listdir(self.proxies), [])
         with open(gate, "w") as g:  # let the trash finish
             g.write("go")
-        j = G.until(lambda: (lambda j: j if j["done"] else None)(s.get("/api/job")), "the trash to end")
+        G.until(lambda: (lambda j: j if j["done"] else None)(s.get("/api/job")), "the trash to end")
         self.assertFalse(os.path.lexists(hv))
         self.assertEqual(os.listdir(self.proxies), [])
 
