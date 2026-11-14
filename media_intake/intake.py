@@ -25,7 +25,6 @@ Run as `media-intake <command>` (cli.py); `python3 -I media_intake/intake.py` wo
   media-intake tag     BATCH [--no-labels]       (after apply: XMP sidecar tags for filed files)
   media-intake tag-files FILE... [--event SLUG] [--no-labels]   (re-tag library files)
   media-intake mark-used FILE... --post SLUG     (adds Used|<post slug>)
-  media-intake gallery [--drive MOUNT]           (local web gallery: browse, keep, trash, erase)
   media-intake find    [--tag T] [--event E] [--place P] [--project P] [--unused-since 30d]
 
 Tags live in <file>.<ext>.xmp sidecars next to each file (digiKam's default
@@ -2069,14 +2068,6 @@ def cmd_share_copy(a):
 cmd_social_copy = cmd_share_copy  # older name
 
 
-def cmd_gallery(a):
-    import gallery
-    argv = (["--drive", a.drive] if a.drive else []) + ["--port", str(a.port)]
-    if a.share_out:
-        argv += ["--share-out", a.share_out]
-    sys.exit(gallery.main(argv))
-
-
 def clock_offset_arg(v):
     try:
         dates.parse_clock_offset(v)
@@ -2134,9 +2125,6 @@ def build_parser(prog=None):
     s.add_argument("--event"); s.add_argument("--place", help="substring of city, state or country"); s.add_argument("--project")
     s.add_argument("--unused-since", metavar="Nd", help="not used in a post in the last N days")
     s.add_argument("--never-used", action="store_true"); s.add_argument("--root", action="append", help="search here instead of the library folders")
-    s = sp.add_parser("gallery", help="local web gallery of the library (gallery.py)")
-    s.add_argument("--drive", help="backup drive mount, passed to forget by Erase"); s.add_argument("--port", type=int, default=0)
-    s.add_argument("--share-out", help="folder for share-safe copies (default ~/Pictures/share-safe)")
     return ap
 
 
@@ -2144,7 +2132,7 @@ def build_parser(prog=None):
 # of these (tests/test_library_lock.py checks), and main() is the only place that takes it for the CLI.
 LOCKED = {"stage", "plan", "scan", "apply", "release", "erase", "forget", "offload", "purge-review", "trash",
           "not-trash", "suggest-trash", "tag", "tag-files", "mark-used", "migrate-tags"}
-READ_ONLY = {"quarantine", "verify-gone", "wipe-free", "share-copy", "social-copy", "find", "gallery"}
+READ_ONLY = {"quarantine", "verify-gone", "wipe-free", "share-copy", "social-copy", "find"}
 
 
 def main(argv=None, prog=None):
@@ -2152,7 +2140,7 @@ def main(argv=None, prog=None):
     if hasattr(sys.stdout, "reconfigure"):  # a job's log or a pipe gets each line as it is printed
         sys.stdout.reconfigure(line_buffering=True)
     run = globals()["cmd_" + a.cmd.replace("-", "_")]
-    if a.cmd in READ_ONLY:  # gallery takes the lock itself, per write
+    if a.cmd in READ_ONLY:
         run(a)
         return
     import library_lock

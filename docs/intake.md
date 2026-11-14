@@ -99,8 +99,10 @@ run and a CLI `apply` never interleave (`media_intake/library_lock.py`):
   purge-review, trash, not-trash, suggest-trash, tag, tag-files, mark-used,
   migrate-tags).
   The read-only ones in `intake.READ_ONLY` (quarantine, verify-gone, wipe-free,
-  share-copy, find, gallery) never do; a new subcommand counts as locked until
+  share-copy, find) never do; a new subcommand counts as locked until
   it is listed there, and `tests/test_library_lock.py` fails on one in neither.
+  `media-intake gallery` is cli.py's, not intake.py's (gallery.py imports
+  intake.py, never the reverse); it takes the lock itself, per write.
   `vlm-trash` takes it around each batch of verdicts it writes.
 - **Jobs** (the review page's run, the gallery's Trash, Erase and Share-safe copy) take it with
   their job lock at submit and hold it until their last step is over; each
