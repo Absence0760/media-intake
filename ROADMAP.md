@@ -67,8 +67,9 @@ The goal: someone else can install it on Fedora, import a phone, and trust it.
 - [x] Tests that a re-tag replaces only its own namespace and never an owner tag.
 
 ### Tests that still don't exist
-- [ ] Real-browser tests (Playwright, synthetic media) for the gallery and review page:
-      keys, selection, dialogs, video autoplay, Range seeking.
+- [x] Real-browser tests (Playwright, synthetic media) for the gallery and review page:
+      keys, selection, dialogs, video autoplay, Range seeking, job progress and re-attach
+      (`tests/browser/`, the `browser` CI job).
 - [x] End-to-end on a fake MTP and gphoto2 tree with case-only collisions.
 
 ---

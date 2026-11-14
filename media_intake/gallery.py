@@ -1089,7 +1089,7 @@ h2.month{font-size:16px;margin:18px 0 8px;position:sticky;top:52px;background:va
 </div>
 <main id="main"><div id="list"></div><div id="sentinel"></div><div id="plugin" hidden></div></main>
 <div id="viewer" role="dialog" aria-label="Item"><div id="stage"></div><div id="side"></div></div>
-<div class="modal" id="modal"><div class="box"><h3 id="mh"></h3><div id="mb"></div>
+<div class="modal" id="modal" role="dialog" aria-modal="true" aria-labelledby="mh" data-dialog="confirm"><div class="box"><h3 id="mh"></h3><div id="mb"></div>
  <p id="mtype" hidden>Type <b>ERASE</b> to confirm: <input id="mtyped" autocomplete="off" spellcheck="false" aria-label="Type ERASE"></p>
  <div><button id="mgo">Confirm</button> <button id="mno">Cancel</button></div><pre id="mout" hidden></pre></div></div>
 <script>
@@ -1112,7 +1112,7 @@ async function loadFacets(){facets=await api("/api/facets");
 function reset(){items=[];total=0;done=false;cur=-1;$("#list").replaceChildren();sel.clear();dec={};paintSel();more()}
 async function more(){if(loading||done||view.startsWith("p-"))return;loading=true;
  try{const j=await api("/api/list?"+qs(Object.assign(filt(),{offset:items.length,limit:240})));
-  total=j.total;ranked=j.ranked;$("#note").textContent=j.note||"";const start=items.length;items=items.concat(j.items);done=items.length>=total;render(start)}
+  total=j.total;ranked=j.ranked;$("#note").textContent=j.note||"";const start=items.length;items=items.concat(j.items);done=items.length>=total;render(start);document.body.dataset.ready="1"}
  catch(e){$("#note").textContent="Error: "+e.message}finally{loading=false}
  $("#count").textContent=total+" items"+(view==="sug"?" suggested":"");
  if(!done&&$("#sentinel").getBoundingClientRect().top<innerHeight+600)more()}
@@ -1122,7 +1122,7 @@ function render(start){const L=$("#list");let g=L.lastElementChild&&L.lastElemen
   if(k!==gk){const sec=el("section");sec.dataset.k=k;sec.append(el("h2","month",ranked?k:monthName(k)));g=el("div","grid");sec.append(g);L.append(sec);gk=k}
   g.append(tile(it,n))}paintSel()}
 function monthName(k){const [y,m]=k.split("-");return new Date(+y,+m-1,1).toLocaleString(undefined,{month:"long",year:"numeric"})}
-function tile(it,n){const t=el("div","tile");t.id="t"+it.id;t.dataset.n=n;
+function tile(it,n){const t=el("div","tile");t.id="t"+it.id;t.dataset.n=n;t.dataset.item=it.n;
  const im=el("img");im.loading="lazy";im.decoding="async";im.alt=it.n;im.src="/t/"+it.id;im.onerror=()=>{im.replaceWith(el("div","ph",(it.m==="video"?"video: ":"")+it.n))};t.append(im);
  const cb=el("input");cb.type="checkbox";cb.setAttribute("aria-label","select "+it.n);cb.onclick=ev=>{ev.stopPropagation();pick(n,ev.shiftKey)};t.append(cb);
  if(it.m==="video")t.append(el("span","badge","▶"));
@@ -1140,7 +1140,7 @@ function nameOf(id){const it=items.find(i=>i.id===id);return it?it.n:"#"+id}
 // ---------------------------------------------------------------- actions
 async function doKeep(ids){try{const j=await api("/api/keep",{ids});toast(j.result);refreshAfter(ids,false)}catch(e){alert("Keep refused: "+e.message)}}
 function confirmBox(title,lines,needType,go){$("#mh").textContent=title;const b=$("#mb");b.replaceChildren();lines.forEach(l=>b.append(el("p",l.startsWith("!")?"warn":null,l.replace(/^!/,""))));
- $("#mtype").hidden=!needType;$("#mtyped").value="";$("#mgo").disabled=!!needType;$("#mgo").hidden=false;$("#mout").hidden=true;$("#mout").textContent="";$("#modal").classList.add("on");
+ $("#mtype").hidden=!needType;$("#mtyped").value="";$("#mgo").disabled=!!needType;$("#mgo").hidden=false;$("#mout").hidden=true;$("#mout").textContent="";delete $("#modal").dataset.job;$("#modal").classList.add("on");
  $("#mtyped").oninput=()=>{$("#mgo").disabled=$("#mtyped").value!=="ERASE"};if(needType)$("#mtyped").focus();
  $("#mgo").onclick=async()=>{$("#mgo").disabled=true;try{await go()}catch(e){$("#mout").hidden=false;$("#mout").textContent="Refused: "+e.message;$("#mgo").disabled=false}}}
 $("#mno").onclick=()=>{$("#modal").classList.remove("on")};
@@ -1159,7 +1159,7 @@ async function runJob(path,body,ids){try{await api(path,body)}catch(e){if(/still
 function progressMode(){$("#mgo").hidden=true;$("#mtype").hidden=true;$("#mout").hidden=false;$("#mout").textContent="";$("#modal").classList.add("on")}
 function stepText(j){return j.step?` (step ${j.step}${j.total?" of "+j.total:""}: ${j.label})`:""}
 async function poll(since,ids){let j;try{j=await api("/api/job?since="+since)}catch(e){$("#mout").textContent+="\n(server stopped; an action already started keeps going on its own)";return}
- if(j.lines.length){$("#mout").textContent+=j.lines.join("\n")+"\n";$("#mout").scrollTop=1e9}
+ if(j.lines.length){$("#mout").textContent+=j.lines.join("\n")+"\n";$("#mout").scrollTop=1e9}$("#modal").dataset.job=j.done?(j.state==="crashed"?"crashed":j.ok?"done":"failed"):"running";
  if(!j.done){$("#mh").textContent="Running"+stepText(j)+"; closing the page does not stop it";setTimeout(()=>poll(j.next,ids),600);return}
  $("#mh").textContent=j.state==="crashed"?"The action stopped unexpectedly (crashed)"+stepText(j)+(j.step_running?"; the step it started is still running":"")+". Nothing more runs by itself."
   :j.ok?"Done":"Finished with problems (see below)";
@@ -1180,10 +1180,10 @@ $("#sugapply").onclick=()=>{const keep=Object.keys(dec).filter(k=>dec[k]==="keep
 // ---------------------------------------------------------------- viewer
 async function openViewer(n){if(n<0||n>=items.length)return;vi=n;cur=n;let d;try{d=await api("/api/item/"+items[n].id)}catch(e){toast("gone");return}
  const st=$("#stage");st.replaceChildren();
- if(d.src&&d.video){const v=el("video");v.controls=true;v.preload="metadata";v.poster="/t/"+d.id;v.src=d.src;v.style.transform=`rotate(${d.rot}deg)`;st.append(v)}
+ if(d.src&&d.video){const v=el("video");v.controls=true;v.autoplay=true;v.preload="metadata";v.poster="/t/"+d.id;v.src=d.src;v.style.transform=`rotate(${d.rot}deg)`;st.append(v)}
  else if(d.src){const im=el("img");im.alt=d.name;im.src=d.src;im.style.transform=`rotate(${d.rot}deg)`;im.onerror=()=>im.replaceWith(el("p",null,"No preview for this format in the browser"));st.append(im)}
  else st.append(el("p",null,"No preview for this format in the browser"));
- const s=$("#side");s.replaceChildren(el("h3",null,d.name));
+ $("#viewer").dataset.current=d.name;const s=$("#side");s.replaceChildren(el("h3",null,d.name));
  const row=(k,v)=>{if(v)s.append(el("div","row",k+": "+v))};
  row("Date",d.date);row("Place",d.place);row("Event",d.event);row("Project",d.project);row("Source",d.source);row("Folder",d.folder);row("Resolution",d.res);row("Size",d.size);
  if(d.ai!=null)row("AI trash confidence",d.ai.toFixed(1));if(d.used.length)row("Used in",d.used.join(", "));if(d.kept)row("Owner","kept");
@@ -1199,7 +1199,7 @@ async function openViewer(n){if(n<0||n>=items.length)return;vi=n;cur=n;let d;try
  $("#viewer").classList.add("on");if(n>=items.length-20)more()}
 function closeViewer(){vi=-1;$("#viewer").classList.remove("on");$("#stage").replaceChildren();paintSel()}
 // ---------------------------------------------------------------- keys
-document.addEventListener("keydown",ev=>{if(ev.target.tagName==="INPUT"||ev.target.tagName==="SELECT"||ev.ctrlKey||ev.metaKey||ev.altKey||$("#modal").classList.contains("on")){if(ev.key==="Escape")$("#modal").classList.remove("on");return}
+document.addEventListener("keydown",ev=>{if((ev.target.tagName==="INPUT"&&ev.target.type!=="checkbox")||ev.target.tagName==="SELECT"||ev.ctrlKey||ev.metaKey||ev.altKey||$("#modal").classList.contains("on")){if(ev.key==="Escape"&&$("#modal").classList.contains("on")){$("#modal").classList.remove("on");ev.target.blur()}return}
  const k=ev.key;
  if(vi>=0){const id=items[vi].id;
   if(k==="Escape")closeViewer();else if(k==="ArrowRight")openViewer(vi+1);else if(k==="ArrowLeft")openViewer(vi-1);

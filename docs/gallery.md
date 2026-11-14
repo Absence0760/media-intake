@@ -26,7 +26,7 @@ copies there go too.
   the erase log lists (`label.flagged()`).
 - **Library**: a timeline grid by month, newest first, 240 items per page with
   infinite scroll; thumbnails load lazily. Click opens the large view (the
-  image, or `<video controls>`; HEIC/DNG get a 1600 px JPEG made in memory)
+  image, or `<video controls>`, which starts playing by itself; HEIC/DNG get a 1600 px JPEG made in memory)
   with tags, date, place, event, project, source, folder, resolution and size.
   Arrow keys go to the previous/next item, Esc closes.
 - **Trash suggestions**: `Review|maybe-trash`, an `AI|vlm/<model>/trash/*`
@@ -158,14 +158,16 @@ HOME, the real `intake.py` for trash and forget, and a demo plugin view; the
 job tests swap in a fake `intake.py` whose trash waits on a FIFO, then kill
 the server or the worker mid-job.
 
+In headless Chromium (`tests/browser/test_browser_gallery.py`, see
+CONTRIBUTING.md, Tests): keys, click and shift-click selection, the Trash,
+Erase (ERASE typed) and Close confirms, the lightbox video playing by itself
+and seeking by Range, and the job dialog's progress, re-attach after a reload
+and crash message.
+
 ## Not verified
 
-- The job dialog (progress, attach on load, crash message) in a real browser.
-- A full click-through in a real browser (layout, keys, selection, dialogs,
-  infinite scroll, video playback, HEVC posters through GStreamer); the tests
-  drive the HTTP API. Checked: the inline script parses (`node --check`) and
-  headless Chromium renders the first page of the synthetic library (240
-  tiles, month headings, filters filled).
+- Layout, infinite scroll and HEVC posters through GStreamer in a real
+  browser, and any browser but Chromium.
 - Semantic search and Similar through the venv: tested only as "unavailable,
   falls back", not with the real model.
 - Start-up time on a large real library read from disk.
