@@ -119,6 +119,7 @@ class VlmTrash(unittest.TestCase):
     @classmethod
     def tearDownClass(cls):
         cls.srv.shutdown()
+        cls.srv.server_close()  # shutdown() only stops serve_forever; this closes the listening socket
 
     def setUp(self):
         self.d = tempfile.mkdtemp(prefix="vlm-test-")
@@ -348,12 +349,12 @@ class VlmTrash(unittest.TestCase):
             time.sleep(0.05)
             return reply({"verdict": "KEEP", "reason": "other", "confidence": 0.9})
         Stub.reply = slow
-        proc = subprocess.Popen([PY, "-I", SCRIPT, "--host", self.host, "--all"], env=self.env,
-                                stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
-        while n[0] < 27:  # past the first 25-file checkpoint
-            time.sleep(0.02)
-        proc.kill()
-        proc.wait()
+        # DEVNULL, not PIPE: nothing reads the output, and unread pipes would be left open
+        with subprocess.Popen([PY, "-I", SCRIPT, "--host", self.host, "--all"], env=self.env,
+                              stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL) as proc:
+            while n[0] < 27 and proc.poll() is None:  # past the first 25-file checkpoint (or it died: fail below)
+                time.sleep(0.02)
+            proc.kill()
         code, c, _ = self.run_v("--all")
         self.assertGreaterEqual(c["already"], 25)
         self.assertEqual(c["already"] + c["todo"], 30)
@@ -385,8 +386,9 @@ class RealOllama(unittest.TestCase):
     def test_real_call_synthetic(self):
         import urllib.request
         try:
-            urllib.request.build_opener(urllib.request.ProxyHandler({})).open(
-                "http://127.0.0.1:11434/api/version", timeout=3)
+            with urllib.request.build_opener(urllib.request.ProxyHandler({})).open(
+                    "http://127.0.0.1:11434/api/version", timeout=3):
+                pass  # reachable is all this needs; the with closes the response
         except OSError:
             self.skipTest("Ollama not reachable")
         import vlm_trash
