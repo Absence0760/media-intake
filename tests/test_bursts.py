@@ -6,10 +6,9 @@
 import datetime, json, os, subprocess, sys, tempfile, unittest
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
-import support  # noqa: E402,F401  (hermetic config)
+import support  # noqa: E402  (hermetic config; puts media_intake/ on sys.path)
 
-HERE = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "media_intake")
-sys.path.insert(0, HERE)
+HERE = support.PKG
 import bursts  # noqa: E402
 
 T0 = datetime.datetime(2026, 11, 8, 7, 15, 0)

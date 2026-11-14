@@ -7,7 +7,9 @@ record the SigLIP revision pinned in pins.json. Synthetic npz files in a throwaw
 import os, shutil, sys, tempfile, unittest
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
-import support  # noqa: E402,F401  (hermetic config)
+import support  # noqa: E402  (hermetic config)
+
+support.check_hermetic()
 
 import label  # noqa: E402
 
