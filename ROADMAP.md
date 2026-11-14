@@ -59,10 +59,13 @@ The goal: someone else can install it on Fedora, import a phone, and trust it.
 - [x] Device identity from Make/Model/serial: tag `Source|<model>` and name batches by it;
       two GoPros with the same file numbers go to separate device folders, never `_1`.
 - [x] GoPro chapters (GX01xxxx, GX02xxxx...) dated and grouped by the first chapter.
+- [ ] Source kind `folder` for laptop folders (refuse HOME itself, hidden/config dirs, repos,
+      the state dir, library roots, password-manager paths; offload refuses folder sources).
 
 ### Tag precedence (who writes what)
-- [x] Review page writes `Owner|keep` and `Owner|trash` (the gallery's Keep already writes
-      `Owner|keep`); nothing writes `Owner|trash` yet.
+- [x] Review page and gallery record owner decisions: Keep writes `Owner|keep`; trash
+      records the sha256 in `trashed.json` (the durable `Owner|trash`, so it never comes
+      back) and marks surviving library copies `Owner|trash` in their sidecars.
 - [x] All tools honour `Owner|not-trash`; drop the legacy `Review|not-trash`.
 - [x] Tests that a re-tag replaces only its own namespace and never an owner tag.
 
