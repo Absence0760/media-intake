@@ -34,6 +34,9 @@ A change can hit several rows. Report only the rows that match.
 | A subcommand or option added, removed or renamed (`media_intake/cli.py`, any `argparse` change) | `README.md` § Commands (the table and the walkthrough), the feature page in `docs/` |
 | Stage, plan, scan, apply, quarantine, release, dedupe, erase, trash, offload, tagging | `docs/intake.md` (the matching section: Commands, Duplicates, Trash vs erase, Erasing, Tagging) |
 | Capture dates, `--clock-offset` (`media_intake/dates.py`) | `docs/intake.md` § Dates |
+| Device ids, the serial pseudonym, `device-salt`, GoPro chapters (`media_intake/devices.py`) | `docs/intake.md` § Devices (and § GoPro chapters), `docs/configuration.md` (the `state` row's `device-salt`) |
+| Owner tags (`media_intake/owner.py`, `Owner\|keep` / `not-trash` / `trash`), `migrate-tags` | `docs/intake.md` § Tagging (§ Tags: who writes what, § Owner decisions), `README.md` § Commands |
+| Real-browser tests (`tests/browser/`), `requirements-browser.txt` | `CONTRIBUTING.md` § Tests and § Pins |
 | Review page | `docs/review-ui.md` |
 | Detached jobs (`media_intake/jobs.py`) | `docs/review-ui.md` and `docs/gallery.md` (the pages that start them) |
 | The library lock (`media_intake/library_lock.py`, `intake.LOCKED` / `READ_ONLY`) | `docs/intake.md` § One writer at a time, `docs/configuration.md` (`MEDIA_INTAKE_LOCK_WAIT`) |
