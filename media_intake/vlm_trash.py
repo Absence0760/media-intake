@@ -42,6 +42,7 @@ import label  # noqa: E402  (read-only: refused(), STATE, IMG/VID)
 HOME = os.path.expanduser("~")
 STATE = label.STATE
 import config  # noqa: E402
+import library_lock  # noqa: E402  (stdlib only)
 ROOTS = config.library_roots()
 PROTECTED = config.protected_tags()
 IMG = label.IMG | {".dng"}
@@ -300,7 +301,17 @@ def verdict_tags(verdict, reason, conf):
 
 def write_verdicts(items, tags):
     """items: [(path, verdict, reason, conf)]. Sidecar only. Removes this model's previous
-    AI|vlm/<model>/ tags, adds the new ones; no other keyword is touched."""
+    AI|vlm/<model>/ tags, adds the new ones; no other keyword is touched. Under the library lock
+    (library_lock.py), so a gallery erase or a CLI apply never runs in between; a file that went
+    away while it was judged gets no sidecar."""
+    try:
+        with library_lock.hold("vlm_trash.py", wait=library_lock.cli_wait(), out=sys.stderr):
+            _write_verdicts([it for it in items if os.path.lexists(it[0])], tags)
+    except library_lock.Busy as e:
+        sys.exit(f"vlm_trash: refused: {e}")
+
+
+def _write_verdicts(items, tags):
     blocks = []
     for path, verdict, reason, conf in items:
         x = path + ".xmp"

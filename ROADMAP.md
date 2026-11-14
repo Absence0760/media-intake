@@ -48,7 +48,7 @@ The goal: someone else can install it on Fedora, import a phone, and trust it.
       line. Audited scripts and docs: none found. `tests/test_cli.py` guards every `.py`,
       `.sh`, workflow, `.claude/` file and the Markdown at the repo root and in `docs/`
       (code comments and Markdown lines that say "never" state the rule, so they pass).
-- [ ] Don't move library files while a scan/tag/apply job runs: take a lock per library.
+- [x] Don't move library files while a scan/tag/apply job runs: take a lock per library.
 
 ### Dates and devices
 - [x] Implausible camera dates (GoPro with an unset clock writes 2015-12-31/2016-01-01):

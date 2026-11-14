@@ -70,6 +70,12 @@ large view the keys act on the item shown; **R** / **Shift+R** rotate.
 | My tag + / - | sidecar `HierarchicalSubject` + its `dc:Subject` leaf. Refused for the tools' namespaces (`Project\|`, `Source\|`, `Event\|`, `Place\|`, `Label\|`, `Review\|`, `AI\|`, `Used\|`, `Owner\|`); removal only touches your tags, and keeps a leaf another tag still uses. |
 | Rotate | sidecar `XMP-tiff:Orientation` only (1/6/3/8). The original is never re-encoded or written; digiKam reads the same field. |
 
+Every action holds the library lock ([intake.md](intake.md), "One writer at
+a time"): Keep, my tags and Rotate for the write, Trash and Erase for their
+whole job. While a CLI command (`apply`, `erase`, ...), a review run or
+another gallery's job holds it, the action gets 409 naming the holder and
+nothing is written; browsing is never locked.
+
 The summary before Trash or Erase lists the names and warns when any were
 used or kept before. Trash and Erase run one at a time with their output
 streamed into the dialog.
@@ -84,7 +90,9 @@ one that has started:
   and media until it ends.
 - One at a time across every gallery page and server: an `flock` on
   `<state>/jobs/gallery.lock`, so a second Trash or Erase gets 409 and the
-  page shows the running one.
+  page shows the running one. The job also holds the library lock, so it
+  can't start while a review run or a CLI command is changing the library
+  (409, naming it), and they can't start while it runs.
 - A job whose worker PID is gone (checked by PID and its `/proc` start time) is
   reported as crashed, at its step, not as running; its files stay busy while
   the step it started is still running, and nothing re-runs by itself.

@@ -24,7 +24,7 @@ random port, random token swapped for an HttpOnly SameSite=Strict cookie, Host
 check, CSRF value on every POST, no-store + strict CSP, media by opaque id only.
 Originals are never written: sidecars (<file>.<ext>.xmp) only. docs/gallery.md.
 """
-import argparse, datetime, html, http.server, io, json, os, re, secrets, shutil, subprocess, sys, tempfile
+import argparse, contextlib, datetime, html, http.server, io, json, os, re, secrets, shutil, subprocess, sys, tempfile
 import threading, time, urllib.parse
 import xml.etree.ElementTree as ET
 
@@ -32,6 +32,7 @@ HERE = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, HERE)
 import intake  # noqa: E402  (constants, sidecar helpers, trash_allowed, exiftool_batch)
 import jobs  # noqa: E402  (trash / erase run as a detached job: <state>/jobs/gallery.*)
+import library_lock  # noqa: E402  (Keep, my tags, Rotate write sidecars under the library lock)
 import label  # noqa: E402  (flagged / refused: stdlib only at import)
 import plugins  # noqa: E402  (extra tabs: gallery_views())
 import review_ui as R  # noqa: E402  (server guards, media with Range, sizes)
@@ -600,6 +601,19 @@ class App:
                 fh.write(intake.EMPTY_XMP)
         return x
 
+    @contextlib.contextmanager
+    def writing(self, what):
+        """The library lock around one sidecar write (taken before self.lock, never waited on: an HTTP request
+        gets 409 naming the holder, e.g. a CLI apply or a review run, at once)."""
+        try:
+            fd = library_lock.acquire(f"gallery {what}")
+        except library_lock.Busy as e:
+            raise RuntimeError(str(e)) from None
+        try:
+            yield
+        finally:
+            os.close(fd)
+
     def run_exiftool(self, blocks):
         try:
             intake.exiftool_batch(blocks)
@@ -616,7 +630,7 @@ class App:
         return leaf not in {t.split("|")[-1] for t in rest} | {t.split("/")[-1] for t in it["tagslist"]}
 
     def keep(self, ids):
-        with self.lock:
+        with self.writing("keep"), self.lock:
             ids = self.targets(ids)
             blocks = []
             for i in ids:
@@ -643,7 +657,7 @@ class App:
             raise ValueError("Project|, Source|, Event|, Place|, Label|, Review|, AI|, Used| and Owner| belong to the "
                              "tools; pick another name")
         leaf = tag.split("|")[-1]
-        with self.lock:
+        with self.writing("tag"), self.lock:
             ids = self.targets(ids)
             blocks = []
             for i in ids:
@@ -669,7 +683,7 @@ class App:
     def rotate(self, ids, way):
         if way not in ("cw", "ccw"):
             raise ValueError("cw or ccw")
-        with self.lock:
+        with self.writing("rotate"), self.lock:
             ids = self.targets(ids)
             blocks, new = [], {}
             for i in ids:
@@ -697,8 +711,8 @@ class App:
             files = [list(self.items[i]["fid"]) for i in ids if self.items[i].get("fid")]
             try:
                 claim = jobs.claim(JOB_KEY)  # atomic across pages and servers; the worker inherits it
-            except jobs.Busy:
-                raise RuntimeError("another action is still running")
+            except jobs.Busy as e:  # this page's last job, another page's, or the library lock (says who)
+                raise RuntimeError(f"another action is still running: {e}")
             with claim:
                 st = claim.spawn("commands", dict(label=label_, files=files, count=len(ids)), total=len(argsets),
                                  private=dict(argsets=argsets, paths=paths, **({} if redact else {"shown": shown})),

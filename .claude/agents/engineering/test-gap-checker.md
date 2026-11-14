@@ -40,6 +40,7 @@ Tests are stdlib `unittest` in `tests/`, one `test_<area>.py` per area, every on
 | `media_intake/semantic.py`, `build_label_embeddings.py`, `labels.yaml` | `tests/test_semantic.py` |
 | `media_intake/vlm_trash.py` | `tests/test_vlm_trash.py` (Ollama faked, never real) |
 | `media_intake/jobs.py` (detached review / gallery jobs) | `tests/test_jobs.py` |
+| `media_intake/library_lock.py`, `intake.py` `LOCKED` / `READ_ONLY` | `tests/test_library_lock.py` |
 | `media_intake/dates.py` (capture dates, `--clock-offset`) | `tests/test_dates.py` |
 | The device-delete gate (`intake.py` `device_targets`, `sources.py` `check_case`) | `tests/test_device_case.py` |
 | `media_intake/cli.py` `doctor` | `tests/test_cli.py` |
