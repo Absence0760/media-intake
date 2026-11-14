@@ -37,7 +37,7 @@ def picture(path, seed, dt):
         x, y = (i * 83 * (seed + 3)) % 640, (i * 47 * (seed + 5)) % 480
         d.rectangle([x, y, x + 90, y + 70], fill=((i * 40 + seed * 70) % 255, (i * 29) % 255, (seed * 50) % 255))
     ex = Image.Exif()
-    ex.get_ifd(0x8769)[36867] = dt
+    ex[0x8769] = {36867: dt}  # Pillow 10.2 (Ubuntu 24.04) drops writes made through get_ifd()
     os.makedirs(os.path.dirname(path), exist_ok=True)
     im.save(path, quality=90, exif=ex)
 

@@ -53,7 +53,7 @@ def write_geo(d):
 def gps_jpg(path, lat, lon, dt="2026:11:08 07:15:02", seed=1):
     from PIL import Image
     ex = Image.Exif()
-    ex.get_ifd(0x8769)[36867] = dt
+    ex[0x8769] = {36867: dt}  # Pillow 10.2 (Ubuntu 24.04) drops writes made through get_ifd()
     g = ex.get_ifd(0x8825)
     def dms(v):
         v = abs(v)
