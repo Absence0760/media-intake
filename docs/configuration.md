@@ -26,6 +26,9 @@ Environment variables win over the file: `MEDIA_INTAKE_STATE`, `PHOTO_LIBRARY`,
 `queue.wrapper`. `MEDIA_INTAKE_LOCK_WAIT` (seconds, default 10, `0` to refuse
 at once, at most 86400) is how long a CLI command waits for the library lock
 before it exits 75 ([intake.md](intake.md), "One writer at a time").
+`MEDIA_INTAKE_PROGRESS_EVERY` (files, default 10000) and
+`MEDIA_INTAKE_PROGRESS_SECS` (seconds, default 2) set how often the long
+sweeps in erase, forget and verify-gone print a counts-only progress line.
 
 `MEDIA_INTAKE_LIBRARY_LOCK_FD` is internal, not a setting: a detached job's
 worker sets it for the steps it starts, so they share the library lock it
