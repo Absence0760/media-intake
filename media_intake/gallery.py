@@ -2,7 +2,7 @@
 """Local web gallery for the media library (a day-to-day browser, in place of digiKam).
 
   media-intake gallery [--drive MOUNT] [--port 0]
-  python3 -I media_intake/gallery.py         (same flags)
+  python3 -I media_intake/gallery.py         (same flags, and --share-out DIR)
 
 Shows everything under the library, videos and project folders (config.toml)
 (never the media-intake state folder: quarantine, staging, review; never a file
@@ -12,9 +12,13 @@ dir 0700, files 0600; intake.py erase/forget/trash delete them by sha and
 verify-gone checks them), filters, semantic search (semantic.py, local SigLIP),
 and your actions: Keep, Trash (intake.py trash), Erase (intake.py forget, the
 erase-everywhere path), my tags, Rotate (XMP-tiff:Orientation in the sidecar
-only). A left sidebar holds the views with counts (/api/facets): Library, Trash
-suggestions, any tab a plugin adds (plugins.py gallery_views(), docs/plugins.md) and
-the quick views Recently added, Possible child, Untagged; then search and the filters.
+only), Set event, all on one item or a selection, and Share-safe copy (intake.py
+share-copy into a new folder under --share-out, default ~/Pictures/share-safe, as a
+job). A left sidebar holds the views with counts (/api/facets): Library, Trash
+suggestions, any tab a plugin adds (plugins.py gallery_views(), docs/plugins.md),
+the quick views Recently added, Possible child, Untagged, and the Events (Event|
+tags; rename and merge rewrite only those, in the sidecars that have them); then
+search and the filters.
 Selection actions sit in a bottom bar shown only while something is selected. Media
 the browser can't decode opens in the desktop's player (xdg-open, a POST naming one
 item id, argument list, library files only). Trash and Erase run as a detached
@@ -61,6 +65,8 @@ AI_CONF = re.compile(r"^AI\|vlm/([^/]+)/conf/([0-9.]+)$")
 SUGGEST_MIN = 0.7
 OPENER = "xdg-open"  # the desktop's default app, for media the browser can't decode (found on PATH)
 RECENT_DAYS = 30  # "Recently added": filed into the library in the last N days
+# Share-safe export (intake.py share-copy --out): each export gets a new dated folder under this one.
+SHARE_OUT = os.path.join(HOME, "Pictures", "share-safe")
 
 NS_RDF = "http://www.w3.org/1999/02/22-rdf-syntax-ns#"
 XMP_WANT = {
@@ -344,8 +350,9 @@ class LockBusy(RuntimeError):
 
 
 class App:
-    def __init__(self, items, drive=None, views=()):
+    def __init__(self, items, drive=None, views=(), share_out=None):
         self.items = items
+        self.share_out = os.path.abspath(share_out or SHARE_OUT)
         self.by_path = {it["path"]: i for i, it in enumerate(items)}
         # (device, inode): how a job's status file names its files, so no path is written (see start_job)
         self.by_fid = {tuple(it["fid"]): i for i, it in enumerate(items) if it.get("fid")}
@@ -471,9 +478,11 @@ class App:
             counts["used:used" if it["used"] else "used:unused"] += 1
             counts["suggest"] += self.suggested(it)
             counts["recent"] += it.get("ctime", 0) >= recent
-            for k in ("project", "source", "event", "place"):
+            for k in ("project", "source", "place"):
                 if it[k]:
                     c[k][it[k]] += 1
+            for e in self.events_of(it):  # an item in two events counts in both (the sidebar's Events list)
+                c["event"][e] += 1
             c["month"][it["date"][:7]] += 1
             c["month"][it["date"][:4]] += 1
             for t in it["labels"]:
@@ -485,7 +494,9 @@ class App:
         self.text_checked.wait(timeout=0.05)
         search = None if self.text_why is None and self.text_checked.is_set() \
             else (self.text_why or "checking the search model...")
-        return dict(total=n, facets=out, counts=dict(counts), recent_days=RECENT_DAYS, search=search)
+        share = "~/" + os.path.relpath(self.share_out, HOME) if self.share_out.startswith(HOME + os.sep) \
+            else self.share_out
+        return dict(total=n, facets=out, counts=dict(counts), recent_days=RECENT_DAYS, search=search, share_out=share)
 
     def suggested(self, it):
         if it["kept"] or it["used"] or f"Project|{it['project']}" in PROTECTED or PROTECTED.intersection(it["tags"]):
@@ -500,9 +511,11 @@ class App:
             return False
         if f.get("kind") in ("photo", "video") and it["media"] != f["kind"]:
             return False
-        for k in ("project", "source", "event", "place"):
+        for k in ("project", "source", "place"):
             if f.get(k) and it[k] != f[k]:
                 return False
+        if f.get("event") and f["event"] not in self.events_of(it):
+            return False
         if f.get("label") and f["label"] not in it["labels"]:
             return False
         if f.get("mine") and f["mine"] not in it["mine"]:
@@ -678,6 +691,23 @@ class App:
             self.refresh(ids)
             return f"kept {len(ids)}: Owner|keep + Owner|not-trash, Review|maybe-trash and Owner|trash removed"
 
+    def tag_block(self, it, add=(), remove=(), extra=()):
+        """One exiftool block for one sidecar: HierarchicalSubject tags added / removed with their dc:Subject
+        leaves (a removed leaf only when no other tag still uses it), then extra arguments. The one place that
+        edits a sidecar's tag list: my tags, events (set, rename, merge) all go through here."""
+        b = ["-q", "-m", "-overwrite_original", "-sep", "@@sep@@"]
+        adding = {t.split("|")[-1] for t in add}
+        for t in remove:
+            b.append(f"-XMP-lr:HierarchicalSubject-={t}")
+        for leaf in sorted({t.split("|")[-1] for t in remove} - adding):
+            if self.leaf_free(it, leaf, set(remove)):
+                b.append(f"-XMP-dc:Subject-={leaf}")
+        for t in add:
+            leaf = t.split("|")[-1]
+            b += [f"-XMP-lr:HierarchicalSubject-={t}", f"-XMP-lr:HierarchicalSubject+={t}",
+                  f"-XMP-dc:Subject-={leaf}", f"-XMP-dc:Subject+={leaf}"]
+        return b + list(extra) + [self.ensure_sidecar(it) if add else intake.sidecar(it["path"])]
+
     def tag(self, ids, tag, op):
         tag = (tag or "").strip()
         if not TAG_RE.match(tag) or tag.startswith("-") or "@@sep@@" in tag:
@@ -685,29 +715,116 @@ class App:
         if not owner_tag(tag):
             raise ValueError("Project|, Source|, Event|, Place|, Label|, Review|, AI|, Used| and Owner| belong to the "
                              "tools; pick another name")
-        leaf = tag.split("|")[-1]
+        if op not in ("add", "remove"):
+            raise ValueError("op is add or remove")
         with self.writing("tag"), self.lock:
             ids = self.targets(ids)
             blocks = []
             for i in ids:
                 it = self.items[i]
                 if op == "add":
-                    x = self.ensure_sidecar(it)
-                    blocks.append(["-q", "-m", "-overwrite_original", "-sep", "@@sep@@",
-                                   f"-XMP-lr:HierarchicalSubject-={tag}", f"-XMP-lr:HierarchicalSubject+={tag}",
-                                   f"-XMP-dc:Subject-={leaf}", f"-XMP-dc:Subject+={leaf}", x])
-                elif op == "remove":
-                    if tag not in it["tags"]:
-                        continue
-                    b = ["-q", "-m", "-overwrite_original", "-sep", "@@sep@@", f"-XMP-lr:HierarchicalSubject-={tag}"]
-                    if self.leaf_free(it, leaf, {tag}):
-                        b.append(f"-XMP-dc:Subject-={leaf}")
-                    blocks.append(b + [intake.sidecar(it["path"])])
-                else:
-                    raise ValueError("op is add or remove")
+                    blocks.append(self.tag_block(it, add=[tag]))
+                elif tag in it["tags"]:
+                    blocks.append(self.tag_block(it, remove=[tag]))
             self.run_exiftool(blocks)
             self.refresh(ids)
             return f"{'added' if op == 'add' else 'removed'} {tag!r} on {len(blocks)}"
+
+    # ---------------------------------------------- events (Event|<slug> tags; sidecars only)
+    def events_of(self, it):
+        """Every event an item is in: its Event| tags, and XMP-iptcExt:Event when it has no Event| tag."""
+        ev = [t[6:] for t in it["tags"] if t.startswith("Event|")]
+        return ev or ([it["xevent"]] if it.get("xevent") else [])
+
+    def event_names(self):
+        return {e for it in self.items if not it["gone"] for e in self.events_of(it)}
+
+    def event_block(self, it, new, drop):
+        """The block that moves one item out of the events in drop (all of its events when drop is None) and
+        into new ("" = no event): Event| tags through tag_block, and XMP-iptcExt:Event kept in step. Only
+        Event| tags are ever removed, so Owner|, my tags and every other namespace stay as they are."""
+        old = [t for t in it["tags"] if t.startswith("Event|") and (drop is None or t[6:] in drop)]
+        add = [f"Event|{new}"] if new else []
+        remove = [t for t in old if t not in add]
+        xev = it.get("xevent") or ""
+        extra = []
+        if new and (not xev or drop is None or xev in drop):
+            if xev != new:
+                extra.append(f"-XMP-iptcExt:Event={new}")
+        elif not new and xev and (drop is None or xev in drop):
+            extra.append("-XMP-iptcExt:Event=")
+        changed = bool(remove or extra or (add and add[0] not in it["tags"]))
+        if not changed:
+            return None  # already in that event: nothing to write
+        return self.tag_block(it, add=add, remove=remove, extra=extra)
+
+    @staticmethod
+    def check_event_name(name, what="event"):
+        name = (name or "").strip() if isinstance(name, str) else None
+        if not name or not intake.config.SLUG.match(name):
+            raise ValueError(f"the {what} is a slug: lowercase letters, digits and dashes, up to 64")
+        return name
+
+    def set_event(self, ids, event):
+        """Bulk: every selected item into one event (replacing its others), or out of every event (event "")."""
+        if event is None or not isinstance(event, str):
+            raise ValueError("event is a slug, or empty to clear")
+        event = event.strip()
+        if event:
+            event = self.check_event_name(event)
+        with self.writing("set event"), self.lock:
+            ids = self.targets(ids)
+            blocks = [b for b in (self.event_block(self.items[i], event, None) for i in ids) if b]
+            self.run_exiftool(blocks)
+            self.refresh(ids)
+            return f"event {event!r} set on {len(blocks)}" if event else f"event cleared on {len(blocks)}"
+
+    def rename_event(self, old, new):
+        """Rename an event in every sidecar that has it (Event|old -> Event|new). new must not exist yet: joining
+        an existing event is a merge."""
+        if not isinstance(old, str) or not old.strip():
+            raise ValueError("which event?")
+        old = old.strip()
+        new = self.check_event_name(new, "new name")
+        if new == old:
+            raise ValueError("that is already its name")
+        with self.writing("rename event"), self.lock:
+            names = self.event_names()
+            if old not in names:
+                raise ValueError("no such event")
+            if new in names:
+                raise ValueError(f"{new!r} already exists: use Merge to join the two")
+            return self._move_events({old}, new, f"renamed {old!r} to {new!r}")
+
+    def merge_events(self, sources, into):
+        """Merge events into an existing one: every item of each source event moves to into."""
+        if isinstance(sources, str):
+            sources = [sources]
+        if not isinstance(sources, list) or not sources or len(sources) > 200 \
+                or not all(isinstance(s, str) and s.strip() for s in sources):
+            raise ValueError("which events?")
+        sources = {s.strip() for s in sources}
+        if not isinstance(into, str) or not into.strip():
+            raise ValueError("merge into which event?")
+        into = into.strip()
+        if into in sources:
+            raise ValueError("an event can't be merged into itself")
+        with self.writing("merge events"), self.lock:
+            names = self.event_names()
+            if into not in names or not sources <= names:
+                raise ValueError("no such event")
+            return self._move_events(sources, into, f"merged {', '.join(sorted(map(repr, sources)))} into {into!r}")
+
+    def _move_events(self, drop, new, what):
+        """(Under the library lock and self.lock.) Every live item in one of the drop events, moved to new."""
+        for name in drop:
+            if not TAG_RE.match(name) or name.startswith("-") or "@@sep@@" in name:
+                raise ValueError("that event's name can't be rewritten here")
+        ids = [i for i, it in enumerate(self.items) if not it["gone"] and drop & set(self.events_of(it))]
+        blocks = [b for b in (self.event_block(self.items[i], new, drop) for i in ids) if b]
+        self.run_exiftool(blocks)
+        self.refresh(ids)
+        return f"{what}: {len(blocks)} sidecars"
 
     def rotate(self, ids, way):
         if way not in ("cw", "ccw"):
@@ -729,15 +846,16 @@ class App:
             return f"rotated {len(ids)} (sidecar XMP-tiff:Orientation only; originals untouched)"
 
     # ---------------------------------------------- trash / erase (a detached jobs.py job, one at a time)
-    def start_job(self, label_, argsets, ids):
+    def start_job(self, label_, argsets, ids, hold=True):
         """Paths reach the worker on a pipe (private); the status file gets only (device, inode) pairs and a
-        count. An erase is a redact job: its command lines carry no path and its output is scrubbed at the end."""
+        count. An erase is a redact job: its command lines carry no path and its output is scrubbed at the end.
+        hold=False (a share-safe copy, which deletes nothing): the files stay viewable while it runs."""
         redact = label_ == "erase"
         shown = [" ".join(a if a.startswith("--") else "'" + os.path.basename(a) + "'" if os.path.isabs(a) else a
                           for a in args) for args in argsets]
         with self.lock:
             paths = [self.items[i]["path"] for i in ids]
-            files = [list(self.items[i]["fid"]) for i in ids if self.items[i].get("fid")]
+            files = [list(self.items[i]["fid"]) for i in ids if self.items[i].get("fid")] if hold else []
             try:
                 claim = jobs.claim(JOB_KEY)  # atomic across pages and servers; the worker inherits it
             except jobs.Busy as e:  # this page's last job, another page's, or the library lock (says who)
@@ -847,6 +965,50 @@ class App:
         args = ["forget", *paths, "--yes"] + (["--drive", self.drive] if self.drive else [])
         self.start_job("erase", [args], ids)
         return f"erasing {len(ids)} everywhere"
+
+    def share_dir(self):
+        """A new, empty folder for one share-safe export: <share_out>/<date>-<time>[-N], 0700. Never inside a
+        library root or the state folder (the copies would be taken for library files)."""
+        base, real = self.share_out, os.path.realpath(self.share_out)
+        for r in ROOTS + [STATE]:
+            rr = os.path.realpath(r)
+            if real == rr or real.startswith(rr + os.sep):
+                raise ValueError(f"the share-safe folder {self.share_out} is inside the library or the state "
+                                 "folder; start the gallery with --share-out DIR")
+        os.makedirs(base, mode=0o700, exist_ok=True)
+        stamp = f"{datetime.datetime.now():%Y-%m-%d-%H%M%S}"
+        for n in range(1, 100):
+            d = os.path.join(base, stamp if n == 1 else f"{stamp}-{n}")
+            try:
+                os.mkdir(d, 0o700)
+            except FileExistsError:
+                continue
+            return d
+        raise RuntimeError("could not make a new share-safe folder")
+
+    def share(self, ids):
+        """Share-safe copies of the selection: intake.py share-copy (all metadata and GPS stripped) as a job, into
+        a new folder. Returns the folder, never the copies' contents. Originals and sidecars are only read."""
+        with self.lock:
+            ids = self.targets(ids)
+            paths = []
+            for i in ids:
+                p = self.library_file(i)
+                if not p:
+                    raise ValueError("not a library file")
+                paths.append(p)
+            names = [os.path.basename(p) for p in paths]
+            if len(set(names)) != len(names):
+                raise ValueError("two of these have the same file name; share them one at a time")
+        out = self.share_dir()
+        try:
+            self.start_job("share", [["share-copy", *paths, "--out", out]], ids, hold=False)
+        except Exception:
+            with contextlib.suppress(OSError):  # nothing was started: drop the empty folder (kept if not empty)
+                os.rmdir(out)
+            raise
+        shown = "~/" + os.path.relpath(out, HOME) if out.startswith(HOME + os.sep) else out
+        return dict(result=f"making {len(ids)} share-safe copies in {shown}", dest=shown)
 
     def servable(self, i):
         """The path of item i when the media routes may serve it: live, not in a running job, a regular file
@@ -1035,6 +1197,10 @@ class Handler(R.Handler):
             "/api/trash": lambda: app.trash(body.get("ids"), body.get("confirm")),
             "/api/erase": lambda: app.erase(body.get("ids"), body.get("confirm")),
             "/api/open": lambda: app.open_external(body.get("ids")),
+            "/api/share": lambda: app.share(body.get("ids")),
+            "/api/event/set": lambda: app.set_event(body.get("ids"), body.get("event")),
+            "/api/event/rename": lambda: app.rename_event(body.get("from"), body.get("to")),
+            "/api/event/merge": lambda: app.merge_events(body.get("from"), body.get("into")),
             "/api/decide": lambda: app.decide(body.get("keep") or [], body.get("trash") or [], body.get("confirm")),
         }
         if path == "/api/close":
@@ -1072,7 +1238,7 @@ class Handler(R.Handler):
         except RuntimeError as e:
             self.json(409, {"error": str(e)})
             return
-        self.json(200, {"result": msg})
+        self.json(200, msg if isinstance(msg, dict) else {"result": msg})
 
 
 def serve(app, port=0):
@@ -1094,6 +1260,8 @@ def main(argv=None):
     ap = argparse.ArgumentParser(description="Local web gallery for the media library.")
     ap.add_argument("--drive", help="backup drive mount, passed to forget (Erase)")
     ap.add_argument("--port", type=int, default=0, help="0 = a random free port (default)")
+    ap.add_argument("--share-out", help=f"folder for share-safe copies, one dated subfolder per export "
+                                        f"(default {SHARE_OUT}); never inside the library")
     a = ap.parse_args(argv)
     if a.drive and not os.path.isdir(a.drive):
         sys.exit(f"--drive {a.drive}: not a directory")
@@ -1101,7 +1269,7 @@ def main(argv=None):
     jobs.sweep()  # a trash/erase that died while no page watched: marked crashed, an erase's output scrubbed
     items, skipped = scan_library()
     views = view_list([v for vs in plugins.call("gallery_views") for v in vs])
-    app = App(items, os.path.abspath(a.drive) if a.drive else None, views)
+    app = App(items, os.path.abspath(a.drive) if a.drive else None, views, a.share_out)
     running = app.sync()  # a trash/erase started before a restart: its files stay busy until it ends
     threading.Thread(target=app.check_text, daemon=True).start()
     httpd, url = serve(app, a.port)
@@ -1179,6 +1347,12 @@ kbd{font:600 11px/1 ui-monospace,monospace;border:1px solid currentColor;border-
 .ct{color:var(--mut);font-size:12px;font-variant-numeric:tabular-nums;font-weight:400}
 .nv[aria-current=page] .ct{color:var(--acc)}
 .railonly{display:none}
+#evlist{display:flex;flex-direction:column;gap:2px}
+.evmore{align-self:flex-start;margin:2px 10px}
+#evbar{display:flex;flex-wrap:wrap;align-items:center;gap:8px;padding:12px 24px 0}
+#evbar .evt{font-weight:600;margin-right:4px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;max-width:100%}
+#mfieldp label{display:block;font-size:13px;color:var(--mut);margin-bottom:4px}
+#mfield{width:100%}
 .sb-search{padding:8px 16px 4px;border-top:1px solid var(--line)}
 .field{position:relative}
 .field .ic{position:absolute;left:10px;top:50%;transform:translateY(-50%);color:var(--mut);pointer-events:none}
@@ -1229,7 +1403,7 @@ output{font-variant-numeric:tabular-nums;color:var(--fg);font-weight:600}
 /* collapsed to an icon rail */
 .collapsed{--sbw:60px;--ml:60px}
 .collapsed #sidebar .lbl,.collapsed #sidebar .nv .ct,.collapsed #sidebar .brand,.collapsed #sidebar .nvhead,
-.collapsed .sb-search,.collapsed #filters{display:none}
+.collapsed .sb-search,.collapsed #filters,.collapsed #evsec{display:none}
 .collapsed #views{padding:4px 8px}
 .collapsed .nv{justify-content:center;padding:0;height:40px}
 .collapsed .railonly{display:flex}
@@ -1330,7 +1504,7 @@ dl.dt dd{margin:0;word-break:break-word}
  #vtitle{font-size:16px;overflow:hidden;text-overflow:ellipsis}
  #tsize{width:72px}
  #close .lbl2{display:none}#close{padding:0 8px}
- #chips{padding:10px 12px 0}#note{padding:0 12px}
+ #chips,#evbar{padding:10px 12px 0}#note{padding:0 12px}
  main{padding:4px 12px 40px}
  .grid{gap:4px}
  #actionbar{left:calc(var(--ml) + 8px);right:8px;bottom:8px;padding:8px;gap:6px}
@@ -1351,6 +1525,7 @@ dl.dt dd{margin:0;word-break:break-word}
  <symbol id="i-chev" viewBox="0 0 24 24"><path d="M6 9l6 6 6-6"/></symbol>
  <symbol id="i-size" viewBox="0 0 24 24"><rect x="4" y="4" width="16" height="16" rx="2"/><path d="M4 14l4-4 5 5 2-2 5 5"/></symbol>
  <symbol id="i-power" viewBox="0 0 24 24"><path d="M12 3.5v8M7 6.5a7.5 7.5 0 1 0 10 0"/></symbol>
+ <symbol id="i-cal" viewBox="0 0 24 24"><rect x="4" y="5.5" width="16" height="14.5" rx="2"/><path d="M4 10h16M8.5 3.5v4M15.5 3.5v4"/></symbol>
  <symbol id="i-x" viewBox="0 0 24 24"><path d="M6 6l12 12M18 6L6 18"/></symbol>
 </svg>
 <aside id="sidebar" aria-label="Views and filters">
@@ -1366,6 +1541,7 @@ dl.dt dd{margin:0;word-break:break-word}
   <button type="button" class="nv" data-v="recent" title="Recently added"><svg class="ic"><use href="#i-clock"/></svg><span class="lbl">Recently added</span><span class="ct" id="c-recent"></span></button>
   <button type="button" class="nv" data-v="child" title="Possible child (Review|child-in-shot)"><svg class="ic"><use href="#i-child"/></svg><span class="lbl">Possible child</span><span class="ct" id="c-child"></span></button>
   <button type="button" class="nv" data-v="untagged" title="Untagged"><svg class="ic"><use href="#i-tag"/></svg><span class="lbl">Untagged</span><span class="ct" id="c-untagged"></span></button>
+  <div id="evsec"><div class="nvhead">Events</div><div id="evlist"></div></div>
   <button type="button" class="nv railonly" id="rsearch" title="Search (/)"><svg class="ic"><use href="#i-search"/></svg><span class="vh">Search</span></button>
   <button type="button" class="nv railonly icon" id="rfilter" title="Filters" style="width:100%"><svg class="ic"><use href="#i-filter"/></svg><span class="vh">Filters</span><span class="badge-n" id="rbadge" hidden></span></button>
  </nav>
@@ -1386,13 +1562,14 @@ dl.dt dd{margin:0;word-break:break-word}
   <button type="button" class="btn" id="close" title="Stop the gallery server"><svg class="ic"><use href="#i-power"/></svg><span class="lbl2">Close</span></button>
  </header>
  <div id="chips" aria-label="Active filters" hidden></div>
+ <div id="evbar" role="toolbar" aria-label="Event" hidden><span class="evt" id="evname"></span><button type="button" class="btn" id="evren">Rename…</button><button type="button" class="btn" id="evmerge">Merge into…</button></div>
  <p id="note" class="note" hidden></p>
  <main id="main"><div id="list"></div><div id="sentinel"></div><div id="plugin" hidden></div></main>
  <div id="actionbar" hidden>
   <div class="grp" id="selgrp" role="toolbar" aria-label="Selection actions" hidden><span id="seln"></span>
    <button type="button" class="btn keep" id="bkeep">Keep <kbd>K</kbd></button><button type="button" class="btn trash" id="btrash">Trash <kbd>T</kbd></button><button type="button" class="btn erase" id="berase">Erase <kbd>E</kbd></button>
    <span class="sep"></span>
-   <button type="button" class="btn" id="btag">+ tag</button><button type="button" class="btn" id="buntag">− tag</button><button type="button" class="btn" id="brot">Rotate ⟳</button><button type="button" class="btn" id="bnone">Clear selection <kbd>Esc</kbd></button>
+   <button type="button" class="btn" id="btag">+ tag</button><button type="button" class="btn" id="buntag">− tag</button><button type="button" class="btn" id="bevent">Set event…</button><button type="button" class="btn" id="brot">Rotate ⟳</button><button type="button" class="btn" id="bshare">Share-safe copy</button><button type="button" class="btn" id="bnone">Clear selection <kbd>Esc</kbd></button>
   </div>
   <div class="grp" id="suggrp" role="group" aria-label="Decisions" hidden><span id="sugn"></span><span class="note" style="margin:0">K / T on the outlined tile, arrows move, Enter opens</span><button type="button" class="btn primary" id="sugapply">Apply…</button></div>
  </div>
@@ -1404,6 +1581,7 @@ dl.dt dd{margin:0;word-break:break-word}
  <aside id="info" aria-label="Details"></aside>
 </div>
 <div class="modal" id="modal" role="dialog" aria-modal="true" aria-labelledby="mh" data-dialog="confirm"><div class="box"><h3 id="mh"></h3><div id="mb"></div>
+ <p id="mfieldp" hidden><label for="mfield" id="mflabel"></label><input id="mfield" list="evnames" autocomplete="off" spellcheck="false"><datalist id="evnames"></datalist></p>
  <p id="mtype" hidden>Type <b>ERASE</b> to confirm: <input id="mtyped" autocomplete="off" spellcheck="false" aria-label="Type ERASE"></p>
  <div class="mbtns"><button type="button" class="btn" id="mno">Cancel</button><button type="button" class="btn primary" id="mgo">Confirm</button></div><p id="mstatus" role="status" hidden></p><pre id="mout" hidden></pre></div></div>
 <script>
@@ -1484,7 +1662,7 @@ async function loadFacets(tries){facets=await api("/api/facets");const fc=facets
  renderOpts("review",Object.keys(REVIEW).map(v=>[v,c["review:"+v]||0]),v=>REVIEW[v]);
  renderOpts("ai",Object.keys(AIV).map(v=>[v,c["ai:"+v]||0]),v=>AIV[v]);
  renderOpts("used",[["used",c["used:used"]||0],["unused",c["used:unused"]||0]],v=>v==="used"?"Used in a post":"Unused");
- renderWhen();
+ renderWhen();renderEvents();
  $("#ck-all").textContent=fmt(facets.total);$("#ck-photo").textContent=fmt(c["kind:photo"]);$("#ck-video").textContent=fmt(c["kind:video"]);
  $("#c-lib").textContent=fmt(facets.total);$("#c-sug").textContent=fmt(c.suggest);$("#c-recent").textContent=fmt(c.recent);
  $("#c-child").textContent=fmt(c["review:child-in-shot"]);$("#c-untagged").textContent=fmt(c["review:untagged"]);
@@ -1493,10 +1671,25 @@ async function loadFacets(tries){facets=await api("/api/facets");const fc=facets
  if(facets.search){const checking=/^checking/.test(facets.search);const d=el("details"),s=el("summary",null,checking?"Checking the search model…":"Semantic search off: tags and names only");
   d.append(s,el("div","why",facets.search));h.append(d);h.title=facets.search;if(checking&&(tries||0)<10)setTimeout(()=>loadFacets((tries||0)+1).catch(()=>{}),1500)}
  syncUI()}
+// ---------------------------------------------------------------- events (Event| tags): the sidebar list, rename, merge
+let evAll=false;const EVSHOW=8;
+function renderEvents(){const L=$("#evlist");L.replaceChildren();const ev=(facets&&facets.facets.event)||[];
+ $("#evnames").replaceChildren(...ev.map(([n])=>{const o=el("option");o.value=n;return o}));
+ if(!ev.length){L.append(el("div","empty","No events yet"));return}
+ const show=evAll?ev.slice():ev.slice(0,EVSHOW);if(F.event&&!show.some(([n])=>n===F.event)){const x=ev.find(([n])=>n===F.event);if(x)show.push(x)}
+ show.forEach(([n,c])=>{const b=el("button","nv");b.type="button";b.dataset.ev=n;b.title="Event: "+n;b.insertAdjacentHTML("beforeend",'<svg class="ic"><use href="#i-cal"/></svg>');b.append(el("span","lbl",n),el("span","ct",fmt(c)));
+  b.onclick=()=>{F={aimin:F.aimin,event:n};$("#q").value="";setView("lib");if(mqPhone.matches&&drawer){drawer=false;layout()}};L.append(b)});
+ if(ev.length>EVSHOW){const m=el("button","link evmore",evAll?"Fewer events":"All "+fmt(ev.length)+" events");m.type="button";m.onclick=()=>{evAll=!evAll;renderEvents();syncUI()};L.append(m)}}
+function askField(title,lines,label,value,go){confirmBox(title,lines,false,go);$("#mfieldp").hidden=false;$("#mflabel").textContent=label;const f=$("#mfield");f.value=value||"";f.focus();f.select()}
+async function afterEvent(j,ev){$("#modal").classList.remove("on");toast(j.result);if(ev!==undefined){if(ev)F.event=ev;else delete F.event}await loadFacets();reset()}
+$("#evren").onclick=()=>{const old=F.event;askField("Rename the event "+old+"?",["Every sidecar with Event|"+old+" gets the new name instead: the Event| tag and XMP-iptcExt:Event only. The files and every other tag stay as they are.","A slug: lowercase letters, digits and dashes. To join an event that already exists, use Merge."],"New name",old,
+ async()=>afterEvent(await api("/api/event/rename",{from:old,to:$("#mfield").value.trim()}),$("#mfield").value.trim()))};
+$("#evmerge").onclick=()=>{const src=F.event;askField("Merge "+src+" into another event?",["Every item of "+src+" moves to the event you name (the Event| tag and XMP-iptcExt:Event in its sidecar only); "+src+" is gone afterwards."],"Merge into (an event that exists)","",
+ async()=>afterEvent(await api("/api/event/merge",{from:[src],into:$("#mfield").value.trim()}),$("#mfield").value.trim()))};
 // ---------------------------------------------------------------- filter state
 function setF(k,v){if(v)F[k]=v;else delete F[k];simId=null;if(plugView()){setView("lib");return}syncUI();reset()}
 function clearAll(){F={aimin:F.aimin||"0.7"};$("#q").value="";simId=null;syncUI();reset()}
-function navActive(){if(view!=="lib")return view;const a=activeKeys();if(a.length===1&&!$("#q").value.trim()&&simId===null){if(F.added)return "recent";if(F.review==="child-in-shot")return "child";if(F.review==="untagged")return "untagged"}return "lib"}
+function navActive(){if(view!=="lib")return view;const a=activeKeys();if(a.length===1&&!$("#q").value.trim()&&simId===null){if(F.event)return "ev";if(F.added)return "recent";if(F.review==="child-in-shot")return "child";if(F.review==="untagged")return "untagged"}return "lib"}
 function syncUI(){$$("button[data-k]").forEach(b=>b.setAttribute("aria-pressed",String((F[b.dataset.k]||"")===b.dataset.val)));
  $$(".fs").forEach(s=>{const k=SECKEY[s.dataset.s]||s.dataset.s;s.querySelector(".fs-v").textContent=F[k]?chipVal(k):""});
  const n=activeKeys().length;$("#clear").hidden=!n;$("#clear").textContent=`Clear filters (${n})`;$("#rbadge").hidden=!n;$("#rbadge").textContent=n;
@@ -1510,7 +1703,9 @@ function syncUI(){$$("button[data-k]").forEach(b=>b.setAttribute("aria-pressed",
  if(C.children.length>1){const a=el("button","link","Clear all");a.type="button";a.onclick=clearAll;C.append(a)}
  C.hidden=!C.children.length||plugView();
  const na=navActive();$$(".nv[data-v]").forEach(b=>{if(b.dataset.v===na)b.setAttribute("aria-current","page");else b.removeAttribute("aria-current")});
- $("#vtitle").textContent=TITLES[na]||""}
+ $$(".nv[data-ev]").forEach(b=>{if(na==="ev"&&b.dataset.ev===F.event)b.setAttribute("aria-current","page");else b.removeAttribute("aria-current")});
+ $("#evbar").hidden=na!=="ev";if(na==="ev")$("#evname").textContent="Event: "+F.event;
+ $("#vtitle").textContent=na==="ev"?"Event: "+F.event:TITLES[na]||""}
 $("#clear").onclick=clearAll;
 // ---------------------------------------------------------------- listing
 function setNote(n){n=n||"";if(/^Semantic search unavailable/.test(n))n="Semantic search is off: showing tag and file-name matches.";$("#note").textContent=n;$("#note").hidden=!n}
@@ -1551,10 +1746,11 @@ function nameOf(id){const it=items.find(i=>i.id===id);return it?it.n:"#"+id}
 let tt=null;function toast(s){const t=$("#toast");t.textContent=s;t.classList.add("on");clearTimeout(tt);tt=setTimeout(()=>t.classList.remove("on"),4500)}
 async function doKeep(ids){try{const j=await api("/api/keep",{ids});toast(j.result);refreshAfter(ids,false);loadFacets()}catch(e){alert("Keep refused: "+e.message)}}
 function confirmBox(title,lines,needType,go){$("#mh").textContent=title;const b=$("#mb");b.replaceChildren();lines.forEach(l=>b.append(el("p",l.startsWith("!")?"warn":null,l.replace(/^!/,""))));
- $("#mtype").hidden=!needType;$("#mtyped").value="";$("#mgo").disabled=!!needType;$("#mgo").hidden=false;$("#mout").hidden=true;$("#mout").textContent="";$("#mstatus").hidden=true;delete $("#modal").dataset.job;$("#modal").classList.add("on");
+ $("#mtype").hidden=!needType;$("#mfieldp").hidden=true;$("#mtyped").value="";$("#mgo").disabled=!!needType;$("#mgo").hidden=false;$("#mout").hidden=true;$("#mout").textContent="";$("#mstatus").hidden=true;delete $("#modal").dataset.job;$("#modal").classList.add("on");
  $("#mtyped").oninput=()=>{$("#mgo").disabled=$("#mtyped").value!=="ERASE"};if(needType)$("#mtyped").focus();else $("#mno").focus();
  $("#mgo").onclick=async()=>{$("#mgo").disabled=true;try{await go()}catch(e){$("#mout").hidden=false;$("#mout").textContent="Refused: "+e.message;$("#mgo").disabled=false}}}
 $("#mno").onclick=()=>{$("#modal").classList.remove("on")};
+$("#mfield").onkeydown=ev=>{if(ev.key==="Enter"&&!$("#mgo").disabled){ev.preventDefault();$("#mgo").click()}};
 function names(ids){const n=ids.map(nameOf);return n.slice(0,15).join(", ")+(n.length>15?` … and ${n.length-15} more`:"")}
 function warnings(ids){const its=ids.map(id=>items.find(i=>i.id===id)).filter(Boolean),w=[];
  const u=its.filter(i=>i.f.includes("used")).length;if(u)w.push(`!${u} were used in posts (Used|…).`);
@@ -1563,14 +1759,24 @@ function askTrash(ids){confirmBox(`Trash ${ids.length} item${ids.length>1?"s":""
  ()=>runJob("/api/trash",{ids,confirm:true},ids))}
 function askErase(ids){confirmBox(`Erase ${ids.length} item${ids.length>1?"s":""} everywhere?`,[names(ids),"For sensitive files: intake.py forget moves them to quarantine and erases every copy in HOME (and the drive, if the gallery was started with --drive), with the sidecars, thumbnails and recent-file entries. This cannot be undone.",...warnings(ids)],true,
  ()=>runJob("/api/erase",{ids,confirm:$("#mtyped").value},ids))}
+function askSetEvent(ids){if(!ids.length)return;askField("Set the event on "+ids.length+" item"+(ids.length>1?"s":"")+"?",[names(ids),"Each one goes into this event and out of any other: the Event| tag and XMP-iptcExt:Event in its sidecar. The originals and every other tag stay as they are. Leave it empty to take them out of every event."],"Event (a slug: lowercase letters, digits, dashes)",F.event||"",
+ async()=>{const ev=$("#mfield").value.trim(),j=await api("/api/event/set",{ids,event:ev});if(vi>=0){$("#modal").classList.remove("on");toast(j.result);loadFacets();openViewer(vi,{keep:true})}else afterEvent(j)})}
+/* Share-safe copies: intake.py share-copy as a job (one at a time, with Trash and Erase), into a new folder; the page
+   shows the folder and share-copy's own lines (each copy's path and "gps=none"), never the copies themselves. */
+let jobDest="";
+function askShare(ids){if(!ids.length)return;confirmBox("Make share-safe copies of "+ids.length+" item"+(ids.length>1?"s":"")+"?",[names(ids),"Copies with all metadata and GPS stripped (media-intake share-copy) go into a new folder under "+((facets&&facets.share_out)||"the share-safe folder")+". The originals and their sidecars are only read."],false,
+ ()=>runShare(ids))}
+async function runShare(ids){let j;try{j=await api("/api/share",{ids})}catch(e){if(/still running/.test(e.message)){attachJob();return}throw e}
+ jobDest=j.dest;const b=$("#mb");b.replaceChildren(el("p",null,"Destination: "+j.dest));b.firstChild.id="mdest";progressMode("share-copy");poll(0,[])}
 /* Trash and Erase run as a detached job (jobs.py): closing the page or stopping the server never stops
    them, and any page (a reload, a second tab, a restarted server) shows the running one from its status file. */
-async function runJob(path,body,ids){try{await api(path,body)}catch(e){if(/still running/.test(e.message)){attachJob();return}throw e}
+async function runJob(path,body,ids){jobDest="";try{await api(path,body)}catch(e){if(/still running/.test(e.message)){attachJob();return}throw e}
  progressMode(path==="/api/erase"?"forget":"trash");poll(0,ids)}
 /* Shown from the moment a job starts, before its first output line: an erase sweeps HOME for copies and can
    print nothing for minutes, which looked like a hang. Hidden once the job has finished. */
 const STATUS={forget:"Erasing… looking for copies in your home folder. This can take a few minutes; you can close this page, it keeps running.",
- trash:"Trashing… you can close this page, it keeps running."};
+ trash:"Trashing… you can close this page, it keeps running.",
+ "share-copy":"Copying without metadata or GPS… you can close this page, it keeps running."};
 function jobStatus(label){const t=STATUS[label]||"Working… you can close this page, it keeps running.";const m=$("#mstatus");if(m.textContent!==t)m.textContent=t;m.hidden=false}
 function progressMode(label){$("#mgo").hidden=true;$("#mtype").hidden=true;$("#mout").hidden=false;$("#mout").textContent="";jobStatus(label);$("#modal").classList.add("on")}
 function stepText(j){return j.step?` (step ${j.step}${j.total?" of "+j.total:""}: ${j.label})`:""}
@@ -1578,7 +1784,8 @@ async function poll(since,ids){let j;try{j=await api("/api/job?since="+since)}ca
  if(j.lines.length){$("#mout").textContent+=j.lines.join("\n")+"\n";$("#mout").scrollTop=1e9}$("#modal").dataset.job=j.done?(j.state==="crashed"?"crashed":j.ok?"done":"failed"):"running";
  if(!j.done){if(j.label)jobStatus(j.label);$("#mh").textContent="Running"+stepText(j)+"; closing the page does not stop it";setTimeout(()=>poll(j.next,ids),600);return}
  $("#mh").textContent=j.state==="crashed"?"The action stopped unexpectedly (crashed)"+stepText(j)+(j.step_running?"; the step it started is still running":"")+". Nothing more runs by itself."
-  :j.ok?"Done":"Finished with problems (see below)";
+  :/gps=STILL PRESENT/.test($("#mout").textContent)?"Finished, but GPS is still in some copies (see below): don't share those"
+  :j.ok?"Done"+(j.label==="share-copy"&&jobDest?": share-safe copies in "+jobDest:""):"Finished with problems (see below)";
  $("#mstatus").hidden=true;ids.forEach(id=>sel.delete(id));closeViewer();loadFacets();reset()}
 async function attachJob(){let j;try{j=await api("/api/job")}catch(e){return}if(j.done)return;$("#mh").textContent="An action is running";$("#mb").replaceChildren();progressMode(j.label);poll(0,j.ids||[])}
 async function tagAsk(op){const ids=vi>=0&&!sel.size?[items[vi].id]:selIds();if(!ids.length)return;
@@ -1588,7 +1795,8 @@ async function rot(ids,dir){try{const j=await api("/api/rotate",{ids,dir});toast
 function refreshAfter(ids,thumbs){if(thumbs)ids.forEach(id=>{const t=$("#t"+id);if(t){const im=t.querySelector("img");if(im)im.src="/t/"+id+"?r="+Date.now()}});
  if(vi>=0)openViewer(vi,{keep:true});else if(view==="sug")reset()}
 $("#bkeep").onclick=()=>doKeep(selIds());$("#btrash").onclick=()=>askTrash(selIds());$("#berase").onclick=()=>askErase(selIds());
-$("#btag").onclick=()=>tagAsk("add");$("#buntag").onclick=()=>tagAsk("remove");$("#brot").onclick=()=>rot(selIds(),"cw");$("#bnone").onclick=()=>{sel.clear();paintSel()};
+$("#btag").onclick=()=>tagAsk("add");$("#buntag").onclick=()=>tagAsk("remove");$("#brot").onclick=()=>rot(selIds(),"cw");
+$("#bevent").onclick=()=>askSetEvent(selIds());$("#bshare").onclick=()=>askShare(selIds());$("#bnone").onclick=()=>{sel.clear();paintSel()};
 $("#sugapply").onclick=()=>{const keep=Object.keys(dec).filter(k=>dec[k]==="keep").map(Number),trash=Object.keys(dec).filter(k=>dec[k]==="trash").map(Number);
  confirmBox(`Apply: ${keep.length} keep, ${trash.length} trash?`,[keep.length?"Keep: Owner|keep + Owner|not-trash in the sidecar (never suggested again).":"",trash.length?"Trash ("+names(trash)+"): plain delete, never taken in again (Owner|trash: the sha256 in trashed.json; copies left on disk are marked).":""].filter(Boolean),false,
   async()=>{const j=await api("/api/decide",{keep,trash,confirm:true});if(trash.length){progressMode("trash");$("#mout").textContent=j.result+"\n";poll(0,trash)}else{$("#modal").classList.remove("on");toast(j.result);loadFacets();reset()}})};
@@ -1630,6 +1838,7 @@ async function openViewer(n,opt){opt=opt||{};if(n<0||n>=items.length)return;if(v
  const acts=el("div","acts"),mk=(box,t,f,c)=>{const b=el("button","btn"+(c?" "+c:""),t);b.type="button";b.onclick=f;box.append(b);return b};
  mk(acts,"Keep (K)",()=>doKeep([d.id]),"keep");mk(acts,"Trash (T)",()=>askTrash([d.id]),"trash");mk(acts,"Erase (E)",()=>askErase([d.id]),"erase");s.append(acts);
  const tools=el("div","tools");mk(tools,"⟲ Rotate",()=>rot([d.id],"ccw")).title="Shift+R";mk(tools,"⟳ Rotate",()=>rot([d.id],"cw")).title="R";
+ mk(tools,"Set event…",()=>askSetEvent([d.id]));mk(tools,"Share-safe copy",()=>askShare([d.id]));
  mk(tools,"Similar",()=>{simId=d.id;simName=d.name;closeViewer();$("#q").value="";syncUI();reset()});s.append(tools);
  const dl=el("dl","dt"),row=(k,v)=>{if(v){dl.append(el("dt",null,k),el("dd",null,v))}};
  row("Date",d.date);row("Place",d.place);row("Event",d.event);row("Project",d.project);row("Source",d.source);row("Folder",d.folder);row("Resolution",d.res);row("Size",d.size);
@@ -1678,7 +1887,7 @@ function setView(v){view=v;simId=null;document.body.dataset.view=v;const plug=pl
   pv.render(P,{el,api:(p,b)=>api("/plugin/"+id+"/"+p,b),media:p=>"/plugin/"+id+"/media/"+p})}
  else{if(v==="sug")setNote("K = keep, T = trash on the outlined tile; nothing changes until Apply.");syncUI();reset()}}
 $$(".nv[data-v]").forEach(b=>b.onclick=()=>{const v=b.dataset.v;
- if(v==="lib"){if(["recent","child","untagged"].includes(navActive()))F={aimin:F.aimin};setView("lib")}
+ if(v==="lib"){if(["recent","child","untagged","ev"].includes(navActive()))F={aimin:F.aimin};setView("lib")}
  else if(v==="sug"||v.startsWith("p-"))setView(v);
  else{F={aimin:F.aimin};if(v==="recent")F.added=String((facets&&facets.recent_days)||30);if(v==="child")F.review="child-in-shot";if(v==="untagged")F.review="untagged";$("#q").value="";setView("lib")}
  if(mqPhone.matches&&drawer){drawer=false;layout()}});
