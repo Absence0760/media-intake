@@ -191,7 +191,8 @@ class Sidecars(Base):
         party = os.path.join(self.lib, "2026", "2026-10", "20261024_100000.jpg")
         self.assertIn("Place|Riverton, Eastland, US", xmp(filed)["XMP-lr:HierarchicalSubject"])
         self.assertEqual(set(xmp(party)["XMP-lr:HierarchicalSubject"]),
-                         {"Project|Personal", "Source|phone camera", "Event|birthday-party"})
+                         {"Project|Personal", "Source|phone camera", "Source|SyntheticCam",
+                          "Event|birthday-party"})  # Source|<model>: the fixture's EXIF Model
         quar = os.path.join(self.state, "quarantine", batch)
         sidecars = [os.path.join(r, f) for r, _, fs in os.walk(self.state) for f in fs if f.endswith(".xmp")]
         self.assertEqual(sidecars, [], "nothing in quarantine or review gets a sidecar")
