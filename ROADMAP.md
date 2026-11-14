@@ -80,9 +80,10 @@ The goal: someone else can install it on Fedora, import a phone, and trust it.
 ## Milestone 0.2: the gallery as the everyday UI
 
 - [ ] Layout polish after real use (left panel, sticky actions, lightbox).
-- [ ] **HEVC in the browser:** Firefox/Chromium often can't play HEVC. Make an on-demand
+- [x] **HEVC in the browser:** Firefox/Chromium often can't play HEVC. Make an on-demand
       H.264 proxy (GStreamer GPU decode → x264), cached by sha256 in the private cache
-      and cleaned by erase/trash/forget/verify-gone like thumbnails.
+      and cleaned by erase/trash/forget/verify-gone like thumbnails (gallery only; the
+      review page keeps serving batch files as they are: docs/gallery.md, "Video proxies").
 - [x] Burst groups: show bursts as one stack, pick the best, trash the rest (review page;
       the gallery's stacks wait for a later round).
 - [x] Albums/events as first-class views (from `Event|` tags), with rename and merge.

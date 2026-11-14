@@ -66,7 +66,9 @@ media-intake doctor      # what's installed, checksums, and the dnf line for wha
 `labels.npz` after editing `labels.yaml` or moving the SigLIP pin), `--refresh-geo` (accept a new
 GeoNames snapshot), `--no-launcher`. For HEVC video (most phones) Fedora's
 `ffmpeg-free` has no decoder; the tool uses GStreamer's VA-API (`vah265dec`)
-or Vulkan decoder when one is installed. The optional trash second opinion
+or Vulkan decoder when one is installed, also to make the H.264 copy the
+gallery plays HEVC from (with an H.264 encoder: `x264enc`, `openh264enc` or
+`vah264enc`; [docs/gallery.md](docs/gallery.md), "Video proxies"). The optional trash second opinion
 needs [Ollama](https://ollama.com/) and `ollama pull qwen3-vl:2b`. Every model
 pin (SigLIP file sha256s, the Ollama model digest) lives in
 `media_intake/pins.json`; `doctor` checks the files on disk and the local

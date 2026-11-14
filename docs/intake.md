@@ -314,7 +314,8 @@ cameras of one model share a folder, as above.
 
 `trash [BATCH] FILE... [--phone ROOT]` is a plain delete for junk that isn't
 private: the file (library, quarantine or review copy), its `.xmp` sidecar,
-its thumbnails (freedesktop and the gallery's), its `index.json` entry, and
+its thumbnails (freedesktop and the gallery's) and the gallery's H.264 proxy
+of a video, its `index.json` entry, and
 with `--phone` its phone original (the manifest's `src`, checked by
 `sources.check`). No home sweep, near-duplicate search, erase log or
 verify-gone. Its sha256 and size (no name) go to `trashed.json`, and `plan`
@@ -357,7 +358,8 @@ quarantine. A file named twice is forgotten once.
   repo would go dirty and git history keeps the content anyway.
 - **verify-gone.** The erase log keeps checksum and size, no names, so
   `verify-gone [BATCH]` repeats the sweep read-only and exits 1 if anything is
-  left (including orphaned sidecars and gallery thumbnails). `erase` runs it
+  left (including orphaned sidecars, gallery thumbnails and gallery video
+  proxies). `erase` runs it
   last.
 - **Progress while it searches.** The HOME sweep, the drive sweep, the
   near-duplicate search and verify-gone can take minutes on a big HOME, so
