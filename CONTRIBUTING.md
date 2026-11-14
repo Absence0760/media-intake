@@ -103,7 +103,8 @@ close the PR.
   `.github/workflows/models.yml` runs them nightly and on demand ("Run
   workflow" in the Actions tab) in a Fedora 43 container, after `setup.sh`,
   and fails if any test skips except the real-Ollama one (`VLM_REAL`, which
-  needs a GPU; run it locally). It is not a required check and doesn't run on
+  needs a GPU; run it locally) and the browser tests (the `browser` job in
+  `ci.yml` runs those). It is not a required check and doesn't run on
   pull requests: run it on your branch to model-test a pin bump, and on
   `main` before a release.
 - When a test fails, fix the test if it is wrong, or the code if it is; never
