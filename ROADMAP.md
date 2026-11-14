@@ -59,7 +59,7 @@ The goal: someone else can install it on Fedora, import a phone, and trust it.
 - [x] Device identity from Make/Model/serial: tag `Source|<model>` and name batches by it;
       two GoPros with the same file numbers go to separate device folders, never `_1`.
 - [x] GoPro chapters (GX01xxxx, GX02xxxx...) dated and grouped by the first chapter.
-- [ ] Source kind `folder` for laptop folders (refuse HOME itself, hidden/config dirs, repos,
+- [x] Source kind `folder` for laptop folders (refuse HOME itself, hidden/config dirs, repos,
       the state dir, library roots, password-manager paths; offload refuses folder sources).
 
 ### Tag precedence (who writes what)

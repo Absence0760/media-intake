@@ -3,7 +3,7 @@
 sensitive files quarantined for you to review, erased everywhere on confirm.
 Run as `media-intake <command>` (cli.py); `python3 -I media_intake/intake.py` works too.
 
-  media-intake stage   SRC_ROOT --kind phone|gopro|drive [--batch NAME] [--only LISTFILE]  (default name: <device>-<date>)
+  media-intake stage   SRC_ROOT --kind phone|gopro|drive|folder [--batch NAME] [--only LISTFILE]  (default name: <device>-<date>)
   media-intake plan    BATCH [--event [PROJECT/]SLUG@YYYY-MM-DD ...] [--clock-offset DEVICE=±Nh ...]
   media-intake scan    BATCH                     (local detectors; labels only)
   media-intake apply   BATCH                     (moves files; prints a summary)
@@ -19,7 +19,8 @@ Run as `media-intake <command>` (cli.py); `python3 -I media_intake/intake.py` wo
   media-intake suggest-trash [--batch B] [--phone ROOT]  (Review|maybe-trash files -> review page)
   media-intake not-trash FILE...                 (keep a suggestion: Owner|keep + Owner|not-trash)
   media-intake migrate-tags [--dry-run]          (legacy Review|not-trash -> Owner|not-trash, once)
-  media-intake offload BATCH --phone ROOT        (after a drive backup: free the phone; a drive batch: its source root)
+  media-intake offload BATCH --phone ROOT        (after a drive backup: free the phone; a drive batch: its source root;
+                                                  refused for a laptop folder batch: you delete the folder yourself)
   media-intake share-copy FILE... --out DIR      (copy without GPS/metadata; alias social-copy)
   media-intake tag     BATCH [--no-labels]       (after apply: XMP sidecar tags for filed files)
   media-intake tag-files FILE... [--event SLUG] [--no-labels]   (re-tag library files)
@@ -210,7 +211,7 @@ def category(rel, kind):
     ext = os.path.splitext(rel)[1].lower()
     if kind == "gopro":
         return "gopro"
-    if kind == "drive":
+    if kind in ("drive", "folder"):
         return sources.drive_category(rel)
     app = sources.extra_app(rel)
     if app:
@@ -259,6 +260,11 @@ def cmd_stage(a):
     if a.kind == "drive":  # refuses the laptop's disk and the backup drive; uuid lets offload check it
         try:
             extra = dict(mount=sources.check_drive_root(root), uuid=sources.drive_uuid(root))
+        except sources.Denied as e:
+            sys.exit(f"refused: {e}")
+    if a.kind == "folder":  # a laptop folder: refuses HOME, state, library, app data, keys, repos, outside HOME
+        try:
+            sources.check_folder_root(root)
         except sources.Denied as e:
             sys.exit(f"refused: {e}")
     only = None
@@ -1284,10 +1290,14 @@ def cmd_offload(a):
     """Free phone space: delete phone originals whose copy is filed (or deliberately removed).
 
     Only after a drive backup. Checks each phone file is still the same size as
-    the staged copy and sits inside the allowlist; never deletes a folder.
+    the staged copy and sits inside the allowlist; never deletes a folder. Refused
+    for a laptop folder batch (kind folder): you delete that folder yourself.
     """
     b = bdir(a.batch)
     man = load(os.path.join(b, "manifest.json"))
+    if (man or {}).get("kind") == "folder":
+        sys.exit(f"refused: {man.get('root')} is a folder on this laptop; the tool never deletes its originals. "
+                 "Check the import, then delete the folder yourself.")
     plan = {p["rel"]: p for p in load(os.path.join(b, "plan.json"))}
     root = os.path.abspath(a.phone)
     check = sources.check
@@ -2003,7 +2013,8 @@ def clock_offset_arg(v):
 def build_parser(prog=None):
     ap = argparse.ArgumentParser(prog=prog, description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     sp = ap.add_subparsers(dest="cmd", required=True)
-    s = sp.add_parser("stage"); s.add_argument("src"); s.add_argument("--kind", choices=["phone", "gopro", "drive"], required=True)
+    s = sp.add_parser("stage"); s.add_argument("src"); s.add_argument("--kind", choices=["phone", "gopro", "drive", "folder"], required=True,
+                                                         help="folder = a folder on the laptop's own disk (under HOME)")
     s.add_argument("--batch", help="batch name (default: <device id>-<YYYYMMDD> from the files' Make/Model/serial)")
     s.add_argument("--only", metavar="LISTFILE", help="stage only these relative paths (one per line; drive_queue.py chunks)")
     s.add_argument("--origin", help="device root the files really came from, if SRC is an earlier copy (for erase --phone)")

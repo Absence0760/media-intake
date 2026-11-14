@@ -1,8 +1,9 @@
-# Drive queue: an external drive of old photos and videos
+# Media queue: folders of old photos and videos, on a drive or the laptop
 
-For a separate external drive (not your backup drive) full of photos and
-videos: tag them, classify them, set junk aside, then file the rest in the
-library, in chunks, unattended. Tool: `media_intake/drive_queue.py`, run as
+For a separate external drive (not your backup drive), or a folder on the
+laptop's own disk (`--kind folder`), full of photos and videos: tag them,
+classify them, set junk aside, then file the rest in the library, in chunks,
+unattended. Tool: `media_intake/drive_queue.py`, run as
 `media-intake queue`.
 
 It is named `drive_queue.py`, not `queue.py`: `media_intake/` goes on
@@ -14,12 +15,15 @@ would shadow Python's standard `queue` module (`concurrent.futures` and
 
 ```
 media-intake queue add "/run/media/$USER/<drive>/<folder>" --label <name>
+media-intake queue add "$HOME/<folder>" --label <name> --kind folder   # a folder on the laptop
+media-intake queue add ... --event [PROJECT/]SLUG@YYYY-MM-DD           # repeatable: shoot days, as plan --event
 media-intake queue run --inhibit            # overnight; --chunk 2000 is the default
 media-intake queue status
 media-intake queue offload <name> --yes     # deletes the drive originals: only when you mean it
+                                            # (refused for --kind folder: you delete the folder yourself)
 ```
 
-## What `add` checks
+## What `add` checks (kind `drive`, the default)
 
 - **The source root is exactly the folder you name**, walked recursively
   (`sources.py`, kind `drive`): media extensions only; hidden files and
@@ -42,23 +46,69 @@ media-intake queue offload <name> --yes     # deletes the drive originals: only 
   at a time instead (run and offload each before adding the next). The run
   checks again before staging each chunk.
 - Overlapping sources on the same drive and duplicate labels are refused.
+- **`--event`** values are checked like `plan --event` (a slug, a real
+  `YYYY-MM-DD`, and a project prefix that exists in the config) and stored with
+  the source.
+
+## Laptop folders (`--kind folder`)
+
+A folder of photos and videos on the laptop's own disk, for example one copied
+off an old computer. `media-intake queue add PATH --label NAME --kind folder`
+(or `media-intake stage PATH --kind folder`) imports it with the same per-file
+rules as a drive: media extensions only; hidden files and folders, OS folders,
+symlinks and password-manager or recovery-code names skipped. On top of that,
+**a git working tree found inside the folder** (a subfolder holding `.git`) is
+skipped whole.
+
+`sources.check_folder_root` decides whether the folder may be a source. It
+fails closed (anything it cannot check is refused) and refuses:
+
+- **HOME itself**, anything that contains HOME, and **anything outside HOME**
+  (a folder under `/run/media`, `/media`, `/mnt` or `/Volumes` is told to use
+  `--kind drive`);
+- **the tool's own folders**, read from the config: the state folder, the
+  library, the videos folder and every project folder
+  ([configuration.md](configuration.md)), and `$XDG_CONFIG_HOME`,
+  `$XDG_DATA_HOME`, `$XDG_CACHE_HOME`, `$XDG_STATE_HOME` when set;
+- **app data and keys**: `~/.local`, `~/.config`, `~/.cache`, `~/.var`,
+  `~/.ssh`, `~/.gnupg`, and any hidden folder at any depth;
+- **common code and SDK trees** directly under HOME (`github`, `gitlab`,
+  `repos`, `src`, `code`, `development`, `go`, `Android`, `sdk`, `flutter`,
+  `snap`), and **any git repository** (a `.git` at or above the folder, up to
+  HOME);
+- **password-manager and recovery-code names** anywhere in the path (the same
+  list the phone and drive walks use).
+
+"Is, is inside, or contains" applies to each listed folder, compared
+case-insensitively so a case-insensitive disk can't slip one past. Everything
+is checked again when `run` stages each chunk: a folder that has since become
+a repository (or moved) stops the run with `folder refused now`.
+
+A folder source has no mount and no UUID. **The tool never deletes its
+originals**: `media-intake queue offload` and `media-intake offload` refuse a
+folder source. When every chunk is reviewed, `status` says so; check the
+library, then delete the folder yourself.
 
 ## What `run` does
 
 Each source is split into chunks (`--chunk`, fixed at the source's first
 run); each chunk is an ordinary intake batch `<added date>-<label>-<n>`:
 
-stage (`media-intake stage --kind drive --only <chunk list>`; the manifest
-records the drive's UUID and mount) -> plan -> scan -> apply -> tag ->
+stage (`media-intake stage --kind drive|folder --only <chunk list>`; for a
+drive the manifest records its UUID and mount) -> plan (with the source's
+`--event` values) -> scan -> apply -> tag ->
 semantic index -> `vlm_trash.py` on the batch's `Review|maybe-trash` files.
 Steps run one at a time. The VLM step is skipped with a note when Ollama or
 the pinned model is not available, or the venv is missing; the candidates wait
 for a later `media-intake vlm-trash` run ([search.md](search.md)).
 
-Drive files are categorised by name: `Screenshot_*`, `Screen Shot *` ->
+Drive and folder files are categorised by name: `Screenshot_*`, `Screen Shot *` ->
 Screenshots; `IMG-YYYYMMDD-WA*` / `VID-YYYYMMDD-WA*` -> Messaging/WhatsApp
-(no config needed); else photo or video by extension. No `--event` routing:
-drive files file by date.
+(no config needed); else photo or video by extension. They file by date,
+except on an `--event` day: as with `plan --event`
+([intake.md](intake.md)), the event tags those files, and with a project
+(a `PROJECT/` prefix, or a slug matching a project's `events` patterns) that
+day's photos and videos go to the project's folder.
 
 **Wrapper.** plan, scan, tag, index and the VLM run behind the config's
 `[queue] wrapper`, a command prefix such as a memory-capping or locking
@@ -73,7 +123,7 @@ log, never the terminal). A step is marked done only when it exits 0, so a
 killed run picks up at the step it was in, and a finished step is never run
 again. A failed step stops the run (`status` shows the error and the log);
 `run` again resumes there. It stops if the drive is unplugged or a different
-drive sits at that path. `--inhibit` holds `systemd-inhibit
+drive sits at that path, or a folder source is refused now. `--inhibit` holds `systemd-inhibit
 --what=sleep:idle` for the whole run. Each chunk ends with a counts-only
 summary.
 
@@ -92,6 +142,7 @@ nohup media-intake queue run --inhibit > ~/.local/share/media-intake/queue-run.l
 
 ## Offload
 
+Drives only: a laptop folder source is never offloaded (see above).
 `offload <name> --yes` runs `media-intake offload <batch> --phone <root>
 --yes` for each finished, not yet offloaded chunk. Refused when any of those
 batches still has files in any quarantine its review page shows
@@ -109,5 +160,7 @@ prints what it would do.
 ## Tests
 
 `python3 -I -m unittest discover -s tests -p test_drive_queue.py` (fake drive, fake backup
-markers, simulated kills, chunking, free-space guard, UUID mismatch) and
-`-p test_sources.py`.
+markers, simulated kills, chunking, free-space guard, UUID mismatch, a laptop
+folder end to end with an `--event` day, its refused roots and offload
+refusals) and `-p test_sources.py` (every `check_folder_root` refusal, git
+trees skipped inside a folder).
