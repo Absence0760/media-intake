@@ -1,0 +1,16 @@
+# Path-based reviewer routing: GitHub requests review from the owner when a
+# PR touches a matching path. Last matching line wins.
+
+# Catch-all
+*                           @Absence0760
+
+# CI, supply chain and security policy
+/.github/                   @Absence0760
+/.gitleaks.toml             @Absence0760
+/.pre-commit-config.yaml    @Absence0760
+/SECURITY.md                @Absence0760
+/setup.sh                   @Absence0760
+
+# Assistant tooling and its guard hooks
+/.claude/                   @Absence0760
+/CLAUDE.md                  @Absence0760

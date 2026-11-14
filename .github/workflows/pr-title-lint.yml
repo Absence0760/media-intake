@@ -11,7 +11,11 @@ name: pr-title-lint
 # PR may not be worth it if you're the only contributor.
 
 on:
-  pull_request_target:
+  # `pull_request`, not `pull_request_target`: the check only reads the PR's
+  # title, which the run's read-only token can do on a fork's PR too, so it
+  # needs neither this repo's write token nor its secrets (zizmor
+  # dangerous-triggers).
+  pull_request:
     types: [opened, edited, reopened, synchronize]
 
 permissions: read-all
@@ -23,7 +27,7 @@ jobs:
     permissions:
       pull-requests: read
     steps:
-      - uses: amannn/action-semantic-pull-request@48f256284bd46cdaab1048c3721360e808335d50 # v6.1.1
+      - uses: amannn/action-semantic-pull-request@2252a14e810aa9b85c2d560bd7070c802206ecf6 # v6.1.2
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         with:

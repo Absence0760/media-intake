@@ -1,38 +1,24 @@
 name: gitleaks
 
-# Secret-scan every push to main, every PR, and the full history once
-# a week. Catches accidentally-committed AWS keys, <CMS> API tokens,
-# <email-service> API keys, <payment-processor> passphrase, admin tokens — anything an
-# automated pattern can recognise.
+# Secret-scan every push to main and every PR. The weekly full-history sweep
+# calls this workflow from gitleaks-sweep.yml, which also opens a
+# `secret-scan` issue when the sweep fails (a failed scheduled run otherwise
+# reaches nobody) and closes it on the next clean sweep.
 #
-# Complements existing controls:
-#   - CodeQL (workflows/security.yml) — finds source-level injection
-#     vulns, not secrets.
-#   - pnpm audit (workflows/audit.yml) — flags CVEs in dependencies,
-#     not committed secrets.
-#   - (this project keeps no secrets at all) — the scan catches a stray paste.
+# This project keeps no secrets at all; the scan catches a stray paste.
+# CodeQL (security.yml) finds source-level bugs and osv-scanner
+# (supply-chain-scan.yml) dependency CVEs; neither looks for secrets.
 #
-# What gitleaks adds: regex-matching against the entire working tree
-# AND git history, with a built-in rule set tuned for common token
-# shapes (AWS, <CMS>, GitHub, <email-service>, generic API keys, etc.).
-#
-# False positives go in `.gitleaks.toml` at the repo root (not yet
-# created — add it on first false hit rather than pre-empt). The
-# example secrets in `backend/.env.example`, `web/.env.example`,
-# and `frontend/.env.example` use obviously-placeholder values that
-# the default ruleset already passes.
+# False positives go in `.gitleaks.toml`, scoped to the matched value rather
+# than the file, so a genuine key in the same file still fails.
 
 on:
   push:
     branches: [main]
   pull_request:
     branches: [main]
-  schedule:
-    # Weekly full-history sweep. The push / PR triggers above only
-    # diff against the base, so a secret that landed on a forgotten
-    # branch and got merged via fast-forward could slip through.
-    # 06:00 UTC Monday — same tide as audit.yml / security.yml / scorecard.yml.
-    - cron: '0 6 * * 1'
+  # Called by gitleaks-sweep.yml for the weekly full-history scan.
+  workflow_call:
 
 permissions: read-all
 
@@ -50,15 +36,17 @@ jobs:
       # PR metadata for inline annotations.
       pull-requests: read
     steps:
-      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           # `fetch-depth: 0` is required for the full-history scan
           # on the scheduled run. Push/PR triggers ignore the depth
           # because they have access to the base ref via the
           # workflow event itself.
           fetch-depth: 0
+          # The action reads GITHUB_TOKEN from its env; git never needs it.
+          persist-credentials: false
 
-      - uses: gitleaks/gitleaks-action@ff98106e4c7b2bc287b24eaf42907196329070c7 # v2.3.9
+      - uses: gitleaks/gitleaks-action@e0c47f4f8be36e29cdc102c57e68cb5cbf0e8d1e # v3.0.0
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           # GITLEAKS_LICENSE is intentionally unset — public-repo free
