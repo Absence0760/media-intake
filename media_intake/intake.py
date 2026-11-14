@@ -10,7 +10,7 @@ Run as `media-intake <command>` (cli.py); `python3 -I media_intake/intake.py` wo
   media-intake quarantine BATCH                  (counts + the folder to open)
   media-intake release BATCH FILE...             (false positive -> library)
   media-intake erase   BATCH [--phone ROOT [--keep-phone-thumbnails]] [--drive MOUNT [--no-wipe-free]]
-  media-intake forget  LIBRARY_FILE... [--drive MOUNT]   (later finds)
+  media-intake forget  LIBRARY_FILE... [--drive MOUNT] [--yes]  (later finds; asks before anything moves)
   media-intake verify-gone [BATCH] [--drive MOUNT]  (read-only sweep; exit 1 if a copy remains)
   media-intake wipe-free MOUNT                   (zero a backup drive's free space)
   media-intake purge-review BATCH                (empty the review folder)
@@ -1274,13 +1274,28 @@ def cmd_erase(a):
 
 
 def cmd_forget(a):
-    """A sensitive file found later in the library: same erase path as intake."""
+    """A sensitive file found later in the library: same erase path as intake.
+
+    Every file is checked, and the yes given, before anything moves: a missing file or a "no" leaves
+    every file, sidecar and index entry where it was (nothing half-forgotten in quarantine)."""
+    files = list(dict.fromkeys(os.path.abspath(f) for f in a.files))
+    bad = [f for f in files if os.path.islink(f) or not os.path.isfile(f)]
+    if bad:
+        sys.exit(f"not forgetting anything: {len(bad)} of {len(files)} are missing or not regular files")
+    if not a.yes:
+        try:
+            ans = input(f"Erase {len(files)} files everywhere for good{' and from the drive' if a.drive else ''}? "
+                        "Type ERASE: ")
+        except EOFError:
+            ans = ""
+        if ans.strip() != "ERASE":
+            sys.exit("nothing erased")
+        a.yes = True
     batch = datetime.datetime.now().strftime("forget-%Y%m%d-%H%M%S")
     quar = private_dir(os.path.join(private_dir(os.path.join(STATE, "quarantine")), batch))
     index = load(os.path.join(STATE, "index.json"), {})
     q = load(os.path.join(quar, "quarantine.json"), {}) or {}  # a forget in the same second adds to it
-    for f in a.files:
-        f = os.path.abspath(f)
+    for f in files:
         stem, ext = os.path.splitext(os.path.basename(f))
         rel, i = stem + ext, 1
         while rel in q or os.path.lexists(os.path.join(quar, rel)):  # same name from two library folders
@@ -1339,6 +1354,8 @@ def cmd_offload(a):
 
 
 def cmd_purge_review(a):
+    if not BATCH_NAME.match(a.batch):  # a batch name, never a path: rmtree stays under batches/<batch>/review
+        sys.exit(f"purge-review {a.batch!r}: not a batch name (letters, digits, '.', '_' and '-' only)")
     rv = os.path.join(bdir(a.batch), "review")
     n = sum(len(fs) for _, _, fs in os.walk(rv))
     for r, _, fs in os.walk(rv):
@@ -1979,14 +1996,38 @@ def cmd_find(a):
 
 
 # ---------------------------------------------------------------- share copy
+def share_copy_refusal(files, out):
+    """Why share-copy must not run (None if it may): every check is made before any copy, so a refusal
+    writes nothing. A copy never lands in a library root or the state folder (it would be taken for a
+    library file, and could replace an original of the same name there), never on a source file, and two
+    sources never share one name in --out (the second would replace the first one's copy)."""
+    real = os.path.realpath(out)
+    for r in LIB_ROOTS + [STATE]:
+        rr = os.path.realpath(r)
+        if real == rr or real.startswith(rr + os.sep):
+            return f"not copying: --out {out} is inside the library or the state folder"
+    missing = [f for f in files if not os.path.isfile(f)]
+    if missing:
+        return f"not copying: {len(missing)} files are missing"
+    names = [os.path.basename(f) for f in files]
+    if len(set(names)) != len(names):
+        return "not copying: two of these have the same file name; share them one at a time"
+    if any(os.path.realpath(os.path.join(out, n)) == os.path.realpath(f) for f, n in zip(files, names)):
+        return f"not copying: --out {out} holds a source file itself; pick another folder"
+    return None
+
+
 def cmd_share_copy(a):
+    if refusal := share_copy_refusal(a.files, a.out):
+        sys.exit(refusal)
     os.makedirs(a.out, exist_ok=True)
     for f in a.files:
         dst = os.path.join(a.out, os.path.basename(f))
         ext = os.path.splitext(f)[1].lower()
         if ext in VID:
-            # Drop every data stream (GoPro GPMF GPS track) and all metadata.
-            subprocess.run(["ffmpeg", "-v", "error", "-y", "-i", f, "-map", "0:v", "-map", "0:a?", "-c", "copy",
+            # Drop every data stream (GoPro GPMF GPS track), attached pictures (cover art: a JPEG with its
+            # own EXIF; 0:V, not 0:v) and all metadata.
+            subprocess.run(["ffmpeg", "-v", "error", "-y", "-i", f, "-map", "0:V", "-map", "0:a?", "-c", "copy",
                             "-map_metadata", "-1", "-map_chapters", "-1", dst], check=True)
         elif shutil.which("exiftool"):
             if os.path.exists(dst):
