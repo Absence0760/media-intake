@@ -41,12 +41,20 @@ of a clip, and walking back to the run's start gives the recording's start, not 
 pre-lock sample (which the earliest sample would be).
 
 `--clock-offset DEVICE=+-Nh` shifts every date that came from a device's own clock
-(everything but GPS) for the files whose Make, Model or "Make Model" is DEVICE (or every
-file, for DEVICE `all`); the source becomes "offset" and `base` keeps the clock it shifted.
-Corrected dates are written to the XMP sidecar only; originals are never written.
+(everything but GPS) for the files whose Make, Model, "Make Model" or device id
+(devices.py, e.g. gopro-hero11-black-3fa9c2) is DEVICE (or every file, for DEVICE `all`);
+the source becomes "offset" and `base` keeps the clock it shifted. Corrected dates are
+written to the XMP sidecar only; originals are never written.
+
+GoPro chapters (GX01nnnn, GX02nnnn, ...; devices.chapter) take the date of the first
+chapter of their recording in the batch, so a recording that crosses midnight or an hour
+is filed together; `chapter_of` names that first chapter.
 """
-import datetime, json, os, re, shutil, statistics, subprocess
+import dataclasses, datetime, json, os, re, shutil, statistics, subprocess
 from dataclasses import dataclass
+
+import config
+import devices
 
 # Mirrors intake.VID (tests/test_dates.py checks they agree).
 VIDEO_EXT = {".mp4", ".mov", ".3gp", ".mkv", ".webm"}
@@ -64,7 +72,7 @@ MAX_OFFSET_H = 24 * 366 * 30  # a clock can be years out; more than 30 is a typo
 UTC = datetime.timezone.utc
 
 TAGS = ("DateTimeOriginal", "CreateDate", "ModifyDate", "OffsetTimeOriginal", "OffsetTime",
-        "GPSDateTime", "GPSDateStamp", "CreationDate", "Make", "Model")
+        "GPSDateTime", "GPSDateStamp", "CreationDate", "Make", "Model", *devices.SERIAL_TAGS)
 DT_RX = re.compile(r"(\d{4})[:-](\d\d)[:-](\d\d)[ T](\d\d):(\d\d):(\d\d)(?:\.\d+)?\s*(Z|[+-]\d\d:?\d\d)?$")
 DAY_RX = re.compile(r"(\d{4})[:-](\d\d)[:-](\d\d)$")
 FOLDER_RX = re.compile(r"(?:^|/)DCIM/(\d{4})(\d\d)__/")
@@ -83,6 +91,9 @@ class Dated:
     offset: str = None         # the --clock-offset DEVICE matching the file (a GPS date is never shifted)
     note: str = None           # why a camera date was not used, or what to check
     suspect: bool = False      # needs a look: clock-reset default, a GPS conflict or nothing plausible
+    device: str = None         # devices.Device.id (never a raw serial)
+    model: str = None          # devices.Device.model, for the Source|<model> tag
+    chapter_of: str = None     # a later GoPro chapter: the first chapter's file name, whose date it took
 
     def aware(self):
         return aware(self.dt, self.tz)
@@ -165,14 +176,17 @@ def clock_offsets(specs):
 
 
 def device_names(meta):
+    """Every DEVICE a --clock-offset may name this file by: Make, Model, "Make Model", device id."""
     make = " ".join(str(meta.get("Make") or "").split())
     model = " ".join(str(meta.get("Model") or "").split())
-    names = {make, model, f"{make} {model}".strip()} - {""}
+    names = {make, model, f"{make} {model}".strip(), meta.get("Device") or ""} - {""}
     return {n.casefold() for n in names}
 
 
 def device_label(meta):
-    return " ".join(f"{meta.get('Make') or ''} {meta.get('Model') or ''}".split()) or "(no make/model)"
+    label = " ".join(f"{meta.get('Make') or ''} {meta.get('Model') or ''}".split()) or "(no make/model)"
+    dev = meta.get("Device")
+    return f"{label} ({dev})" if dev and dev != devices.slug(label) else label
 
 
 def offset_for(meta, offsets):
@@ -206,7 +220,8 @@ def _pil(path):
     e, g = ex.get_ifd(0x8769), ex.get_ifd(0x8825)
     m = {k: v for k, v in (("DateTimeOriginal", e.get(36867)), ("CreateDate", e.get(36868)),
                            ("ModifyDate", ex.get(306)), ("OffsetTimeOriginal", e.get(36881)),
-                           ("OffsetTime", e.get(36880)), ("Make", ex.get(271)), ("Model", ex.get(272))) if v}
+                           ("OffsetTime", e.get(36880)), ("Make", ex.get(271)), ("Model", ex.get(272)),
+                           ("SerialNumber", e.get(0xA431))) if v}
     day, hms = g.get(29), g.get(7)
     if day:
         m["GPSDateStamp"] = str(day)
@@ -233,9 +248,11 @@ def _ffprobe(path):
     return {k: v for k, v in m.items() if v}
 
 
-def read_meta(paths, use_exiftool=None):
-    """{path: {tag: value}} for the TAGS above plus "mtime". exiftool when installed (one run,
-    plus an -ee run over videos for GoPro's GPMF GPS time), else Pillow / ffprobe."""
+def read_meta(paths, use_exiftool=None, state=None, gpmf=True):
+    """{path: {tag: value}} for the TAGS above plus "mtime", and Device / DeviceModel / DeviceLabel
+    (devices.identify) in place of any serial number, which is dropped from the row. exiftool when
+    installed (one run, plus, with gpmf, an -ee run over videos for GoPro's GPMF GPS time), else
+    Pillow / ffprobe. state: the folder holding the device salt (default: the configured state)."""
     paths = [os.path.abspath(p) for p in paths]
     use = shutil.which("exiftool") if use_exiftool is None else use_exiftool
     out = {p: {} for p in paths}
@@ -243,7 +260,8 @@ def read_meta(paths, use_exiftool=None):
         for row in _exiftool(paths, [f"-{t}" for t in TAGS]):
             if row.get("SourceFile") in out:
                 out[row["SourceFile"]] = {k: v for k, v in row.items() if k in TAGS}
-        vids = [p for p in paths if os.path.splitext(p)[1].lower() in VIDEO_EXT and "GPSDateTime" not in out[p]]
+        vids = [p for p in paths if gpmf and os.path.splitext(p)[1].lower() in VIDEO_EXT
+                and "GPSDateTime" not in out[p]]
         for row in _exiftool(vids, ["-ee", "-G3", "-api", "LargeFileSupport=1", "-GPSDateTime"]) if vids else []:
             ts = [v for k, v in row.items() if k.split(":")[-1] == "GPSDateTime"]
             if ts and row.get("SourceFile") in out:
@@ -251,7 +269,14 @@ def read_meta(paths, use_exiftool=None):
     else:
         for p in paths:
             out[p] = _ffprobe(p) if os.path.splitext(p)[1].lower() in VIDEO_EXT else _pil(p)
+    key = None
+    if any(devices.serial_of(m) for m in out.values()):
+        key = devices.salt(state or config.get()["state"])
     for p in paths:
+        dev = devices.identify(out[p], key)
+        devices.strip_serials(out[p])
+        if dev:
+            out[p].update(Device=dev.id, DeviceModel=dev.model, DeviceLabel=dev.label)
         try:
             out[p]["mtime"] = os.path.getmtime(p)
         except OSError:
@@ -387,7 +412,7 @@ def resolve(path, meta, offsets=None, now=None, local_tz=None):
     def done(c, note=None, suspect=False):
         shifted = bool(shift) and c.src != "gps"
         return Dated(c.local, "offset" if shifted else c.src, tz_str(c.tz), c.src if shifted else None,
-                     key, note, suspect)
+                     key, note, suspect, meta.get("Device"), meta.get("DeviceModel"))
 
     def why(c):
         if impossible(c.local, now):
@@ -419,11 +444,20 @@ def resolve(path, meta, offsets=None, now=None, local_tz=None):
     return done(last, "no plausible date: " + (rejected or why(last) or "nothing to read"), True)
 
 
-def resolve_all(paths, offsets=None, now=None, local_tz=None, use_exiftool=None):
+def resolve_all(paths, offsets=None, now=None, local_tz=None, use_exiftool=None, metas=None, state=None):
     """{path (as given): Dated}. Raises ValueError for an ambiguous --clock-offset or one that
-    matched no file (so a typo never silently leaves a wrong clock uncorrected)."""
-    metas = read_meta(paths, use_exiftool)
+    matched no file (so a typo never silently leaves a wrong clock uncorrected). metas: read_meta()
+    rows already read (keyed by absolute path), else they are read here. A later GoPro chapter
+    takes its first chapter's Dated (chapter_of set, the note says so)."""
+    if metas is None:
+        metas = read_meta(paths, use_exiftool, state)
     out = {p: resolve(os.path.abspath(p), metas[os.path.abspath(p)], offsets, now, local_tz) for p in paths}
+    firsts = devices.chapter_groups(paths, lambda p: metas[os.path.abspath(p)].get("Device"))
+    for p, first in firsts.items():
+        f = out[first]
+        name = os.path.basename(first)
+        out[p] = dataclasses.replace(f, chapter_of=name, note=f"dated by its first chapter {name}"
+                                     + (f"; {f.note}" if f.note else ""))
     unused = set(offsets or {}) - {d.offset for d in out.values()}
     if unused:
         seen = sorted({device_label(m) for m in metas.values()})
