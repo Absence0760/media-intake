@@ -95,7 +95,8 @@ run and a CLI `apply` never interleave (`media_intake/library_lock.py`):
   file name).
 - **CLI:** `intake.py main()` takes it for every subcommand in
   `intake.LOCKED` (stage, plan, scan, apply, release, erase, forget, offload,
-  purge-review, trash, not-trash, suggest-trash, tag, tag-files, mark-used).
+  purge-review, trash, not-trash, suggest-trash, tag, tag-files, mark-used,
+  migrate-tags).
   The read-only ones in `intake.READ_ONLY` (quarantine, verify-gone, wipe-free,
   share-copy, find, gallery) never do; a new subcommand counts as locked until
   it is listed there, and `tests/test_library_lock.py` fails on one in neither.
@@ -608,7 +609,8 @@ suggest-trash, vlm-trash, semantic `--clean`, the gallery and the review page.
   the sha256 in `<state>/trashed.json`, written before the delete: `plan`
   drops that content if it ever comes back. Library copies of the same sha256
   that `index.json` knows and that stay on disk (`trash` deletes only the paths
-  you name) get `Owner|trash` in their sidecar, so suggest-trash and the
+  you name) get `Owner|trash` in their sidecar (only copies `index.json`
+  knows: a copy made outside the tool is not looked for and is not marked), so suggest-trash and the
   gallery offer them for a confirm and the VLM leaves them alone. A copy with
   its own keep decision is left as it is. Keep on such a copy later wins (it
   drops `Owner|trash`; the sha stays in `trashed.json`, where it changes
