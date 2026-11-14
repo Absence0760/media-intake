@@ -333,6 +333,15 @@ back from another device or a backup. Anything private goes through `erase`
   `verify-gone [BATCH]` repeats the sweep read-only and exits 1 if anything is
   left (including orphaned sidecars and gallery thumbnails). `erase` runs it
   last.
+- **Progress while it searches.** The HOME sweep, the drive sweep, the
+  near-duplicate search and verify-gone can take minutes on a big HOME, so
+  each prints a start line (what it searches, how many erased items), then a
+  line every 10,000 files or every 2 s, whichever comes first (`home sweep:
+  12,000 files checked, 0 copies so far`), then its summary. Counts only,
+  never a file name. stdout is line-buffered (and jobs run `python3 -u`), so
+  a gallery Erase or `forget` streams these to its job log as they happen.
+  `MEDIA_INTAKE_PROGRESS_EVERY` / `MEDIA_INTAKE_PROGRESS_SECS` change the
+  two intervals (the tests set a count and `inf` seconds).
 - **Near-duplicates** (a messaging-app recompress, a resized edit) don't match
   by checksum. `erase` takes the dHash of each erased image before deleting it
   and moves any image within 4 bits and with the same orientation to

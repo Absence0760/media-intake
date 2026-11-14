@@ -48,7 +48,7 @@ Test: python3 -I -m unittest discover -s tests (synthetic media, throwaway HOME)
 An AI assistant may run these commands for you, but must never read, view,
 montage or describe a file under quarantine/ or a file scan.json flags.
 """
-import argparse, collections, datetime, glob, hashlib, json, os, re, shutil, stat, subprocess, sys, urllib.parse
+import argparse, collections, datetime, glob, hashlib, json, os, re, shutil, stat, subprocess, sys, time, urllib.parse
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import config  # noqa: E402
@@ -619,6 +619,30 @@ def near_roots():
     return [r for r in roots if os.path.isdir(r)]
 
 
+# Progress of a long walk (the HOME sweep, the near-duplicate search): a line every PROGRESS_EVERY files or
+# PROGRESS_SECS seconds, whichever comes first, so a gallery Erase or a forget never sits silent for minutes.
+# MEDIA_INTAKE_PROGRESS_EVERY / _SECS override them (tests drive the lines by count with SECS=inf).
+PROGRESS_EVERY, PROGRESS_SECS = 10000, 2.0
+
+
+class Progress:
+    """Counts-only progress lines, flushed at once so a job log streams them. Never a file name."""
+
+    def __init__(self, label, start, unit="files checked", hits="copies"):
+        self.label, self.unit, self.hits, self.n = label, unit, hits, 0
+        self.every = max(1, int(os.environ.get("MEDIA_INTAKE_PROGRESS_EVERY") or PROGRESS_EVERY))
+        self.secs = float(os.environ.get("MEDIA_INTAKE_PROGRESS_SECS") or PROGRESS_SECS)
+        self.last = time.monotonic()
+        print(f"{label}: {start}", flush=True)
+
+    def tick(self, found):
+        self.n += 1
+        now = time.monotonic()
+        if self.n % self.every == 0 or now - self.last >= self.secs:
+            self.last = now
+            print(f"{self.label}: {self.n:,} {self.unit}, {found:,} {self.hits} so far", flush=True)
+
+
 def where(path, base):
     """Top-level location of path for a count line: 'Pictures', '.cache/some-app', 'Trash'."""
     rel = os.path.relpath(path, base).split(os.sep)
@@ -629,7 +653,7 @@ def where(path, base):
     return rel[0] if len(rel) > 1 else "(home)"
 
 
-def sweep(sig, delete=True, drive=None):
+def sweep(sig, delete=True, drive=None, label="home sweep"):
     """Find files anywhere in HOME (and on drive) with an erased item's size+sha256.
 
     sig is {sha: size}. Only same-size files are hashed. With delete, matches go
@@ -637,13 +661,17 @@ def sweep(sig, delete=True, drive=None):
     orphaned sidecars (<file>.<ext>.xmp whose file is gone: they hold its place
     and labels). Matches inside a git working tree are never deleted (that leaves the
     repo dirty and git history keeps the content): they're returned in in_git.
+    Prints a start line and counts-only progress (Progress) under label while it walks.
     Returns (Counter by location, paths, Counter of orphan sidecars by location, in_git paths).
     """
     sizes = set(sig.values())
     found, paths, orphans, in_git = collections.Counter(), [], collections.Counter(), []
     roots = [(HOME, SWEEP_SKIP)] + ([(os.path.abspath(drive), (WIPE_NAME,))] if drive else [])
+    prog = Progress(label, f"searching every file in HOME{' and on the drive' if drive else ''} for copies of "
+                           f"{len(sig)} erased items (same size, then sha256)")
     for root, skip in roots:
         for p, git in walk_files(root, skip, git=True):
+            prog.tick(len(paths) + len(in_git))
             try:
                 if git:
                     st = os.lstat(p)
@@ -678,7 +706,10 @@ def drive_purge(mount, shas):
     """Delete files anywhere on a backup drive whose sha256 is in shas (size prefilter)."""
     sizes = {s for s, _ in shas.values()}
     n = 0
+    prog = Progress("drive sweep", f"searching every file on the drive for copies of {len(shas)} erased items "
+                                   "(same size, then sha256)")
     for p in walk_files(os.path.abspath(mount), (WIPE_NAME,)):
+        prog.tick(n)
         try:
             if os.path.getsize(p) in sizes and sha256(p) in shas:
                 os.remove(p)
@@ -742,7 +773,11 @@ def near_dups(refs, kept, index, batch, spare=()):
     q = load(qfile, {}) or {}
     moved = left = 0
     spare = {os.path.abspath(x) for x in spare}
-    for p in sorted(cands - spare):
+    todo = sorted(cands - spare)
+    prog = Progress("near-duplicate search", f"comparing {len(todo):,} images in the library folders and batches "
+                    f"with {len(refs)} erased images", unit="images checked", hits="near-copies")
+    for p in todo:
+        prog.tick(moved + left)
         pre = lib_dh.get(p)
         if pre is not None and all(bin(pre ^ r[0]).count("1") > NEAR_MAX + 2 for r in refs):
             continue  # library entry: the stored hash rules it out without decoding
@@ -1047,7 +1082,7 @@ def erase_log_sigs(batch=None):
 
 
 def verify_gone(sig, drive=None):
-    found, _, orphans, in_git = sweep(sig, delete=False, drive=drive)
+    found, _, orphans, in_git = sweep(sig, delete=False, drive=drive, label="verify-gone")
     gthumbs = sum(os.path.lexists(os.path.join(THUMBS, s + ".jpg")) for s in sig)
     if gthumbs:
         found["gallery thumbnails (~/.cache/media-intake/thumbs)"] += gthumbs
@@ -2016,6 +2051,8 @@ READ_ONLY = {"quarantine", "verify-gone", "wipe-free", "share-copy", "social-cop
 
 def main(argv=None, prog=None):
     a = build_parser(prog).parse_args(argv)
+    if hasattr(sys.stdout, "reconfigure"):  # a job's log or a pipe gets each line as it is printed
+        sys.stdout.reconfigure(line_buffering=True)
     run = globals()["cmd_" + a.cmd.replace("-", "_")]
     if a.cmd in READ_ONLY:  # gallery takes the lock itself, per write
         run(a)

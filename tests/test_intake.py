@@ -372,6 +372,29 @@ class EraseEverywhere(unittest.TestCase):
         with open(p, "rb") as f:
             return __import__("hashlib").sha256(f.read()).hexdigest()
 
+    def test_erase_prints_sweep_progress_before_its_summary(self):
+        """A long HOME sweep says what it searches and how far it got (counts only), driven here by file count."""
+        batch = "2026-11-13-progress"
+        self.quarantine(batch)
+        for i in range(12):  # enough files that a line every 5 has to come
+            self.plant(self.H(f"Documents/other-{i}.bin"), os.path.join(self.phone, "DCIM/.other/5.jpg"))
+        self.env.update(MEDIA_INTAKE_PROGRESS_EVERY="5", MEDIA_INTAKE_PROGRESS_SECS="inf")
+        out = self.intake("erase", batch, "--yes", "--drive", self.drive, "--no-wipe-free").splitlines()
+        start = out.index("home sweep: searching every file in HOME for copies of 1 erased items "
+                          "(same size, then sha256)")
+        ticks = [i for i, ln in enumerate(out) if re.fullmatch(r"home sweep: [\d,]+ files checked, \d+ copies so far", ln)]
+        summary = next(i for i, ln in enumerate(out) if re.fullmatch(r"home sweep: \d+ more copies deleted", ln))
+        self.assertGreaterEqual(len(ticks), 2, out)
+        self.assertTrue(start < ticks[0] and ticks[-1] < summary, out)
+        self.assertEqual([out[i].split(":")[1].split()[0] for i in ticks[:2]], ["5", "10"], "a line every 5 files")
+        for ln in out:  # progress never names a file
+            if ln.startswith(("home sweep:", "drive sweep:", "verify-gone:", "near-duplicate search:")):
+                self.assertNotIn("/", ln)
+        self.assertIn("drive sweep: searching every file on the drive for copies of 1 erased items (same size, then sha256)",
+                      out)
+        self.assertIn("verify-gone: searching every file in HOME and on the drive for copies of 1 erased items "
+                      "(same size, then sha256)", out)
+
     def test_erase_everywhere(self):
         batch = "2026-11-13-sweep"
         qpath = self.quarantine(batch)
