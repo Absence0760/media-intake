@@ -17,7 +17,8 @@ Run as `media-intake <command>` (cli.py); `python3 -I media_intake/intake.py` wo
   media-intake trash   [BATCH] FILE... [--phone ROOT]   (plain delete of non-sensitive junk; never comes back)
   media-intake trash   --from-digikam [--yes]    (library files with digiKam's Rejected pick label)
   media-intake suggest-trash [--batch B] [--phone ROOT]  (Review|maybe-trash files -> review page)
-  media-intake not-trash FILE...                 (keep a suggestion: Owner|not-trash)
+  media-intake not-trash FILE...                 (keep a suggestion: Owner|keep + Owner|not-trash)
+  media-intake migrate-tags [--dry-run]          (legacy Review|not-trash -> Owner|not-trash, once)
   media-intake offload BATCH --phone ROOT        (after a drive backup: free the phone; a drive batch: its source root)
   media-intake share-copy FILE... --out DIR      (copy without GPS/metadata; alias social-copy)
   media-intake tag     BATCH [--no-labels]       (after apply: XMP sidecar tags for filed files)
@@ -52,6 +53,7 @@ import argparse, collections, datetime, glob, hashlib, json, os, re, shutil, sta
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import config  # noqa: E402
 import dates  # noqa: E402
+import owner  # noqa: E402
 import sources  # noqa: E402
 
 CFG = config.get()
@@ -1213,8 +1215,30 @@ def phone_rels(batch, path):
     return rels
 
 
+def mark_trashed_copies(shas, index):
+    """Owner|trash on library copies (by index.json) of content just trashed that are still on disk.
+    trash deletes only the paths named; a copy is marked so suggest-trash and the gallery offer it, and
+    the VLM leaves it alone. A copy with its own keep decision (owner.kept) or a scan flag is skipped.
+    Returns (marked, kept copies left alone, an error or None)."""
+    copies = sorted(p for p, e in index.items() if isinstance(e, dict) and e.get("sha") in shas
+                    and os.path.isfile(p) and not os.path.islink(p)
+                    and any(os.path.realpath(p).startswith(os.path.realpath(r) + os.sep) for r in LIB_ROOTS))
+    bad = set(guard_label().refused(copies, STATE)) if copies else set()
+    copies = [p for p in copies if p not in bad]
+    if not copies:
+        return 0, 0, None
+    if not shutil.which("exiftool"):
+        return 0, 0, f"{len(copies)} copies not marked Owner|trash: exiftool missing ({DEPS})"
+    old = read_sidecar_tags(copies)
+    todo = [p for p in copies if not owner.kept(*old.get(p, ([], ""))[:2])]
+    write_tags([(p, dict(hier=[owner.TRASH])) for p in todo])
+    return len(todo), len(copies) - len(todo), None
+
+
 def trash_files(files, batch=None, phone=None):
-    """Delete each file, its sidecar, thumbnails, index entry and (with phone) its phone original."""
+    """Delete each file, its sidecar, thumbnails, index entry and (with phone) its phone original.
+    The sha256 goes in trashed.json first: the durable Owner|trash (never taken in again); library
+    copies of it left on disk get Owner|trash in their sidecar (mark_trashed_copies)."""
     private_dir(STATE)
     index = load(os.path.join(STATE, "index.json"), {})
     trashed = load(TRASHED, {})
@@ -1236,8 +1260,10 @@ def trash_files(files, batch=None, phone=None):
     known = [m["src"] for man in mans.values() for m in man["files"].values() if m.get("src")]
     phone_ok = set(device_targets(root, [x for _, srcs in todo for x in srcs], known)) if root else set()
     n = sc = th = ph = 0
+    gone = set()
     for p, srcs in todo:
         s, size = sha256(p), os.path.getsize(p)
+        gone.add(s)
         trashed[s] = size
         save(TRASHED, trashed)  # first, so a crash mid-way still keeps it from coming back
         os.remove(p)
@@ -1257,9 +1283,14 @@ def trash_files(files, batch=None, phone=None):
                 phone_ok.discard(src)
                 ph += len(device_remove([src]))
     save(os.path.join(STATE, "index.json"), index)
+    marked, spared, err = mark_trashed_copies(gone, index)
     print(f"trashed {n} files; sidecars {sc}; thumbnails {th}; phone {ph}"
+          + (f"; copies left on disk marked Owner|trash {marked}" if marked else "")
+          + (f"; copies you kept left alone {spared}" if spared else "")
           + (f"; refused {len(refused)} (not a library, review or quarantine file)" if refused else ""))
-    return not refused
+    if err:
+        print(err)
+    return not refused and not err
 
 
 def digikam_rejected(roots):
@@ -1300,25 +1331,67 @@ def cmd_trash(a):
     sys.exit(0 if trash_files(args, batch, a.phone) else 1)
 
 
+def keep_args(tags, owner_leaves=()):
+    """exiftool arguments (no target) for Keep, the one rule the review page (via not-trash) and the
+    gallery share: Owner|keep + Owner|not-trash on; Review|maybe-trash, Owner|trash (an older trash
+    decision) and the legacy Review|not-trash off. A dc:Subject leaf goes only with a tag that was
+    there, and never one a remaining tag or digiKam's TagsList (owner_leaves) still uses."""
+    drop = ("Review|maybe-trash", owner.TRASH, *owner.LEGACY)
+    add = (owner.KEEP, owner.NOT_TRASH)
+    used = {t.split("|")[-1] for t in tags if t not in drop} | {h.split("|")[-1] for h in add} | set(owner_leaves)
+    b = [f"-XMP-lr:HierarchicalSubject-={t}" for t in drop]
+    b += [f"-XMP-dc:Subject-={leaf}" for leaf in dict.fromkeys(t.split("|")[-1] for t in drop if t in tags)
+          if leaf not in used]
+    for h in add:
+        leaf = h.split("|")[-1]
+        b += [f"-XMP-lr:HierarchicalSubject-={h}", f"-XMP-lr:HierarchicalSubject+={h}",
+              f"-XMP-dc:Subject-={leaf}", f"-XMP-dc:Subject+={leaf}"]
+    return b
+
+
 def cmd_not_trash(a):
-    """You kept a suggested file: Review|maybe-trash off, Owner|not-trash on (never suggested again)."""
+    """You kept a suggested file (the review page's Keep): keep_args() on its sidecar, so it is
+    never suggested again."""
     need_exiftool()
     files = [os.path.abspath(f) for f in a.files]
     bad = [f for f in files if not trash_allowed(f) or not os.path.exists(sidecar(f))]
     if bad:
         sys.exit(f"not changing: {len(bad)} files are not library files with a sidecar")
-    blocks = [["-q", "-m", "-overwrite_original", "-XMP-lr:HierarchicalSubject-=Review|maybe-trash",
-               "-XMP-dc:Subject-=maybe-trash", "-XMP-lr:HierarchicalSubject-=Owner|not-trash",
-               "-XMP-lr:HierarchicalSubject+=Owner|not-trash", "-XMP-dc:Subject-=not-trash",
-               "-XMP-dc:Subject+=not-trash", sidecar(f)] for f in files]
+    old = read_sidecar_tags(files)
+    blocks = []
+    for f in files:
+        tags, _, leaves = old.get(f, ([], "", set()))
+        blocks.append(["-q", "-m", "-overwrite_original", *keep_args(tags, leaves), sidecar(f)])
     exiftool_batch(blocks)
-    print(f"kept {len(files)} files: Owner|not-trash")
+    print(f"kept {len(files)} files: Owner|keep + Owner|not-trash")
+
+
+def cmd_migrate_tags(a):
+    """One-shot, idempotent: rewrite the legacy Review|not-trash to Owner|not-trash in every library
+    sidecar (through merge_tags and write_tags, the normal sidecar-write path). Nothing else changes."""
+    need_exiftool()
+    roots = [r for r in LIB_ROOTS if os.path.isdir(r)]
+    r = subprocess.run(["exiftool", "-j", "-q", "-q", "-r", "-ext", "xmp", "-HierarchicalSubject",
+                        "-XMP-digiKam:PickLabel", *roots], capture_output=True, text=True) if roots else None
+    entries = []
+    for row in json.loads(r.stdout or "[]") if r else []:
+        tags = as_list(row.get("HierarchicalSubject"))
+        if not owner.LEGACY.keys() & set(tags):
+            continue
+        hier, remove, leaves = merge_tags(tags, [], owner.pick_label(row.get("PickLabel")), relabelled=False)
+        entries.append((row["SourceFile"][:-4], dict(hier=hier, remove=remove, drop_leaves=leaves)))
+    if a.dry_run:
+        print(f"{len(entries)} sidecars have the legacy Review|not-trash (dry run: nothing written)")
+        return
+    write_tags(entries)
+    print(f"migrated {len(entries)} sidecars: Review|not-trash -> Owner|not-trash")
 
 
 def cmd_suggest_trash(a):
     """Library files the VLM called trash (Review|vlm-trash/*, written only at confidence >= 0.7, or
-    AI|vlm/<model>/trash...), or SigLIP's Review|maybe-trash without a VLM keep. Never one you
-    kept (Owner|not-trash, Owner|keep, digiKam Accepted), Used|* or a protected project's Project| tag."""
+    AI|vlm/<model>/trash...), SigLIP's Review|maybe-trash without a VLM keep, or a surviving copy of
+    content you trashed (Owner|trash). Never one you kept (owner.kept: Owner|keep, Owner|not-trash,
+    digiKam Accepted), Used|* or a protected project's Project| tag."""
     need_exiftool()
     roots = [r for r in LIB_ROOTS if os.path.isdir(r)]
     protected = config.protected_tags(CFG)
@@ -1334,14 +1407,14 @@ def cmd_suggest_trash(a):
         tags = as_list(row.get("HierarchicalSubject"))
         vlm_trash = any(t.startswith("Review|vlm-trash/") or (t.startswith("AI|vlm/") and "/trash" in t) for t in tags)
         vlm_keep = any(t == "Review|vlm-keep" or (t.startswith("AI|vlm/") and "/keep" in t) for t in tags)
-        if not (vlm_trash or ("Review|maybe-trash" in tags and not vlm_keep)):
+        if not (vlm_trash or ("Review|maybe-trash" in tags and not vlm_keep) or owner.TRASH in tags):
             continue
-        if owner_kept(tags, str(row.get("PickLabel", "")).strip()) or protected.intersection(tags) \
+        if owner.kept(tags, owner.pick_label(row.get("PickLabel"))) or protected.intersection(tags) \
                 or any(t.startswith("Used|") for t in tags):
             continue
         if not trash_allowed(media) or (only is not None and os.path.realpath(media) not in only):
             continue
-        items.append(dict(path=media, labels=[t for t in tags if t.startswith(("Label|", "Review|", "AI|"))]))
+        items.append(dict(path=media, labels=[t for t in tags if t == owner.TRASH or t.startswith(("Label|", "Review|", "AI|"))]))
     items.sort(key=lambda x: x["path"])
     out = os.path.join(private_dir(STATE), "maybe-trash.json")
     fd = os.open(out + ".tmp", os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
@@ -1359,7 +1432,7 @@ def cmd_suggest_trash(a):
 
 # ---------------------------------------------------------------- tags (XMP sidecars)
 # Fields (docs/intake.md, "Tagging"): XMP-lr:HierarchicalSubject with "|"
-# (Project|, Source|, Event|, Place|, Label|, Review|, Used|), XMP-dc:Subject
+# (Project|, Source|, Event|, Place|, Label|, Review|, Used|, Owner|), XMP-dc:Subject
 # with each leaf, XMP-iptcExt:Event, XMP-photoshop:City/State/Country,
 # XMP-iptcCore:CountryCode, XMP-exif:GPSLatitude/GPSLongitude, XMP-exif:DateTimeOriginal.
 EMPTY_XMP = ("<?xpacket begin='﻿' id='W5M0MpCehiHzreSzNTczkc9d'?>\n"
@@ -1497,9 +1570,8 @@ def infer(path):
 
 
 # Tags: who writes what (docs/intake.md). AI never overrides; each writer replaces only its own
-# namespace; your own tags (Owner|, plain keywords) win.
+# namespace; your own tags (Owner|, plain keywords) win. Owner decisions: owner.py.
 FACT_PREFIXES = ("Project|", "Source|", "Event|", "Place|")  # intake facts (tag, tag-files)
-OWNER_KEEP = ("Owner|not-trash", "Owner|keep", "Review|not-trash")  # Review|not-trash: legacy spelling
 
 
 def ai_owned(t):
@@ -1524,7 +1596,7 @@ def read_sidecar_tags(paths):
 
 
 def owner_kept(tags, pick):
-    return any(t in tags for t in OWNER_KEEP) or pick == "3"  # digiKam Accepted
+    return owner.kept(tags, pick)
 
 
 def merge_tags(old, new, pick="", relabelled=True, owner_leaves=()):
@@ -1532,11 +1604,15 @@ def merge_tags(old, new, pick="", relabelled=True, owner_leaves=()):
 
     Facts replace only the prefixes this run has a value for; AI labels replace SigLIP's
     namespace (only when it ran); everything else (owner keywords, Owner|, Used|, the VLM's
-    Review|vlm-*, Review|child-in-shot) is never removed."""
-    if owner_kept(old, pick):
+    Review|vlm-*, Review|child-in-shot) is never removed. A file you kept or trashed
+    (owner.py) never gets Review|maybe-trash. A legacy Review|not-trash is
+    rewritten to Owner|not-trash (migration on write; the decision is never dropped)."""
+    if owner.kept(old, pick) or owner.TRASH in old:
         new = [t for t in new if t != "Review|maybe-trash"]
+    legacy = [t for t in old if t in owner.LEGACY]
+    new = new + [h for h in dict.fromkeys(owner.LEGACY[t] for t in legacy) if h not in new]
     have = {t.split("|", 1)[0] + "|" for t in new if t.startswith(FACT_PREFIXES)}
-    remove = [t for t in old if t not in new and ((relabelled and ai_owned(t)) or
+    remove = [t for t in old if t not in new and ((relabelled and ai_owned(t)) or t in owner.LEGACY or
                                                   any(t.startswith(p) for p in have))]
     keep_leaves = ({t.split("|")[-1] for t in old if t not in remove} | {t.split("|")[-1] for t in new}
                    | set(owner_leaves))
@@ -1794,7 +1870,9 @@ def build_parser(prog=None):
     s = sp.add_parser("trash", help="plain delete of unwanted, non-sensitive files (no sweep, no erase log)")
     s.add_argument("args", nargs="*", metavar="[BATCH] FILE"); s.add_argument("--batch", help="batch the files came from (for --phone)")
     s.add_argument("--phone"); s.add_argument("--from-digikam", action="store_true"); s.add_argument("--yes", action="store_true")
-    s = sp.add_parser("not-trash"); s.add_argument("files", nargs="+")
+    s = sp.add_parser("not-trash", help="keep suggested files: Owner|keep + Owner|not-trash"); s.add_argument("files", nargs="+")
+    s = sp.add_parser("migrate-tags", help="one-shot, idempotent: legacy Review|not-trash -> Owner|not-trash")
+    s.add_argument("--dry-run", action="store_true", help="count the sidecars, write nothing")
     s = sp.add_parser("suggest-trash"); s.add_argument("--batch"); s.add_argument("--phone")
     s.add_argument("--no-serve", action="store_true", help="write maybe-trash.json and stop")
     for name in ("share-copy", "social-copy"):

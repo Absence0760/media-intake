@@ -356,7 +356,8 @@ class Runner:
 
     def _execute(self, dec):
         ok = True
-        # 0. Maybe-trash suggestions: Keep marks them not-trash, Trash deletes.
+        # 0. Maybe-trash suggestions. Keep: `not-trash` (Owner|keep + Owner|not-trash, as the gallery's
+        # Keep). Trash: `trash` (sha256 into trashed.json, the durable Owner|trash; copies marked).
         mb = [(i, it) for i, it in enumerate(self.items) if it["tab"] == "maybe"]
         keep = [it["path"] for i, it in mb if dec[i] == "keep"]
         trash = [it["path"] for i, it in mb if dec[i] == "trash"]

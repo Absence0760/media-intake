@@ -33,7 +33,10 @@ review files it prints `nothing to review for BATCH` and exits 0.
   with `--phone` when the page has it, except xcheck items). It runs first in
   each tab. `--maybe-trash` (or `media-intake suggest-trash`, which opens it)
   adds a "Maybe trash" tab from `maybe-trash.json`, re-checked against the
-  library roots: Keep runs `not-trash`, Trash runs `trash`. With no BATCH,
+  library roots: Keep runs `not-trash` (`Owner|keep` + `Owner|not-trash`, the
+  gallery's Keep rule), Trash runs `trash` (the sha256 goes in `trashed.json`,
+  the durable `Owner|trash`; copies left on disk get `Owner|trash` in their
+  sidecar: [intake.md](intake.md), "Owner decisions"). With no BATCH,
   decisions go to `maybe-trash-decisions.json`. The confirm summary shows
   keep / erase / trash per tab.
 - **On submit** it writes `batches/BATCH/review-decisions.json` (0600,

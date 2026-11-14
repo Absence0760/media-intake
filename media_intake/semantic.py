@@ -22,13 +22,15 @@ there read-only, sha256-checked; without it only `similar` works.
 similar: nearest neighbours of FILE by cosine (FILE is embedded on the fly if new).
 Filters read the XMP sidecars: --project P (Project|P), --unused-since Nd (no
 Used|<YYYY-MM-DD-slug> in the last N days, like intake.py find), --clean (no
-Review|child-in-shot, Review|maybe-trash, AI|vlm/*/trash/*).
+Review|child-in-shot, no Owner|trash, and no Review|maybe-trash or AI|vlm/*/trash/*
+unless you kept the file: owner.kept, so Owner|not-trash outranks a trash flag).
 """
 import argparse, datetime, hashlib, json, math, os, re, shutil, string, subprocess, sys, tempfile, time
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, HERE)
 import label  # noqa: E402  (read-only: encoder path/sha, preprocessing, refusals)
+import owner  # noqa: E402  (owner decisions outrank AI trash flags)
 
 HOME = os.path.expanduser("~")
 STATE = label.STATE
@@ -219,8 +221,8 @@ def passes(tags, a, cutoff):
             m = POST_SLUG.match(t[5:]) if t.startswith("Used|") else None
             if m and datetime.date.fromisoformat(m.group(1)) >= cutoff:
                 return False
-    if a.clean and any(t in ("Review|child-in-shot", "Review|maybe-trash")
-                       or re.match(r"AI\|vlm/[^/]+/trash/", t) for t in tags):
+    if a.clean and ("Review|child-in-shot" in tags or owner.trashed(tags) or not owner.kept(tags) and any(
+            t == "Review|maybe-trash" or re.match(r"AI\|vlm/[^/]+/trash/", t) for t in tags)):
         return False
     return True
 

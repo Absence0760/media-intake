@@ -33,6 +33,7 @@ sys.path.insert(0, HERE)
 import intake  # noqa: E402  (constants, sidecar helpers, trash_allowed, exiftool_batch)
 import jobs  # noqa: E402  (trash / erase run as a detached job: <state>/jobs/gallery.*)
 import label  # noqa: E402  (flagged / refused: stdlib only at import)
+import owner  # noqa: E402  (owner decisions: Owner|keep / not-trash / trash)
 import plugins  # noqa: E402  (extra tabs: gallery_views())
 import review_ui as R  # noqa: E402  (server guards, media with Range, sizes)
 
@@ -160,7 +161,8 @@ def facts(it):
         ai = max(ai or 0.0, SUGGEST_MIN)
     it["ai_trash"] = ai
     it["ai_keep"] = any(t == "Review|vlm-keep" or (t.startswith("AI|vlm/") and "/keep" in t) for t in tags)
-    it["kept"] = intake.owner_kept(tags, it.get("pick", ""))
+    it["kept"] = owner.kept(tags, it.get("pick", ""))
+    it["trashed"] = owner.trashed(tags)  # a surviving copy of content you trashed
 
 
 # ---------------------------------------------------------------- library scan
@@ -417,7 +419,8 @@ class App:
     def summary(self, i, it):
         return dict(id=i, m=it["media"], d=it["date"], mo=it["date"][:7], n=os.path.basename(it["path"]),
                     c=it["ai_trash"], f=[t[7:] for t in it["tags"] if t in ("Review|maybe-trash", "Review|child-in-shot")]
-                    + (["kept"] if it["kept"] else []) + (["used"] if it["used"] else []))
+                    + (["kept"] if it["kept"] else []) + (["trashed copy"] if it["trashed"] else [])
+                    + (["used"] if it["used"] else []))
 
     def detail(self, i):
         it = self.items[i]
@@ -462,7 +465,7 @@ class App:
     def suggested(self, it):
         if it["kept"] or it["used"] or f"Project|{it['project']}" in PROTECTED or PROTECTED.intersection(it["tags"]):
             return False
-        return "Review|maybe-trash" in it["tags"] or (it["ai_trash"] or 0) >= SUGGEST_MIN
+        return it["trashed"] or "Review|maybe-trash" in it["tags"] or (it["ai_trash"] or 0) >= SUGGEST_MIN
 
     def matches(self, it, f):
         if it["gone"]:
@@ -622,18 +625,13 @@ class App:
             for i in ids:
                 it = self.items[i]
                 x = self.ensure_sidecar(it)
-                b = ["-q", "-m", "-overwrite_original", "-sep", "@@sep@@",
-                     "-XMP-lr:HierarchicalSubject-=Review|maybe-trash"]
-                if self.leaf_free(it, "maybe-trash", {"Review|maybe-trash"}):
-                    b.append("-XMP-dc:Subject-=maybe-trash")
-                for h in ("Owner|keep", "Owner|not-trash"):
-                    leaf = h.split("|")[-1]
-                    b += [f"-XMP-lr:HierarchicalSubject-={h}", f"-XMP-lr:HierarchicalSubject+={h}",
-                          f"-XMP-dc:Subject-={leaf}", f"-XMP-dc:Subject+={leaf}"]
-                blocks.append(b + [x])
+                # The same rule as the review page's Keep (intake.keep_args).
+                leaves = {t.split("/")[-1] for t in it["tagslist"]}
+                blocks.append(["-q", "-m", "-overwrite_original", "-sep", "@@sep@@",
+                               *intake.keep_args(it["tags"], leaves), x])
             self.run_exiftool(blocks)
             self.refresh(ids)
-            return f"kept {len(ids)}: Owner|keep + Owner|not-trash, Review|maybe-trash removed"
+            return f"kept {len(ids)}: Owner|keep + Owner|not-trash, Review|maybe-trash and Owner|trash removed"
 
     def tag(self, ids, tag, op):
         tag = (tag or "").strip()
@@ -1163,7 +1161,7 @@ function toast(s){$("#note").textContent=s}
 $("#bkeep").onclick=()=>doKeep(selIds());$("#btrash").onclick=()=>askTrash(selIds());$("#berase").onclick=()=>askErase(selIds());
 $("#btag").onclick=()=>tagAsk("add");$("#buntag").onclick=()=>tagAsk("remove");$("#brot").onclick=()=>rot(selIds(),"cw");$("#bnone").onclick=()=>{sel.clear();paintSel()};
 $("#sugapply").onclick=()=>{const keep=Object.keys(dec).filter(k=>dec[k]==="keep").map(Number),trash=Object.keys(dec).filter(k=>dec[k]==="trash").map(Number);
- confirmBox(`Apply: ${keep.length} keep, ${trash.length} trash?`,[keep.length?"Keep: Owner|keep + Owner|not-trash in the sidecar (never suggested again).":"",trash.length?"Trash ("+names(trash)+"): plain delete, never taken in again.":""].filter(Boolean),false,
+ confirmBox(`Apply: ${keep.length} keep, ${trash.length} trash?`,[keep.length?"Keep: Owner|keep + Owner|not-trash in the sidecar (never suggested again).":"",trash.length?"Trash ("+names(trash)+"): plain delete, never taken in again (Owner|trash: the sha256 in trashed.json; copies left on disk are marked).":""].filter(Boolean),false,
   async()=>{const j=await api("/api/decide",{keep,trash,confirm:true});if(trash.length){$("#mgo").hidden=true;$("#mout").hidden=false;$("#mout").textContent=j.result+"\n";poll(0,trash)}else{$("#modal").classList.remove("on");toast(j.result);reset()}})};
 // ---------------------------------------------------------------- viewer
 async function openViewer(n){if(n<0||n>=items.length)return;vi=n;cur=n;let d;try{d=await api("/api/item/"+items[n].id)}catch(e){toast("gone");return}
