@@ -868,5 +868,29 @@ class ReviewUITest(unittest.TestCase):
         self.assertIn(b"crashed", page)
 
 
+class BurstInputs(unittest.TestCase):
+    """attach_bursts reads batch names and plans from state files: a bad name or shape groups nothing."""
+
+    def test_bad_batch_name_and_plan_shape_group_nothing(self):
+        sys.path.insert(0, HERE)
+        import review_ui
+        tmp = tempfile.mkdtemp(prefix="burst-inputs-")
+        self.addCleanup(shutil.rmtree, tmp, True)
+        outside = os.path.join(tmp, "x")
+        row = {"rel": "a.jpg", "dst": "/l/a.jpg", "date": "2026-11-08T07:15:00", "device": "cam"}
+        write_json(os.path.join(outside, "plan.json"), [row, dict(row, rel="b.jpg", dst="/l/b.jpg")])
+        write_json(os.path.join(tmp, "batches", "ok", "plan.json"), {"not": "a list"})
+        write_json(os.path.join(tmp, "maybe-trash.json"), {"batch": "../x", "items": []})
+        items = [dict(tab="maybe", path="/l/a.jpg", rel="a.jpg", qbatch=None),
+                 dict(tab="maybe", path="/l/b.jpg", rel="b.jpg", qbatch=None)]
+        old = review_ui.STATE
+        review_ui.STATE = tmp
+        try:
+            review_ui.attach_bursts("ok", items)
+        finally:
+            review_ui.STATE = old
+        self.assertEqual([it.get("burst") for it in items], [None, None])
+
+
 if __name__ == "__main__":
     unittest.main(verbosity=2)

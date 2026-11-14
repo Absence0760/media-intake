@@ -970,6 +970,20 @@ class ViewsEndpointsTest(unittest.TestCase):
         self.assertFalse(os.path.exists(self.share_root))
         self.assertEqual(s.get("/api/job")["id"], None)  # no job started
 
+    def test_rename_and_merge_refuse_an_unsafe_old_name_from_metadata(self):
+        """An event name read from a file's metadata (not typed here) can look like an exiftool option; it is
+        refused before any exiftool argument is built, and no sidecar changes."""
+        raw_xmp(self.b, ["Trips|beach"], event="-o")
+        s = self.start()
+        self.assertIn(["-o", 1], s.get("/api/facets")["facets"]["event"])
+        before = self.files()
+        for path, body in (("/api/event/rename", {"from": "-o", "to": "coast"}),
+                           ("/api/event/merge", {"from": ["-o"], "into": "beach"})):
+            code, j = s.post(path, body)
+            self.assertEqual(code, 400, (path, j))
+            self.assertIn("can't be rewritten", j["error"], path)
+        self.assertEqual(self.files(), before)
+
     def test_new_posts_get_409_while_the_library_is_locked(self):
         fake, gate = os.path.join(self.tmp, "gated_intake.py"), os.path.join(self.tmp, "gate")
         with open(fake, "w") as f:
@@ -1088,9 +1102,16 @@ class EventBlockTest(unittest.TestCase):
         self.assertTrue(self.app.matches(x, {"event": "iptc-only"}))
 
     def test_share_folder_never_in_the_library(self):
-        for inside in (self.g.LIBRARY, os.path.join(self.g.LIBRARY, "share"), os.path.join(self.g.STATE, "x")):
-            with self.assertRaises(ValueError):
-                self.g.App([], share_out=inside).share_dir()
+        inside = [self.g.LIBRARY, os.path.join(self.g.LIBRARY, "share"), os.path.join(self.g.STATE, "x")]
+        inside += [os.path.join(r, "share") for r in self.g.ROOTS]  # videos and every project folder too
+        os.makedirs(self.g.LIBRARY, exist_ok=True)
+        link = os.path.join(self.tmp, "looks-elsewhere")
+        os.symlink(self.g.LIBRARY, link)
+        inside.append(os.path.join(link, "share"))  # a symlink that leads into the library
+        for d in inside:
+            with self.assertRaises(ValueError, msg=d):
+                self.g.App([], share_out=d).share_dir()
+        self.assertFalse(os.path.exists(os.path.join(self.g.LIBRARY, "share")), "nothing created on refusal")
 
 
 class AddedFilterTest(unittest.TestCase):

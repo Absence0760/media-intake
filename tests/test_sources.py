@@ -242,6 +242,17 @@ class Folder(unittest.TestCase):
         self.refused(os.path.join(h, "Pictures/library/2019"), "photo library")
         self.refused(os.path.join(h, "Videos/demo-footage/originals"), "Demo project folder")
 
+    def test_symlinked_parent_into_state_or_library_refused(self):
+        """A link in a parent folder (not the last component) that leads into the state or the library:
+        only the resolved path can tell, and it is what every check compares."""
+        h = self.home
+        for target, why in ((".local/share/media-intake", "media-intake state"), ("Pictures/library", "photo library")):
+            os.makedirs(os.path.join(h, target, "sub"), exist_ok=True)
+            link = os.path.join(h, "Documents", "pics-link-" + target.split("/")[-1])
+            os.makedirs(os.path.dirname(link), exist_ok=True)
+            os.symlink(os.path.join(h, target), link)
+            self.refused(os.path.join(link, "sub"), why)
+
     def test_config_overrides_are_refused_too(self):
         lib = os.path.join(self.home, "Photos lib")
         state = os.path.join(self.home, "intake-state")
