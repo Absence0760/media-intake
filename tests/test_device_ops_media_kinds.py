@@ -252,7 +252,7 @@ class Phone(Base):
         self.assertIsNone(p[self.SCREENREC]["project"])
         # Photo and video of one event day both go to the project's phone/ folder.
         photo(self.P("DCIM/Camera/20261031_090000.jpg"), 11, "2026:10:31 09:00:00")
-        p = self.staged(b, "--event", "demo/river-shoot@2026-10-31")
+        self.staged(b, "--event", "demo/river-shoot@2026-10-31")
         self.apply(b)
         self.assertEqual(sorted(os.listdir(shoot)), ["20261031_090000.jpg", "clip_utc.mp4"])
 

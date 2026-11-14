@@ -18,8 +18,8 @@ content beyond the fake detector's own colour test. Cases needing ffmpeg or
 exiftool skip when the tool is missing (the CI image has both).
 """
 import base64, contextlib, hashlib, http.server, io, json, os, shutil, stat, subprocess, sys, tempfile, threading
-import types, unittest
-from unittest import mock
+import importlib.util, types, unittest
+import unittest.mock as mock
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import support  # noqa: E402  (hermetic config; puts media_intake/ on sys.path)
@@ -32,16 +32,8 @@ PKG = support.PKG
 PY = sys.executable
 HAVE_FFMPEG = bool(shutil.which("ffmpeg") and shutil.which("ffprobe"))
 HAVE_EXIFTOOL = bool(shutil.which("exiftool"))
-try:
-    import numpy  # noqa: F401
-    HAVE_NUMPY = True
-except ImportError:
-    HAVE_NUMPY = False
-try:
-    import yaml  # noqa: F401
-    HAVE_YAML = True
-except ImportError:
-    HAVE_YAML = False
+HAVE_NUMPY = importlib.util.find_spec("numpy") is not None
+HAVE_YAML = importlib.util.find_spec("yaml") is not None
 
 RED, BLUE, GREEN = (220, 20, 20), (20, 40, 210), (20, 170, 40)
 EMPTY_XMP = ("<?xpacket begin='﻿' id='W5M0MpCehiHzreSzNTczkc9d'?>\n<x:xmpmeta xmlns:x='adobe:ns:meta/'>"
