@@ -22,7 +22,7 @@ an erased photo (any level of quarantine/near-<batch>, near-near-<batch>, ...,
 all reviewed on this one page) is shown beside the original its erased photo
 was a copy of when one survives in the library (`root_of`), else gets a note
 with the erase date; the erased file is never looked for. quarantine/xcheck-<batch> (quarantine-only: no
-plan or manifest) holds messaging copies of library photos; each entry's `of`
+plan or manifest) holds messaging copies of library photos and videos; each entry's `of`
 is shown as the original, same roots check, and its erase gets no --phone.
 Every item can also be trashed (`intake.py trash`: plain delete for junk that
 isn't private, remembered so it never comes back). --maybe-trash adds a tab of
@@ -230,16 +230,16 @@ def attach_originals(batch, items):
                 it["orig"] = dict(erased=True, date=date)
             continue
         why = it["why"] or ""
-        if it.get("of"):  # xcheck-<batch>: a messaging copy of a library photo
+        if it.get("of"):  # xcheck-<batch>: a messaging copy of a library photo or video
             it["meta"] = meta(it["path"], it["kind"])
             of = it["of"]
+            label = "WhatsApp/Messages copy of this " + ("video" if it["kind"] == "video" else "photo")
             if not (isinstance(of, str) and os.path.isabs(of) and original_allowed(batch, of)):
-                it["orig"] = dict(missing="the original was not found in the library",
-                                  label="WhatsApp/Messages copy of this photo")
+                it["orig"] = dict(missing="the original was not found in the library", label=label)
                 continue
             k, mime = kind_of(of)
             origs.append(dict(path=of, kind=k, mime=mime))
-            it["orig"] = dict(id=len(origs) - 1, kind=k, meta=meta(of, k), label="WhatsApp/Messages copy of this photo")
+            it["orig"] = dict(id=len(origs) - 1, kind=k, meta=meta(of, k), label=label)
             continue
         if why.startswith("near-duplicate of library "):
             cands = [why[len("near-duplicate of library "):]]
@@ -995,9 +995,13 @@ function toggleStack(it){if(it.burst==null)return;open[it.burst]=!open[it.burst]
 function restOf(it){return it.tab==="quarantine"?"erase":"trash"}
 function oneLabel(it){return it.tab==="quarantine"?"Keep this one, erase the rest":"Keep this one, trash the rest"}
 function keepOne(it){members(it).forEach(m=>{dec[m.id]=m===it?"keep":restOf(it)});const v=visibleOf(tab);cur[tab]=Math.max(0,v.indexOf(it));paint(false)}
+/* A file the browser can't decode says so instead of an empty box: a broken image, a video it can't open,
+   or one whose picture it can't decode (iPhone HEVC .mov: the sound plays, videoWidth stays 0). */
+function cantShow(m,why){m.replaceChildren(el("div","nopreview",why+" Open it in your file manager to see it."));m.dataset.cant="1"}
 function mediaEl(kind,src,alt){const m=el("div","media");
- if(kind==="image"){const im=el("img");im.loading="lazy";im.alt=alt;im.src=src;m.append(im)}
- else if(kind==="video"){const v=el("video");v.controls=true;v.preload="metadata";v.src=src;m.append(v)}
+ if(kind==="image"){const im=el("img");im.loading="lazy";im.alt=alt;im.onerror=()=>cantShow(m,"This browser can't show this picture.");im.src=src;m.append(im)}
+ else if(kind==="video"){const v=el("video");v.controls=true;v.preload="metadata";const bad=()=>cantShow(m,"This browser can't play this video (HEVC, most likely).");
+  v.onerror=bad;v.onloadedmetadata=()=>{if(!v.videoWidth)bad()};v.src=src;m.append(v)}
  else m.append(el("div","nopreview","No preview in the browser for this format"));return m}
 function metaEl(x){return el("div","meta",`${x.res} · ${x.size} · ${x.date} · ${x.folder}`)}
 function side(title,m,x){const s=el("div","side");s.append(el("h3",null,title),m,metaEl(x));return s}
