@@ -60,7 +60,7 @@ media-intake doctor      # what's installed, checksums, and the dnf line for wha
 
 `setup.sh` is safe to re-run (it only re-verifies checksums). Options:
 `--build-labels` (text model for semantic search, and to rebuild
-`labels.npz` after editing `labels.yaml`), `--refresh-geo` (accept a new
+`labels.npz` after editing `labels.yaml` or moving the SigLIP pin), `--refresh-geo` (accept a new
 GeoNames snapshot), `--no-launcher`. For HEVC video (most phones) Fedora's
 `ffmpeg-free` has no decoder; the tool uses GStreamer's VA-API (`vah265dec`)
 or Vulkan decoder when one is installed. The optional trash second opinion

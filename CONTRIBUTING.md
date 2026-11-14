@@ -70,7 +70,8 @@ file's inputs live at the top of the script. The script reads metadata from
 PyPI, Hugging Face and the Ollama registry and never downloads model weights;
 the tests run it against fakes.
 
-A SigLIP move also needs `bash setup.sh --build-labels` (labels.npz) and a
+A SigLIP move also needs `bash setup.sh --build-labels` (labels.npz records
+the revision it was built with, and `label.py` refuses a stale one) and a
 check of `label.py`'s logit scale, bias and preprocessing; an Ollama move
 needs `ollama pull` and makes `vlm-trash` judge files again. Put the
 script's output in the PR body. A pin bump is its own PR, model-tested
