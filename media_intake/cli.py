@@ -32,7 +32,8 @@ SYSTEM_MODULES = {"zxingcpp": "python3-zxing-cpp", "PIL": "python3-pillow", "num
 TESSERACT_ENG = "tesseract-langpack-eng"
 HEVC_DECODERS, HEVC_PACKAGE = ("vah265dec", "vulkanh265dec"), "gstreamer1-plugins-bad-free"
 MTP_BACKEND, MTP_PACKAGE = "/usr/libexec/gvfsd-mtp", "gvfs-mtp"
-OPTIONAL = {"gstreamer1", HEVC_PACKAGE, MTP_PACKAGE}  # Fedora packages, as in the maps above
+XDG_OPEN, XDG_PACKAGE = "xdg-open", "xdg-utils"  # the gallery's "Open in the system player" (POST /api/open)
+OPTIONAL = {"gstreamer1", HEVC_PACKAGE, MTP_PACKAGE, XDG_PACKAGE}  # Fedora packages, as in the maps above
 
 
 def venv_python():
@@ -124,6 +125,10 @@ def doctor(probe=None, out=print):
         report("ok", "gvfs MTP backend")
     else:
         missing(MTP_PACKAGE, "gvfs MTP backend (Android phones)")
+    if probe.which(XDG_OPEN):
+        report("ok", XDG_OPEN)
+    else:
+        missing(XDG_PACKAGE, f"{XDG_OPEN} (the gallery's Open in the system player button)")
 
     vp = venv_python()
     have = probe.exists(vp)
