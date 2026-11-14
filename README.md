@@ -100,14 +100,14 @@ media-intake offload phone-1 --phone <device root> --yes   # after a backup: fre
 | `index`, `search`, `similar` | Local semantic search (SigLIP) |
 | `vlm-trash` | Local vision-model second opinion on trash candidates |
 | `gallery` | Local web gallery: browse, keep, trash, erase, tag, rotate |
-| `queue add/run/status/offload` | Process an old external drive in resumable chunks |
+| `queue add/run/status/offload` | Process an old external drive or a laptop folder in resumable chunks |
 | `share-copy` | Copy files with GPS and metadata stripped, for posting |
 | `doctor` | Check the install |
 
 `media-intake <command> --help` for options. Details:
 [intake](docs/intake.md), [review page](docs/review-ui.md),
 [gallery](docs/gallery.md), [search and VLM](docs/search.md),
-[drive queue](docs/queue.md), [configuration](docs/configuration.md),
+[drive and folder queue](docs/queue.md), [configuration](docs/configuration.md),
 [plugins](docs/plugins.md), [releases](docs/release.md).
 
 ## Tested devices
@@ -115,7 +115,7 @@ media-intake offload phone-1 --phone <device root> --yes   # after a backup: fre
 - Android phones over MTP (GNOME's gvfs mount)
 - iPhone over gphoto2 (gvfs), photos and videos under `DCIM/`
 - GoPro (SD card or USB mass storage, `DCIM/1xxGOPRO`)
-- External drives, through the drive queue
+- External drives and laptop folders, through the queue (`--kind folder`)
 
 ## Limits
 

@@ -25,6 +25,12 @@ All read-only; they report, the caller applies.
 | `test-gap-checker` | Which `tests/test_<area>.py` cases the diff should ship with, and the targeted commands. |
 | `doc-hygiene-checker` | Which of `README.md`, `docs/`, `ROADMAP.md`, `CONTRIBUTING.md` and this file need updating. |
 
+## Skills (`skills/`)
+
+- `media-folders`: importing a laptop folder or an external drive through the
+  queue (`--kind folder` / `--kind drive`): what is refused and why, and that
+  the owner deletes a folder source themselves.
+
 ## Hooks (`hooks/`)
 
 - `git-scope-guard.py` (PreToolUse on Bash): blocks whole-tree staging, bare
