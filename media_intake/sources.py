@@ -123,7 +123,7 @@ def check_case(targets, known):
     Android's emulated storage (and exFAT/FAT on cameras and drives) ignores case: after
     a case-only rename the listing can show both names, and they are one file there, so
     deleting the "duplicate" deletes the real one. known is every path the device listed
-    (the batch manifests' src); a target colliding with any other known path or target
+    (the batch manifests' src, plus live_case_matches at delete time); a target colliding with any other known path or target
     is refused, whether or not the other name is a target too. Each group in the error
     lists the colliding paths, sorted.
     """
@@ -133,6 +133,63 @@ def check_case(targets, known):
     groups = sorted({tuple(sorted(by_key[case_key(t)])) for t in targets if len(by_key[case_key(t)]) > 1})
     if groups:
         raise CaseCollision([list(g) for g in groups])
+
+
+class ListingFailed(Denied):
+    """The device's live listing could not be taken, so a delete can't be checked against it."""
+
+
+def list_dir(path):
+    """The names a folder on the device lists now (os.listdir: gvfs over MTP or gphoto2, a mounted
+    card, drive or folder). The one place the live listing is read, so tests can fake a device."""
+    return os.listdir(path)
+
+
+def live_case_matches(root, targets):
+    """Every path the device lists right now that a case-insensitive device takes for one of targets.
+
+    The manifests only know what was there at staging; a file copied on afterwards, or one the
+    walk never recorded (outside the allowlist, a hidden folder), is just as much one file with
+    a target whose name differs only by case. So for each target this lists the folders on its
+    way down from root, following every entry whose name matches the next part case-insensitively
+    (case_key), and returns the matching paths: the target itself, plus any case twin of it or of
+    a folder above it. A file where a folder is expected counts as a twin. Each folder is listed
+    once. Raises ListingFailed if a folder can't be listed, or if the listing doesn't show a target
+    at all (an incomplete listing proves nothing): fail closed, never fall back on the manifests.
+    """
+    cache, found = {}, set()
+
+    def ls(d):
+        if d not in cache:
+            try:
+                cache[d] = list_dir(d)
+            except NotADirectoryError:
+                cache[d] = None
+            except OSError as e:
+                raise ListingFailed(f"could not list {d} on the device ({e.strerror or e})") from None
+        return cache[d]
+
+    for t in targets:
+        parts = os.path.relpath(t, root).split(os.sep)
+        level = [root]
+        for i, part in enumerate(parts):
+            key, below = case_key(part), []
+            for d in level:
+                for n in ls(d):
+                    if case_key(n) == key:
+                        below.append(os.path.join(d, n))
+            if i == len(parts) - 1:
+                found.update(below)
+                break
+            level = []
+            for p in below:
+                if ls(p) is None:  # a file named like the folder: one name on the device
+                    found.add(os.path.join(p, *parts[i + 1:]))
+                else:
+                    level.append(p)
+        if t not in found:
+            raise ListingFailed(f"the device's listing does not show {os.path.relpath(t, root)}")
+    return sorted(found)
 
 
 # The only folders erase --phone-thumbnails may remove (Android rebuilds them).

@@ -349,5 +349,63 @@ class CaseCollisions(unittest.TestCase):
         sources.check_case([], ["/r/a.jpg", "/r/A.jpg"])  # a collision nobody deletes is left alone
 
 
+class LiveCaseMatches(unittest.TestCase):
+    """live_case_matches: what the device lists now that is one name with a target."""
+
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.root = self.tmp.name
+        self.real = sources.list_dir
+
+    def tearDown(self):
+        sources.list_dir = self.real
+        self.tmp.cleanup()
+
+    def test_twins_of_the_file_and_of_its_folders(self):
+        t = touch(self.root, "DCIM/Camera/IMG_1.jpg")
+        twins = [touch(self.root, "DCIM/Camera/img_1.JPG"), touch(self.root, "DCIM/camera/IMG_1.jpg"),
+                 touch(self.root, "dcim/CAMERA/Img_1.Jpg")]
+        touch(self.root, "DCIM/Camera/IMG_2.jpg")
+        touch(self.root, "DCIM/camera/IMG_3.jpg")
+        self.assertEqual(sources.live_case_matches(self.root, [t]), sorted([t, *twins]))
+
+    def test_only_the_target_when_unique(self):
+        t = touch(self.root, "DCIM/Camera/IMG_1.jpg")
+        touch(self.root, "DCIM/Camera/IMG_1.jpeg")
+        self.assertEqual(sources.live_case_matches(self.root, [t]), [t])
+        self.assertEqual(sources.live_case_matches(self.root, []), [])
+
+    def test_unicode_case_and_normalisation(self):
+        t = touch(self.root, "DCIM/café.jpg")
+        nfd = touch(self.root, "DCIM/CAFE\u0301.JPG")
+        self.assertEqual(sources.live_case_matches(self.root, [t]), sorted([t, nfd]))
+
+    def test_file_where_a_folder_is_expected(self):
+        t = touch(self.root, "DCIM/Camera/IMG_1.jpg")
+        touch(self.root, "DCIM/camera")
+        self.assertIn(os.path.join(self.root, "DCIM/camera/IMG_1.jpg"), sources.live_case_matches(self.root, [t]))
+
+    def test_each_folder_listed_once(self):
+        ts = [touch(self.root, f"DCIM/Camera/IMG_{i}.jpg") for i in range(5)]
+        seen = []
+        sources.list_dir = lambda d: seen.append(d) or self.real(d)
+        self.assertEqual(sources.live_case_matches(self.root, ts), sorted(ts))
+        self.assertEqual(len(seen), len(set(seen)))
+
+    def test_fails_closed(self):
+        t = touch(self.root, "DCIM/Camera/IMG_1.jpg")
+
+        def broken(d):
+            raise PermissionError(13, "Permission denied")
+        sources.list_dir = broken
+        with self.assertRaises(sources.ListingFailed) as cm:
+            sources.live_case_matches(self.root, [t])
+        self.assertIsInstance(cm.exception, sources.Denied)
+        self.assertIn("Permission denied", str(cm.exception))
+        sources.list_dir = lambda d: [] if d.endswith("Camera") else self.real(d)
+        with self.assertRaisesRegex(sources.ListingFailed, "does not show DCIM/Camera/IMG_1.jpg"):
+            sources.live_case_matches(self.root, [t])
+
+
 if __name__ == "__main__":
     unittest.main()
