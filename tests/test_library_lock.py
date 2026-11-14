@@ -368,6 +368,53 @@ class LibraryLockTest(unittest.TestCase):
         self.assertIn(library_lock.WAIT_ENV, r.stderr)
         self.assertTrue(os.path.isdir(self.review))
 
+    def test_wait_setting_edges(self):
+        """Negative and over a day are refused before anything runs; 0 and exactly a day are accepted."""
+        for bad in ("-1", "-0.5", "86400.5", "86401", "1e9"):
+            with self.subTest(wait=bad):
+                r = self.intake("purge-review", "q1", env=dict(self.env, **{library_lock.WAIT_ENV: bad}))
+                self.assertNotEqual(r.returncode, 0)
+                self.assertNotEqual(r.returncode, library_lock.EX_TEMPFAIL, "a bad setting, not a busy lock")
+                self.assertIn(f"{library_lock.WAIT_ENV}={bad!r}: between 0 and 86400 seconds", r.stderr)
+                self.assertTrue(os.path.isdir(self.review))
+        for ok, want in (("0", 0.0), ("86400", 86400.0), ("", library_lock.CLI_WAIT)):
+            os.environ[library_lock.WAIT_ENV] = ok
+            self.assertEqual(library_lock.cli_wait(), want)
+        os.environ.pop(library_lock.WAIT_ENV)
+
+    def test_zero_wait_refuses_at_once(self):
+        """0: a busy lock is refused on the first try, with no wait announced and nothing done."""
+        p = self.hold_in_child("intake.py apply")
+        r = self.intake("purge-review", "q1", env=dict(self.env, **{library_lock.WAIT_ENV: "0"}))
+        self.assertEqual(r.returncode, library_lock.EX_TEMPFAIL, r.stderr)
+        self.assertNotIn("waiting", r.stderr)
+        self.assertIn(f"refused: the library is busy: intake.py apply (PID {p.pid})", r.stderr)
+        self.assertTrue(os.path.isdir(self.review))
+        p.stdin.close()
+        p.wait()
+
+    def test_review_submit_refused_while_another_writer_holds_the_lock(self):
+        """The review page never waits: Submit gets 409 naming the holder, and no run starts."""
+        from test_review_ui import Server
+        p = self.hold_in_child("intake.py apply")
+        s = Server(self.env, batch="q1")
+        try:
+            r, b = s.req("GET", "/api/items")
+            self.assertEqual(r.status, 200, b)
+            items = json.loads(b)["items"]
+            self.assertTrue(items)
+            pick = {"quarantine": "erase", "review": "delete", "maybe": "keep"}
+            dec = {str(i): pick[it["tab"]] for i, it in enumerate(items)}  # submit takes the list index
+            r, b = s.req("POST", "/api/submit", headers={"X-CSRF": s.csrf()}, body={"decisions": dec, "confirm": "ERASE"})
+            self.assertEqual(r.status, 409, b)
+            self.assertIn(f"intake.py apply (PID {p.pid})", json.loads(b)["error"])
+            self.assertIsNone(jobs.status("review-q1"))
+            self.assertTrue(os.path.exists(self.qfile) and os.path.isdir(self.review), "nothing was run")
+        finally:
+            s.stop()
+            p.stdin.close()
+            p.wait()
+
 
 if __name__ == "__main__":
     unittest.main(verbosity=2)

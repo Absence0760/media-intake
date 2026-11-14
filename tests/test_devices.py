@@ -273,6 +273,30 @@ class EndToEnd(unittest.TestCase):
         self.assertFalse(glob.glob(os.path.join(month, "**", "*_1.*"), recursive=True))
         self.assert_no_serial()
 
+    def test_corrupt_salt_stops_stage_and_plan_and_is_left_as_it_is(self):
+        if not HAVE_EXIFTOOL:
+            self.skipTest("serials (and so the salt) are read only through exiftool")
+        a = self.card("card-a", SERIAL_A)
+        self.run_intake("stage", a, "--kind", "gopro", "--batch", "a")
+        salt = os.path.join(self.state, devices.SALT_FILE)
+        os.makedirs(self.state, exist_ok=True)
+        with open(salt, "w") as f:
+            f.write("half a salt\n")
+        os.chmod(salt, 0o600)
+        before = os.stat(salt)
+        for args in (("plan", "a"), ("stage", a, "--kind", "gopro")):
+            with self.subTest(args=args[0]):
+                r = self.run_intake(*args, ok=False)
+                self.assertNotEqual(r.returncode, 0, r.stdout)
+                self.assertIn("is not a device salt (64 hex digits)", r.stderr)
+                with open(salt) as f:
+                    self.assertEqual(f.read(), "half a salt\n", "never replaced: cameras would get new folders")
+                after = os.stat(salt)
+                self.assertEqual((after.st_ino, after.st_mtime_ns, stat.S_IMODE(after.st_mode)),
+                                 (before.st_ino, before.st_mtime_ns, 0o600))
+        self.assertFalse(os.path.exists(os.path.join(self.state, "batches", "a", "plan.json")))
+        self.assert_no_serial()
+
     def test_same_model_without_serials_shares_a_folder(self):
         # Nothing tells the two cameras apart: one folder, and the second file gets _1 (documented).
         a = self.card("card-a", None)
