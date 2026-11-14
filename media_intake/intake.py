@@ -2037,8 +2037,9 @@ def cmd_share_copy(a):
         if ext in VID:
             # Drop every data stream (GoPro GPMF GPS track), attached pictures (cover art: a JPEG with its
             # own EXIF; 0:V, not 0:v) and all metadata.
-            subprocess.run(["ffmpeg", "-v", "error", "-y", "-i", f, "-map", "0:V", "-map", "0:a?", "-c", "copy",
-                            "-map_metadata", "-1", "-map_chapters", "-1", dst], check=True)
+            # file: so a name with a colon (a:b.mp4) is never read as an ffmpeg protocol.
+            subprocess.run(["ffmpeg", "-v", "error", "-y", "-i", "file:" + f, "-map", "0:V", "-map", "0:a?",
+                            "-c", "copy", "-map_metadata", "-1", "-map_chapters", "-1", "file:" + dst], check=True)
         elif shutil.which("exiftool"):
             if os.path.exists(dst):
                 os.remove(dst)  # exiftool -o refuses to overwrite

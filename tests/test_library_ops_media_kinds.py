@@ -659,6 +659,18 @@ class ShareCopy(Base):
         self.assertEqual(sorted(s["codec_type"] for s in got), ["audio", "video"])
         self.assertEqual([s.get("disposition", {}).get("attached_pic") for s in got if s["codec_type"] == "video"], [0])
 
+    def test_share_copy_video_with_a_colon_in_its_name(self):
+        # Regression: run from the video's folder, ffmpeg read "a:b.mp4" as protocol "a" and the copy failed.
+        v = clip(os.path.join(self.vids, "2026/2026-11/a:b.mp4"), seed=54)
+        before = sha(v)
+        out_dir = os.path.join(self.tmp, "share-out")
+        r = subprocess.run([PY, "-I", INTAKE, "share-copy", "a:b.mp4", "--out", out_dir], env=self.env,
+                           cwd=os.path.dirname(v), capture_output=True, text=True, stdin=subprocess.DEVNULL)
+        self.assertEqual(r.returncode, 0, r.stderr)
+        got = streams(os.path.join(out_dir, "a:b.mp4"))["streams"]
+        self.assertEqual(sorted(s["codec_type"] for s in got), ["audio", "video"])
+        self.assertEqual(sha(v), before)
+
     def test_share_copy_never_replaces_its_own_source(self):
         # Regression: --out the source's own folder removed the original (exiftool -o refuses to overwrite,
         # so share-copy deleted "the old copy" first, which was the file itself).
