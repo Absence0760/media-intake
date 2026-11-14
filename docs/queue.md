@@ -79,7 +79,8 @@ summary.
 
 **It never makes your decisions**: quarantine review, trash suggestions and
 offload all wait. `status` lists, per finished chunk, the quarantine,
-near-copy, review-folder and trash-suggestion counts with the commands to
+near and messaging copy (the rest of that review page), review-folder and
+trash-suggestion counts with the commands to
 open them (`media-intake review <batch>`, the quarantine `xdg-open` line,
 `media-intake gallery` or `media-intake suggest-trash --batch <batch>`).
 
@@ -93,9 +94,12 @@ nohup media-intake queue run --inhibit > ~/.local/share/media-intake/queue-run.l
 
 `offload <name> --yes` runs `media-intake offload <batch> --phone <root>
 --yes` for each finished, not yet offloaded chunk. Refused when any of those
-batches still has files in `quarantine/<batch>` or any level of
-`quarantine/near-<batch>` (`near-near-<batch>`, ...), when the drive's UUID differs from the one queued, or when the drive now looks
-like the backup. `media-intake offload` itself checks the UUID and the backup
+batches still has files in any quarantine its review page shows
+(`review_ui.sub_batches`, the one definition both use): `quarantine/<batch>`,
+every level of `quarantine/near-<batch>` (`near-near-<batch>`, ...), the
+messaging cross-check `quarantine/xcheck-<batch>` and every near- level of
+it; when the drive's UUID differs from the one queued; or when the drive now
+looks like the backup. `media-intake offload` itself checks the UUID and the backup
 markers again for a drive batch. It deletes only originals whose copy is filed
 in the library (or that `plan` dropped as exact duplicates of library files
 or of something trashed before); files in quarantine, the review folder, or

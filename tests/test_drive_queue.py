@@ -64,6 +64,8 @@ class Queue(unittest.TestCase):
             p = os.path.join(self.root, x)
             os.makedirs(os.path.dirname(p), exist_ok=True)
             picture(p, 9, "2019:09:09 09:09:09") if p.endswith(".jpg") else open(p, "w").close()
+        # pending() imports review_ui, which reads STATE at import: never one cached under another test's state.
+        sys.modules.pop("review_ui", None)
         spec = importlib.util.spec_from_file_location("drive_queue_t", os.path.join(HERE, "drive_queue.py"))
         self.q = importlib.util.module_from_spec(spec)
         spec.loader.exec_module(self.q)
@@ -73,6 +75,7 @@ class Queue(unittest.TestCase):
         self.flag_first = False
 
     def tearDown(self):
+        sys.modules.pop("review_ui", None)
         for k, v in self.saved.items():
             if v is None:
                 os.environ.pop(k, None)
@@ -261,6 +264,15 @@ class Queue(unittest.TestCase):
         batch = self.state_q()["sources"]["d"]["chunks"]["1"]["batch"]
         qj = os.path.join(self.state, "quarantine", batch, "quarantine.json")
         jsave(qj, {})  # the owner reviewed and erased it
+        # A messaging cross-check (or any near- level of it) waits on the same review page: offload waits too.
+        xj = os.path.join(self.state, "quarantine", f"near-xcheck-{batch}", "quarantine.json")
+        os.makedirs(os.path.dirname(xj))
+        jsave(xj, {"Downloads/n.jpg": dict(reasons=["near-duplicate"], sha="0" * 64, size=1, dst=None)})
+        with self.assertRaises(SystemExit) as e:
+            self.qrun("offload", "d", "--yes")
+        self.assertIn("chunk 1 (quarantine 0, near and messaging copies 1)", str(e.exception))
+        self.assertIn("near and messaging copies 1", self.qrun("status"))
+        jsave(xj, {})
         os.environ["MEDIA_INTAKE_TEST_UUID"] = "OTHER-0000"
         with self.assertRaises(SystemExit) as e:
             self.qrun("offload", "d", "--yes")

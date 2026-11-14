@@ -279,13 +279,43 @@ class ReviewChains(Base):
 
 
 class QueuePending(Base):
+    def pending(self, batch):
+        """drive_queue.pending in this test's state: drive_queue and the review_ui it imports both read STATE
+        at import, so both load under the test's env (a review_ui cached by another test would look elsewhere)."""
+        sys.modules.pop("review_ui", None)
+        dq = fresh("drive_queue", self.env)
+        old = {k: os.environ.get(k) for k in KEYS}
+        os.environ.update({k: self.env[k] for k in KEYS})
+        try:
+            return dq.pending(batch)
+        finally:
+            sys.modules.pop("review_ui", None)
+            for k, v in old.items():
+                if v is None:
+                    os.environ.pop(k, None)
+                else:
+                    os.environ[k] = v
+
     def test_pending_counts_every_level(self):
         self.quarantined(f"near-{B}", "Downloads/n1.jpg", pattern(4).resize((600, 450)))
         self.quarantined(f"near-near-{B}", "Downloads/n2.jpg", pattern(4).resize((500, 375)))
         self.quarantined(f"near-near-{B}", "Downloads/n3.jpg", pattern(5).resize((500, 375)))
         self.quarantined(f"near-other-{B}", "Downloads/n4.jpg", pattern(5).resize((500, 375)))
-        dq = fresh("drive_queue", self.env)
-        self.assertEqual(dq.pending(B), (0, 3, 0))
+        self.assertEqual(self.pending(B), (0, 3, 0))
+
+    def test_pending_is_what_the_review_page_shows(self):
+        """The messaging cross-check and its near- levels wait on the same review page, so they count too."""
+        self.quarantined(B, "DCIM/s.jpg", pattern(4), reasons=["nudity"])
+        self.quarantined(f"near-{B}", "Downloads/n1.jpg", pattern(4).resize((600, 450)))
+        self.quarantined(f"xcheck-{B}", "Pictures/library/Messaging/w.jpg", pattern(6).resize((800, 600)),
+                         reasons=["messaging copy"], of=self.H("Pictures/library/2025/IMG_1.jpg"))
+        self.quarantined(f"near-xcheck-{B}", "Downloads/n2.jpg", pattern(6).resize((500, 375)))
+        self.quarantined(f"near-near-xcheck-{B}", "Downloads/n3.jpg", pattern(6).resize((450, 338)))
+        self.quarantined(f"near-other-{B}", "Downloads/n4.jpg", pattern(5).resize((500, 375)))
+        ui = fresh("review_ui", self.env)
+        shown = sum(1 for it in ui.collect(B) if it["qbatch"] != B)
+        self.assertEqual(self.pending(B), (1, 4, 0))
+        self.assertEqual(self.pending(B)[1], shown, "pending counts exactly what the review page lists")
 
 
 if __name__ == "__main__":
