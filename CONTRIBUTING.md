@@ -112,8 +112,9 @@ close the PR.
 - Real-browser tests (`tests/browser/`, Playwright + headless Chromium) drive
   the gallery and the review page: keys, selection and the bottom selection
   bar, the confirm dialogs (ERASE typed), lightbox video autoplay and Space
-  play / pause, Range seeking, and the detached job's
-  progress, including re-attaching after a reload. They skip with a reason
+  play / pause, Range seeking, burst stacks on the review page (the cover, its
+  X to open and close, the count badge, a near-copy never stacked), and the
+  detached job's progress, including re-attaching after a reload. They skip with a reason
   when Playwright or its Chromium is missing, so the commands above are
   unaffected; the `browser` job in `ci.yml` runs them (and fails, not skips,
   through `MEDIA_INTAKE_BROWSER_REQUIRED=1`). Locally, once:
