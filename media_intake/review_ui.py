@@ -545,8 +545,8 @@ class App:
                 return 409, "already submitted"
             try:
                 claim = jobs.claim(self.key)  # atomic: a second submit for this batch is refused here
-            except jobs.Busy:
-                return 409, "a run for this batch is already in progress"
+            except jobs.Busy as e:  # this batch's own job, or the library lock held by another writer
+                return 409, str(e)
             with claim:
                 # Under the claim no run can start or end, so this is the last word on staleness.
                 st = jobs.status(self.key)

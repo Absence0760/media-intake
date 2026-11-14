@@ -1983,7 +1983,7 @@ def build_parser(prog=None):
 # The library lock (library_lock.py; docs/intake.md, "One writer at a time"): every subcommand is in exactly one
 # of these (tests/test_library_lock.py checks), and main() is the only place that takes it for the CLI.
 LOCKED = {"stage", "plan", "scan", "apply", "release", "erase", "forget", "offload", "purge-review", "trash",
-          "not-trash", "suggest-trash", "tag", "tag-files", "mark-used"}
+          "not-trash", "suggest-trash", "tag", "tag-files", "mark-used", "migrate-tags"}
 READ_ONLY = {"quarantine", "verify-gone", "wipe-free", "share-copy", "social-copy", "find", "gallery"}
 
 
