@@ -637,7 +637,22 @@ class App:
             if not isinstance(i, int) or isinstance(i, bool) or not self.live(i):
                 raise ValueError("unknown or removed item")
             out.append(i)
-        return list(dict.fromkeys(out))
+        out = list(dict.fromkeys(out))
+        # Deleted (or replaced by something else) since the scan, e.g. by a CLI trash or a job no page watched:
+        # refuse the whole request before anything is written, so no sidecar is made for a file that is gone,
+        # and drop it from the grid.
+        missing = [i for i in out if not os.path.isfile(self.items[i]["path"])]
+        if missing:
+            for i in missing:
+                self.drop_gone(self.items[i])
+            raise ValueError(f"{len(missing)} of these files are no longer on disk; nothing was changed")
+        return out
+
+    def summaries(self, ids):
+        """The grid's summary of each live item in ids (after an edit, so the page can redraw those tiles)."""
+        with self.lock:
+            ok = [i for i in dict.fromkeys(ids or []) if type(i) is int and self.live(i)]
+            return [self.summary(i, self.items[i]) for i in ok]
 
     def ensure_sidecar(self, it):
         x = intake.sidecar(it["path"])
@@ -1078,6 +1093,10 @@ def page(app):
             .replace("</body>", scripts + "</body>"))
 
 
+# Sidecar edits on a selection whose reply carries the items' new grid summaries ("items").
+REDRAW = ("/api/keep", "/api/tag", "/api/rotate", "/api/event/set")
+
+
 class Handler(R.Handler):
     server_version = "gallery"
     app = None
@@ -1238,7 +1257,10 @@ class Handler(R.Handler):
         except RuntimeError as e:
             self.json(409, {"error": str(e)})
             return
-        self.json(200, msg if isinstance(msg, dict) else {"result": msg})
+        out = msg if isinstance(msg, dict) else {"result": msg}
+        if path in REDRAW and isinstance(body.get("ids"), list):
+            out["items"] = app.summaries(body["ids"])  # the page redraws those tiles' flags (kept, ...) in place
+        self.json(200, out)
 
 
 def serve(app, port=0):
@@ -1709,7 +1731,7 @@ function syncUI(){$$("button[data-k]").forEach(b=>b.setAttribute("aria-pressed",
 $("#clear").onclick=clearAll;
 // ---------------------------------------------------------------- listing
 function setNote(n){n=n||"";if(/^Semantic search unavailable/.test(n))n="Semantic search is off: showing tag and file-name matches.";$("#note").textContent=n;$("#note").hidden=!n}
-function reset(){gen++;items=[];total=0;done=false;cur=-1;$("#list").replaceChildren();sel.clear();dec={};paintSel();more()}
+function reset(){gen++;items=[];total=0;done=false;cur=-1;last=null;$("#list").replaceChildren();sel.clear();dec={};paintSel();more()}
 async function more(){if(loading||done||plugView())return;loading=true;const g=gen;let stale=false;
  try{const j=await api("/api/list?"+qs(Object.assign(filt(),{offset:items.length,limit:240})));
   if(g!==gen)stale=true;else{total=j.total;ranked=j.ranked;setNote(j.note);const start=items.length;items=items.concat(j.items);done=items.length>=total;render(start);
@@ -1728,10 +1750,15 @@ function tile(it,n){const t=el("div","tile");t.id="t"+it.id;t.dataset.n=n;t.data
  const im=el("img");im.loading="lazy";im.decoding="async";im.alt=it.n;im.src="/t/"+it.id;im.onerror=()=>{im.replaceWith(el("div","ph",(it.m==="video"?"video: ":"")+it.n))};t.append(im);
  const cb=el("input","ck");cb.type="checkbox";cb.tabIndex=-1;cb.setAttribute("aria-label","select "+it.n);cb.onclick=ev=>{ev.stopPropagation();pick(n,ev.shiftKey)};t.append(cb);
  if(it.m==="video")t.append(el("span","play","▶"));
- const fl=[];if(it.c!=null)fl.push("AI "+it.c.toFixed(1));fl.push(...it.f);if(fl.length)t.append(el("span","flag",fl.join(" · ")));
+ const fl=flagsOf(it);if(fl)t.append(el("span","flag",fl));
  t.onclick=ev=>{if(ev.shiftKey||ev.ctrlKey||ev.metaKey){pick(n,ev.shiftKey);return}if(view==="sug"){cur=n;paintSel();return}openViewer(n)};
  // Enter opens, Space selects (on the focused tile, never while the large view is open: Space plays / pauses there)
  t.onkeydown=ev=>{if(vi>=0||ev.target!==t)return;if(ev.key==="Enter"&&view!=="sug"){ev.preventDefault();ev.stopPropagation();openViewer(n)}else if(ev.key===" "){ev.preventDefault();ev.stopPropagation();pick(n,ev.shiftKey)}};return t}
+function flagsOf(it){const fl=[];if(it.c!=null)fl.push("AI "+it.c.toFixed(1));fl.push(...it.f);return fl.join(" · ")}
+// after an edit: the reply's summaries replace those items and their tiles' flags (kept, ...);
+// the tile, its focus and the selection stay
+function patchTiles(fresh){(fresh||[]).forEach(s=>{const n=items.findIndex(i=>i.id===s.id);if(n<0)return;items[n]=s;const t=$("#t"+s.id);if(!t)return;
+  const old=t.querySelector(".flag"),fl=flagsOf(s);if(old)old.remove();if(fl)t.append(el("span","flag",fl))})}
 function pick(n,range){if(range&&last!==null){const [a,b]=[Math.min(last,n),Math.max(last,n)];for(let i=a;i<=b;i++)sel.add(items[i].id)}
  else{const id=items[n].id;sel.has(id)?sel.delete(id):sel.add(id)}last=n;paintSel()}
 function paintSel(){$$(".tile").forEach(t=>{const id=+t.id.slice(1),n=+t.dataset.n;t.classList.toggle("sel",sel.has(id));t.querySelector("input").checked=sel.has(id);
@@ -1744,7 +1771,7 @@ function selIds(){return [...sel]}
 function nameOf(id){const it=items.find(i=>i.id===id);return it?it.n:"#"+id}
 // ---------------------------------------------------------------- actions
 let tt=null;function toast(s){const t=$("#toast");t.textContent=s;t.classList.add("on");clearTimeout(tt);tt=setTimeout(()=>t.classList.remove("on"),4500)}
-async function doKeep(ids){try{const j=await api("/api/keep",{ids});toast(j.result);refreshAfter(ids,false);loadFacets()}catch(e){alert("Keep refused: "+e.message)}}
+async function doKeep(ids){try{const j=await api("/api/keep",{ids});toast(j.result);refreshAfter(ids,false,j.items);loadFacets()}catch(e){alert("Keep refused: "+e.message)}}
 function confirmBox(title,lines,needType,go){$("#mh").textContent=title;const b=$("#mb");b.replaceChildren();lines.forEach(l=>b.append(el("p",l.startsWith("!")?"warn":null,l.replace(/^!/,""))));
  $("#mtype").hidden=!needType;$("#mfieldp").hidden=true;$("#mtyped").value="";$("#mgo").disabled=!!needType;$("#mgo").hidden=false;$("#mout").hidden=true;$("#mout").textContent="";$("#mstatus").hidden=true;delete $("#modal").dataset.job;$("#modal").classList.add("on");
  $("#mtyped").oninput=()=>{$("#mgo").disabled=$("#mtyped").value!=="ERASE"};if(needType)$("#mtyped").focus();else $("#mno").focus();
@@ -1790,9 +1817,9 @@ async function poll(since,ids){let j;try{j=await api("/api/job?since="+since)}ca
 async function attachJob(){let j;try{j=await api("/api/job")}catch(e){return}if(j.done)return;$("#mh").textContent="An action is running";$("#mb").replaceChildren();progressMode(j.label);poll(0,j.ids||[])}
 async function tagAsk(op){const ids=vi>=0&&!sel.size?[items[vi].id]:selIds();if(!ids.length)return;
  const t=prompt((op==="add"?"Add":"Remove")+" a tag of yours on "+ids.length+" item(s). Not Project|, Source|, Event|, Place|, Label|, Review|, AI|, Used|, Owner| (the tools' own):");
- if(!t)return;try{const j=await api("/api/tag",{ids,tag:t,op});toast(j.result);loadFacets();refreshAfter(ids,false)}catch(e){alert("Refused: "+e.message)}}
-async function rot(ids,dir){try{const j=await api("/api/rotate",{ids,dir});toast(j.result);refreshAfter(ids,true)}catch(e){alert("Refused: "+e.message)}}
-function refreshAfter(ids,thumbs){if(thumbs)ids.forEach(id=>{const t=$("#t"+id);if(t){const im=t.querySelector("img");if(im)im.src="/t/"+id+"?r="+Date.now()}});
+ if(!t)return;try{const j=await api("/api/tag",{ids,tag:t,op});toast(j.result);loadFacets();refreshAfter(ids,false,j.items)}catch(e){alert("Refused: "+e.message)}}
+async function rot(ids,dir){try{const j=await api("/api/rotate",{ids,dir});toast(j.result);refreshAfter(ids,true,j.items)}catch(e){alert("Refused: "+e.message)}}
+function refreshAfter(ids,thumbs,fresh){patchTiles(fresh);if(thumbs)ids.forEach(id=>{const t=$("#t"+id);if(t){const im=t.querySelector("img");if(im)im.src="/t/"+id+"?r="+Date.now()}});
  if(vi>=0)openViewer(vi,{keep:true});else if(view==="sug")reset()}
 $("#bkeep").onclick=()=>doKeep(selIds());$("#btrash").onclick=()=>askTrash(selIds());$("#berase").onclick=()=>askErase(selIds());
 $("#btag").onclick=()=>tagAsk("add");$("#buntag").onclick=()=>tagAsk("remove");$("#brot").onclick=()=>rot(selIds(),"cw");
@@ -1846,10 +1873,10 @@ async function openViewer(n,opt){opt=opt||{};if(n<0||n>=items.length)return;if(v
  const det=el("div");det.append(el("p","sh","Details"),dl);s.append(det);
  const tg=el("div"),tl=el("div","tags");tg.append(el("p","sh","Tags"),tl);
  d.tags.forEach(t=>{const c=el("span","tag");c.append(el("span",null,t));if(d.mine.includes(t)){const b=el("button",null,"×");b.type="button";b.title="Remove my tag";b.setAttribute("aria-label","Remove my tag "+t);
-  b.onclick=async()=>{try{await api("/api/tag",{ids:[d.id],tag:t,op:"remove"});openViewer(n,{keep:true});loadFacets()}catch(e){alert(e.message)}};c.append(b)}tl.append(c)});
+  b.onclick=async()=>{try{patchTiles((await api("/api/tag",{ids:[d.id],tag:t,op:"remove"})).items);openViewer(n,{keep:true});loadFacets()}catch(e){alert(e.message)}};c.append(b)}tl.append(c)});
  if(!d.tags.length)tl.append(el("span","tag","none"));
  const add=el("input");add.placeholder="Add my tag, Enter";add.setAttribute("aria-label","Add my tag");
- add.onkeydown=async ev=>{if(ev.key==="Enter"&&add.value.trim()){ev.stopPropagation();try{await api("/api/tag",{ids:[d.id],tag:add.value.trim(),op:"add"});loadFacets();openViewer(n,{keep:true})}catch(e){alert(e.message)}}};
+ add.onkeydown=async ev=>{if(ev.key==="Enter"&&add.value.trim()){ev.stopPropagation();try{patchTiles((await api("/api/tag",{ids:[d.id],tag:add.value.trim(),op:"add"})).items);loadFacets();openViewer(n,{keep:true})}catch(e){alert(e.message)}}};
  tg.append(add);s.append(tg);
  s.append(el("p","fine","Rotate writes XMP-tiff:Orientation in the sidecar only; the original is never touched. No crop here: make crops as copies in an editor."));
  if(!opt.keep)$("#viewer").focus({preventScroll:true});
