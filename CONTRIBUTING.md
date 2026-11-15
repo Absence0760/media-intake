@@ -124,7 +124,11 @@ close the PR.
   burst stacks: the cover and its count badge, X and `x` to open and close
   with focus back on the cover, a closed stack's selection and Keep acting on
   the cover only, the large view stepping over hidden shots, and a near-copy
-  from the same second never stacked. They skip with a reason
+  from the same second never stacked. `test_browser_gallery_select_all.py`
+  runs Select all: the button, Ctrl+A and Cmd+A, a closed stack adding its
+  cover only, a filter respected, Ctrl+A in a text field left alone, Esc
+  clearing, Trash and Erase keeping their confirmations, and a paged grid
+  saying how many more match. They skip with a reason
   when Playwright or its Chromium is missing, so the commands above are
   unaffected; the `browser` job in `ci.yml` runs them (and fails, not skips,
   through `MEDIA_INTAKE_BROWSER_REQUIRED=1`). Locally, once:

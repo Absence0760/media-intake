@@ -23,7 +23,8 @@ tags; rename and merge rewrite only those, in the sidecars that have them); then
 search and the filters. Bursts (bursts.py over the plan entries intake wrote) show in
 the timeline as one stack per burst: a cover with a count badge, X opens or closes it,
 and on a closed stack every action acts on the cover only.
-Selection actions sit in a bottom bar shown only while something is selected. Media
+Selection actions sit in a bottom bar shown only while something is selected; Select all
+(header, Ctrl+A / Cmd+A) ticks every tile shown (loaded pages; a closed stack's cover). Media
 the browser can't decode opens in the desktop's player (xdg-open, a POST naming one
 item id, argument list, library files only). Trash and Erase run as a detached
 job (jobs.py, key "gallery", one at a time): closing the page or stopping the
@@ -1866,6 +1867,7 @@ dl.dt dd{margin:0;word-break:break-word}
 <div id="app">
  <header id="top">
   <h1 id="vtitle">Library</h1><span id="count"></span><span class="grow"></span>
+  <button type="button" class="btn" id="ball" aria-keyshortcuts="Control+A Meta+A" title="Select every tile shown (Ctrl+A, or Cmd+A on a Mac); Esc clears" hidden>Select all</button>
   <label class="size" id="tsizew" title="Thumbnail size"><svg class="ic"><use href="#i-size"/></svg><span class="vh">Thumbnail size</span><input id="tsize" type="range" min="80" max="320" step="8"></label>
   <button type="button" class="btn" id="close" title="Stop the gallery server"><svg class="ic"><use href="#i-power"/></svg><span class="lbl2">Close</span></button>
  </header>
@@ -1901,7 +1903,7 @@ function el(t,c,x){const e=document.createElement(t);if(c)e.className=c;if(x!=nu
 const fmt=n=>(+n||0).toLocaleString();
 // per-browser conveniences only (sidebar rail, open sections, tile size); the page works without them
 const LS={get(k,d){try{const v=localStorage.getItem("gallery."+k);return v===null?d:v}catch(e){return d}},set(k,v){try{localStorage.setItem("gallery."+k,v)}catch(e){}}};
-let view="lib",items=[],total=0,loading=false,done=false,sel=new Set(),last=null,cur=-1,ranked=false,simId=null,simName="",dec={},vi=-1,facets=null,gen=0,lastFocus=null,openB={};
+let view="lib",items=[],total=0,loading=false,done=false,sel=new Set(),last=null,cur=-1,ranked=false,simId=null,simName="",dec={},vi=-1,facets=null,gen=0,lastFocus=null,openB={},allSel=null;
 let F={aimin:"0.7"};
 const ACTIVE=["kind","ym","project","source","place","event","label","mine","review","ai","used","added"];
 const NAMES={kind:"Kind",ym:"When",project:"Project",source:"Source",place:"Place",event:"Event",label:"Label",mine:"My tag",review:"Review",ai:"AI",used:"Used",added:"Added"};
@@ -2032,13 +2034,13 @@ function groupKey(it){return ranked?(view==="sug"?"Most likely junk first":"Best
 function render(start){const L=$("#list");let sec=L.lastElementChild,g=sec&&sec.querySelector(".grid"),gk=sec?sec.dataset.k:null;
  for(let n=start;n<items.length;n++){const it=items[n],k=groupKey(it);
   if(k!==gk){sec=el("section");sec.dataset.k=k;sec.append(el("h2","month",ranked?k:monthName(k)));g=el("div","grid");sec.append(g);L.append(sec);gk=k}
-  g.append(tile(it,n))}$("#helpb").hidden=!items.some(i=>i.b!=null);paintSel()}
+  g.append(tile(it,n))}$("#helpb").hidden=!items.some(i=>i.b!=null);allSel=null;paintSel()}
 /* Bursts (bursts.py, server side): the listed shots of one burst follow one another, the cover (it.bc) first.
    A closed stack shows only its cover; a shot of a closed stack is never selected, shown or stepped to. */
 function hiddenAt(n){const it=items[n];return !!it&&it.b!=null&&!it.bc&&!openB[it.b]}
 function stepVis(n,d){n+=d;while(n>=0&&n<items.length&&hiddenAt(n))n+=d;return n}
 function stackLabel(it){return openB[it.b]?"Close stack (X)":`Show all ${it.bn} (X)`}
-function toggleStack(n){const it=items[n];if(!it||it.b==null)return;const b=it.b;openB[b]=!openB[b];let c=-1,dropped=0;
+function toggleStack(n){const it=items[n];if(!it||it.b==null)return;const b=it.b;allSel=null;openB[b]=!openB[b];let c=-1,dropped=0;
  items.forEach((m,i)=>{if(m.b!==b)return;if(m.bc)c=i;const t=$("#t"+m.id);if(t)t.hidden=hiddenAt(i);if(hiddenAt(i)&&sel.has(m.id)){sel.delete(m.id);dropped++}});
  if(last!==null&&hiddenAt(last))last=null;if(cur>=0&&hiddenAt(cur))cur=c;
  const ct=c>=0?$("#t"+items[c].id):null;if(ct){ct.classList.toggle("stack",!openB[b]);const x=ct.querySelector(".x");if(x)x.textContent=stackLabel(items[c]);ct.focus({preventScroll:false})}
@@ -2060,15 +2062,24 @@ function flagsOf(it){const fl=[];if(it.c!=null)fl.push("AI "+it.c.toFixed(1));fl
 // the tile, its focus and the selection stay
 function patchTiles(fresh){(fresh||[]).forEach(s=>{const n=items.findIndex(i=>i.id===s.id);if(n<0)return;const o=items[n];items[n]=o.b!=null?Object.assign(s,{b:o.b,bn:o.bn,bc:o.bc,mo:o.mo}):s;const t=$("#t"+s.id);if(!t)return;
   const old=t.querySelector(".flag"),fl=flagsOf(s);if(old)old.remove();if(fl)t.append(el("span","flag",fl))})}
-function pick(n,range){if(range&&last!==null){const [a,b]=[Math.min(last,n),Math.max(last,n)];for(let i=a;i<=b;i++)if(!hiddenAt(i))sel.add(items[i].id)}
+function pick(n,range){allSel=null;if(range&&last!==null){const [a,b]=[Math.min(last,n),Math.max(last,n)];for(let i=a;i<=b;i++)if(!hiddenAt(i))sel.add(items[i].id)}
  else{const id=items[n].id;sel.has(id)?sel.delete(id):sel.add(id)}last=n;paintSel()}
 function paintSel(){$$(".tile").forEach(t=>{const id=+t.id.slice(1),n=+t.dataset.n;t.classList.toggle("sel",sel.has(id));t.querySelector("input").checked=sel.has(id);
   t.classList.toggle("cur",n===cur);t.classList.toggle("dk",dec[id]==="keep");t.classList.toggle("dt",dec[id]==="trash")});
  const selOn=sel.size>0&&!plugView(),sugOn=view==="sug";$("#selgrp").hidden=!selOn;$("#suggrp").hidden=!sugOn;$("#actionbar").hidden=!(selOn||sugOn);
- document.body.classList.toggle("barup",selOn||sugOn);document.body.classList.toggle("selecting",sel.size>0);$("#seln").textContent=fmt(sel.size)+" selected";
+ document.body.classList.toggle("barup",selOn||sugOn);document.body.classList.toggle("selecting",sel.size>0);
+ $("#seln").textContent=allSel&&allSel.n===sel.size?allSel.text:fmt(sel.size)+" selected";$("#ball").hidden=!canSelectAll();
  const nk=Object.values(dec).filter(d=>d==="keep").length,nt=Object.values(dec).filter(d=>d==="trash").length;
  $("#sugn").textContent=`${nk} keep / ${nt} trash marked`;$("#sugapply").disabled=!(nk+nt)}
 function selIds(){return [...sel]}
+/* Select all: every tile the grid shows now (the active view, filters and search; the pages loaded so far, since
+   the grid loads 240 at a time as you scroll), and on a closed burst stack its cover only (hidden shots are never
+   selected). Not in Trash suggestions (K / T and Apply there) or a plugin tab. Trash and Erase ask as always. */
+function canSelectAll(){return view!=="sug"&&!plugView()&&items.length>0}
+function selectAll(){if(!canSelectAll())return;let hid=0;items.forEach((it,i)=>{if(hiddenAt(i))hid++;else sel.add(it.id)});
+ const left=total-items.length,n=sel.size;
+ allSel={n,text:`Selected ${fmt(n)} (all shown`+(left>0?`; ${fmt(left)} more match below: scroll to load them, then Select all again`:"")
+  +(hid?`; closed stacks: cover only`:"")+")"};paintSel()}
 function nameOf(id){const it=items.find(i=>i.id===id);return it?it.n:"#"+id}
 // ---------------------------------------------------------------- actions
 let tt=null;function toast(s){const t=$("#toast");t.textContent=s;t.classList.add("on");clearTimeout(tt);tt=setTimeout(()=>t.classList.remove("on"),4500)}
@@ -2124,7 +2135,7 @@ function refreshAfter(ids,thumbs,fresh){patchTiles(fresh);if(thumbs)ids.forEach(
  if(vi>=0)openViewer(vi,{keep:true});else if(view==="sug")reset()}
 $("#bkeep").onclick=()=>doKeep(selIds());$("#btrash").onclick=()=>askTrash(selIds());$("#berase").onclick=()=>askErase(selIds());
 $("#btag").onclick=()=>tagAsk("add");$("#buntag").onclick=()=>tagAsk("remove");$("#brot").onclick=()=>rot(selIds(),"cw");
-$("#bevent").onclick=()=>askSetEvent(selIds());$("#bshare").onclick=()=>askShare(selIds());$("#bnone").onclick=()=>{sel.clear();paintSel()};
+$("#ball").onclick=selectAll;$("#bevent").onclick=()=>askSetEvent(selIds());$("#bshare").onclick=()=>askShare(selIds());$("#bnone").onclick=()=>{sel.clear();paintSel()};
 $("#sugapply").onclick=()=>{const keep=Object.keys(dec).filter(k=>dec[k]==="keep").map(Number),trash=Object.keys(dec).filter(k=>dec[k]==="trash").map(Number);
  confirmBox(`Apply: ${keep.length} keep, ${trash.length} trash?`,[keep.length?"Keep: Owner|keep + Owner|not-trash in the sidecar (never suggested again).":"",trash.length?"Trash ("+names(trash)+"): plain delete, never taken in again (Owner|trash: the sha256 in trashed.json; copies left on disk are marked).":""].filter(Boolean),false,
   async()=>{const j=await api("/api/decide",{keep,trash,confirm:true});if(trash.length){progressMode("trash");$("#mout").textContent=j.result+"\n";poll(0,trash)}else{$("#modal").classList.remove("on");toast(j.result);loadFacets();reset()}})};
@@ -2190,6 +2201,9 @@ $("#vprev").onclick=()=>openViewer(stepVis(vi,-1));$("#vnext").onclick=()=>openV
 document.addEventListener("keydown",ev=>{const tg=ev.target,modal=$("#modal").classList.contains("on");
  // a ticked checkbox (or a slider) keeps focus but takes no letters, so the keys still act on the selection
  const typing=(tg.tagName==="INPUT"&&!["checkbox","radio","range"].includes(tg.type))||tg.tagName==="SELECT"||tg.tagName==="TEXTAREA";
+ // Ctrl+A / Cmd+A selects every tile shown; in a text field it stays the field's own select-all
+ if((ev.key==="a"||ev.key==="A")&&(ev.ctrlKey||ev.metaKey)&&!ev.altKey&&!ev.shiftKey&&!typing&&!modal&&vi<0&&canSelectAll()){
+  ev.preventDefault();selectAll();return}
  if(typing||ev.ctrlKey||ev.metaKey||ev.altKey||modal){
   if(ev.key==="Escape"){if(modal){$("#modal").classList.remove("on");tg.blur()}  // blur: the next key goes to the page, not the hidden input
    else if(tg.id==="q"&&tg.value){tg.value="";syncUI();reset()}}

@@ -32,8 +32,8 @@ copies there go too.
   full reason under "why"), then the filters as collapsible sections with
   counts (open / closed remembered per section) and "Clear filters (N)".
   Counts are for the whole library, not narrowed by the other filters.
-- **Main area**: a slim header (view, item count, thumbnail-size slider,
-  Close), the active filters as removable chips (in an event: the event's
+- **Main area**: a slim header (view, item count, **Select all**,
+  thumbnail-size slider, Close), the active filters as removable chips (in an event: the event's
   **Rename…** and **Merge into…** bar), the month grid. The
   selection actions sit in a bar at the bottom that appears only while
   something is selected (Trash suggestions keeps its Apply bar there).
@@ -109,7 +109,7 @@ badge) or closes it, and focus goes back to the cover either way. A line
 above the grid says what a stack is and how actions behave.
 
 - **A closed stack acts on its cover only.** Selecting (Space, a click, a
-  shift-click range across it), K / T / E and every bar action reach only
+  shift-click range across it, Select all), K / T / E and every bar action reach only
   the cover; the hidden shots are never selected, and closing a stack
   unselects any of its shots that were (the page says how many). Open the
   stack to act on the others. Nothing ever acts on a file you can't see,
@@ -161,7 +161,8 @@ folders. **Similar** on any item runs `semantic.py similar`. Both need
 Tick the box on a tile (shift-click a second box selects the range between,
 in the grid as it is now: after the grid reloads, for another view or filter,
 a shift-click starts a new selection; Ctrl-click on a tile ticks or unticks
-it; Space on a focused tile ticks it), then the bottom bar's buttons or keys:
+it; Space on a focused tile ticks it; **Select all** in the header, or Ctrl+A /
+Cmd+A, ticks every tile shown), then the bottom bar's buttons or keys:
 **K** Keep, **T** Trash, **E** Erase, **+ tag** / **− tag**, **Set event…**,
 **Rotate ⟳**, **Share-safe copy**; Esc or **Clear selection** clears it. Each
 applies to every selected item through the same endpoint as one item, photos
@@ -173,6 +174,20 @@ items' new grid summaries (`"items"`), so the tiles' flags ("kept", ...)
 change at once; the selection stays for the next action. In the large view the keys
 act on the item shown; **R** / **Shift+R** rotate, and its buttons include Set
 event and Share-safe copy.
+
+**Select all** ticks every tile the grid shows now: the current view, filters
+and search, and only the pages loaded so far (the grid loads 240 at a time as
+you scroll). A closed burst stack adds its cover only. The bar says what it
+took: "Selected 240 (all shown)", or, while more match than are loaded,
+"Selected 240 (all shown; 1,200 more match below: scroll to load them, then
+Select all again)"; with a closed stack, "closed stacks: cover only". It never
+reaches a file the page hasn't shown, so a Trash or Erase after it can't take
+more than you scrolled past, and they ask exactly as for any selection (the
+count and names, then Confirm, or ERASE typed). Ctrl+A in the search box or
+any other text field selects that field's text, as usual; Select all is not
+offered in Trash suggestions (K / T and Apply there) or a plugin tab. Ticking
+or unticking a tile afterwards, opening or closing a stack, or a new page
+loading turns the line back into a plain count. Esc clears.
 
 | Action | What it writes |
 |---|---|
@@ -391,6 +406,11 @@ never; a released file found by `lib_dst`; a later batch winning; unplanned
 files by a burst name or a sidecar's GCamera BurstID), and `/api/list`
 putting a burst's shots after their cover across pages, no stack of one
 under a filter, and none in Trash suggestions.
+`tests/browser/test_browser_gallery_select_all.py`: Select all by the button,
+Ctrl+A and Cmd+A, a closed stack adding its cover only (and an open one every
+shot), an event filter respected, Ctrl+A in the search box left to the field,
+Esc clearing, Trash and Erase asking as before (the count, ERASE typed), and a
+grid with only its first 240 loaded saying how many more match.
 `tests/browser/test_browser_gallery_bursts.py` does it on the page: the
 cover, badge and X, `x` and `X` with focus back on the cover, a near-copy
 never stacked, a closed stack's range selection and Keep reaching only the
