@@ -37,11 +37,11 @@ Fedora Linux first. Python, no service, no account.
   nothing on a device is ever renamed or moved. Erasing a GoPro chapter
   from the card also removes its `.LRV`/`.THM` previews (unstaged copies of
   the same footage), behind the same `--yes` and path checks.
-- The state folder (staging, quarantine, index, erase log, `jobs/`: each
-  detached job's status, log and lock, `locks/`: the library lock, and
-  `device-salt`) is `0700`. So are `jobs/` and `locks/`, whose files are
-  `0600`; the lock's holder note names the command and its PID, never a file
-  name. `device-salt` is `0600`.
+- The state folder (staging, quarantine, index, erase log, `backup/`: the
+  backup records, `jobs/`: each detached job's status, log and lock, `locks/`:
+  the library lock, and `device-salt`) is `0700`. So are `backup/`, `jobs/`
+  and `locks/`, whose files are `0600`; the lock's holder note names the
+  command and its PID, never a file name. `device-salt` is `0600`.
 - **Raw camera serial numbers are never written anywhere** (folder names,
   tags, plans, logs). A device id is a salted HMAC pseudonym of make, model
   and serial, keyed by `device-salt`.
@@ -54,6 +54,17 @@ Fedora Linux first. Python, no service, no account.
   `~/.cache/media-intake/proxies` (`0700`, files `0600`); `erase`, `forget`
   and `trash` delete them, `verify-gone` reports any left, and quarantine and
   review files never get one.
+- `erase` and `forget` also drop the erased files' entries from the backup
+  records in the state folder (`backup/`, which name library files), so no
+  name outlives the file there; a record they can't read or rewrite is
+  counted in the coverage report as left.
+- Every erase ends with a coverage report (counts and place names, never a
+  file name) of what it reached, including GNOME's per-file metadata and the
+  desktop search index, and what nothing on the machine can reach (cloud
+  services, chat apps and recipients, a device's app-private storage,
+  backups, and a cloud export's Takeout JSON or iCloud CSV row left beside an
+  erased file on its source drive). It is kept in the erase log;
+  `verify-gone BATCH` shows it.
 
 ## Install (Fedora)
 
@@ -111,6 +122,8 @@ media-intake offload phone-1 --phone <device root> --yes   # after a backup: fre
 | `index`, `search`, `similar` | Local semantic search (SigLIP) |
 | `vlm-trash` | Local vision-model second opinion on trash candidates |
 | `gallery` | Local web gallery: browse, keep, trash, erase, tag, rotate, events, bulk edits, share-safe copies |
+| `prune-cache` | Delete gallery thumbnails and video proxies nothing in the library shows any more (`--dry-run` first) |
+| `backup` | Copy the library (photos, videos, sidecars) to a mounted drive: incremental, never deletes there |
 | `queue add/run/status/offload` | Process an old external drive or a laptop folder in resumable chunks |
 | `share-copy` | Copy files with GPS and metadata stripped, for posting |
 | `doctor` | Check the install |
@@ -118,7 +131,7 @@ media-intake offload phone-1 --phone <device root> --yes   # after a backup: fre
 `media-intake <command> --help` for options. Details:
 [intake](docs/intake.md), [review page](docs/review-ui.md),
 [gallery](docs/gallery.md), [search and VLM](docs/search.md),
-[drive and folder queue](docs/queue.md), [configuration](docs/configuration.md),
+[drive and folder queue](docs/queue.md), [backup](docs/backup.md), [configuration](docs/configuration.md),
 [plugins](docs/plugins.md), [releases](docs/release.md).
 
 ## Tested devices

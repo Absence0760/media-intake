@@ -274,6 +274,24 @@ class VideoAndFolders(unittest.TestCase):
         self.assertEqual(res({"DateTimeOriginal": "2024:03:09 10:00:00"}, "/r/DCIM/202403__/IMG_1.JPG").src, "exif")
         self.assertEqual(res({}, "/r/DCIM/202403__/20240309_100000.jpg").src, "filename")
 
+    def test_messaging_export_names(self):
+        """Telegram Desktop's photo_<n>@DD-MM-YYYY_HH-MM-SS (day first) and Signal's signal-YYYY-MM-DD-HH-mm-ss-SSS."""
+        m = {"mtime": mtime(D(2026, 11, 13, 8))}
+        for path, want in (("/e/ChatExport_2026-11-13/photos/photo_12@05-03-2026_14-22-01.jpg", D(2026, 3, 5, 14, 22, 1)),
+                           ("/e/video_files/video_3@31-12-2025_23-59-59.mp4", D(2025, 12, 31, 23, 59, 59)),
+                           ("/e/files/file_1@01-02-2026_08-00-00.HEIC", D(2026, 2, 1, 8)),
+                           ("/p/Pictures/Signal/signal-2026-11-12-10-20-30-123.jpg", D(2026, 11, 12, 10, 20, 30)),
+                           ("/d/signal-2026-11-12-10-20-30-123_002.mp4", D(2026, 11, 12, 10, 20, 30))):
+            d = res(m, path)
+            self.assertEqual((d.src, d.dt), ("filename", want), path)
+        # Not a real date (31 February): the name gives nothing, mtime it is.
+        for bad in ("photo_1@31-02-2026_10-00-00.jpg", "photo_1@05-13-2026_10-00-00.jpg", "photo_1@05-03-2026_25-00-00.jpg"):
+            self.assertEqual(res(m, "/e/photos/" + bad).src, "mtime", bad)
+        # Naive local time, never shifted: a late-evening name keeps its day.
+        self.assertEqual(res(m, "/e/photos/photo_9@31-10-2026_23-30-00.jpg").dt, D(2026, 10, 31, 23, 30))
+        self.assertEqual(res({"DateTimeOriginal": "2024:03:09 10:00:00"}, "/e/photos/photo_1@05-03-2026_14-22-01.jpg").src,
+                         "exif")
+
 
 class ClockOffset(unittest.TestCase):
     def test_parse(self):

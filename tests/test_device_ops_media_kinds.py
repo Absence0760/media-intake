@@ -761,6 +761,38 @@ class Folder(Base):
         self.assertRegex(out, r"\n  Camera import +1\n")
         self.assertEqual(sorted(os.listdir(f)), ["IMG_0001.jpg", "MVI_0001.mp4"])
 
+    def test_telegram_export_and_signal_saves_are_messaging_copies(self):
+        """A Telegram Desktop export and Signal's saved files: only the export's media folders are staged,
+        each filed under Messaging/<App>/<year>/ and dated from its name."""
+        f = os.path.join(self.home, "Chats")
+        chat = "ChatExport_2026-11-01"
+        photo(os.path.join(f, chat, "photos", "photo_1@05-03-2025_14-22-01.jpg"), 1)
+        photo(os.path.join(f, chat, "photos", "photo_1@05-03-2025_14-22-01_thumb.jpg"), 1, size=(320, 240))
+        clip(os.path.join(f, chat, "video_files", "video_1@06-03-2025_09-00-00.mp4"), 1)
+        photo(os.path.join(f, chat, "stickers", "sticker.webp"), 2)
+        photo(os.path.join(f, chat, "images", "back.png"), 3)
+        clip(os.path.join(f, chat, "round_video_messages", "round.mp4"), 2)
+        photo(os.path.join(f, "Signal", "signal-2024-07-08-10-20-30-123.jpg"), 4)
+        for n in ("result.json", "messages.html"):
+            with open(os.path.join(f, chat, n), "w") as fh:
+                fh.write("{}")
+        b = "chats-1"
+        self.intake("stage", f, "--kind", "folder", "--batch", b)
+        man = jload(os.path.join(self.bd(b), "manifest.json"))
+        tp, tv, sg = (f"{chat}/photos/photo_1@05-03-2025_14-22-01.jpg", f"{chat}/video_files/video_1@06-03-2025_09-00-00.mp4",
+                      "Signal/signal-2024-07-08-10-20-30-123.jpg")
+        self.assertEqual(sorted(man["files"]), sorted([tp, tv, sg]))
+        self.intake("plan", b)
+        p = self.plan(b)
+        self.assertEqual({r: p[r]["cat"] for r in p},
+                         {tp: "messaging:Telegram", tv: "messaging:Telegram", sg: "messaging:Signal"})
+        self.assertEqual((p[tp]["date_src"], p[tp]["date"]), ("filename", "2025-03-05T14:22:01"))
+        self.assertEqual((p[tv]["date_src"], p[tv]["date"]), ("filename", "2025-03-06T09:00:00"))
+        self.assertEqual((p[sg]["date_src"], p[sg]["date"]), ("filename", "2024-07-08T10:20:30"))
+        self.assertEqual(p[tp]["dst"], self.L("Messaging", "Telegram", "2025", os.path.basename(tp)))
+        self.assertEqual(p[tv]["dst"], self.L("Messaging", "Telegram", "2025", os.path.basename(tv)))
+        self.assertEqual(p[sg]["dst"], self.L("Messaging", "Signal", "2024", os.path.basename(sg)))
+
 
 # ---------------------------------------------------------------- the drive queue with videos
 class QueueWithVideos(Base):

@@ -14,7 +14,7 @@ Paths take `~` and `$VARS`.
 | `library` | `~/Pictures/library` | Photos, `Screenshots/`, `Messaging/<app>/` |
 | `videos` | `~/Videos/personal` | Videos (GoPro included), `Screen recordings/` |
 | `state` | `~/.local/share/media-intake` | Staging, quarantine, index, erase log, `jobs/` (each detached job's status, log and lock), `locks/` (the library lock), `device-salt` (the key of the device-id pseudonyms, `0600`), venv, models, GeoNames. Kept `0700` (`jobs/` and `locks/` too, their files `0600`); never sync or index it. Keep `device-salt` when you move or rebuild the state folder: a new salt gives every camera a new device id, so its next batches and folders no longer match the old ones. |
-| `phone.extra_folders` | none | `{ "relative/folder" = "App" }`: extra exact folders on a phone that may be read, each filed under `Messaging/<App>/`. Everything else outside `DCIM/` and `Pictures/` stays unlisted. |
+| `phone.extra_folders` | none | `{ "relative/folder" = "App" }`: extra exact folders on a phone that may be read, each filed under `Messaging/<App>/`. Everything else outside `DCIM/` and `Pictures/` stays unlisted. Entries for WhatsApp, Telegram and Signal: [intake.md](intake.md), "Messaging apps". |
 | `drive.backup_markers` | `[]` | Folder names at a drive's mount root that mark your backup drive; `stage --kind drive` and `queue add` refuse it. A `.media-intake-backup` file at the root does the same; `.media-intake-source-ok` overrides both. |
 | `queue.wrapper` | `[]` | Command prefix for the queue's heavy steps (plan, scan, tag, index, vlm). |
 | `queue.wrapper_lock` | none | That wrapper's lock file, so `queue run` can say when it will wait. |
@@ -34,6 +34,16 @@ before it exits 75 ([intake.md](intake.md), "One writer at a time").
 `MEDIA_INTAKE_PROGRESS_EVERY` (files, default 10000) and
 `MEDIA_INTAKE_PROGRESS_SECS` (seconds, default 2) set how often the long
 sweeps in erase, forget and verify-gone print a counts-only progress line.
+`MEDIA_INTAKE_NO_GVFS_METADATA=1` stops erase clearing GNOME's per-file
+metadata through `gio`, and `MEDIA_INTAKE_NO_LOCALSEARCH=1` stops it resetting
+and checking the desktop search index; the tests set both, and the erase
+coverage report then lists those places as not checked ([intake.md](intake.md),
+"Erasing, and what it can't reach").
+
+`MEDIA_INTAKE_TEST_MOUNT` (and `MEDIA_INTAKE_TEST_UUID`) are for tests only:
+they stand in for `findmnt`'s mount point (and filesystem UUID) and turn off
+the laptop-disk check in `stage --kind drive`, `queue add` and `backup`. Never
+set them for a real run.
 
 `MEDIA_INTAKE_LIBRARY_LOCK_FD` is internal, not a setting: a detached job's
 worker sets it for the steps it starts, so they share the library lock it

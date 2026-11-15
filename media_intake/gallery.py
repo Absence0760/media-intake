@@ -382,6 +382,15 @@ def css_delta(it):
     return (DEG[effective_orientation(it)] - DEG[file_orientation(it)]) % 360
 
 
+def thumb_turn(it):
+    """The clockwise turn baked into this item's thumbnail (its cache key, intake.gallery_thumb_path): a video's
+    sidecar orientation (players ignore it), a photo's sidecar orientation on top of its own EXIF one (the
+    browser applies that). A photo with no sidecar orientation is 0 without opening the file."""
+    if it["media"] == "video":
+        return DEG[effective_orientation(it)]
+    return css_delta(it) if it.get("orient") in DEG else 0
+
+
 def _pil_jpeg(im, px, delta, quality=80):
     from PIL import Image, ImageOps
     im = ImageOps.exif_transpose(im).convert("RGB")
@@ -485,7 +494,8 @@ def proxy_commands(src, work):
     has none) into an H.264 encoder, with the sound when it is AAC, then without. gst-launch-1.0 re-parses its
     arguments as one pipeline, so a file name with "!", quotes or spaces could add elements: it reads
     <work>/in, a link to src that make_proxy makes, and both of its paths are checked against SAFE_GST_PATH
-    (else GStreamer is not tried). The argv is built as a list, never split from a string. Nothing is fetched."""
+    (else GStreamer is not tried, said once per folder on stderr). The argv is built as a list, never split
+    from a string. Nothing is fetched."""
     cmds, out, link = [], os.path.join(work, "out.mp4"), os.path.join(work, "in")
     enc = ffmpeg_encoder(("libx264", "libopenh264"))
     if enc:
@@ -495,10 +505,11 @@ def proxy_commands(src, work):
         cmds.append(["ffmpeg", "-v", "error", "-nostdin", "-y", "-i", "file:" + src, "-map", "0:v:0", "-map", "0:a:0?",
                      "-map_metadata", "-1", "-vf", vf, "-c:v", enc, *q, "-c:a", "aac", "-b:a", "160k",
                      "-movflags", "+faststart", "-f", "mp4", "file:" + out])
-    if not SAFE_GST_PATH.fullmatch(work):
-        return cmds
     import scan_sensitive  # the GPU HEVC decoder thumbnails and scans use
     dec = scan_sensitive._gst_hevc_decoder()
+    if dec and not SAFE_GST_PATH.fullmatch(work):
+        scan_sensitive.note_gst_skipped(os.path.dirname(work), "HEVC clips get no GStreamer proxy")
+        return cmds
     genc = gst_element(("x264enc", "openh264enc", "vah264enc")) if dec else None
     if dec and genc:
         post = ["vapostproc"] if dec == "vah265dec" else ["vulkandownload"]
@@ -606,7 +617,7 @@ class App:
             return None
         # Keyed by content and the turn baked in (a copy rotated in its sidecar shows its own rotation; copies
         # turned alike share one file). A photo's EXIF orientation is part of its content, so it needs no key.
-        delta = DEG[effective_orientation(it)] if it["media"] == "video" else css_delta(it)
+        delta = thumb_turn(it)
         dst = intake.gallery_thumb_path(sha, delta)
         if os.path.isfile(dst):
             return dst
@@ -674,7 +685,8 @@ class App:
 
     def drop_thumb(self, it):
         """After a rotate: the item's new turn has its own cache key, so its next /t/ request shows it at once.
-        The other variants stay (a same-content copy may still show them; trash, forget and erase remove all)."""
+        The other variants stay (a same-content copy may still show them; trash, forget and erase remove all,
+        and `media-intake prune-cache` removes the turns no copy shows any more)."""
         it.pop("nothumb", None)
 
     def summary(self, i, it):
@@ -1606,9 +1618,9 @@ PAGE = r"""<!doctype html>
 <style>
 :root{--bg:#f5f6f8;--panel:#fff;--fg:#16181d;--mut:#5d6470;--line:#e2e5ea;--card:#e9ecf0;--hover:#eef0f4;--acc:#2456d3;--acc-soft:rgba(36,86,211,.10);
  --keep:#1b7a33;--trash:#8a5a00;--erase:#b3261e;--shadow:0 6px 24px rgba(16,24,40,.14);
- --sbw:280px;--ml:280px;--hh:56px;--tile:168px}
+ --on-acc:#fff;--sbw:280px;--ml:280px;--hh:56px;--tile:168px}
 @media (prefers-color-scheme: dark){:root{--bg:#0f1013;--panel:#17191d;--fg:#e8eaed;--mut:#9aa1ad;--line:#2a2d34;--card:#22252b;--hover:#1f2228;--acc:#8ab0ff;--acc-soft:rgba(138,176,255,.14);
- --keep:#4cc26a;--trash:#e0a030;--erase:#ff6b5e;--shadow:0 6px 24px rgba(0,0,0,.5)}}
+ --keep:#4cc26a;--trash:#e0a030;--erase:#ff6b5e;--shadow:0 6px 24px rgba(0,0,0,.5);--on-acc:#0b1020}}
 *{box-sizing:border-box}
 html,body{margin:0}
 body{background:var(--bg);color:var(--fg);font:15px/1.45 system-ui,-apple-system,"Segoe UI",Roboto,sans-serif;-webkit-font-smoothing:antialiased}
@@ -1626,8 +1638,9 @@ button:disabled{opacity:.45;cursor:not-allowed}
 .btn.keep{color:var(--keep);border-color:color-mix(in srgb,var(--keep) 45%,transparent);background:color-mix(in srgb,var(--keep) 9%,var(--panel))}
 .btn.trash{color:var(--trash);border-color:color-mix(in srgb,var(--trash) 45%,transparent);background:color-mix(in srgb,var(--trash) 10%,var(--panel))}
 .btn.erase{color:var(--erase);border-color:color-mix(in srgb,var(--erase) 45%,transparent);background:color-mix(in srgb,var(--erase) 9%,var(--panel))}
-.btn.primary{background:var(--acc);border-color:var(--acc);color:#fff}
-kbd{font:600 11px/1 ui-monospace,monospace;border:1px solid currentColor;border-radius:4px;padding:2px 4px;opacity:.7}
+.btn.primary{background:var(--acc);border-color:var(--acc);color:var(--on-acc)}
+::placeholder{color:var(--mut);opacity:1}
+kbd{font:600 11px/1 ui-monospace,monospace;border:1px solid currentColor;border-radius:4px;padding:2px 4px}
 .icon{display:inline-flex;align-items:center;justify-content:center;width:36px;height:36px;border:0;border-radius:8px;background:none;color:var(--mut);position:relative}
 .icon:hover{background:var(--hover);color:var(--fg)}
 .link{border:0;background:none;color:var(--acc);padding:2px 0;font-size:13px}
@@ -1711,15 +1724,16 @@ output{font-variant-numeric:tabular-nums;color:var(--fg);font-weight:600}
 .collapsed #views{padding:4px 8px}
 .collapsed .nv{justify-content:center;padding:0;height:40px}
 .collapsed .railonly{display:flex}
-.badge-n{position:absolute;top:3px;right:3px;min-width:16px;height:16px;border-radius:8px;background:var(--acc);color:#fff;font-size:10px;line-height:16px;text-align:center;padding:0 4px}
+.badge-n{position:absolute;top:3px;right:3px;min-width:16px;height:16px;border-radius:8px;background:var(--acc);color:var(--on-acc);font-size:10px;line-height:16px;text-align:center;padding:0 4px}
 .overlay{--ml:60px;--sbw:min(304px,86vw)}
 .overlay #sidebar{box-shadow:var(--shadow)}
 
 /* ---------------------------------------------------------------- main */
-#app{margin-left:var(--ml);min-height:100vh;min-width:0}
+#app{margin-left:var(--ml);min-height:100vh;min-width:0;display:flex;flex-direction:column}
 #top{position:sticky;top:0;z-index:10;height:var(--hh);display:flex;align-items:center;gap:12px;padding:0 24px;background:color-mix(in srgb,var(--bg) 88%,transparent);backdrop-filter:blur(8px);border-bottom:1px solid var(--line)}
-#vtitle{font-size:17px;font-weight:650;margin:0;white-space:nowrap}
-#count{color:var(--mut);font-size:14px;white-space:nowrap;font-variant-numeric:tabular-nums}
+#vtitle{font-size:17px;font-weight:650;margin:0;white-space:nowrap;min-width:0;overflow:hidden;text-overflow:ellipsis}
+#count{color:var(--mut);font-size:14px;white-space:nowrap;font-variant-numeric:tabular-nums;flex:none}
+#top>.btn,#top>.size{flex:none}
 .grow{flex:1}
 .size{display:flex;align-items:center;gap:8px;color:var(--mut)}
 #tsize{width:120px;accent-color:var(--acc)}
@@ -1728,9 +1742,10 @@ output{font-variant-numeric:tabular-nums;color:var(--fg);font-weight:600}
 .chip>span{overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
 .chip .x{border:0;background:none;color:inherit;width:22px;height:22px;border-radius:50%;font-size:15px;line-height:1}
 .chip .x:hover{background:var(--acc-soft)}
-#note{padding:0 24px;margin:10px 0 0}
-main{padding:4px 24px 48px}
-.barup main{padding-bottom:110px}
+#note,#helpb{padding:0 24px}
+#helpb .hshort,#hmore{display:none}
+#note{margin:10px 0 0}
+main{padding:4px 24px 48px;flex:1 0 auto}
 h2.month{position:sticky;top:var(--hh);z-index:2;margin:0;padding:16px 0 8px;font-size:14px;font-weight:650;background:var(--bg)}
 .grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(var(--tile),1fr));gap:6px}
 [data-view=sug] .grid{grid-template-columns:repeat(auto-fill,minmax(max(var(--tile),220px),1fr));gap:10px}
@@ -1749,12 +1764,26 @@ h2.month{position:sticky;top:var(--hh);z-index:2;margin:0;padding:16px 0 8px;fon
 /* Burst stacks: the review page's look (a stacked card, a count badge, an X button) on a tile */
 .tile.stack{box-shadow:4px 4px 0 -1px var(--bg),4px 4px 0 0 var(--mut),8px 8px 0 -1px var(--bg),8px 8px 0 0 var(--mut)}
 .tile.stack.cur{box-shadow:inset 0 0 0 3px var(--fg),4px 4px 0 -1px var(--bg),4px 4px 0 0 var(--mut),8px 8px 0 -1px var(--bg),8px 8px 0 0 var(--mut)}
-.tile .badge{position:absolute;right:6px;top:6px;z-index:2;background:var(--acc);color:#fff;font-size:11px;font-weight:700;border-radius:999px;padding:1px 8px;white-space:nowrap}
+.tile .badge{position:absolute;right:6px;top:6px;z-index:2;background:var(--acc);color:var(--on-acc);font-size:11px;font-weight:700;border-radius:999px;padding:1px 8px;white-space:nowrap}
 .tile .x{position:absolute;right:6px;top:28px;z-index:2;font-size:11px;padding:2px 8px;border-radius:6px;border:1px solid var(--line);background:var(--panel);color:var(--fg);cursor:pointer;white-space:nowrap}
+/* on a small tile they shorten (ellipsis) rather than run over the checkbox or out of the tile */
+.tile .badge,.tile .x{max-width:calc(100% - 40px);overflow:hidden;text-overflow:ellipsis}
+/* a small tile (phone) shows a compact "×N" instead: on the cover a button that opens / closes the stack,
+   on an open stack's other shots the badge drawn as "×N" (its full text stays for screen readers) */
+.tile{container:tile/inline-size}
+.tile .bx{display:none;position:absolute;right:4px;top:4px;z-index:2;min-width:32px;height:28px;padding:0 8px;align-items:center;justify-content:center;border:0;border-radius:999px;background:var(--acc);color:var(--on-acc);font-size:13px;font-weight:700;cursor:pointer}
+@container tile (max-width:149px){
+ .tile .bx{display:flex}
+ .tile .bx~.badge,.tile .bx~.x{display:none}
+ .tile .badge{font-size:0;padding:2px 7px}
+ .tile .badge::before{content:"×" attr(data-count);font-size:12px}
+}
 .flag{position:absolute;left:6px;bottom:6px;width:max-content;max-width:calc(100% - 12px);background:rgba(0,0,0,.62);color:#fff;font-size:11px;border-radius:4px;padding:1px 6px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
 #sentinel{height:40px}
 /* bottom action bar: only while something is selected (or the Trash suggestions view's Apply) */
-#actionbar{position:fixed;left:calc(var(--ml) + 16px);right:16px;bottom:16px;z-index:12;display:flex;flex-wrap:wrap;gap:8px 16px;align-items:center;justify-content:center;padding:10px 14px;background:var(--panel);border:1px solid var(--line);border-radius:14px;box-shadow:var(--shadow)}
+/* sticky, last in #app: it floats over the grid while scrolling, but takes its own room at the end, so no tile
+   stays under it however many rows its buttons wrap to */
+#actionbar{position:sticky;margin:0 16px;bottom:16px;z-index:12;display:flex;flex-wrap:wrap;gap:8px 16px;align-items:center;justify-content:center;padding:10px 14px;background:var(--panel);border:1px solid var(--line);border-radius:14px;box-shadow:var(--shadow)}
 .grp{display:flex;flex-wrap:wrap;gap:6px;align-items:center}
 #seln,#sugn{font-weight:650;font-size:14px;margin-right:4px;white-space:nowrap}
 .sep{width:1px;height:22px;background:var(--line)}
@@ -1794,8 +1823,10 @@ dl.dt dd{margin:0;word-break:break-word}
 .tag:not(:has(button)){padding-right:9px}
 .tag button{border:0;background:none;color:#f99;width:20px;height:20px;border-radius:50%}
 #info input{width:100%;height:32px;margin-top:8px;padding:0 10px;border:1px solid #34353c;border-radius:8px;background:#0f1013;color:#eee}
+#info input::placeholder{color:#9a9ba3}
 #info .fine{color:#8d8e96;font-size:12px;margin:0}
-@media (max-width:760px){#viewer.on{display:block;overflow-y:auto;overscroll-behavior:contain}#stage{height:88vh;height:88dvh}#info{width:auto;overflow:visible;border-left:0;border-top:1px solid #2a2b31}#media{inset:8px}.arrow{width:36px;height:52px}}
+@media (max-width:760px){#viewer.on{display:block;overflow-y:auto;overscroll-behavior:contain}#stage{height:88vh;height:88dvh}#info{width:auto;overflow:visible;border-left:0;border-top:1px solid #2a2b31}#media{inset:8px}.arrow{width:36px;height:52px}
+ #vclose{position:fixed;top:8px;right:8px;z-index:6;width:44px;height:44px;background:rgba(0,0,0,.6);color:#fff}}
 
 /* ---------------------------------------------------------------- confirm / job dialog */
 .modal{position:fixed;inset:0;background:rgba(0,0,0,.55);z-index:30;display:none;align-items:center;justify-content:center;padding:16px}
@@ -1807,18 +1838,28 @@ dl.dt dd{margin:0;word-break:break-word}
 .mbtns{display:flex;gap:8px;justify-content:flex-end;margin-top:14px}
 #mstatus{margin:12px 0 0;padding:10px 12px;border-radius:8px;background:var(--acc-soft)}
 
+/* ---------------------------------------------------------------- narrow: the header's controls fit beside the title */
+@media (max-width:900px){
+ #tsize{width:72px}
+ #close .lbl2{display:none}#close{padding:0 8px}
+}
 /* ---------------------------------------------------------------- phone */
 @media (max-width:760px){
  #top{padding:0 12px;gap:8px}
- #vtitle{font-size:16px;overflow:hidden;text-overflow:ellipsis}
- #tsize{width:72px}
- #close .lbl2{display:none}#close{padding:0 8px}
- #chips,#evbar{padding:10px 12px 0}#note{padding:0 12px}
+ #vtitle{font-size:16px}
+ #count,.size .ic{display:none}
+ #ball{padding:0 9px}
+ #chips,#evbar{padding:10px 12px 0}#note,#helpb{padding:0 12px}
+ /* the burst help: one line, "more" for the whole text */
+ #helpb .hshort,#hmore{display:inline}#helpb .hfull{display:none}
+ #helpb.more .hshort{display:none}#helpb.more .hfull{display:inline}
+ #hmore{margin-left:6px}
  main{padding:4px 12px 40px}
  .grid{gap:4px}
- #actionbar{left:calc(var(--ml) + 8px);right:8px;bottom:8px;padding:8px;gap:6px}
+ #actionbar{margin:0 8px;bottom:8px;padding:8px;gap:6px}
  #actionbar .btn{padding:0 9px}
  #actionbar kbd,#actionbar .sep{display:none}
+ #seln{white-space:normal;min-width:0}
 }
 </style></head><body data-view="lib">
 <svg width="0" height="0" style="position:absolute" aria-hidden="true" focusable="false">
@@ -1874,7 +1915,7 @@ dl.dt dd{margin:0;word-break:break-word}
  <div id="chips" aria-label="Active filters" hidden></div>
  <div id="evbar" role="toolbar" aria-label="Event" hidden><span class="evt" id="evname"></span><button type="button" class="btn" id="evren">Rename…</button><button type="button" class="btn" id="evmerge">Merge into…</button></div>
  <p id="note" class="note" hidden></p>
- <p id="helpb" class="note" hidden>A stack is a burst (shots from one camera a moment apart): X opens or closes it. On a closed stack, selecting and every action (Keep, Trash, Erase, tags, Rotate, Set event, Share-safe copy) act on the cover shot only; open the stack to act on the others.</p>
+ <p id="helpb" class="note" hidden><span class="hshort">Bursts are stacked; X opens one.</span><span class="hfull">A stack is a burst (shots from one camera a moment apart): X opens or closes it. On a closed stack, selecting and every action (Keep, Trash, Erase, tags, Rotate, Set event, Share-safe copy) act on the cover shot only; open the stack to act on the others.</span><button type="button" class="link" id="hmore" aria-controls="helpb" aria-expanded="false">more</button></p>
  <main id="main"><div id="list"></div><div id="sentinel"></div><div id="plugin" hidden></div></main>
  <div id="actionbar" hidden>
   <div class="grp" id="selgrp" role="toolbar" aria-label="Selection actions" hidden><span id="seln"></span>
@@ -1932,6 +1973,10 @@ function layout(){const ph=mqPhone.matches,col=ph?!drawer:railPref;document.body
 function expandSidebar(){if(mqPhone.matches)drawer=true;else{railPref=false;LS.set("rail","0")}layout()}
 $("#rail").onclick=()=>{if(mqPhone.matches)drawer=!drawer;else{railPref=!railPref;LS.set("rail",railPref?"1":"0")}layout()};
 $("#scrim").onclick=()=>{drawer=false;layout()};
+// the burst help at phone width: one line, "more" for the whole text (remembered per browser)
+function helpMore(on){$("#helpb").classList.toggle("more",on);$("#hmore").textContent=on?"less":"more";$("#hmore").setAttribute("aria-expanded",String(on))}
+helpMore(LS.get("helpmore","0")==="1");
+$("#hmore").onclick=()=>{const on=!$("#helpb").classList.contains("more");helpMore(on);LS.set("helpmore",on?"1":"0")};
 mqPhone.addEventListener("change",()=>{drawer=false;layout()});
 $("#rsearch").onclick=()=>{expandSidebar();$("#q").focus()};
 $("#rfilter").onclick=()=>{expandSidebar();const f=$("#filters");if(!f.hidden){f.scrollIntoView({block:"start"});const h=f.querySelector(".fs-h");if(h)h.focus()}};
@@ -2040,17 +2085,19 @@ function render(start){const L=$("#list");let sec=L.lastElementChild,g=sec&&sec.
 function hiddenAt(n){const it=items[n];return !!it&&it.b!=null&&!it.bc&&!openB[it.b]}
 function stepVis(n,d){n+=d;while(n>=0&&n<items.length&&hiddenAt(n))n+=d;return n}
 function stackLabel(it){return openB[it.b]?"Close stack (X)":`Show all ${it.bn} (X)`}
+function bxLabel(it){return `Burst: ${it.bn} shots, ${openB[it.b]?"close":"open"} stack`}
 function toggleStack(n){const it=items[n];if(!it||it.b==null)return;const b=it.b;allSel=null;openB[b]=!openB[b];let c=-1,dropped=0;
  items.forEach((m,i)=>{if(m.b!==b)return;if(m.bc)c=i;const t=$("#t"+m.id);if(t)t.hidden=hiddenAt(i);if(hiddenAt(i)&&sel.has(m.id)){sel.delete(m.id);dropped++}});
  if(last!==null&&hiddenAt(last))last=null;if(cur>=0&&hiddenAt(cur))cur=c;
- const ct=c>=0?$("#t"+items[c].id):null;if(ct){ct.classList.toggle("stack",!openB[b]);const x=ct.querySelector(".x");if(x)x.textContent=stackLabel(items[c]);ct.focus({preventScroll:false})}
+ const ct=c>=0?$("#t"+items[c].id):null;if(ct){ct.classList.toggle("stack",!openB[b]);const x=ct.querySelector(".x");if(x)x.textContent=stackLabel(items[c]);const bx=ct.querySelector(".bx");if(bx)bx.setAttribute("aria-label",bxLabel(items[c]));ct.focus({preventScroll:false})}
  if(dropped)toast(`Stack closed: ${dropped} hidden shot${dropped>1?"s":""} unselected (actions act on the cover only).`);paintSel()}
 function tile(it,n){const t=el("div","tile");t.id="t"+it.id;t.dataset.n=n;t.dataset.item=it.n;t.tabIndex=0;t.title=it.n;
  const im=el("img");im.loading="lazy";im.decoding="async";im.alt=it.n;im.src="/t/"+it.id;im.onerror=()=>{im.replaceWith(el("div","ph",(it.m==="video"?"video: ":"")+it.n))};t.append(im);
  const cb=el("input","ck");cb.type="checkbox";cb.tabIndex=-1;cb.setAttribute("aria-label","select "+it.n);cb.onclick=ev=>{ev.stopPropagation();pick(n,ev.shiftKey)};t.append(cb);
  if(it.m==="video")t.append(el("span","play","▶"));
  if(it.b!=null){t.dataset.burst=it.b;const bd=el("span","badge",`Burst: ${it.bn} shots`);bd.dataset.count=it.bn;t.append(bd);
-  if(it.bc){const x=el("button","x",stackLabel(it));x.type="button";x.tabIndex=-1;x.onclick=ev=>{ev.stopPropagation();toggleStack(n)};t.append(x);if(!openB[it.b])t.classList.add("stack")}
+  if(it.bc){const bx=el("button","bx","×"+it.bn);bx.type="button";bx.tabIndex=-1;bx.setAttribute("aria-label",bxLabel(it));bx.onclick=ev=>{ev.stopPropagation();toggleStack(n)};bd.before(bx);
+   const x=el("button","x",stackLabel(it));x.type="button";x.tabIndex=-1;x.onclick=ev=>{ev.stopPropagation();toggleStack(n)};t.append(x);if(!openB[it.b])t.classList.add("stack")}
   else t.hidden=hiddenAt(n)}
  const fl=flagsOf(it);if(fl)t.append(el("span","flag",fl));
  t.onclick=ev=>{if(ev.shiftKey||ev.ctrlKey||ev.metaKey){pick(n,ev.shiftKey);return}if(view==="sug"){cur=n;paintSel();return}openViewer(n)};
@@ -2067,7 +2114,7 @@ function pick(n,range){allSel=null;if(range&&last!==null){const [a,b]=[Math.min(
 function paintSel(){$$(".tile").forEach(t=>{const id=+t.id.slice(1),n=+t.dataset.n;t.classList.toggle("sel",sel.has(id));t.querySelector("input").checked=sel.has(id);
   t.classList.toggle("cur",n===cur);t.classList.toggle("dk",dec[id]==="keep");t.classList.toggle("dt",dec[id]==="trash")});
  const selOn=sel.size>0&&!plugView(),sugOn=view==="sug";$("#selgrp").hidden=!selOn;$("#suggrp").hidden=!sugOn;$("#actionbar").hidden=!(selOn||sugOn);
- document.body.classList.toggle("barup",selOn||sugOn);document.body.classList.toggle("selecting",sel.size>0);
+ document.body.classList.toggle("selecting",sel.size>0);
  $("#seln").textContent=allSel&&allSel.n===sel.size?allSel.text:fmt(sel.size)+" selected";$("#ball").hidden=!canSelectAll();
  const nk=Object.values(dec).filter(d=>d==="keep").length,nt=Object.values(dec).filter(d=>d==="trash").length;
  $("#sugn").textContent=`${nk} keep / ${nt} trash marked`;$("#sugapply").disabled=!(nk+nt)}
@@ -2172,7 +2219,7 @@ async function openViewer(n,opt){opt=opt||{};if(n<0||n>=items.length)return;if(v
  else cantPlay(d,"No browser preview for this format.");
  $("#vprev").disabled=n<=0;$("#vnext").disabled=n>=items.length-1&&done;
  const s=$("#info");s.replaceChildren();
- const head=el("div","ihead"),x=el("button","icon");x.type="button";x.setAttribute("aria-label","Close (Esc)");x.title="Close (Esc)";x.insertAdjacentHTML("beforeend",'<svg class="ic"><use href="#i-x"/></svg>');x.onclick=closeViewer;
+ const head=el("div","ihead"),x=el("button","icon");x.id="vclose";x.type="button";x.setAttribute("aria-label","Close (Esc)");x.title="Close (Esc)";x.insertAdjacentHTML("beforeend",'<svg class="ic"><use href="#i-x"/></svg>');x.onclick=closeViewer;
  head.append(el("h2",null,d.name),x);s.append(head);
  const acts=el("div","acts"),mk=(box,t,f,c)=>{const b=el("button","btn"+(c?" "+c:""),t);b.type="button";b.onclick=f;box.append(b);return b};
  mk(acts,"Keep (K)",()=>doKeep([d.id]),"keep");mk(acts,"Trash (T)",()=>askTrash([d.id]),"trash");mk(acts,"Erase (E)",()=>askErase([d.id]),"erase");s.append(acts);
@@ -2194,8 +2241,12 @@ async function openViewer(n,opt){opt=opt||{};if(n<0||n>=items.length)return;if(v
  if(!opt.keep)$("#viewer").focus({preventScroll:true});
  $("#viewer").dataset.current=d.name;  // last: the keys (Space, arrows) act on this item from here on
  if(n>=items.length-20)more()}
-function closeViewer(){if(vi<0)return;const id=items[vi]&&items[vi].id;stopVideo();vi=-1;$("#viewer").classList.remove("on");document.body.classList.remove("noscroll");$("#media").replaceChildren();
+function closeViewer(){if(vi<0)return;const id=items[vi]&&items[vi].id;stopVideo();vi=-1;$("#viewer").scrollTop=0;$("#viewer").classList.remove("on");document.body.classList.remove("noscroll");$("#media").replaceChildren();
  delete $("#viewer").dataset.current;const u=$("#unmute");if(u)u.remove();paintSel();const t=$("#t"+id)||lastFocus;if(t&&t.focus)t.focus({preventScroll:true})}
+// swipe down on the photo or video closes the large view (phone); Esc and the close button still do
+let swipe=null;
+$("#stage").addEventListener("touchstart",ev=>{swipe=ev.touches.length===1&&$("#viewer").scrollTop<=0?[ev.touches[0].clientX,ev.touches[0].clientY]:null},{passive:true});
+$("#stage").addEventListener("touchend",ev=>{if(!swipe||vi<0)return;const t=ev.changedTouches[0],dx=t.clientX-swipe[0],dy=t.clientY-swipe[1];swipe=null;if(dy>80&&Math.abs(dx)<dy/2)closeViewer()},{passive:true});
 $("#vprev").onclick=()=>openViewer(stepVis(vi,-1));$("#vnext").onclick=()=>openViewer(stepVis(vi,1));
 // ---------------------------------------------------------------- keys
 document.addEventListener("keydown",ev=>{const tg=ev.target,modal=$("#modal").classList.contains("on");

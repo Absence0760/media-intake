@@ -35,7 +35,8 @@ default; all of them come from `~/.config/media-intake/config.toml`
   (`Messaging/WhatsApp/`). Only those folders and their subfolders are read
   under a denied tree; nothing else of that app (statuses, databases,
   backups). Default: none. Offloading such files also removes them from the
-  app's chats, so think before you `offload` a batch that has them.
+  app's chats, so think before you `offload` a batch that has them. Telegram
+  and Signal: see "Messaging apps" below.
 - **No assistant views photos for sensitivity.** Anything an AI assistant
   views goes to its provider and its transcript on disk, which is exactly where
   a passport scan or a nude must not end up. All detection is local and
@@ -51,12 +52,91 @@ default; all of them come from `~/.config/media-intake/config.toml`
   writes the frames there, and its argv is built as a list
   (`scan_sensitive.gst_frames_command`). A work folder whose path has anything
   but letters, digits and `._/+-` (an unusual HOME) means GStreamer is not
-  tried, so the clip is `unscanned-video`, never clean. The same sampling
+  tried, so the clip is `unscanned-video`, never clean, and `scan` says why
+  once per folder on stderr (`[gst] fallback skipped: ...`, the folder's path
+  only), so you can tell it from a missing decoder. The same sampling
   serves `label`, `semantic`, `vlm_trash` and gallery thumbnails; the gallery's
   HEVC proxy does the same (docs/gallery.md).
   ffmpeg and ffprobe get every path as `file:` plus the absolute path, so a
   name or relative source like `concat:...` or `http:...` is never followed as
   a protocol.
+
+## Messaging apps
+
+Media from a messaging app is a **messaging copy**: filed under
+`~/Pictures/library/Messaging/<App>/<YYYY>/`, tagged with the app's name in
+lower case, ranked below a camera original or a screenshot when two copies are
+exact duplicates, and checked against the library for near-copies (see
+"Duplicates"). On a phone it comes only from folders the config names
+(`[phone] extra_folders`, never a whole `Android/` tree) or from `Pictures/<App>/`,
+which is read anyway. From a drive or laptop folder it is recognised by name
+or layout, with no config. Layouts checked against each app's source code on
+2026-11-14 (links below); real phones and exports were not.
+
+| App | Where | How it is read |
+| --- | --- | --- |
+| WhatsApp | `Android/media/com.whatsapp/WhatsApp/Media/WhatsApp Images`, `.../WhatsApp Video` | config entries; on a drive or folder, `IMG-YYYYMMDD-WA*` / `VID-YYYYMMDD-WA*` names |
+| Telegram (Android 11+) | `Android/media/org.telegram.messenger/Telegram/Telegram Images`, `.../Telegram Video` | config entries |
+| Telegram (Android 10 and older) | `Telegram/Telegram Images`, `Telegram/Telegram Video` at the storage root | config entries |
+| Telegram "Save to gallery" | `Pictures/Telegram`, `Movies/Telegram` | `Pictures/` always; `Movies/Telegram` by config entry |
+| Signal "Save" (Android) | `Pictures/Signal`, `Movies/Signal`, named `signal-YYYY-MM-DD-HH-mm-ss-SSS` | `Pictures/` always; `Movies/Signal` by config entry |
+| Signal "Save" (Desktop) | wherever you saved it (usually Downloads), same `signal-...` names when the attachment had no name | a laptop folder or drive source: `signal-...` names (the phone's `Download/` denial doesn't apply to a folder you stage) |
+| Telegram Desktop export | `ChatExport_<date>/` or `DataExport_<date>/` (or a renamed one holding `result.json` or `messages.html` beside `photos/` or `video_files/`) | a laptop folder or drive source: only `photos/`, `video_files/` and `files/` |
+
+Example config entries (copy the ones for apps you use; a folder that isn't
+there is skipped):
+
+```toml
+[phone.extra_folders]
+"Android/media/org.telegram.messenger/Telegram/Telegram Images" = "Telegram"
+"Android/media/org.telegram.messenger/Telegram/Telegram Video" = "Telegram"
+"Movies/Telegram" = "Telegram"
+"Movies/Signal" = "Signal"
+# Android 10 and older keep Telegram's folders at the storage root:
+# "Telegram/Telegram Images" = "Telegram"
+# "Telegram/Telegram Video" = "Telegram"
+```
+
+Never taken, by design:
+
+- **Telegram's other folders**: `Telegram Documents`, `Telegram Files`,
+  `Telegram Audio`, `Telegram Stories` (each also has a `.nomedia`), the
+  cache under `Android/data/org.telegram.messenger/`. Name them in the config
+  only if you really want them read.
+- **In a Telegram Desktop export**: `stickers/`, `animations/` (GIFs),
+  `round_video_messages/`, `voice_messages/`, `profile_pictures/`,
+  `stories/`, `contacts/`, the HTML export's own `css/`, `js/` and
+  `images/` (its icons), and every `*_thumb.jpg` preview. A file in `files/`
+  is taken only when it is a photo or video by extension.
+- **Signal's chats**: Signal keeps attachments inside its encrypted database,
+  not in a folder; Android backups (`signal-*.backup`) and Desktop's backups are
+  encrypted. Only files you saved out of Signal can be read. Restore a backup
+  into Signal and save what you want, or stage the folder you saved them to.
+
+Dates: an export's own names (`photo_<n>@DD-MM-YYYY_HH-MM-SS.jpg`,
+`video_<n>@...`, `file_<n>@...`, the message's time on the exporting
+computer) and Signal's `signal-YYYY-MM-DD-HH-mm-ss` names are `filename`
+dates ("Dates" below). A file an export keeps under its own name (a video
+or file sent with a name) is dated by its metadata, else its mtime: reading
+`result.json`'s per-message dates for those is a ROADMAP follow-up.
+
+**Stage the folder that holds the export, not the export itself.** A file is
+labelled `messaging:Telegram` by a `ChatExport_<date>` / `DataExport_<date>`
+folder in its path under the staged folder, or by its own `photo_<n>@...`,
+`video_<n>@...`, `file_<n>@...` name. When the staged folder *is* the export
+(or a renamed one), the same files are taken (the export rules still apply),
+but its files kept under their own names are filed as ordinary photos and
+videos; making the category see the source root is a ROADMAP follow-up.
+
+Sources (checked 2026-11-14):
+[Telegram Android `ImageLoader.java`](https://github.com/DrKLO/Telegram/blob/master/TMessagesProj/src/main/java/org/telegram/messenger/ImageLoader.java)
+(media folders), [`MediaController.java`](https://github.com/DrKLO/Telegram/blob/master/TMessagesProj/src/main/java/org/telegram/messenger/MediaController.java)
+(save to gallery), [tdesktop `export_data_types.cpp`](https://github.com/telegramdesktop/tdesktop/blob/dev/Telegram/SourceFiles/export/data/export_data_types.cpp)
+(export folders, names, `_thumb.jpg`), [`export_output_abstract.cpp`](https://github.com/telegramdesktop/tdesktop/blob/dev/Telegram/SourceFiles/export/output/export_output_abstract.cpp)
+(`ChatExport_`/`DataExport_` folder), [`export_output_html.cpp`](https://github.com/telegramdesktop/tdesktop/blob/dev/Telegram/SourceFiles/export/output/export_output_html.cpp)
+(`css/`, `images/`), [Signal-Android `SaveAttachmentUtil.kt`](https://github.com/signalapp/Signal-Android/blob/main/app/src/main/java/org/thoughtcrime/securesms/util/SaveAttachmentUtil.kt)
+(save folders and names), [Signal-Desktop `ts/util/Attachment.std.ts`](https://github.com/signalapp/Signal-Desktop/blob/main/ts/util/Attachment.std.ts)
+(`getSuggestedFilename`).
 
 ## Commands
 
@@ -69,7 +149,7 @@ media-intake quarantine BATCH           # counts + the folder to open
 media-intake release BATCH FILE...      # false positive -> library
 media-intake erase BATCH [--phone ROOT [--keep-phone-thumbnails]] [--drive MOUNT [--no-wipe-free]] [--yes]
 media-intake forget LIBRARY_FILE... [--drive MOUNT] [--yes]   # asks (type ERASE) before anything moves
-media-intake verify-gone [BATCH] [--drive MOUNT]
+media-intake verify-gone [BATCH] [--drive MOUNT]   # with BATCH, also its last erase coverage report
 media-intake wipe-free MOUNT
 media-intake offload BATCH --phone ROOT [--yes]   # asks (type DELETE); refused for a --kind folder batch
 media-intake purge-review BATCH        # a batch name, never a path
@@ -84,11 +164,14 @@ media-intake tag-files FILE... [--event SLUG] [--no-labels]
 media-intake mark-used FILE... --post SLUG
 media-intake find [--tag T] [--event E] [--place P] [--project P] [--unused-since 30d] [--never-used]
 media-intake gallery [--drive MOUNT] [--share-out DIR]
+media-intake prune-cache [--dry-run]          # gallery thumbnails and proxies nothing shows any more
+media-intake backup MOUNT [--verify] [--dry-run]   # library, videos, sidecars to a mounted drive (backup.md)
 ```
 
 `media-intake <command> --help` shows every option. The review page is
 `media-intake review BATCH` ([review-ui.md](review-ui.md)), the web gallery
 [gallery.md](gallery.md), the drive and laptop-folder queue [queue.md](queue.md),
+the backup to a mounted drive [backup.md](backup.md),
 semantic search and the VLM trash check [search.md](search.md). `media-intake
 doctor` checks system packages (and prints the `sudo dnf install` line for
 what's missing), the venv, the model files' sha256 and the local Ollama
@@ -128,6 +211,12 @@ run and a CLI `apply` never interleave (`media_intake/library_lock.py`):
   it is listed there, and `tests/test_library_lock.py` fails on one in neither.
   `media-intake gallery` is cli.py's, not intake.py's (gallery.py imports
   intake.py, never the reverse); it takes the lock itself, per write.
+  `media-intake prune-cache` is cli.py's too (it reads the library as the
+  gallery does) and holds the lock while it deletes, for a steady view of the
+  library; with `--dry-run` it writes nothing and doesn't take it.
+  `media-intake backup` is cli.py's too and takes no library lock: it only
+  reads the library, and checks each file before and after copying it, so one
+  that changes mid-copy is skipped for the next run ([backup.md](backup.md)).
   `vlm-trash` takes it around each batch of verdicts it writes.
 - **Jobs** (the review page's run, the gallery's Trash, Erase and Share-safe copy) take it with
   their job lock at submit and hold it until their last step is over; each
@@ -172,14 +261,15 @@ order (`date_src` in `plan.json`; `plan` prints a count per source):
 | `exif` | `DateTimeOriginal`, else EXIF `CreateDate`, else `ModifyDate`; local time, with `OffsetTimeOriginal` (else `OffsetTime`) as its offset |
 | `video` | Apple's `Keys:CreationDate` (local time with its own offset), else QuickTime `CreateDate` / ffprobe `creation_time`, which is UTC: converted to local time with `OffsetTimeOriginal` when the file has one, else this machine's time zone for that date |
 | `gps` | `GPSDateTime` (EXIF, or a GoPro's GPMF track read with `exiftool -ee`; the start of the locked run, below), else `GPSDateStamp` alone (noon UTC of that day). UTC, converted like `video` |
-| `filename` | a date in the name (`20261108_071502`, `2026-11-08 07.15.02`, `20261108`) |
+| `export` | a cloud export's own record of the date, from the file's Google Takeout JSON (`photoTakenTime`) or iCloud `Photo Details.csv` row (`originalCreationDate`): UTC, converted like `video` ("Cloud exports", below) |
+| `filename` | a date in the name (`20261108_071502`, `2026-11-08 07.15.02`, `20261108`; a Telegram export's day-first `@08-11-2026_07-15-02`) |
 | `folder` | an iPhone export's `DCIM/YYYYMM__/` folder: the 1st of that month (day unknown, so `--event` days don't match it) |
 | `mtime` | the file's modification time, last resort |
-| `offset` | any of the above except `gps`, shifted by `--clock-offset`; `date_from` keeps which |
+| `offset` | any of the above except `gps` and `export`, shifted by `--clock-offset`; `date_from` keeps which |
 
 A camera date (`exif`, `video`) is used unless it is **impossible** or **GPS
-overrules it**; then the GPS date wins, and only without one do `filename`,
-`folder` and `mtime` get a turn.
+overrules it**; then the GPS date wins, and only without one do `export`,
+`filename`, `folder` and `mtime` get a turn, in that order.
 
 - **Impossible**: before 2000-01-02 (the QuickTime 1904, Unix 1970 and DOS
   1980 epochs, and the 2000-01-01 many cameras reset to), or more than a day
@@ -242,6 +332,90 @@ Without exiftool, Pillow (images) and ffprobe (videos) read the same tags,
 except a GoPro video's GPMF GPS time and any serial number: ffprobe can't
 read a video's serial, so neither fallback reads one, and a camera's photos
 and videos get the same Make/Model device id (Devices, below).
+
+### Cloud exports (Google Takeout, iCloud)
+
+A Google Photos Takeout or an iCloud Photos export ("Request a copy of your
+data" at privacy.apple.com) is a folder of photos and videos: unzip it and
+queue or stage it as a folder or drive source ([queue.md](queue.md)). Many of
+its files have lost their own capture date (edited copies, messaging images,
+scans, screenshots) and their mtime is the download time, but the export
+keeps the date beside them. `stage` (`media_intake/exports.py`) reads it, for
+`--kind folder` and `--kind drive` only, into the batch manifest
+(`files[rel].export`: `time` in UTC, `via` `google-takeout` or `icloud`, the
+`sidecar` it came from, and `lat`/`lon` when there is a place), and prints
+how many files matched. `plan` turns it into the `export` date source above:
+below the file's own EXIF, QuickTime and GPS dates (Google and Apple usually
+copied those from the file anyway), above the file name, folder and mtime.
+`--clock-offset` never shifts it (it is Google's or Apple's record, not the
+camera's clock).
+
+- **Google Takeout**: one JSON per media file, in the same folder.
+  `photoTakenTime.timestamp` (UTC epoch seconds; `0` or missing: no date) and
+  `geoDataExif`, else `geoData` (`latitude`, `longitude`; `0, 0` means no
+  place). The JSON's name is the media's original name plus
+  `.supplemental-metadata` (exports since about late 2024) or nothing (older
+  exports), cut to 46 characters, then the media's `(N)` duplicate counter if
+  it has one, then `.json`: `IMG_0001.jpg.supplemental-metadata.json`,
+  `IMG_0001.jpg.supplemental-metadata(1).json` for `IMG_0001(1).jpg`,
+  `Panorama_lake_shore_morning.jpg.supplemental-m.json`, or
+  `IMG_0001.jpg(1).json` in the older form. An `-edited` copy (English
+  exports only) uses its original's JSON, and a Live Photo's video half
+  (`IMG_0042.MOV`) the still image's (`IMG_0042.HEIC...json`). Matching is
+  by these exact candidate names, compared in Unicode NFC, never by a loose
+  prefix: when two media files would claim the same JSON (two long names
+  with the same first 46 characters), neither gets it (counted as
+  ambiguous). A JSON without a valid `photoTakenTime` is not used. A folder
+  that can't be listed when `stage` reads the metadata is skipped and
+  reported (`skipped N folders whose cloud export metadata could not be
+  read`); its files are staged without export dates.
+- **iCloud Photos**: `Photo Details.csv` (or `Photos Details*.csv`,
+  numbered variants too) in the same folder as the media, header
+  `imgName,fileChecksum,favorite,hidden,deleted,originalCreationDate,viewCount,importDate`;
+  `originalCreationDate` looks like `Tuesday March 3,2015 7:45 PM GMT`
+  (minutes only, GMT). Rows match by `imgName`; a name listed with two
+  different dates in that folder gets none. `importDate` is never used (it
+  is when the file reached iCloud, not when it was taken). A file with both
+  kinds of record takes the Google one.
+- **Places**: the export's place is stored only when the file has no GPS of
+  its own: `plan.json` keeps it as `export_gps`, and `tag` geocodes it
+  offline like file GPS (a `Place|` tag, `XMP-exif:GPSLatitude/Longitude` in
+  the sidecar). Nothing is ever looked up online.
+- **Duplicates**: the JSON and CSV files are never staged or filed (only
+  media extensions are walked). A Takeout puts the same photo in its year
+  folder and in each album folder; `plan` drops the copies by sha256 against
+  the batch and the library like any other duplicate ("Duplicates", below).
+- Only these small files (at most 1 MiB for a JSON, `JSON_MAX`; 64 MiB for a
+  CSV, `CSV_MAX`) are read, never through a symlink, and a CSV must be UTF-8;
+  nothing is written to the export (its files, mtimes and folders are left
+  exactly as they were). A metadata file that breaks one of these rules, or
+  isn't a regular file, or fails to read, is skipped without stopping
+  `stage`, its media are staged without an export date, and `stage` reports
+  each reason it hit: `skipped N symlinked cloud export metadata files (never
+  followed)`, `... over the size cap`, `skipped N cloud export CSV files that
+  are not UTF-8`, `... that are not regular files or could not be read`
+  (`exports.REFUSED`; each file counted once). Staging the same folder
+  again gives the same files, dates and report.
+- **Offload** of a drive deletes only the media originals: the JSON and CSV
+  files stay on the drive; delete the export folder yourself once it is filed.
+- **Erase** doesn't reach them either: an erased file's Takeout JSON or iCloud
+  CSV row (which can hold its date, place and description) stays beside where
+  it was, and the coverage report lists it under `cant_reach`.
+
+Neither format is documented by Google or Apple. The rules above follow the
+open-source importers that parse them, checked 2026-11-14:
+[immich-go](https://github.com/simulot/immich-go) (`adapters/googlePhotos/matchers.go`
+and its test cases, `adapters/googlePhotos/json.go`, `adapters/folder/icloud.go`
+and its `Photo Details.csv` fixture; commit `bc54ad2`),
+[GooglePhotosTakeoutHelper](https://github.com/TheLastGimbus/GooglePhotosTakeoutHelper)
+(`lib/date_extractors/json_extractor.dart`: the 51-character `<name>.json`
+limit of the older form) and
+[PhotoMigrator](https://github.com/jaimetur/PhotoMigrator)
+(`help/05-icloud-takeout.md`, `src/Features/ICloudTakeout/ClassICloudTakeoutFolder.py`:
+the CSV header and date formats; commit `5a6b770`). No code was copied; the
+names and fields are facts of the format. Apple's
+[data request page](https://support.apple.com/en-us/HT208502) describes the
+export but not the CSV's columns.
 
 ### GoPro chapters
 
@@ -334,9 +508,39 @@ cameras of one model share a folder, as above.
   anything is deleted. Two camera photos (phone or GoPro) are never merged
   (burst shots and time-lapse frames look alike). A screenshot or messaging copy is also checked against the library
   index and goes to review when it is near a library image.
+- **Near videos** (`videohash.py`): a re-encoded, resized or trimmed copy of
+  a clip goes to review exactly as a near-copy photo does, never deleted. ffmpeg
+  samples a frame every 0.5 s (at most 120, spread over a longer clip), scaled
+  to 9x8 grey and piped as raw pixels, so no frame is written to disk; each
+  gets the same dHash as a photo, and blank frames (black, fades) are dropped.
+  Two clips match when at least 80% of the shorter one's frames are each
+  within 10 bits of some frame of the other, compared as a set, ignoring
+  order and time, so a trimmed copy matches its original. Camera videos (phone, GoPro, a
+  drive's or folder's videos) are camera originals like camera photos: two are
+  never merged, and only a messaging copy or screen recording is checked
+  against the library. A clip ffmpeg can't decode (HEVC on Fedora's
+  `ffmpeg-free`) is sampled through `scan_sensitive.video_frames`, GStreamer
+  included, into a private folder removed at once. A clip that still can't be
+  read, or has fewer than 3 frames with any contrast, gets `vhash_note`
+  (`unreadable`, `too short or blank to compare`) in `plan.json` and is
+  counted in plan's output: "not checked", never "unique". `plan` decodes
+  every video once for this; expect roughly the clip's length or less per
+  clip on CPU.
+  - Research (2026-11-14): Meta's [vPDQ](https://github.com/facebook/ThreatExchange/tree/main/vpdq)
+    hashes a frame a second with PDQ and matches frame sets by the share of
+    each video's frames that match, ignoring timestamps, which is what makes
+    it trim-tolerant; its C++ build needs CMake and the libav* libraries, so
+    its method is used here with the dHash the photos already use, and no
+    new dependency. [videohash](https://github.com/akamhy/videohash) (MIT,
+    last PyPI release 3.0.1 on 2022-05-29, pulls yt-dlp) makes one 64-bit
+    hash of a frame collage and says it can't tell whether one video is part
+    of another: rejected. Thresholds were set on lavfi patterns (a
+    re-encode, a resize and a 1.3 s trim were within 5 bits a frame; unlike
+    clips 15 or more), not on real phone video: see Unverified.
 - Images under 200 px and empty files go to review as junk.
 - `index.json` in the state folder keeps sha256 and dHash of everything in
-  the library, so later batches are checked against it.
+  the library (and each filed video's frame hashes, `vhash`), so later
+  batches are checked against it.
 - **A move never replaces a file** (`intake.free_path`). `release` puts a
   file back at its old place only while that place and its sidecar are free.
   If another file was filed there since (erase moved `2026-08/IMG_1.jpg` to
@@ -410,7 +614,51 @@ quarantine. A file named twice is forgotten once.
   `verify-gone [BATCH]` repeats the sweep read-only and exits 1 if anything is
   left (including orphaned sidecars, gallery thumbnails and gallery video
   proxies). `erase` runs it
-  last.
+  last. Given a batch, it then prints that batch's last coverage report in
+  full (below), or says the batch was erased before reports were kept.
+- **Coverage report.** Every `erase` (and so every `forget`) ends with a
+  report of what it reached and what it can't, and appends it to
+  `erase-log.txt` as one line, `<date> <time> <batch> coverage <json>`, beside
+  the batch's `sha256:` lines (which `verify-gone` and `label.py` read; the
+  coverage line never matches them). Counts and fixed place names only, never
+  a file name. The JSON has four keys:
+  - `reached`: a count for every place it looked, zeros included: quarantined
+    files, library copies, other copies in HOME (the sweep), sidecars, Trash
+    entries, freedesktop thumbnails, the gallery's thumbnails and proxies,
+    recent files, Showtime's positions and log lines, localsearch's error
+    reports, near-duplicates moved to quarantine (not deleted), gvfs-metadata
+    entries cleared, localsearch resets and files checked forgotten, and with
+    `--phone` the device originals, camera previews and phone thumbnails, with
+    `--drive` the drive's copies and the MB the free-space wipe wrote, and the
+    entries dropped from the backup records (`<state>/backup/*.json`, which
+    keep library names: an entry goes when its path was erased or moved, or
+    its sha256 is an erased item's, with its `.xmp` entry, whatever its path;
+    only bookkeeping, so a file still in the library is hashed again by the
+    next `backup`; `erase --drive`
+    removes the copies on the drive by checksum, so the next `backup` has
+    nothing to bring back).
+  - `left`: what it found but did not remove (exact copies inside git repos,
+    near-duplicates left in place, thumbnails the phone refused, files
+    localsearch still has indexed after the reset or could not check,
+    gvfs-metadata entries gio could not clear, backup records it could not
+    rewrite, backup records it could not read (not JSON, another version: left
+    as they are, they may keep names until the next `backup` to that drive
+    starts them afresh), anything verify-gone found).
+    A check that got no answer lands here, never under `reached`. Empty when
+    nothing was left.
+  - `not_checked`: what it was not asked or able to look at (no `--phone`,
+    no `--drive`, `--keep-phone-thumbnails`, `--no-wipe-free`, `gio` or
+    `localsearch` not installed).
+  - `cant_reach`: the fixed list nothing on this machine can reach: cloud
+    services and sync, chat apps, email and the people it was sent to,
+    app-private storage on a phone or camera (a gallery app's own trash),
+    other computers and backup drives not named with `--drive`, filesystem
+    snapshots and the blocks an SSD keeps aside, re-encoded or trimmed video
+    copies, and a cloud export's Takeout JSON or iCloud CSV row left beside an
+    erased file on its source drive.
+
+  `erase` prints a short form (places with a count, what was left, what was
+  not checked, what it can't reach); `verify-gone BATCH` prints the full one.
 - **Progress while it searches.** The HOME sweep, the drive sweep, the
   near-duplicate search and verify-gone can take minutes on a big HOME, so
   each prints a start line (what it searches, how many erased items), then a
@@ -436,7 +684,9 @@ quarantine. A file named twice is forgotten once.
   videos and project folders, plus batches' `raw/` and `review/`), never in
   caches, app icons, map tiles or git repos, which hold look-alikes that
   aren't your photos. Images under 200 px and featureless hashes are ignored.
-  Videos: exact copies only; a re-encoded or trimmed video isn't found.
+  Videos: erase finds exact copies only; a re-encoded, resized or trimmed copy
+  of an erased video is neither found nor moved. (The near-video check in
+  "Duplicates", above, runs only in `plan`, on a new batch.)
 - **App traces** (GNOME apps, checked against Loupe 49, Showtime 49 and
   localsearch 3.10 as distro packages, not Flatpaks):
   - Recent files (`~/.local/share/recently-used.xbel`): bookmarks for erased
@@ -450,14 +700,41 @@ quarantine. A file named twice is forgotten once.
     recursively, and only the top of `$HOME` and Downloads, so the state folder
     is never indexed. It stores metadata (names, EXIF, location), not pixels,
     and drops deleted files itself; `erase` also runs `localsearch reset
-    --file` on each erased path inside an indexed folder and deletes its
-    failure reports (`~/.cache/tracker3/files/errors/<md5(uri)>`). The whole
-    index is never reset.
+    --file` on each erased path inside an indexed folder, then `localsearch
+    info` on it to check the index forgot it (a stored file has a `nie:url`),
+    and deletes its failure reports
+    (`~/.cache/tracker3/files/errors/<md5(uri)>`). A file still indexed is
+    counted under `left` in the coverage report, and so is one `localsearch`
+    could not answer for: each call gets 20 s (`GIO_TIMEOUT`), and after one
+    times out (a hung miner) the rest of that erase skips localsearch. The
+    whole index is never reset. verify-gone can't repeat the check: the erase
+    log keeps no paths.
   - Thumbnails: `erase` clears `~/.cache/thumbnails` entirely (rebuildable),
     since thumbnails are keyed by URI and a phone browsed in Files gets
     `mtp://` keys.
-  - Not covered: `~/.local/share/gvfs-metadata` (per-file Files attributes,
-    names only, no image data) keeps entries for files deleted outside `gio`.
+  - GNOME's per-file metadata (`~/.local/share/gvfs-metadata`: emblems, icon
+    positions, custom icons that Files and other apps set through gio; names
+    only, no image data) is keyed by path in a binary database that only
+    `gvfsd-metadata` writes, and is never edited by hand. GLib drops a file's
+    entry itself when the file is deleted through gio (`g_file_delete` calls
+    the VFS's `local_file_removed`, which asks the daemon to `Remove` it), so
+    device deletes (`gio remove`) need nothing more. Files on this machine and
+    the `--drive` are deleted with a plain unlink, so before each one (and
+    before `forget` or the near-duplicate search moves a library file) `erase`
+    lists its keys with `gio info -n -a metadata FILE` and unsets each with
+    `gio set -n -t unset FILE metadata::KEY`, which works only while the file
+    exists. A gio call that fails, or leaves a key, counts the file under
+    `left`; each call gets 20 s, and after one times out (a hung
+    `gvfsd-metadata`) the rest of that erase skips gio. Not covered: entries
+    for files deleted earlier outside gio (no
+    documented route clears an entry once its file is gone), and entries
+    under a folder rather than a file. Without `gio`, the coverage report
+    lists gvfs-metadata as not checked. Checked 2026-11-14 against GLib's
+    [glocalfile.c](https://gitlab.gnome.org/GNOME/glib/-/blob/main/gio/glocalfile.c),
+    [gio-tool-info.c](https://gitlab.gnome.org/GNOME/glib/-/blob/main/gio/gio-tool-info.c)
+    and the [gio manual](https://gitlab.gnome.org/GNOME/glib/-/blob/main/docs/reference/gio/gio.rst),
+    and gvfs's [gdaemonvfs.c](https://gitlab.gnome.org/GNOME/gvfs/-/blob/master/client/gdaemonvfs.c).
+    `MEDIA_INTAKE_NO_GVFS_METADATA=1` switches it off (the tests' default).
 - **The state folder.** Quarantine and staging live in
   `~/.local/share/media-intake/` (0700), not under `~/Pictures`, so desktop
   search and thumbnailers don't pick them up.
@@ -465,10 +742,13 @@ quarantine. A file named twice is forgotten once.
   the drive by checksum, then `wipe-free` fills the free space with zeros
   (64 MiB writes to `.media-intake-wipe.N` until the drive is full, fsync,
   delete, sync), since exFAT deletes only free the clusters. It refuses any
-  path whose mount (`findmnt -T`) is `/`, `/home`, `/var`, `/tmp` or `/boot*`.
+  path whose mount (`findmnt -T`) is `/`, `/home`, `/var`, `/tmp` or `/boot*`
+  (`backup` refuses a wider list of the laptop's own mounts,
+  `sources.LAPTOP_MOUNTS`: see [backup.md](backup.md)).
   On flash (`rotational` 0) it also tries `fstrim`, but wear-levelling keeps
   spare blocks, so an overwrite is no guarantee there. The robust fix is a
-  LUKS-encrypted backup drive, or a drive wiped whole.
+  LUKS-encrypted backup drive, or a drive wiped whole. `media-intake backup`
+  writes that drive ([backup.md](backup.md)).
 - **Phone.** `erase --phone` deletes the originals over MTP and, by default,
   `DCIM/.thumbnails` and `Pictures/.thumbnails` (Android rebuilds them;
   `--keep-phone-thumbnails` leaves them alone). Exactly those two paths: a
@@ -755,6 +1035,7 @@ Project / Source / Event / Place / Label / Review / Used.
 | Barcodes (PDF417 on the back of US driving licences, AAMVA header; 2FA `otpauth://` QR codes) | zxing-cpp (`python3-zxing-cpp`) | Reads PDF417 and QR; zbar doesn't do PDF417. |
 | Dates, GPS | exiftool (`perl-Image-ExifTool`) | Standard; falls back to Pillow/ffprobe when missing. |
 | Duplicates | sha256 (exact) + 64-bit dHash on Pillow (near) | Built in; see czkawka below. |
+| Video near-duplicates | dHash of frames sampled by ffmpeg, matched as sets (vPDQ's method) | Built in; see Duplicates. |
 
 Rejected:
 
@@ -788,6 +1069,24 @@ Rejected:
   QuickTime `CreateDate`; this code assumes UTC as the spec says, and
   `--clock-offset` corrects a camera that doesn't) or a real iPhone export's
   `DCIM/YYYYMM__` tree.
+- Video near-duplicate thresholds (`videohash.py`: 10 bits a frame, 80% of
+  the shorter clip) on real phone video: tested on synthetic clips only. A
+  static scene filmed twice, or a clip that is mostly one title card, may
+  match: it only goes to review.
+- Cloud exports: the Google Takeout and iCloud rules ("Cloud exports") were
+  tested on synthetic folders written from the naming rules above, not on a
+  real Takeout or iCloud export. Google localises the `-edited` suffix
+  (`-modifié`, ...); only the English one is recognised.
+- Erase on a real GNOME session: `gio info` / `gio set -t unset`
+  (gvfs-metadata) and `localsearch index`, `reset --file` and `info` (the
+  search-index check) were checked against their documentation and source and
+  run against fakes only, not against a real `gvfsd-metadata` or localsearch
+  miner. Unconfirmed: the `nie:url` test for "still indexed", whether `reset`
+  has finished before `info` runs, how a hung `gvfsd-metadata` or miner shows
+  up (the fakes simply never answer, and the 20 s `GIO_TIMEOUT` is a guess),
+  and the `localsearch index` output format the indexed-folder check parses.
+- Messaging-app layouts (Telegram, Signal; "Messaging apps" above): read from
+  each app's source code, not checked on a real phone or a real export.
 - NudeNet false-positive rate on real photo libraries (no published numbers).
 - Tesseract on embossed card numbers and cheque MICR lines.
 - `scan` time: about 1-2 s an image on CPU (OCR dominates), estimated.
@@ -810,18 +1109,31 @@ Rejected:
   check that crashes on one file `unscanned-error` (the rest of the batch is
   still scanned and `scan.json` still written). GoPro `.gpr` raw files are
   read through Pillow; one it can't open is `unreadable`.
+- `backup` on real exFAT, ext4-on-LUKS and NTFS drives (fsync refusals, name
+  rules, timestamps): tested on a folder standing in for the drive and a faked
+  `findmnt` only ([backup.md](backup.md), "Not tested here").
 
 ## Tests
 
 `python3 -I -m unittest discover -s tests` (synthetic media, a throwaway HOME,
 a hermetic config), or one module: `python3 -I -m unittest discover -s tests -p test_intake.py`
-(also `test_dates`, `test_devices`, `test_sources`, `test_tagging`, `test_config`, and `test_device_case`: offload,
+(also `test_dates`, `test_devices`, `test_sources`, `test_exports` (Google Takeout and iCloud export metadata), `test_tagging`, `test_config`, and `test_device_case`: offload,
 erase and trash on fake MTP, gphoto2 and drive trees with case-only collisions, in the manifests or only in the live listing, and a listing that fails; `test_device_ops_media_kinds`:
 stage, plan, apply, erase, offload and verify-gone with photos, videos and a mix from a phone, a GoPro card,
 a drive, a laptop folder and the drive queue, and erase's and offload's prompts (a wrong answer or closed
 stdin deletes nothing, with no traceback; the typed word does); `test_library_lock`: the
-CLI, a gallery write and a job contending for the library lock; `test_library_ops_media_kinds`: every
+CLI, a gallery write and a job contending for the library lock; `test_videohash`: the video hash on
+ffmpeg patterns (re-encoded, resized and trimmed copies match, a different, blank or unreadable clip
+doesn't, a name like `concat:x.mp4` is read as a file), `plan` routing a near-copy video to review, and
+plan and apply run twice storing the same hashes once; `test_backup`: `backup` and `--verify` on a fake
+drive folder (media and sidecars only, reruns, a corrupted, missing, changed or vanished copy, the
+laptop's own disk, the library or state folder, a symlink or a marker refused, originals unchanged, a
+private record); `test_cache_prune`: `prune-cache` keeping the library's thumbnails and proxies and
+dropping the rest (dry run, unreadable files, symlinked cache folders, the library lock);
+`test_erase_coverage`: erase's coverage report, gvfs-metadata and localsearch against fake `gio` and
+`localsearch` (failed, hung, vanished and symlinked cases), and the backup records after `backup`, `erase --drive`,
+`forget` and `verify-gone` (an erase outside the backed-up folders, a shared sha256, a record it can't rewrite or read); `test_library_ops_media_kinds`: every
 library-side command on a photo, an mp4 and a .mov, alone and mixed; `test_detectors_media_kinds`: scan,
 vlm_trash, semantic, label and the plugin hook on photos, videos and mixed batches, broken videos that
-must be flagged "not checked", never clean, and the GStreamer fallback with a hostile file name (fake tools); `test_offline_guard`). Run long jobs under your
+must be flagged "not checked", never clean, and the GStreamer fallback with a hostile file name and its one-line skip note for an unsafe work folder (fake tools); `test_offline_guard`). Run long jobs under your
 own memory cap if you like.

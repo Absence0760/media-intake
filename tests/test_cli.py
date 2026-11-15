@@ -317,6 +317,42 @@ class GalleryArgs(unittest.TestCase):
         self.assertNotIn("gallery", intake.LOCKED | intake.READ_ONLY)
 
 
+class PruneCacheArgs(unittest.TestCase):
+    """`media-intake prune-cache` is cli.py's (cache_prune imports gallery), with its flags passed on as given."""
+
+    def test_flags_passed_on(self):
+        fake = type(sys)("cache_prune")
+        fake.main = mock.Mock(return_value=0)
+        with mock.patch.dict(sys.modules, {"cache_prune": fake}):
+            self.assertEqual(cli.main(["prune-cache", "--dry-run"]), 0)
+        self.assertEqual(fake.main.call_args[0][0], ["--dry-run"])
+
+    def test_not_an_intake_subcommand(self):
+        import intake
+        self.assertNotIn("prune-cache", intake.LOCKED | intake.READ_ONLY)
+
+
+class BackupArgs(unittest.TestCase):
+    """`media-intake backup` is cli.py's (backup.py imports intake), with its arguments passed on as given."""
+
+    def test_args_passed_on(self):
+        fake = type(sys)("backup")
+        fake.main = mock.Mock(return_value=0)
+        with mock.patch.dict(sys.modules, {"backup": fake}):
+            self.assertEqual(cli.main(["backup", "/mnt/drive", "--verify", "--dry-run"]), 0)
+        self.assertEqual(fake.main.call_args[0][0], ["/mnt/drive", "--verify", "--dry-run"])
+
+    def test_exit_code_passed_back(self):
+        fake = type(sys)("backup")
+        fake.main = mock.Mock(return_value=2)
+        with mock.patch.dict(sys.modules, {"backup": fake}):
+            self.assertEqual(cli.main(["backup", "/mnt/drive"]), 2)
+
+    def test_not_an_intake_subcommand(self):
+        import intake
+        self.assertNotIn("backup", intake.LOCKED | intake.READ_ONLY)
+
+
 class Version(unittest.TestCase):
     """docs/release.md: the version lives only in media_intake/__init__.py."""
 

@@ -33,10 +33,26 @@ copies there go too.
   counts (open / closed remembered per section) and "Clear filters (N)".
   Counts are for the whole library, not narrowed by the other filters.
 - **Main area**: a slim header (view, item count, **Select all**,
-  thumbnail-size slider, Close), the active filters as removable chips (in an event: the event's
+  thumbnail-size slider, Close; at phone width the item count is left out and
+  Close is an icon, so the header fits beside a long title, which shortens with
+  an ellipsis), the active filters as removable chips (in an event: the event's
   **Rename…** and **Merge into…** bar), the month grid. The
   selection actions sit in a bar at the bottom that appears only while
-  something is selected (Trash suggestions keeps its Apply bar there).
+  something is selected (Trash suggestions keeps its Apply bar there). It
+  floats over the grid while you scroll and takes its own room at the end, so
+  the last row is never stuck under it, however many rows its buttons wrap to.
+  On a small tile (narrower than 150 px, as at phone width) a burst's badge and
+  X button give way to a compact **×N** button on the cover (it opens and
+  closes the stack, and is named "Burst: N shots, open stack" for screen
+  readers) and an open stack's other shots show their badge as "×N"; on a
+  wider tile the full labels stay, shortening with an ellipsis rather than
+  covering the checkbox. At phone width the burst help above the grid is one
+  line ("Bursts are stacked; X opens one.") with a **more** link for the whole
+  text (open / closed remembered per browser).
+- **Colours** follow the system's light or dark scheme. Every label meets
+  WCAG 2's 4.5:1 contrast in both: text on the accent colour (burst badges,
+  ×N, the rail's filter count, primary buttons) is white in light and near
+  black in dark, and key hints and placeholders use the muted text colour.
 - **Large view**: the photo or video fills everything left of the info pane.
   A video starts playing on open (muted, with an Unmute button, if the
   browser refuses sound), Space plays / pauses, Prev / Next play the next one,
@@ -46,6 +62,10 @@ copies there go too.
   large with **Open in the system player**, which
   runs `xdg-open` on that one file (below; `xdg-open` comes from Fedora's
   `xdg-utils`, which `media-intake doctor` lists as optional).
+  At phone width the photo takes most of the screen with the info pane
+  below it; the close button stays pinned at the top right however far you
+  scroll, a downward swipe on the photo closes the view (not while scrolled
+  down to the info pane), and a reopened view starts at the photo.
 
 The sidebar rail, open sections and tile size live in the browser's
 `localStorage` (a per-browser convenience; the page works without it).
@@ -106,7 +126,9 @@ look and keys as the review page ([review-ui.md](review-ui.md)): the cover
 shots") and a **Show all 4 (X)** button. **X** or `x` on a focused shot, or
 the button, opens the stack (every shot follows the cover, each with the
 badge) or closes it, and focus goes back to the cover either way. A line
-above the grid says what a stack is and how actions behave.
+above the grid says what a stack is and how actions behave. At phone width
+the cover shows a compact **×N** button instead, and the line is shortened
+with a **more** link ("Layout" above).
 
 - **A closed stack acts on its cover only.** Selecting (Space, a click, a
   shift-click range across it, Select all), K / T / E and every bar action reach only
@@ -304,12 +326,47 @@ which is part of the content). So a byte-identical copy rotated in its own
 sidecar shows its own rotation, and copies turned alike share one file.
 Rotate shows the new turn at once (the next request makes, or reuses, that
 turn's thumbnail; a video's frame too: the page turns the player itself),
-leaving the other turns for any copy that still shows them.
+leaving the other turns for any copy that still shows them
+(`media-intake prune-cache`, below, removes the ones none does).
 They are copies of photo content, so `trash`, `forget` and `erase` delete
 every turn of that sha256 (and `<sha256>.jpg`, the content-only key older
 versions wrote), and `verify-gone` reports any one still there as STILL
 PRESENT. Previews of formats a browser can't show are made in memory, never on
 disk. Safe to delete the whole folder at any time; it rebuilds.
+
+### Pruning the cache
+
+Rotating keeps the old turn, so a photo can hold up to four thumbnails plus
+the legacy `<sha256>.jpg`, and content that leaves the library some other way
+than `trash`, `forget` or `erase` (moved or deleted by hand) keeps its
+thumbnails and proxy. `media-intake prune-cache --dry-run` counts them (and
+their size); `media-intake prune-cache` deletes:
+
+- every `<sha256>.jpg`: the content-only key older versions wrote, never
+  served now;
+- a `<sha256>-r<turn>.jpg` when no library copy of that content shows that
+  turn (the sidecar's orientation on top of the file's own, as above);
+- every thumbnail and `proxies/<sha256>.mp4` of content no longer in the
+  library. A proxy of content still there is kept.
+
+"In the library" is what the gallery lists: the library, videos and project
+folders, never the state folder or a flagged file (so a flagged file's cached
+copies go too). Each file's sha256 comes from `index.json` when its size
+matches, else it is hashed (slow once for a large folder intake didn't file).
+When a library folder isn't there (a project folder on an unplugged drive) or
+a file can't be read, what the library holds is unknown: only the legacy
+thumbnails go, and the summary says why.
+
+Only names the gallery writes are touched (`<sha256>.jpg`,
+`<sha256>-r<0|90|180|270>.jpg`, `<sha256>.mp4`), and only regular files: a
+symlink under one of those names is never followed or removed (the summary
+counts it), and a folder in the cache path that is a symlink is not entered.
+Temporary files and the proxy work folders (`proxies/.work-*`) are left alone.
+Originals and sidecars are only read. Output is counts and sizes, never file
+names. The real run holds the library lock (docs/intake.md, "One writer at a
+time"); `--dry-run` writes nothing and doesn't. With the gallery open, a
+thumbnail deleted mid-request shows again on a reload. The gallery doesn't
+prune on its own: run the command now and then, or after a big reorganisation.
 
 ## Video proxies (HEVC in the browser)
 
@@ -340,7 +397,8 @@ and serves that instead; every other video is served as it is.
   original through a link `in` in a private work folder
   (`proxies/.work-*`, 0700) and writes `out.mp4` beside it, both paths made
   by the tool; if that folder's path holds anything but letters, digits and
-  `._/+-` (an unusual HOME), GStreamer is not tried.
+  `._/+-` (an unusual HOME), GStreamer is not tried, and the gallery says so
+  once per folder on stderr (`[gst] fallback skipped: ...`, the path only).
 - **Cached** in `~/.cache/media-intake/proxies/<sha256>.mp4` (folder 0700,
   files 0600), written in the work folder first (removed afterwards) and kept
   only when ffprobe reads it back as H.264. They are copies of video content, so
@@ -416,6 +474,12 @@ cover, badge and X, `x` and `X` with focus back on the cover, a near-copy
 never stacked, a closed stack's range selection and Keep reaching only the
 cover, closing a stack unselecting its hidden shots, and the large view's
 arrows over a closed and an open stack.
+`tests/browser/test_browser_gallery_layout.py` checks the layout at 390 px
+(phone) and 800 px (just above the phone breakpoint): no sideways page
+scroll, the header's title shown and its controls inside the header, a burst
+badge and X button inside their tile and clear of its checkbox (stack closed
+and open), Select all's long label wrapping inside the bar, and the last row
+of tiles above the selection bar at the end of the page.
 
 `tests/test_gallery_media_kinds.py` runs every operation on a photo, a video and
 a mixed selection (JPEG, PNG, H.264 in .mp4 and an upper-case .MOV): the
@@ -441,7 +505,8 @@ GStreamer fallback's two `gst-launch-1.0` runs (with and without sound) for a
 file named with `!`, spaces and double quotes: two `location=` arguments, the
 work folder's link (resolving to the original) and output, and no part of the
 name in any argument; `proxy_commands` in-process with a hostile name, and
-skipping GStreamer for an unsafe work path; the race where a video is trashed
+skipping GStreamer for an unsafe work path (one stderr note per folder, none
+when no GPU decoder would have been tried); the race where a video is trashed
 while its proxy is made (a gated ffmpeg that has written the proxy waits on a
 FIFO): with the trash job still running the fresh proxy is deleted and the
 original served, and after the trash ends it is deleted and nothing served,

@@ -3,12 +3,13 @@
 
   python3 -I -m unittest discover -s tests -p test_sources.py
 """
-import os, sys, tempfile, unittest
+import os, sys, tempfile, unittest, unittest.mock
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import support  # noqa: E402  (hermetic config)
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+import intake  # noqa: E402  (category: the phone paths' messaging app)
 import sources  # noqa: E402
 
 
@@ -72,6 +73,45 @@ class Walk(unittest.TestCase):
         self.assertEqual(sources.thumbnail_dirs(r), [os.path.join(r, "DCIM/.thumbnails")])
         with self.assertRaises(sources.Denied):
             sources.check_thumbnail(r, os.path.join(r, wa, "Media/WhatsApp Images/IMG-1.jpg"))
+
+    def test_telegram_and_signal_phone_folders(self):
+        """Telegram's and Signal's folders are read only when the config names them, each exactly."""
+        r = self.root
+        tg_pub = "Android/media/org.telegram.messenger/Telegram"  # Android 11+: getExternalMediaDirs()/Telegram
+        extra = {f"{tg_pub}/Telegram Images": "Telegram", f"{tg_pub}/Telegram Video": "Telegram",
+                 "Telegram/Telegram Images": "Telegram",  # Android 10 and older: <storage>/Telegram
+                 "Movies/Telegram": "Telegram", "Movies/Signal": "Signal"}
+        good = {touch(r, x) for x in [
+            f"{tg_pub}/Telegram Images/1234_567.jpg", f"{tg_pub}/Telegram Video/4_5.mp4",
+            "Telegram/Telegram Images/old.jpg", "Movies/Telegram/VID_20261114_102030_123.mp4",
+            "Movies/Signal/signal-2026-11-14-10-20-30-123.mp4",
+            "Pictures/Telegram/IMG_20261114_102030_123.jpg",  # Pictures/ is read anyway: "Save to gallery"
+            "Pictures/Signal/signal-2026-11-14-10-20-30-456.jpg"]}
+        bad = [f"{tg_pub}/Telegram Documents/passport.jpg", f"{tg_pub}/Telegram Audio/a.mp4",
+               f"{tg_pub}/Telegram Files/x.jpg", f"{tg_pub}/Telegram Stories/s.jpg", f"{tg_pub}/x.jpg",
+               f"{tg_pub}/Telegram Images/.nomedia", f"{tg_pub}/Telegram Images/.hidden/x.jpg",
+               "Android/data/org.telegram.messenger/files/Telegram/Telegram Images/x.jpg",
+               "Android/data/org.telegram.messenger/cache/x.jpg",
+               "Download/Signal/signal-2026-11-14-10-20-30-789.jpg", "Documents/Signal/x.jpg",
+               "Android/data/org.thoughtcrime.securesms/files/x.jpg",
+               "Signal/Backups/signal-2026-11-14-10-20-30.backup", "Movies/Signal/notes.txt"]
+        unlisted = ["Telegram/Telegram Documents/x.jpg", "Telegram/x.jpg", "Movies/Other/x.mp4", "Movies/x.mp4"]
+        for x in bad + unlisted:
+            touch(r, x)
+        with unittest.mock.patch.object(sources, "PHONE_EXTRA", extra), \
+                unittest.mock.patch.object(sources, "PHONE_ALLOW_EXTRA", tuple(extra)):
+            got = {p for p, _ in sources.walk(r, "phone")}
+            self.assertEqual(got, self.keep | good)
+            for rel in bad:
+                with self.assertRaises(sources.Denied, msg=rel):
+                    sources.check(r, os.path.join(r, rel))
+            cats = {os.path.relpath(p, r): intake.category(os.path.relpath(p, r), "phone") for p in good}
+        self.assertEqual({k: v for k, v in cats.items() if v != "messaging:Telegram"},
+                         {"Movies/Signal/signal-2026-11-14-10-20-30-123.mp4": "messaging:Signal",
+                          "Pictures/Signal/signal-2026-11-14-10-20-30-456.jpg": "messaging:Signal"})
+        # Without the config entries nothing of Telegram's app folders is read (Pictures/ still is).
+        got = {os.path.relpath(p, r) for p, _ in sources.walk(r, "phone")}
+        self.assertFalse({x for x in got if x.startswith(("Android/", "Telegram/", "Movies/"))})
 
     def test_gopro_only_numbered_folders(self):
         r = self.root
@@ -141,6 +181,61 @@ class Drive(unittest.TestCase):
         self.assertEqual(c("WhatsApp/IMG-20190101-WA0001.jpg"), "messaging:WhatsApp")
         self.assertEqual(c("VID-20190101-WA0002.mp4"), "messaging:WhatsApp")
         self.assertEqual(c("IMG-20190101.jpg"), "photo")
+        self.assertEqual(c("Signal/signal-2026-11-14-10-20-30-123.jpg"), "messaging:Signal")
+        self.assertEqual(c("signal-2026-11-14-10-20-30-123_002.mp4"), "messaging:Signal")
+        self.assertEqual(c("signal.jpg"), "photo")
+        self.assertEqual(c("photo_1@14-11-2026_10-20-30.jpg"), "messaging:Telegram")
+        self.assertEqual(c("x/video_2@14-11-2026_10-20-30.mp4"), "messaging:Telegram")
+        self.assertEqual(c("ChatExport_2026-11-14/video_files/holiday.MOV"), "messaging:Telegram")
+        self.assertEqual(c("a/DataExport_2026-11-14 (2)/chats/chat_01/files/IMG_7.HEIC"), "messaging:Telegram")
+        self.assertEqual(c("ChatExport_2026-11-14/x.jpg"), "photo")
+        # Only the path under the source root is seen: an export staged as the root itself files its
+        # own-named files as photos and videos (docs/intake.md, "Messaging apps"; ROADMAP follow-up).
+        self.assertEqual(c("photos/IMG_1.jpg"), "photo")
+        self.assertEqual(c("photos/photo_4@14-11-2026_10-20-30.jpg"), "messaging:Telegram")
+
+    def test_telegram_export_media_folders_only(self):
+        """A Telegram Desktop export: photos/, video_files/ and files/ only, never its previews or own assets."""
+        r = self.root
+        chat, data = "Telegram/ChatExport_2026-11-14", "Telegram/DataExport_2026-11-14 (1)/chats/chat_001"
+        good = {touch(r, x) for x in [
+            f"{chat}/photos/photo_1@14-11-2026_10-20-30.jpg", f"{chat}/video_files/video_1@14-11-2026_10-21-00.mp4",
+            f"{chat}/video_files/holiday.MOV", f"{chat}/files/IMG_0007.HEIC",
+            f"{data}/photos/photo_2@01-10-2026_08-00-00.jpg"]}
+        bad = [f"{chat}/photos/photo_1@14-11-2026_10-20-30_thumb.jpg",
+               f"{chat}/video_files/video_1@14-11-2026_10-21-00.mp4_thumb.jpg",
+               f"{chat}/stickers/sticker.webp", f"{chat}/animations/a.mp4", f"{chat}/round_video_messages/r.mp4",
+               f"{chat}/voice_messages/audio_1@14-11-2026_10-22-00.ogg", f"{chat}/images/back.png",
+               f"{chat}/css/style.css", f"{chat}/files/report.pdf", f"{chat}/x.jpg",
+               "Telegram/DataExport_2026-11-14 (1)/profile_pictures/p.jpg",
+               "Telegram/DataExport_2026-11-14 (1)/stories/s.mp4", f"{data}/photos/deeper/x.jpg"]
+        for x in bad + [f"{chat}/result.json", f"{chat}/messages.html"]:
+            touch(r, x)
+        # Renamed export folder: known by result.json beside photos/; a saved web page (messages.html beside
+        # files/, no photos/ or video_files/) is not an export, and everything in it is taken as usual.
+        good |= {touch(r, x) for x in ["old chats/photos/photo_3@01-01-2025_09-00-00.jpg",
+                                       "saved page/files/pic.png", "saved page/images/logo.png"]}
+        for x in ["old chats/result.json", "old chats/stickers/s.webp", "saved page/messages.html"]:
+            touch(r, x)
+        got = {p for p, _ in sources.walk(r, "drive")}
+        self.assertEqual(got, self.keep | good)
+        for rel in bad:
+            with self.assertRaises(sources.Denied, msg=rel):
+                sources.check_drive(r, os.path.join(r, rel))
+        # The source root itself is an export (named, or renamed with its result.json).
+        for name in ("ChatExport_2026-11-14", "chat with a friend"):
+            root = os.path.join(self.mount, name)
+            ok = touch(root, "photos/photo_1@14-11-2026_10-20-30.jpg")
+            for x in ["photos/photo_1@14-11-2026_10-20-30_thumb.jpg", "stickers/s.webp", "images/back.png",
+                      "result.json"]:
+                touch(root, x)
+            self.assertEqual([p for p, _ in sources.walk(root, "drive")], [ok], name)
+        # A symlinked result.json marks nothing: the folder is walked as usual.
+        link = os.path.join(self.mount, "linked")
+        touch(link, "photos/a.jpg")
+        touch(link, "stickers/s.webp")
+        os.symlink(os.path.join(self.mount, "chat with a friend", "result.json"), os.path.join(link, "result.json"))
+        self.assertEqual(sorted(rel for _, rel in sources.walk(link, "drive")), ["photos/a.jpg", "stickers/s.webp"])
 
     def test_backup_layout_refused_unless_marker(self):
         for folder in sources.BACKUP_LAYOUT:
@@ -288,7 +383,6 @@ class Folder(unittest.TestCase):
     def test_sweep_skip_trees_are_refused(self):
         """erase's home sweep skips these trees: a folder source never sits in one, so a confirmed
         erase always reaches a copy left in the source folder."""
-        import intake
         for rel in intake.SWEEP_SKIP:
             if not rel.startswith(".."):
                 self.refused(os.path.join(self.home, rel))

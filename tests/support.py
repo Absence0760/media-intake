@@ -39,6 +39,11 @@ atexit.register(shutil.rmtree, _d, True)
 os.environ["MEDIA_INTAKE_CONFIG"] = write_config(os.path.join(_d, "no-such-home", "demo-footage"),
                                                  os.path.join(_d, "config.toml"))
 os.environ.pop("XDG_CONFIG_HOME", None)
+# erase clears GNOME's per-file metadata through the real `gio` (the session's gvfsd-metadata) and resets and
+# checks the real desktop search index: both off for every test, and on only in the tests that put a fake
+# `gio` and `localsearch` first on PATH (test_erase_coverage.py).
+os.environ["MEDIA_INTAKE_NO_GVFS_METADATA"] = "1"
+os.environ["MEDIA_INTAKE_NO_LOCALSEARCH"] = "1"
 CONFIG = os.environ["MEDIA_INTAKE_CONFIG"]
 
 

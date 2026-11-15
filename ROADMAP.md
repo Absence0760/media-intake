@@ -116,6 +116,9 @@ The goal: someone else can install it on Fedora, import a phone, and trust it.
 - [x] Thumbnail cache keyed by content and rotation: rotating one copy no longer turns its
       byte-identical twin's thumbnail; copies turned alike share one; trash, forget, erase and
       verify-gone cover every variant (docs/gallery.md, "Thumbnails").
+- [x] Prune the gallery cache: `media-intake prune-cache [--dry-run]` deletes legacy
+      `<sha256>.jpg` thumbnails, turns no copy shows any more, and thumbnails and proxies of
+      content no longer in the library (docs/gallery.md, "Pruning the cache").
 - [x] A "share-safe export" button in the gallery (the CLI has `media-intake share-copy`:
       copy with all metadata and GPS stripped).
 
@@ -128,7 +131,8 @@ The goal: someone else can install it on Fedora, import a phone, and trust it.
       a newer Ollama than 0.21); licence check (commercial use) before adopting any model.
 - [ ] Optional local face grouping (off by default): face data counts as personal data,
       so erase/verify-gone must cover it; never names faces automatically.
-- [ ] Video near-duplicates (perceptual video hash) for re-encoded or trimmed copies.
+- [x] Video near-duplicates (perceptual video hash) for re-encoded or trimmed copies
+      (`videohash.py`; docs/intake.md, Duplicates).
 - [ ] Text search quality: prompt ensembles, per-label thresholds, search across video
       frames.
 
@@ -136,25 +140,43 @@ The goal: someone else can install it on Fedora, import a phone, and trust it.
 
 - [ ] HEIC/HEIF (pillow-heif), DNG/RAW previews, iPhone Live Photos (HEIC/JPG + MOV pairs),
       Samsung motion photos (embedded video).
-- [ ] Google Takeout and iCloud exports (JSON sidecars for dates/places), with dedupe
-      against the library.
+- [x] Google Takeout and iCloud exports (JSON sidecars for dates/places), with dedupe
+      against the library: `media_intake/exports.py`, the `export` date source
+      (docs/intake.md, "Cloud exports"). Not yet checked on a real export.
 - [ ] External drive queue: tested on real exFAT/NTFS/HFS+ drives; checksum-verified,
       resumable copies; faster parallel copy.
-- [ ] Messaging media beyond WhatsApp (Signal, Telegram exports) behind explicit allowlist
-      entries, never a whole `Android/` tree.
+- [x] Messaging media beyond WhatsApp (Signal, Telegram exports) behind explicit allowlist
+      entries, never a whole `Android/` tree. Telegram's Android folders and Signal's
+      `Movies/Signal` by config entry, Telegram Desktop exports (media folders only) and
+      Signal's saved `signal-...` files from a drive or laptop folder; Signal's own chats
+      and backups are encrypted and out of reach (docs/intake.md, "Messaging apps").
+- [ ] Telegram export `result.json` dates for files an export keeps under their own name
+      (its `photo_<n>@<date>` names are dated already), and `messaging:Telegram` for those
+      files when the staged folder is the export itself (the category sees only the path
+      under the source root today).
 
 ## Milestone 0.5: backups and erase everywhere
 
-- [ ] Built-in `backup` to a mounted drive (photos + videos + sidecars, never quarantine or
-      staging), with `--verify`. Recommend LUKS-encrypted drives: exFAT deletes leave
+- [x] Built-in `backup` to a mounted drive (photos + videos + sidecars, never quarantine or
+      staging), with `--verify` ([docs/backup.md](docs/backup.md)). Recommend LUKS-encrypted drives: exFAT deletes leave
       data readable until overwritten.
 - [ ] Optional S3/offsite module: uploads only reviewed batches, no sidecars versioned
       forever, never Object Lock; erase deletes every object version and delete marker.
-- [ ] Erase coverage report: what each erase reached (laptop, device, drive, caches,
+- [x] Erase coverage report: what each erase reached (laptop, device, drive, caches,
       thumbnails, search index) and what it can't (cloud services, chat apps, recipients,
-      device app-private storage such as gallery trash).
-- [ ] Clean `~/.local/share/gvfs-metadata` entries for erased files; verify the desktop
-      search index forgets them.
+      device app-private storage such as gallery trash). Kept in `erase-log.txt`;
+      `verify-gone BATCH` shows the last one (docs/intake.md, "Coverage report").
+- [x] Clean `~/.local/share/gvfs-metadata` entries for erased files; verify the desktop
+      search index forgets them. Cleared through gio before each delete; entries of files
+      deleted earlier outside gio stay (no documented route once the file is gone). Each
+      gio and localsearch call gets 20 s (`GIO_TIMEOUT`); after one hangs, that erase skips
+      the tool and counts what it skipped as left.
+- [x] Backup records pruned on erase/forget: entries for erased paths and sha256s (and their
+      `.xmp`) leave `<state>/backup/*.json` at once; a record that can't be read or rewritten
+      is counted as left (docs/backup.md, "Incremental").
+- [x] Refused cloud-export metadata reported: `stage` counts the symlinked, oversized and
+      non-UTF-8 Takeout JSON / iCloud CSV it skipped, and stages their media without export
+      dates (docs/intake.md, "Cloud exports").
 
 ## Later
 
@@ -180,6 +202,9 @@ The goal: someone else can install it on Fedora, import a phone, and trust it.
 - Tested on synthetic media and fake device trees only: not yet on real HEVC files, real
   GoPro `.gpr` files and GPS tracks, or real phones over MTP and gphoto2. The real detector
   models run only in the `models.yml` job.
+- Erase's gio (`info`, `set -t unset`) and `localsearch index|reset|info` handling, and the
+  20 s `GIO_TIMEOUT`, are tested against fakes only, not a real `gvfsd-metadata` or miner
+  (docs/intake.md, "Unverified").
 - A GoPro's QuickTime creation time is read as UTC, as the spec says; forum reports say
   some write local time. Unconfirmed on a real file; `--clock-offset` corrects a camera
   that is off.
