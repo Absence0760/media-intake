@@ -320,6 +320,11 @@ def cmd_stage(a):
     if exported or ec.get("ambiguous"):
         print(f"  cloud export metadata: Google Takeout {ec['google']}, iCloud {ec['icloud']}, "
               f"with a place {ec['places']}, ambiguous (ignored) {ec['ambiguous']}")
+    if ec.get("unreadable"):
+        skipped["folders whose cloud export metadata could not be read"] = ec["unreadable"]
+    for k, what in exports.REFUSED.items():  # a symlinked, oversized or non-UTF-8 JSON/CSV: its media get no export date
+        if ec.get(k):
+            skipped[what] = ec[k]
     for k, v in skipped.items():
         print(f"  skipped {v} {k}")
 
