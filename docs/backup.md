@@ -44,12 +44,12 @@ media-intake backup /run/media/$USER/<label> --verify    # then re-read every co
   and both sides' size and modification time in
   `<state>/backup/<drive id>.json` (on the laptop, 0600; the id is a hash of
   the drive's filesystem UUID). While both sides still look as recorded the
-  recorded sha256 is trusted; otherwise both are hashed again. Like
-  `index.json`, that record names library files; each run drops the entries
-  of files no longer in the library, and `erase` / `forget` drop an erased
-  file's entry at once (matched by path and sha256). A plain run
+  recorded sha256 is trusted; otherwise both are hashed again. A plain run
   therefore does not notice bit rot that leaves size and time alone:
-  `--verify` does.
+  `--verify` does. Like `index.json`, that record names library files; each
+  run drops the entries of files no longer in the library, and `erase` /
+  `forget` drop an erased file's entries at once (by path, or by sha256 for
+  the same content under another name, with its `.xmp`).
 - **Atomic per file.** Each copy is written to a hidden
   `.<name>.media-intake-partial` in its destination folder, fsync'd, given
   the source's modification time and renamed over the final name, so an

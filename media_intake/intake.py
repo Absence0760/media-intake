@@ -1032,27 +1032,35 @@ def prune_app_traces(uris, prefixes):
 
 
 def prune_backup_records(gone, shas):
-    """Drop erased library files from every backup record (<state>/backup/*.json, backup.py's manifest: files
-    keyed by the path under media-intake-backup/, each with its sha256). An entry goes when its path is an
-    erased library path's and its sha256 an erased item's: the record keeps names, which must not outlive the
-    file. The copies on the drive are erase --drive's job (by checksum). Returns the entries dropped."""
+    """Drop erased content from every backup record (<state>/backup/*.json, backup.py's manifest: files keyed
+    by the path under media-intake-backup/, each with its sha256): the record keeps names, which must not
+    outlive the file. An entry goes when its path is an erased or moved library path, or its sha256 an erased
+    item's (a copy filed under another name), and so does the .xmp sidecar entry of a media entry that went.
+    Only bookkeeping: a dropped entry that still has a file is hashed again by the next backup. The copies on
+    the drive are erase --drive's job (by checksum). Returns (entries dropped, records it could not rewrite)."""
     recs = sorted(glob.glob(os.path.join(STATE, "backup", "*.json")))
     if not recs:
-        return 0
+        return 0, 0
     import backup  # lazily: backup imports this module
     rels = set()
     for p in gone:
         for src, sub in backup.roots(CFG):
             if backup._within(p, src):
                 rels.add(os.path.join(sub, os.path.relpath(os.path.realpath(p), os.path.realpath(src))))
-    n = 0
+    n = failed = 0
     for rec in recs:
         files = backup.load_manifest(rec)
-        keep = {r: e for r, e in files.items() if not (r in rels and isinstance(e, dict) and e.get("sha") in shas)}
-        if len(keep) != len(files):
-            n += len(files) - len(keep)
-            backup.save_manifest(rec, keep)
-    return n
+        drop = {r for r, e in files.items() if r in rels or (isinstance(e, dict) and e.get("sha") in shas)}
+        drop |= {r for r in files if r.lower().endswith(".xmp") and r[:-4] in drop}
+        if not drop:
+            continue
+        try:
+            backup.save_manifest(rec, {r: e for r, e in files.items() if r not in drop})
+        except OSError:
+            failed += 1  # the names stay in it: counted under left, never fatal (the erase is done)
+            continue
+        n += len(drop)
+    return n, failed
 
 
 def localsearch(*args):
@@ -1515,7 +1523,7 @@ def cmd_erase(a):
     prefixes = [file_uris(STATE)[0] + "/"]  # quarantine and staging, any batch
     recent = prune_recent(uris, prefixes)
     traces = prune_app_traces(uris, prefixes)
-    backups = prune_backup_records(gone, set(shas))
+    backups, backups_failed = prune_backup_records(gone, set(shas))
     with open(os.path.join(STATE, "erase-log.txt"), "a") as f:
         for s, (size, _) in shas.items():
             f.write(f"{datetime.datetime.now():%Y-%m-%d %H:%M} {a.batch} sha256:{s} size:{size}\n")
@@ -1567,7 +1575,8 @@ def cmd_erase(a):
                                 "phone thumbnails the phone refused to delete": prefused,
                                 "files localsearch still has indexed": traces["localsearch still indexed"],
                                 "files localsearch could not check": traces["localsearch could not check"],
-                                "gvfs-metadata entries gio could not clear": stats["gvfs-metadata not cleared"]})
+                                "gvfs-metadata entries gio could not clear": stats["gvfs-metadata not cleared"],
+                                "backup records that could not be rewritten (they keep the names)": backups_failed})
     ok = verify_gone(sig, a.drive, left)
     # The coverage report: every place this erase reached (counts), what it left, what it could not check.
     reached = {"quarantined files (state folder, quarantine/)": len(q),

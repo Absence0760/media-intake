@@ -618,14 +618,16 @@ quarantine. A file named twice is forgotten once.
     entries cleared, localsearch resets and files checked forgotten, and with
     `--phone` the device originals, camera previews and phone thumbnails, with
     `--drive` the drive's copies and the MB the free-space wipe wrote, and the
-    erased library files dropped from the backup records
-    (`<state>/backup/*.json`, matched by path and sha256: the record keeps
-    names; `erase --drive` removes the copies on the drive by checksum, and
-    the next `backup` has nothing to bring back).
+    entries dropped from the backup records (`<state>/backup/*.json`, which
+    keep library names: an entry goes when its path was erased or moved, or
+    its sha256 is an erased item's, with its `.xmp` entry; `erase --drive`
+    removes the copies on the drive by checksum, so the next `backup` has
+    nothing to bring back).
   - `left`: what it found but did not remove (exact copies inside git repos,
     near-duplicates left in place, thumbnails the phone refused, files
     localsearch still has indexed after the reset or could not check,
-    gvfs-metadata entries gio could not clear, anything verify-gone found).
+    gvfs-metadata entries gio could not clear, backup records it could not
+    rewrite, anything verify-gone found).
     A check that got no answer lands here, never under `reached`. Empty when
     nothing was left.
   - `not_checked`: what it was not asked or able to look at (no `--phone`,
@@ -666,8 +668,9 @@ quarantine. A file named twice is forgotten once.
   videos and project folders, plus batches' `raw/` and `review/`), never in
   caches, app icons, map tiles or git repos, which hold look-alikes that
   aren't your photos. Images under 200 px and featureless hashes are ignored.
-  Videos: exact copies only; a re-encoded or trimmed video isn't found
-  (`plan` finds near-copy videos for review, § Duplicates; erase does not).
+  Videos: erase finds exact copies only; a re-encoded, resized or trimmed copy
+  of an erased video is neither found nor moved. (The near-video check in
+  "Duplicates", above, runs only in `plan`, on a new batch.)
 - **App traces** (GNOME apps, checked against Loupe 49, Showtime 49 and
   localsearch 3.10 as distro packages, not Flatpaks):
   - Recent files (`~/.local/share/recently-used.xbel`): bookmarks for erased
@@ -687,8 +690,9 @@ quarantine. A file named twice is forgotten once.
     (`~/.cache/tracker3/files/errors/<md5(uri)>`). A file still indexed is
     counted under `left` in the coverage report, and so is one `localsearch`
     could not answer for: each call gets 20 s (`GIO_TIMEOUT`), and after one
-    times out the rest of that erase skips localsearch. The whole index is never
-    reset. verify-gone can't repeat the check: the erase log keeps no paths.
+    times out (a hung miner) the rest of that erase skips localsearch. The
+    whole index is never reset. verify-gone can't repeat the check: the erase
+    log keeps no paths.
   - Thumbnails: `erase` clears `~/.cache/thumbnails` entirely (rebuildable),
     since thumbnails are keyed by URI and a phone browsed in Files gets
     `mtp://` keys.
@@ -1054,14 +1058,17 @@ Rejected:
   static scene filmed twice, or a clip that is mostly one title card, may
   match: it only goes to review.
 - Cloud exports: the Google Takeout and iCloud rules ("Cloud exports") were
-  tested on synthetic folders written from the naming rules above, not on a real Takeout or iCloud export. Google localises the
-  `-edited` suffix (`-modifié`, ...); only the English one is recognised.
-- Erase on a real GNOME session: `gio set -t unset` (gvfs-metadata) and
-  `localsearch reset --file` / `localsearch info` (the search-index check)
-  were checked against their documentation and source and run against fakes
-  only, not against a real `gvfsd-metadata` or localsearch miner. In
-  particular the `nie:url` test for "still indexed", and whether `reset`
-  has finished before `info` runs, are unconfirmed.
+  tested on synthetic folders written from the naming rules above, not on a
+  real Takeout or iCloud export. Google localises the `-edited` suffix
+  (`-modifié`, ...); only the English one is recognised.
+- Erase on a real GNOME session: `gio info` / `gio set -t unset`
+  (gvfs-metadata) and `localsearch index`, `reset --file` and `info` (the
+  search-index check) were checked against their documentation and source and
+  run against fakes only, not against a real `gvfsd-metadata` or localsearch
+  miner. Unconfirmed: the `nie:url` test for "still indexed", whether `reset`
+  has finished before `info` runs, how a hung `gvfsd-metadata` or miner shows
+  up (the fakes simply never answer, and the 20 s `GIO_TIMEOUT` is a guess),
+  and the `localsearch index` output format the indexed-folder check parses.
 - Messaging-app layouts (Telegram, Signal; "Messaging apps" above): read from
   each app's source code, not checked on a real phone or a real export.
 - NudeNet false-positive rate on real photo libraries (no published numbers).
@@ -1102,7 +1109,14 @@ stdin deletes nothing, with no traceback; the typed word does); `test_library_lo
 CLI, a gallery write and a job contending for the library lock; `test_videohash`: the video hash on
 ffmpeg patterns (re-encoded, resized and trimmed copies match, a different, blank or unreadable clip
 doesn't, a name like `concat:x.mp4` is read as a file), `plan` routing a near-copy video to review, and
-plan and apply run twice storing the same hashes once; `test_library_ops_media_kinds`: every
+plan and apply run twice storing the same hashes once; `test_backup`: `backup` and `--verify` on a fake
+drive folder (media and sidecars only, reruns, a corrupted, missing, changed or vanished copy, the
+laptop's own disk, the library or state folder, a symlink or a marker refused, originals unchanged, a
+private record); `test_cache_prune`: `prune-cache` keeping the library's thumbnails and proxies and
+dropping the rest (dry run, unreadable files, symlinked cache folders, the library lock);
+`test_erase_coverage`: erase's coverage report, gvfs-metadata and localsearch against fake `gio` and
+`localsearch` (failed, hung and symlinked cases), and the backup records after `backup`, `erase --drive`,
+`forget` and `verify-gone`; `test_library_ops_media_kinds`: every
 library-side command on a photo, an mp4 and a .mov, alone and mixed; `test_detectors_media_kinds`: scan,
 vlm_trash, semantic, label and the plugin hook on photos, videos and mixed batches, broken videos that
 must be flagged "not checked", never clean, and the GStreamer fallback with a hostile file name and its one-line skip note for an unsafe work folder (fake tools); `test_offline_guard`). Run long jobs under your

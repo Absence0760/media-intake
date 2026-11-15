@@ -402,6 +402,7 @@ class EraseCoverage(unittest.TestCase):
         verify-gone finds none, and the next backup doesn't bring them back."""
         self.env.update(MEDIA_INTAKE_TEST_MOUNT=self.drive, MEDIA_INTAKE_TEST_UUID="TEST-UUID")
         lib = write(self.H("Pictures/library/2026/2026-11/clip.mp4"), self.data)
+        write(lib + ".xmp", b"tags")  # its sidecar is backed up too, under the erased file's name
         other = os.urandom(2048)
         lib2 = write(self.H("Pictures/library/2026/2026-11/later.mp4"), other)
         keep = write(self.H("Pictures/library/2026/2026-11/keep.mp4"), os.urandom(1024))
@@ -410,15 +411,24 @@ class EraseCoverage(unittest.TestCase):
             json.dump({lib: {"sha": self.sha, "size": len(self.data)}}, f)
         self.backup()
         dest = os.path.join(self.drive, "media-intake-backup", "library", "2026", "2026-11")
-        rels = {"library/2026/2026-11/" + n for n in ("clip.mp4", "later.mp4", "keep.mp4")}
+        rels = {"library/2026/2026-11/" + n for n in ("clip.mp4", "clip.mp4.xmp", "later.mp4", "keep.mp4")}
         self.assertEqual(set(self.record()), rels)
+        # A stale entry for the same content under a name no longer in the library (renamed since the
+        # backup): not in the erase's paths, dropped by its sha256.
+        rec = os.path.join(self.state, "backup", os.listdir(os.path.join(self.state, "backup"))[0])
+        with open(rec) as f:
+            m = json.load(f)
+        m["files"]["library/2026/old-name.mp4"] = dict(m["files"]["library/2026/2026-11/clip.mp4"])
+        with open(rec, "w") as f:
+            json.dump(m, f)
         batch = "2026-11-14-backup"
         self.quarantine(batch)
         self.intake("erase", batch, "--yes", "--drive", self.drive, "--no-wipe-free")
         self.assertFalse(os.path.lexists(lib))
         self.assertFalse(os.path.lexists(os.path.join(dest, "clip.mp4")), "the drive copy goes by checksum")
-        self.assertEqual(set(self.record()), rels - {"library/2026/2026-11/clip.mp4"})
-        self.assertEqual(self.coverage()["reached"]["backup records: erased files dropped (state folder, backup/)"], 1)
+        self.assertEqual(set(self.record()), rels - {"library/2026/2026-11/clip.mp4", "library/2026/2026-11/clip.mp4.xmp"})
+        self.assertNotIn(self.sha, json.dumps(self.record()))
+        self.assertEqual(self.coverage()["reached"]["backup records: erased files dropped (state folder, backup/)"], 3)
         self.intake("forget", lib2, "--yes", "--drive", self.drive, "--no-wipe-free")
         self.assertEqual(set(self.record()), {"library/2026/2026-11/keep.mp4"})
         self.assertFalse(os.path.lexists(os.path.join(dest, "later.mp4")))
@@ -428,6 +438,28 @@ class EraseCoverage(unittest.TestCase):
         self.assertEqual(sorted(os.listdir(dest)), ["keep.mp4"], "the next backup brings nothing back")
         self.assertEqual(set(self.record()), {"library/2026/2026-11/keep.mp4"})
         self.assertTrue(os.path.isfile(keep))
+
+    def test_a_record_it_cannot_rewrite_is_counted_as_left(self):
+        """A backup record erase cannot rewrite (its temporary name taken by a folder) keeps the names: the
+        report says so under left, and the erase itself still finishes."""
+        self.env.update(MEDIA_INTAKE_TEST_MOUNT=self.drive, MEDIA_INTAKE_TEST_UUID="TEST-UUID")
+        lib = write(self.H("Pictures/library/2026/2026-11/clip.mp4"), self.data)
+        os.makedirs(self.state, exist_ok=True)
+        with open(os.path.join(self.state, "index.json"), "w") as f:
+            json.dump({lib: {"sha": self.sha, "size": len(self.data)}}, f)
+        self.backup()
+        rdir = os.path.join(self.state, "backup")
+        rec = os.path.join(rdir, os.listdir(rdir)[0])
+        os.mkdir(rec + ".tmp")  # intake.save writes <record>.tmp first
+        batch = "2026-11-14-ro"
+        self.quarantine(batch)
+        self.intake("erase", batch, "--yes", "--no-wipe-free")
+        self.assertFalse(os.path.lexists(lib))
+        cov = self.coverage()
+        self.assertEqual(cov["left"]["backup records that could not be rewritten (they keep the names)"], 1)
+        self.assertEqual(cov["reached"]["backup records: erased files dropped (state folder, backup/)"], 0)
+        with open(rec) as f:
+            self.assertEqual(set(json.load(f)["files"]), {"library/2026/2026-11/clip.mp4"})
 
     def test_verify_gone_without_a_report(self):
         os.makedirs(self.state)
@@ -511,6 +543,15 @@ class HungTools(unittest.TestCase):
         self.assertEqual(len([ln for ln in self.lines(self.ls_log) if ln.startswith("reset ")]), 1,
                          "one hung reset, then no more localsearch calls")
         self.assertFalse([ln for ln in self.lines(self.ls_log) if ln.startswith("info ")])
+
+    def test_hung_localsearch_index_skips_every_reset_and_check(self):
+        uris = {intake.file_uris(os.path.join(self.home, "Downloads", "a.mp4"))[0]}
+        os.environ["FAKE_LS_HANG"] = "index"
+        n = intake.prune_app_traces(uris, [])
+        self.assertTrue(intake.HUNG["localsearch"])
+        self.assertEqual(n["localsearch could not check"], 1)
+        self.assertEqual((n["localsearch resets"], n["localsearch checked"]), (0, 0))
+        self.assertEqual(self.lines(self.ls_log), ["index"])
 
 
 if __name__ == "__main__":
