@@ -585,10 +585,10 @@ class ReviewUITest(unittest.TestCase):
         ids = {(i["batch"], i["rel"]): i["id"] for i in items}
         X = f"xcheck-{BATCH}"
         w = "photo_library/Messaging/WhatsApp/2025/"
-        want = {(BATCH, "DCIM/Camera/a.jpg"): "trash", (BATCH, "DCIM/Camera/b.png"): "erase",
+        want = {(BATCH, "DCIM/Camera/a.jpg"): "erase", (BATCH, "DCIM/Camera/b.png"): "erase",
                 (BATCH, "DCIM/Camera/c.mp4"): "keep", (f"near-{BATCH}", "Downloads/n.jpg"): "keep",
                 (BATCH, "DCIM/Camera/r1.jpg"): "trash", (BATCH, "Pictures/Screenshots/r2.png"): "delete",
-                (X, w + "w1.jpg"): "trash", (X, w + "w2.jpg"): "erase"}
+                (X, w + "w1.jpg"): "keep", (X, w + "w2.jpg"): "erase"}
         dec = {str(ids[k]): v for k, v in want.items()}
         r, _ = s.req("POST", "/api/submit", headers={"X-CSRF": s.csrf()},
                      body={"decisions": dict(dec, **{str(ids[(BATCH, "DCIM/Camera/r1.jpg")]): "erase"}), "confirm": "ERASE"})
@@ -602,19 +602,61 @@ class ReviewUITest(unittest.TestCase):
             ["trash", "--batch", BATCH, os.path.join(rv, "DCIM/Camera/r1.jpg"), *ph],
             ["purge-review", BATCH],
             ["release", f"near-{BATCH}", os.path.join(self.state, "quarantine", f"near-{BATCH}", "Downloads/n.jpg")],
-            ["trash", "--batch", X, os.path.join(xq, w + "w1.jpg")],  # xcheck: never --phone
-            ["erase", X, "--yes", *dr],
+            ["release", X, os.path.join(xq, w + "w1.jpg")],
+            ["erase", X, "--yes", *dr],  # xcheck: never --phone
             ["verify-gone", X, *dr],
-            ["trash", "--batch", BATCH, os.path.join(quar, "DCIM/Camera/a.jpg"), *ph],
             ["release", BATCH, os.path.join(quar, "DCIM/Camera/c.mp4")],
             ["erase", BATCH, "--yes", *ph, *dr],
             ["verify-gone", BATCH, *dr],
         ])
         with open(os.path.join(self.state, "batches", BATCH, "review-decisions.json")) as f:
             d = json.load(f)
-        self.assertEqual(d["quarantine"][BATCH]["DCIM/Camera/a.jpg"], "trash")
+        self.assertEqual(d["quarantine"][BATCH]["DCIM/Camera/a.jpg"], "erase")
         self.assertEqual(d["review"]["DCIM/Camera/r1.jpg"], "trash")
         self.assertEqual(s.p.wait(timeout=30), 0)
+
+    def test_quarantined_items_refuse_trash(self):
+        """Quarantine is Erase-only: a trash decision on any quarantined item (the batch, a near- level, an
+        xcheck- messaging copy) is refused with 400 before anything is written or run, even when every other
+        decision is valid. The page offers no Trash button or T key there and says why."""
+        self.quarantine()
+        self.review()
+        self.xcheck()
+        s = self.start("--phone", self.phone, "--drive", self.drive)
+        items = self.items(s)
+        quar = [i for i in items if i["tab"] == "quarantine"]
+        self.assertEqual({i["batch"] for i in quar}, {BATCH, f"near-{BATCH}", f"xcheck-{BATCH}"})
+        ok = {str(i["id"]): ("erase" if i["tab"] == "quarantine" else "keep") for i in items}
+        for it in quar:
+            r, b = s.req("POST", "/api/submit", headers={"X-CSRF": s.csrf()},
+                         body={"decisions": dict(ok, **{str(it["id"]): "trash"}), "confirm": "ERASE"})
+            self.assertEqual(r.status, 400, (it["batch"], it["rel"]))
+            self.assertEqual(json.loads(b)["error"], "a quarantined item can't be trashed: erase or keep it")
+        self.assertEqual(self.calls(), [], "nothing ran")
+        self.assertFalse(os.path.exists(os.path.join(self.state, "batches", BATCH, "review-decisions.json")))
+        self.assertFalse(os.path.exists(os.path.join(self.state, "jobs", f"review-{BATCH}.json")), "no job started")
+        # Review items still take trash, and the page still serves: the refusal changed nothing.
+        rv = next(i for i in items if i["tab"] == "review")
+        r, b = s.req("POST", "/api/submit", headers={"X-CSRF": s.csrf()},
+                     body={"decisions": dict(ok, **{str(rv["id"]): "trash"}), "confirm": "ERASE"})
+        self.assertEqual(r.status, 202, b)
+        j, out = self.wait_done(s)
+        self.assertTrue(j["ok"], out)
+        self.assertEqual([c for c in self.calls() if c[0] == "trash"],
+                         [["trash", "--batch", BATCH, os.path.join(self.state, "batches", BATCH, "review", rv["rel"]),
+                           "--phone", self.phone]], "only the review item is trashed")
+        self.assertEqual(s.p.wait(timeout=30), 0)
+
+    def test_page_offers_no_trash_on_quarantined_items(self):
+        """The page script gates the Trash button and the T key on canTrash (false in Quarantine) and shows
+        the reason instead; the browser test drives it."""
+        self.quarantine()
+        s = self.start()
+        _, page = s.req("GET", "/")
+        for text in (b'function canTrash(it){return it.tab!=="quarantine"}', b"Sensitive: erase or keep",
+                     b'k==="t"&&it&&canTrash(it)', b"No Trash here"):
+            self.assertIn(text, page)
+        self.assertNotIn(b'n("quarantine","trash")', page, "the confirm summary counts no quarantine trash")
 
     def test_maybe_trash_tab(self):
         lib = os.path.join(self.home, "photo_library/2026/2026-11")
@@ -796,7 +838,7 @@ class ReviewUITest(unittest.TestCase):
         self.assertEqual(s2.req("GET", f"/m/{items[0]['id']}")[0].status, 404)  # nothing served mid-run
         p = self.progress(s2)
         self.assertFalse(p["done"])
-        self.assertEqual(p["lines"][:2], [f"near-{BATCH}: keep 0, erase 1, trash 0", f"$ intake.py erase near-{BATCH} --yes"])
+        self.assertEqual(p["lines"][:2], [f"near-{BATCH}: keep 0, erase 1", f"$ intake.py erase near-{BATCH} --yes"])
         self.assertEqual((p["job"]["step"], p["job"]["label"]), (1, f"erase near-{BATCH}"))
         # A second submit for the batch is refused, on this server and on another one started now.
         r, b = s2.req("POST", "/api/submit", headers={"X-CSRF": s2.csrf()}, body={"decisions": dec, "confirm": "ERASE"})
