@@ -275,10 +275,10 @@ camera's clock).
   exports), cut to 46 characters, then the media's `(N)` duplicate counter if
   it has one, then `.json`: `IMG_0001.jpg.supplemental-metadata.json`,
   `IMG_0001.jpg.supplemental-metadata(1).json` for `IMG_0001(1).jpg`,
-  `Screenshot_20231027_123303_Facebook.jpg.supple.json`, or
+  `Panorama_lake_shore_morning.jpg.supplemental-m.json`, or
   `IMG_0001.jpg(1).json` in the older form. An `-edited` copy (English
   exports only) uses its original's JSON, and a Live Photo's video half
-  (`IMG_4488.MP4`) the still image's (`IMG_4488.HEIC...json`). Matching is
+  (`IMG_0042.MOV`) the still image's (`IMG_0042.HEIC...json`). Matching is
   by these exact candidate names, compared in Unicode NFC, never by a loose
   prefix: when two media files would claim the same JSON (two long names
   with the same first 46 characters), neither gets it (counted as
@@ -286,7 +286,7 @@ camera's clock).
 - **iCloud Photos**: `Photo Details.csv` (or `Photos Details*.csv`,
   numbered variants too) in the same folder as the media, header
   `imgName,fileChecksum,favorite,hidden,deleted,originalCreationDate,viewCount,importDate`;
-  `originalCreationDate` looks like `Saturday June 4,2022 12:11 PM GMT`
+  `originalCreationDate` looks like `Tuesday March 3,2015 7:45 PM GMT`
   (minutes only, GMT). Rows match by `imgName`; a name listed with two
   different dates in that folder gets none. `importDate` is never used (it
   is when the file reached iCloud, not when it was taken). A file with both
