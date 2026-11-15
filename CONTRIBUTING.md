@@ -111,9 +111,12 @@ close the PR.
   loosen an assertion or add a sleep to make it pass.
 - Real-browser tests (`tests/browser/`, Playwright + headless Chromium) drive
   the gallery and the review page: keys, selection and the bottom selection
-  bar, the confirm dialogs (ERASE typed), lightbox video autoplay and Space
+  bar, the confirm dialogs (ERASE typed; the gallery's Close too), lightbox video autoplay and Space
   play / pause, Range seeking, and the detached job's
-  progress, including re-attaching after a reload. The `*_media_kinds` files
+  progress, including re-attaching after a reload; on the review page also
+  its keyboard and screen-reader hooks (`ReviewA11yBrowserTest`: the tablist,
+  focus outlines in light and dark, the modal confirm, the `?` keys list, the
+  refused-submit banner, the decided counter, and no native dialog). The `*_media_kinds` files
   run the same on photos, an .mp4 and a .MOV together: bulk Keep, tags, Set
   event, Rotate and Trash on a mixed selection, shift-click after the grid
   reloads, the large view playing and rotating a video; on the review page,
@@ -128,7 +131,14 @@ close the PR.
   runs Select all: the button, Ctrl+A and Cmd+A, a closed stack adding its
   cover only, a filter respected, Ctrl+A in a text field left alone, Esc
   clearing, Trash and Erase keeping their confirmations, and a paged grid
-  saying how many more match. `test_browser_gallery_layout.py` checks the
+  saying how many more match. `test_browser_gallery_dialogs.py` fails on any native `alert`, `confirm` or
+  `prompt` and runs the in-page ones: the tag field's suggestions and its
+  refusal of the tools' namespaces, focus kept in a dialog and given back on
+  Esc, an error message staying until dismissed (Playwright's clock, no sleep),
+  a 409 while a job holds the library lock, the `?` shortcut list against the
+  keys the page's handlers check, and Undo of Rotate, Keep, Set event and a
+  tag restoring the sidecars (refused after a later change, never offered after
+  Trash, Erase or Share-safe copy). `test_browser_gallery_layout.py` checks the
   gallery at 390 px and 800 px: no sideways scroll, the header fitting, a burst
   badge clear of its tile's checkbox, and the last row above the selection
   bar; at 390 px the compact "×N" burst button (opening and closing the

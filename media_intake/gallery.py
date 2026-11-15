@@ -31,13 +31,17 @@ job (jobs.py, key "gallery", one at a time): closing the page or stopping the
 server never stops one, and a restarted server or another page shows it again.
 The paths go to the worker on a pipe; the status file names the files only by
 (device, inode), and an Erase's output is scrubbed of names when it ends.
+Keep, my tags, Rotate and Set event can be undone (/api/undo: the server records each sidecar's
+fields before and after and puts back exactly that change, refusing once a sidecar changed
+again); Trash, Erase and Share-safe copy can't. No native alert/confirm/prompt: in-page
+dialogs, an error message that stays until dismissed, and a "?" list of every key.
 
 Server security is review_ui.py's: stdlib only, everything inline, 127.0.0.1 on a
 random port, random token swapped for an HttpOnly SameSite=Strict cookie, Host
 check, CSRF value on every POST, no-store + strict CSP, media by opaque id only.
 Originals are never written: sidecars (<file>.<ext>.xmp) only. docs/gallery.md.
 """
-import argparse, contextlib, datetime, html, http.server, io, json, os, re, secrets, shutil, subprocess, sys, tempfile
+import argparse, collections, contextlib, datetime, hashlib, html, http.server, io, json, os, re, secrets, shutil, subprocess, sys, tempfile
 import threading, time
 import xml.etree.ElementTree as ET
 
@@ -76,12 +80,14 @@ AI_CONF = re.compile(r"^AI\|vlm/([^/]+)/conf/([0-9.]+)$")
 SUGGEST_MIN = 0.7
 OPENER = "xdg-open"  # the desktop's default app, for media the browser can't decode (found on PATH)
 RECENT_DAYS = 30  # "Recently added": filed into the library in the last N days
+UNDO_KEEP = 50  # the last N undoable actions (Keep, my tags, Rotate, Set event) this server can still undo
 # Share-safe export (intake.py share-copy --out): each export gets a new dated folder under this one.
 SHARE_OUT = os.path.join(HOME, "Pictures", "share-safe")
 
 NS_RDF = "http://www.w3.org/1999/02/22-rdf-syntax-ns#"
 XMP_WANT = {
     ("http://ns.adobe.com/lightroom/1.0/", "hierarchicalSubject"): "tags",
+    ("http://purl.org/dc/elements/1.1/", "subject"): "subject",  # the dc:Subject leaves (Undo restores them)
     ("http://ns.adobe.com/photoshop/1.0/", "City"): "city",
     ("http://ns.adobe.com/photoshop/1.0/", "State"): "state",
     ("http://ns.adobe.com/photoshop/1.0/", "Country"): "country",
@@ -92,7 +98,7 @@ XMP_WANT = {
     ("http://www.digikam.org/ns/1.0/", "TagsList"): "tagslist",
     ("http://ns.google.com/photos/1.0/camera/", "BurstID"): "burst_id",  # XMP-GCamera:BurstID, if a tool wrote it
 }
-LISTS = {"tags", "tagslist"}
+LISTS = {"tags", "tagslist", "subject"}
 DATE_RX = re.compile(r"(\d{4})[-:](\d\d)[-:](\d\d)(?:[T ](\d\d):(\d\d))?")
 PATH_DATE = re.compile(r"(?:^|/)((?:19|20)\d\d)-(\d\d)(?:-(\d\d))?")
 NAME_DATE = re.compile(r"((?:19|20)\d\d)(\d\d)(\d\d)[_-]?(\d\d)?(\d\d)?")
@@ -108,7 +114,8 @@ def _split(tag):
 
 
 def read_xmp(path):
-    """{tags, tagslist, city, state, country, date, orient, event, pick} from an XMP sidecar."""
+    """{tags, subject, tagslist, city, state, country, date, orient, event, pick} from an XMP sidecar (a path, or
+    a binary file object)."""
     try:
         root = ET.parse(path).getroot()
     except (ET.ParseError, OSError, ValueError):
@@ -551,6 +558,35 @@ class LockBusy(RuntimeError):
     """App.writing() could not take the library lock (an HTTP 409; its message names the holder)."""
 
 
+class Changed(RuntimeError):
+    """Undo refused: an item's sidecar changed since the action (another action, the CLI, digiKam); an HTTP 409."""
+
+
+def sidecar_state(path):
+    """(sha256 of the sidecar's bytes or None when it doesn't exist, the fields an undoable action writes): read
+    fresh from the file, so a sidecar some other tool changed since the gallery's scan is seen as it is now."""
+    try:
+        with open(path, "rb") as f:
+            data = f.read()
+    except FileNotFoundError:
+        return None, dict(tags=frozenset(), subject=frozenset(), orient=None, xevent="")
+    x = read_xmp(io.BytesIO(data))
+    return hashlib.sha256(data).hexdigest(), dict(
+        tags=frozenset(t for t in x.get("tags", []) if t), subject=frozenset(t for t in x.get("subject", []) if t),
+        orient=(x.get("orient") or "").strip() or None, xevent=(x.get("event") or "").strip())
+
+
+# What each undoable action may change in a sidecar, so an undo can only reverse that (see App.undo): Keep its
+# Owner| / Review| tags, my tags only tags of yours, Set event only Event| tags, Rotate no tag at all.
+KEEP_TAGS = frozenset(("Review|maybe-trash", owner.TRASH, *owner.LEGACY, owner.KEEP, owner.NOT_TRASH))
+UNDO_SCOPE = {
+    "keep": dict(tags=lambda t: t in KEEP_TAGS, orient=False, xevent=False),
+    "tag": dict(tags=owner_tag, orient=False, xevent=False),
+    "event": dict(tags=lambda t: t.startswith("Event|"), orient=False, xevent=True),
+    "rotate": dict(tags=lambda t: False, orient=True, xevent=False),
+}
+
+
 class App:
     def __init__(self, items, drive=None, views=(), share_out=None):
         self.items = items
@@ -569,6 +605,7 @@ class App:
         self.reconciled = None  # id of the last finished job whose results are applied to items
         self.tail = None  # the shown job's log, through an open descriptor (jobs.Tail)
         self.search_cache = {}
+        self.undos = collections.OrderedDict()  # token -> what an undoable action changed (App.journal)
         self.text_why = None
         self.text_checked = threading.Event()
         self.stop = threading.Event()
@@ -713,9 +750,8 @@ class App:
                     used=it["used"], kept=it["kept"], has_xmp=it["has_xmp"])
 
     def facets(self):
-        from collections import Counter
-        c = {k: Counter() for k in ("project", "source", "event", "place", "label", "month", "mine")}
-        counts = Counter()  # the sidebar's view and option counts (whole library, not cross-filtered)
+        c = {k: collections.Counter() for k in ("project", "source", "event", "place", "label", "month", "mine")}
+        counts = collections.Counter()  # the sidebar's view and option counts (whole library, not cross-filtered)
         recent = time.time() - RECENT_DAYS * 86400
         n = 0
         for it in self.items:
@@ -845,7 +881,7 @@ class App:
                     return dict(total=0, items=[], ranked=True,
                                 note="Similar needs the semantic index (semantic.py index); not available here")
                 try:
-                    self.search_cache[key] = self.semantic(["similar", self.items[si]["path"], "-n", "300"])
+                    self.search_cache[key] = self.semantic(["similar", self.items[si]["path"], "-n", "300", "--format", "machine"])
                 except (RuntimeError, OSError, subprocess.TimeoutExpired) as e:
                     return dict(total=0, items=[], ranked=True, note=f"Similar failed: {e}")
             ids, ranked = [i for _, i in self.search_cache[key]], True
@@ -856,7 +892,7 @@ class App:
                 key = ("search", q)
                 if key not in self.search_cache:
                     try:
-                        self.search_cache[key] = self.semantic(["search", q, "-n", "400"])
+                        self.search_cache[key] = self.semantic(["search", q, "-n", "400", "--format", "machine"])
                     except (RuntimeError, OSError, subprocess.TimeoutExpired) as e:
                         self.search_cache.pop(key, None)
                         note = f"semantic search failed ({e}); showing tag and file-name matches"
@@ -984,6 +1020,7 @@ class App:
     def keep(self, ids):
         with self.writing("keep"), self.lock:
             ids = self.targets(ids)
+            before = self.snapshots(ids)
             blocks = []
             for i in ids:
                 it = self.items[i]
@@ -994,7 +1031,8 @@ class App:
                                *intake.keep_args(it["tags"], leaves), x])
             self.run_exiftool(blocks)
             self.refresh(ids)
-            return f"kept {len(ids)}: Owner|keep + Owner|not-trash, Review|maybe-trash and Owner|trash removed"
+            return self.journal("keep", before,
+                                f"kept {len(ids)}: Owner|keep + Owner|not-trash, Review|maybe-trash and Owner|trash removed")
 
     def tag_block(self, it, add=(), remove=(), extra=()):
         """One exiftool block for one sidecar: HierarchicalSubject tags added / removed with their dc:Subject
@@ -1024,6 +1062,7 @@ class App:
             raise ValueError("op is add or remove")
         with self.writing("tag"), self.lock:
             ids = self.targets(ids)
+            before = self.snapshots(ids)
             blocks = []
             for i in ids:
                 it = self.items[i]
@@ -1033,7 +1072,7 @@ class App:
                     blocks.append(self.tag_block(it, remove=[tag]))
             self.run_exiftool(blocks)
             self.refresh(ids)
-            return f"{'added' if op == 'add' else 'removed'} {tag!r} on {len(blocks)}"
+            return self.journal("tag", before, f"{'added' if op == 'add' else 'removed'} {tag!r} on {len(blocks)}")
 
     # ---------------------------------------------- events (Event|<slug> tags; sidecars only)
     def events_of(self, it):
@@ -1079,10 +1118,12 @@ class App:
             event = self.check_event_name(event)
         with self.writing("set event"), self.lock:
             ids = self.targets(ids)
+            before = self.snapshots(ids)
             blocks = [b for b in (self.event_block(self.items[i], event, None) for i in ids) if b]
             self.run_exiftool(blocks)
             self.refresh(ids)
-            return f"event {event!r} set on {len(blocks)}" if event else f"event cleared on {len(blocks)}"
+            return self.journal("event", before, f"event {event!r} set on {len(blocks)}" if event
+                                else f"event cleared on {len(blocks)}")
 
     def rename_event(self, old, new):
         """Rename an event in every sidecar that has it (Event|old -> Event|new). new must not exist yet: joining
@@ -1136,6 +1177,7 @@ class App:
             raise ValueError("cw or ccw")
         with self.writing("rotate"), self.lock:
             ids = self.targets(ids)
+            before = self.snapshots(ids)
             blocks, new = [], {}
             for i in ids:
                 it = self.items[i]
@@ -1148,7 +1190,89 @@ class App:
             self.refresh(ids)
             for i in ids:
                 self.drop_thumb(self.items[i])
-            return f"rotated {len(ids)} (sidecar XMP-tiff:Orientation only; originals untouched)"
+            return self.journal("rotate", before,
+                                f"rotated {len(ids)} (sidecar XMP-tiff:Orientation only; originals untouched)")
+
+    # ---------------------------------------------- undo (Keep, my tags, Rotate, Set event; never Trash or Erase)
+    def snapshots(self, ids):
+        """(Under the library lock.) Each item's sidecar as it is before an undoable action writes it."""
+        return {i: sidecar_state(intake.sidecar(self.items[i]["path"])) for i in ids}
+
+    def journal(self, kind, before, msg):
+        """(Under the library lock and self.lock, right after the write.) Record what the action changed: per
+        item, the sidecar's fields before and after and the after-bytes' sha256. The reply carries a token for
+        /api/undo when anything changed. Only the server holds the record, so an undo can never write anything
+        the page sends: it reverses exactly this action's own change."""
+        rec = {}
+        for i, (_, old) in before.items():
+            sha, new = sidecar_state(intake.sidecar(self.items[i]["path"]))
+            if new != old:
+                rec[i] = (old, new, sha)
+        if not rec:
+            return msg
+        token = secrets.token_urlsafe(12)
+        self.undos[token] = dict(kind=kind, items=rec)
+        while len(self.undos) > UNDO_KEEP:
+            self.undos.popitem(last=False)
+        return dict(result=msg, undo=token)
+
+    @staticmethod
+    def undo_block(kind, old, new, path):
+        """The exiftool block that puts one sidecar's fields back from new to old: tags and dc:Subject leaves
+        added or removed, orientation and XMP-iptcExt:Event set back (or deleted when there was none). Refuses
+        (ValueError) anything outside what that kind of action may write (UNDO_SCOPE)."""
+        scope = UNDO_SCOPE[kind]
+        drop, add = new["tags"] - old["tags"], old["tags"] - new["tags"]
+        if not all(scope["tags"](t) for t in drop | add) or (old["orient"] != new["orient"] and not scope["orient"]) \
+                or (old["xevent"] != new["xevent"] and not scope["xevent"]):
+            raise ValueError(f"that undo would write outside what {kind} writes; nothing was changed")
+        back = set(drop | add | (new["subject"] ^ old["subject"]))
+        if old["xevent"] != new["xevent"]:
+            back.add(old["xevent"])
+        for v in back - {""}:
+            if "@@sep@@" in v or v.startswith("-") or not TAG_RE.match(v):
+                raise ValueError("a value in that sidecar can't be written back here; nothing was changed")
+        b = ["-q", "-m", "-overwrite_original", "-n", "-sep", "@@sep@@"]
+        b += [f"-XMP-lr:HierarchicalSubject-={t}" for t in sorted(drop)]
+        b += [f"-XMP-lr:HierarchicalSubject+={t}" for t in sorted(add)]
+        b += [f"-XMP-dc:Subject-={t}" for t in sorted(new["subject"] - old["subject"])]
+        b += [f"-XMP-dc:Subject+={t}" for t in sorted(old["subject"] - new["subject"])]
+        if old["orient"] != new["orient"]:
+            b.append(f"-XMP-tiff:Orientation={old['orient'] or ''}")
+        if old["xevent"] != new["xevent"]:
+            b.append(f"-XMP-iptcExt:Event={old['xevent']}")
+        return b + [path]
+
+    def undo(self, token):
+        """Put back what one undoable action changed, item by item, under the library lock. Refused, writing
+        nothing, when the token is unknown (already undone, or older than the last UNDO_KEEP actions), an item
+        is gone, or any of its sidecars changed since (another action, the CLI, digiKam): an undo never
+        clobbers a later change. One use per token."""
+        if not isinstance(token, str) or not token:
+            raise ValueError("which action?")
+        with self.writing("undo"), self.lock:
+            rec = self.undos.get(token)
+            if rec is None:
+                raise ValueError("nothing to undo: it was undone already, or is too old")
+            ids = list(rec["items"])
+            for i in ids:
+                if not self.live(i) or not os.path.isfile(self.items[i]["path"]):
+                    del self.undos[token]
+                    raise Changed("can't undo: an item is no longer in the library; nothing was changed")
+            if any(sidecar_state(intake.sidecar(self.items[i]["path"]))[0] != rec["items"][i][2] for i in ids):
+                del self.undos[token]
+                raise Changed("can't undo: those items changed again since; nothing was changed")
+            kind = rec["kind"]
+            blocks = [self.undo_block(kind, old, new, intake.sidecar(self.items[i]["path"]))
+                      for i, (old, new, _) in rec["items"].items()]
+            del self.undos[token]
+            self.run_exiftool(blocks)
+            self.refresh(ids)
+            if kind == "rotate":
+                for i in ids:
+                    self.drop_thumb(self.items[i])
+            what = {"keep": "Keep", "tag": "the tag", "rotate": "Rotate", "event": "Set event"}[kind]
+            return dict(result=f"undid {what} on {len(ids)}", ids=ids, kind=kind, thumbs=kind == "rotate")
 
     # ---------------------------------------------- trash / erase (a detached jobs.py job, one at a time)
     def start_job(self, label_, argsets, ids, hold=True):
@@ -1358,7 +1482,8 @@ class App:
         """Trash suggestions: Keep (sidecar, now) then Trash (job)."""
         msg = []
         if keep:
-            msg.append(self.keep(keep))
+            r = self.keep(keep)
+            msg.append(r["result"] if isinstance(r, dict) else r)  # Apply offers no Undo (it may trash too)
         if trash:
             msg.append(self.trash(trash, confirm))
         if not msg:
@@ -1515,6 +1640,7 @@ class Handler(R.Handler):
             "/api/event/rename": lambda: app.rename_event(body.get("from"), body.get("to")),
             "/api/event/merge": lambda: app.merge_events(body.get("from"), body.get("into")),
             "/api/decide": lambda: app.decide(body.get("keep") or [], body.get("trash") or [], body.get("confirm")),
+            "/api/undo": lambda: app.undo(body.get("undo")),
         }
         if path == "/api/close":
             self.json(200, {"result": "closing"})
@@ -1554,6 +1680,8 @@ class Handler(R.Handler):
         out = msg if isinstance(msg, dict) else {"result": msg}
         if path in REDRAW and isinstance(body.get("ids"), list):
             out["items"] = app.summaries(body["ids"])  # the page redraws those tiles' flags (kept, ...) in place
+        elif path == "/api/undo":
+            out["items"] = app.summaries(out["ids"])
         self.json(200, out)
 
 
@@ -1787,8 +1915,21 @@ h2.month{position:sticky;top:var(--hh);z-index:2;margin:0;padding:16px 0 8px;fon
 .grp{display:flex;flex-wrap:wrap;gap:6px;align-items:center}
 #seln,#sugn{font-weight:650;font-size:14px;margin-right:4px;white-space:nowrap}
 .sep{width:1px;height:22px;background:var(--line)}
-#toast{position:fixed;left:50%;bottom:90px;transform:translateX(-50%);z-index:40;background:var(--fg);color:var(--bg);padding:8px 14px;border-radius:8px;font-size:14px;max-width:min(560px,90vw);box-shadow:var(--shadow);opacity:0;pointer-events:none;transition:opacity .2s}
-#toast.on{opacity:1}
+#toast{position:fixed;left:50%;bottom:90px;transform:translateX(-50%);z-index:40;background:var(--fg);color:var(--bg);padding:8px 14px;border-radius:8px;font-size:14px;max-width:min(560px,90vw);box-shadow:var(--shadow);opacity:0;pointer-events:none;transition:opacity .2s;display:flex;align-items:center;gap:12px}
+#toast.on{opacity:1;pointer-events:auto}
+#toast button,#etoast button{flex:none;border:0;background:none;color:inherit;font-weight:650;text-decoration:underline;padding:4px 2px;border-radius:4px}
+#toast button:focus-visible{outline-color:var(--bg)}
+/* an error stays until dismissed (role=alert: read out at once) */
+#etoast{position:fixed;left:50%;top:12px;transform:translateX(-50%);z-index:41;display:none;align-items:flex-start;gap:12px;background:var(--panel);color:var(--erase);border:1px solid var(--erase);padding:10px 14px;border-radius:8px;font-size:14px;width:max-content;max-width:min(640px,calc(100vw - 32px));box-shadow:var(--shadow)}
+#etoast.on{display:flex}
+#etoast span{flex:1;min-width:0;word-break:break-word;color:var(--fg)}
+#etoast b{color:var(--erase)}
+/* the keyboard-shortcut list */
+#keys .box{max-width:720px}
+#keys h4{margin:14px 0 6px;font-size:12px;font-weight:650;letter-spacing:.06em;text-transform:uppercase;color:var(--mut)}
+#keys dl{display:grid;grid-template-columns:minmax(120px,auto) 1fr;gap:6px 14px;margin:0;font-size:14px}
+#keys dt{white-space:nowrap}
+#keys dd{margin:0}
 
 /* ---------------------------------------------------------------- lightbox */
 #viewer{position:fixed;inset:0;background:#0b0b0d;z-index:20;display:none;color:#e9e9ec}
@@ -1877,6 +2018,7 @@ dl.dt dd{margin:0;word-break:break-word}
  <symbol id="i-power" viewBox="0 0 24 24"><path d="M12 3.5v8M7 6.5a7.5 7.5 0 1 0 10 0"/></symbol>
  <symbol id="i-cal" viewBox="0 0 24 24"><rect x="4" y="5.5" width="16" height="14.5" rx="2"/><path d="M4 10h16M8.5 3.5v4M15.5 3.5v4"/></symbol>
  <symbol id="i-x" viewBox="0 0 24 24"><path d="M6 6l12 12M18 6L6 18"/></symbol>
+ <symbol id="i-keys" viewBox="0 0 24 24"><rect x="2.5" y="6" width="19" height="12" rx="2"/><path d="M6 10h.01M10 10h.01M14 10h.01M18 10h.01M7 14h10"/></symbol>
 </svg>
 <aside id="sidebar" aria-label="Views and filters">
  <div class="sb-top">
@@ -1892,6 +2034,7 @@ dl.dt dd{margin:0;word-break:break-word}
   <button type="button" class="nv" data-v="child" title="Possible child (Review|child-in-shot)"><svg class="ic"><use href="#i-child"/></svg><span class="lbl">Possible child</span><span class="ct" id="c-child"></span></button>
   <button type="button" class="nv" data-v="untagged" title="Untagged"><svg class="ic"><use href="#i-tag"/></svg><span class="lbl">Untagged</span><span class="ct" id="c-untagged"></span></button>
   <div id="evsec"><div class="nvhead">Events</div><div id="evlist"></div></div>
+  <button type="button" class="nv" id="bkeys" title="Keyboard shortcuts (?)" aria-keyshortcuts="?" aria-haspopup="dialog"><svg class="ic"><use href="#i-keys"/></svg><span class="lbl">Keyboard shortcuts</span><span class="ct"><kbd>?</kbd></span></button>
   <button type="button" class="nv railonly" id="rsearch" title="Search (/)"><svg class="ic"><use href="#i-search"/></svg><span class="vh">Search</span></button>
   <button type="button" class="nv railonly icon" id="rfilter" title="Filters" style="width:100%"><svg class="ic"><use href="#i-filter"/></svg><span class="vh">Filters</span><span class="badge-n" id="rbadge" hidden></span></button>
  </nav>
@@ -1927,15 +2070,50 @@ dl.dt dd{margin:0;word-break:break-word}
  </div>
 </div>
 <div id="toast" role="status" aria-live="polite"></div>
+<div id="etoast" role="alert" aria-atomic="true"></div>
 <div id="viewer" role="dialog" aria-modal="true" aria-label="Item" tabindex="-1">
  <div id="stage"><div id="media"></div>
   <button type="button" class="arrow" id="vprev" aria-label="Previous (Left arrow)">‹</button><button type="button" class="arrow" id="vnext" aria-label="Next (Right arrow)">›</button></div>
  <aside id="info" aria-label="Details"></aside>
 </div>
 <div class="modal" id="modal" role="dialog" aria-modal="true" aria-labelledby="mh" data-dialog="confirm"><div class="box"><h3 id="mh"></h3><div id="mb"></div>
- <p id="mfieldp" hidden><label for="mfield" id="mflabel"></label><input id="mfield" list="evnames" autocomplete="off" spellcheck="false"><datalist id="evnames"></datalist></p>
+ <p id="mfieldp" hidden><label for="mfield" id="mflabel"></label><input id="mfield" list="evnames" autocomplete="off" spellcheck="false"><datalist id="evnames"></datalist><datalist id="mytags"></datalist></p>
  <p id="mtype" hidden>Type <b>ERASE</b> to confirm: <input id="mtyped" autocomplete="off" spellcheck="false" aria-label="Type ERASE"></p>
  <div class="mbtns"><button type="button" class="btn" id="mno">Cancel</button><button type="button" class="btn primary" id="mgo">Confirm</button></div><p id="mstatus" role="status" hidden></p><pre id="mout" hidden></pre></div></div>
+<div class="modal" id="keys" role="dialog" aria-modal="true" aria-labelledby="kh"><div class="box"><h3 id="kh">Keyboard shortcuts</h3>
+ <p class="note">Keys act on the page, never while you type in a field. Esc closes this list.</p>
+ <h4>Grid</h4><dl>
+  <dt><kbd>Enter</kbd></dt><dd>Open the focused tile in the large view</dd>
+  <dt><kbd>Space</kbd></dt><dd>Select or unselect the focused tile (<kbd>Shift</kbd>+<kbd>Space</kbd>: the range from the last one)</dd>
+  <dt>Shift+click, Ctrl+click</dt><dd>Select a range; tick or untick one tile</dd>
+  <dt><kbd>Ctrl</kbd>+<kbd>A</kbd> / <kbd>Cmd</kbd>+<kbd>A</kbd></dt><dd>Select every tile shown</dd>
+  <dt><kbd>K</kbd> <kbd>T</kbd> <kbd>E</kbd></dt><dd>Keep, Trash (asks first), Erase (asks, ERASE typed) the selection</dd>
+  <dt><kbd>Esc</kbd></dt><dd>Clear the selection; close the sidebar drawer (phone); in the search box, clear the search</dd>
+  <dt><kbd>/</kbd></dt><dd>Jump to the search box</dd>
+  <dt><kbd>Ctrl</kbd>+<kbd>Z</kbd> / <kbd>Cmd</kbd>+<kbd>Z</kbd></dt><dd>Undo the last Keep, tag, Rotate or Set event while its message shows</dd>
+  <dt><kbd>?</kbd></dt><dd>This list</dd>
+ </dl>
+ <h4>Bursts</h4><dl>
+  <dt><kbd>X</kbd></dt><dd>Open or close the focused tile's burst stack (focus goes back to the cover)</dd>
+ </dl>
+ <h4>Large view</h4><dl>
+  <dt><kbd>←</kbd> <kbd>→</kbd></dt><dd>Previous / next item (over a closed stack's hidden shots)</dd>
+  <dt><kbd>Space</kbd></dt><dd>Play / pause a video</dd>
+  <dt><kbd>K</kbd> <kbd>T</kbd> <kbd>E</kbd></dt><dd>Keep, Trash, Erase the item shown</dd>
+  <dt><kbd>R</kbd> / <kbd>Shift</kbd>+<kbd>R</kbd></dt><dd>Rotate clockwise / anticlockwise (the sidecar only)</dd>
+  <dt><kbd>Esc</kbd></dt><dd>Close the large view</dd>
+ </dl>
+ <h4>Trash suggestions</h4><dl>
+  <dt><kbd>←</kbd> <kbd>↑</kbd> / <kbd>→</kbd> <kbd>↓</kbd> <kbd>J</kbd></dt><dd>Move the outline</dd>
+  <dt><kbd>K</kbd> <kbd>T</kbd></dt><dd>Mark the outlined tile keep / trash (nothing changes until Apply)</dd>
+  <dt><kbd>Enter</kbd></dt><dd>Open the outlined tile</dd>
+ </dl>
+ <h4>Dialogs</h4><dl>
+  <dt><kbd>Esc</kbd></dt><dd>Cancel and close</dd>
+  <dt><kbd>Enter</kbd></dt><dd>Confirm, in a dialog's text field</dd>
+  <dt><kbd>Tab</kbd></dt><dd>Move between the dialog's controls (focus stays in the dialog)</dd>
+ </dl>
+ <div class="mbtns"><button type="button" class="btn primary" id="kclose">Close</button></div></div></div>
 <script>
 "use strict";
 const CSRF=document.querySelector('meta[name=csrf]').content;
@@ -2018,7 +2196,7 @@ async function loadFacets(tries){facets=await api("/api/facets");const fc=facets
  renderOpts("review",Object.keys(REVIEW).map(v=>[v,c["review:"+v]||0]),v=>REVIEW[v]);
  renderOpts("ai",Object.keys(AIV).map(v=>[v,c["ai:"+v]||0]),v=>AIV[v]);
  renderOpts("used",[["used",c["used:used"]||0],["unused",c["used:unused"]||0]],v=>v==="used"?"Used in a post":"Unused");
- renderWhen();renderEvents();
+ renderWhen();renderEvents();renderMyTags();
  $("#ck-all").textContent=fmt(facets.total);$("#ck-photo").textContent=fmt(c["kind:photo"]);$("#ck-video").textContent=fmt(c["kind:video"]);
  $("#c-lib").textContent=fmt(facets.total);$("#c-sug").textContent=fmt(c.suggest);$("#c-recent").textContent=fmt(c.recent);
  $("#c-child").textContent=fmt(c["review:child-in-shot"]);$("#c-untagged").textContent=fmt(c["review:untagged"]);
@@ -2029,6 +2207,8 @@ async function loadFacets(tries){facets=await api("/api/facets");const fc=facets
  syncUI()}
 // ---------------------------------------------------------------- events (Event| tags): the sidebar list, rename, merge
 let evAll=false;const EVSHOW=8;
+// the tag field's suggestions: every tag of yours in the library (the My tags facet)
+function renderMyTags(){$("#mytags").replaceChildren(...((facets&&facets.facets.mine)||[]).map(([n])=>{const o=el("option");o.value=n;return o}))}
 function renderEvents(){const L=$("#evlist");L.replaceChildren();const ev=(facets&&facets.facets.event)||[];
  $("#evnames").replaceChildren(...ev.map(([n])=>{const o=el("option");o.value=n;return o}));
  if(!ev.length){L.append(el("div","empty","No events yet"));return}
@@ -2036,8 +2216,8 @@ function renderEvents(){const L=$("#evlist");L.replaceChildren();const ev=(facet
  show.forEach(([n,c])=>{const b=el("button","nv");b.type="button";b.dataset.ev=n;b.title="Event: "+n;b.insertAdjacentHTML("beforeend",'<svg class="ic"><use href="#i-cal"/></svg>');b.append(el("span","lbl",n),el("span","ct",fmt(c)));
   b.onclick=()=>{F={aimin:F.aimin,event:n};$("#q").value="";setView("lib");if(mqPhone.matches&&drawer){drawer=false;layout()}};L.append(b)});
  if(ev.length>EVSHOW){const m=el("button","link evmore",evAll?"Fewer events":"All "+fmt(ev.length)+" events");m.type="button";m.onclick=()=>{evAll=!evAll;renderEvents();syncUI()};L.append(m)}}
-function askField(title,lines,label,value,go){confirmBox(title,lines,false,go);$("#mfieldp").hidden=false;$("#mflabel").textContent=label;const f=$("#mfield");f.value=value||"";f.focus();f.select()}
-async function afterEvent(j,ev){$("#modal").classList.remove("on");toast(j.result);if(ev!==undefined){if(ev)F.event=ev;else delete F.event}await loadFacets();reset()}
+function askField(title,lines,label,value,go,list){confirmBox(title,lines,false,go);$("#mfieldp").hidden=false;$("#mflabel").textContent=label;const f=$("#mfield");f.setAttribute("list",list||"evnames");f.value=value||"";f.focus();f.select()}
+async function afterEvent(j,ev){closeModal();toast(j.result,j.undo);if(ev!==undefined){if(ev)F.event=ev;else delete F.event}await loadFacets();reset()}
 $("#evren").onclick=()=>{const old=F.event;askField("Rename the event "+old+"?",["Every sidecar with Event|"+old+" gets the new name instead: the Event| tag and XMP-iptcExt:Event only. The files and every other tag stay as they are.","A slug: lowercase letters, digits and dashes. To join an event that already exists, use Merge."],"New name",old,
  async()=>afterEvent(await api("/api/event/rename",{from:old,to:$("#mfield").value.trim()}),$("#mfield").value.trim()))};
 $("#evmerge").onclick=()=>{const src=F.event;askField("Merge "+src+" into another event?",["Every item of "+src+" moves to the event you name (the Event| tag and XMP-iptcExt:Event in its sidecar only); "+src+" is gone afterwards."],"Merge into (an event that exists)","",
@@ -2129,13 +2309,47 @@ function selectAll(){if(!canSelectAll())return;let hid=0;items.forEach((it,i)=>{
   +(hid?`; closed stacks: cover only`:"")+")"};paintSel()}
 function nameOf(id){const it=items.find(i=>i.id===id);return it?it.n:"#"+id}
 // ---------------------------------------------------------------- actions
-let tt=null;function toast(s){const t=$("#toast");t.textContent=s;t.classList.add("on");clearTimeout(tt);tt=setTimeout(()=>t.classList.remove("on"),4500)}
-async function doKeep(ids){try{const j=await api("/api/keep",{ids});toast(j.result);refreshAfter(ids,false,j.items);loadFacets()}catch(e){alert("Keep refused: "+e.message)}}
-function confirmBox(title,lines,needType,go){$("#mh").textContent=title;const b=$("#mb");b.replaceChildren();lines.forEach(l=>b.append(el("p",l.startsWith("!")?"warn":null,l.replace(/^!/,""))));
- $("#mtype").hidden=!needType;$("#mfieldp").hidden=true;$("#mtyped").value="";$("#mgo").disabled=!!needType;$("#mgo").hidden=false;$("#mout").hidden=true;$("#mout").textContent="";$("#mstatus").hidden=true;delete $("#modal").dataset.job;$("#modal").classList.add("on");
+/* Messages: the toast (role=status) fades; one with Undo stays 10 s, longer while the pointer or focus is on it.
+   An error goes to #etoast (role=alert, read out at once) and stays until dismissed. No native dialogs. */
+let tt=null,undoTok=null;
+function toast(s,undo){const t=$("#toast");t.replaceChildren(el("span",null,s));undoTok=undo||null;
+ if(undo){const b=el("button",null,"Undo");b.type="button";b.id="tundo";b.title="Undo (Ctrl+Z)";b.setAttribute("aria-keyshortcuts","Control+Z Meta+Z");b.onclick=doUndo;t.append(b)}
+ t.classList.add("on");clearTimeout(tt);tt=setTimeout(hideToast,undo?10000:4500)}
+function hideToast(){const t=$("#toast");if(t.matches(":hover,:focus-within")){tt=setTimeout(hideToast,1500);return}
+ t.classList.remove("on");undoTok=null;const b=$("#tundo");if(b)b.remove()}
+function errorToast(s){const t=$("#etoast"),x=el("button",null,"Dismiss");x.type="button";x.setAttribute("aria-label","Dismiss error");
+ x.onclick=()=>{t.classList.remove("on");t.replaceChildren()};t.replaceChildren(el("span",null,s),x);t.classList.add("on")}
+/* Undo: the server recorded what Keep, a tag, Rotate or Set event changed and answers with a token; /api/undo puts
+   exactly that back, under the library lock, and refuses (nothing written) when those items changed again since.
+   Trash, Erase and Share-safe copy never offer it. */
+async function doUndo(){const tok=undoTok;if(!tok)return;undoTok=null;const b=$("#tundo");if(b)b.remove();
+ try{const j=await api("/api/undo",{undo:tok});toast(j.result);loadFacets();if(j.kind==="event"&&vi<0){patchTiles(j.items);reset()}else refreshAfter(j.ids,j.thumbs,j.items)}
+ catch(e){errorToast("Undo refused: "+e.message)}}
+async function doKeep(ids){try{const j=await api("/api/keep",{ids});toast(j.result,j.undo);refreshAfter(ids,false,j.items);loadFacets()}catch(e){errorToast("Keep refused: "+e.message)}}
+/* In-page dialogs (the confirm / job dialog, the shortcut list): focus moves in, Tab stays in, Esc closes, and
+   focus goes back to where it was. The large view is a dialog too (Tab stays in it, and its messages). */
+let modalReturn=null,keysReturn=null;
+const isOn=s=>$(s).classList.contains("on");
+function refocus(r){if(r&&r.isConnected&&r.focus&&r.getClientRects().length)r.focus({preventScroll:true})}
+function openModal(){if(!isOn("#modal"))modalReturn=document.activeElement;$("#modal").classList.add("on")}
+function closeModal(){if(!isOn("#modal"))return;$("#modal").classList.remove("on");const r=modalReturn;modalReturn=null;refocus(r);
+ const a=document.activeElement;if(a&&a.closest&&a.closest("#modal"))a.blur()}  // never left on a hidden field: the next key goes to the page
+function openKeys(){if(isOn("#keys"))return;keysReturn=document.activeElement;$("#keys").classList.add("on");$("#kclose").focus()}
+function closeKeys(){if(!isOn("#keys"))return;$("#keys").classList.remove("on");const r=keysReturn;keysReturn=null;refocus(r)}
+function topDialog(){return isOn("#keys")?$("#keys"):isOn("#modal")?$("#modal"):vi>=0?$("#viewer"):null}
+function trapTab(ev,d){const vis=e=>!e.disabled&&e.getClientRects().length>0;
+ let f=[...d.querySelectorAll('button,input,select,textarea,video[controls],a[href],[tabindex]:not([tabindex="-1"])')].filter(vis);
+ if(d.id==="viewer")f=f.concat([...$$("#toast button,#etoast button")].filter(vis));
+ if(!f.length){ev.preventDefault();return}
+ const a=f[0],z=f[f.length-1],at=document.activeElement,inside=f.includes(at);
+ if(!inside){ev.preventDefault();(ev.shiftKey?z:a).focus()}else if(ev.shiftKey&&at===a){ev.preventDefault();z.focus()}else if(!ev.shiftKey&&at===z){ev.preventDefault();a.focus()}}
+function confirmBox(title,lines,needType,go){$("#mh").textContent=title;$("#mgo").textContent="Confirm";const b=$("#mb");b.replaceChildren();lines.forEach(l=>b.append(el("p",l.startsWith("!")?"warn":null,l.replace(/^!/,""))));
+ $("#mtype").hidden=!needType;$("#mfieldp").hidden=true;$("#mtyped").value="";$("#mgo").disabled=!!needType;$("#mgo").hidden=false;$("#mout").hidden=true;$("#mout").textContent="";$("#mstatus").hidden=true;delete $("#modal").dataset.job;openModal();
  $("#mtyped").oninput=()=>{$("#mgo").disabled=$("#mtyped").value!=="ERASE"};if(needType)$("#mtyped").focus();else $("#mno").focus();
  $("#mgo").onclick=async()=>{$("#mgo").disabled=true;try{await go()}catch(e){$("#mout").hidden=false;$("#mout").textContent="Refused: "+e.message;$("#mgo").disabled=false}}}
-$("#mno").onclick=()=>{$("#modal").classList.remove("on")};
+$("#mno").onclick=closeModal;
+$("#kclose").onclick=closeKeys;$("#bkeys").onclick=openKeys;
+$("#keys").onclick=ev=>{if(ev.target===$("#keys"))closeKeys()};  // a click on the backdrop
 $("#mfield").onkeydown=ev=>{if(ev.key==="Enter"&&!$("#mgo").disabled){ev.preventDefault();$("#mgo").click()}};
 function names(ids){const n=ids.map(nameOf);return n.slice(0,15).join(", ")+(n.length>15?` … and ${n.length-15} more`:"")}
 function warnings(ids){const its=ids.map(id=>items.find(i=>i.id===id)).filter(Boolean),w=[];
@@ -2146,7 +2360,7 @@ function askTrash(ids){confirmBox(`Trash ${ids.length} item${ids.length>1?"s":""
 function askErase(ids){confirmBox(`Erase ${ids.length} item${ids.length>1?"s":""} everywhere?`,[names(ids),"For sensitive files: intake.py forget moves them to quarantine and erases every copy in HOME (and the drive, if the gallery was started with --drive), with the sidecars, thumbnails and recent-file entries. This cannot be undone.",...warnings(ids)],true,
  ()=>runJob("/api/erase",{ids,confirm:$("#mtyped").value},ids))}
 function askSetEvent(ids){if(!ids.length)return;askField("Set the event on "+ids.length+" item"+(ids.length>1?"s":"")+"?",[names(ids),"Each one goes into this event and out of any other: the Event| tag and XMP-iptcExt:Event in its sidecar. The originals and every other tag stay as they are. Leave it empty to take them out of every event."],"Event (a slug: lowercase letters, digits, dashes)",F.event||"",
- async()=>{const ev=$("#mfield").value.trim(),j=await api("/api/event/set",{ids,event:ev});if(vi>=0){$("#modal").classList.remove("on");toast(j.result);loadFacets();openViewer(vi,{keep:true})}else afterEvent(j)})}
+ async()=>{const ev=$("#mfield").value.trim(),j=await api("/api/event/set",{ids,event:ev});if(vi>=0){closeModal();toast(j.result,j.undo);loadFacets();openViewer(vi,{keep:true})}else afterEvent(j)})}
 /* Share-safe copies: intake.py share-copy as a job (one at a time, with Trash and Erase), into a new folder; the page
    shows the folder and share-copy's own lines (each copy's path and "gps=none"), never the copies themselves. */
 let jobDest="";
@@ -2164,7 +2378,7 @@ const STATUS={forget:"Erasing… looking for copies in your home folder. This ca
  trash:"Trashing… you can close this page, it keeps running.",
  "share-copy":"Copying without metadata or GPS… you can close this page, it keeps running."};
 function jobStatus(label){const t=STATUS[label]||"Working… you can close this page, it keeps running.";const m=$("#mstatus");if(m.textContent!==t)m.textContent=t;m.hidden=false}
-function progressMode(label){$("#mgo").hidden=true;$("#mtype").hidden=true;$("#mout").hidden=false;$("#mout").textContent="";jobStatus(label);$("#modal").classList.add("on")}
+function progressMode(label){$("#mgo").hidden=true;$("#mtype").hidden=true;$("#mfieldp").hidden=true;$("#mout").hidden=false;$("#mout").textContent="";jobStatus(label);openModal()}
 function stepText(j){return j.step?` (step ${j.step}${j.total?" of "+j.total:""}: ${j.label})`:""}
 async function poll(since,ids){let j;try{j=await api("/api/job?since="+since)}catch(e){$("#mout").textContent+="\n(server stopped; an action already started keeps going on its own)";return}
  if(j.lines.length){$("#mout").textContent+=j.lines.join("\n")+"\n";$("#mout").scrollTop=1e9}$("#modal").dataset.job=j.done?(j.state==="crashed"?"crashed":j.ok?"done":"failed"):"running";
@@ -2174,10 +2388,16 @@ async function poll(since,ids){let j;try{j=await api("/api/job?since="+since)}ca
   :j.ok?"Done"+(j.label==="share-copy"&&jobDest?": share-safe copies in "+jobDest:""):"Finished with problems (see below)";
  $("#mstatus").hidden=true;ids.forEach(id=>sel.delete(id));closeViewer();loadFacets();reset()}
 async function attachJob(){let j;try{j=await api("/api/job")}catch(e){return}if(j.done)return;$("#mh").textContent="An action is running";$("#mb").replaceChildren();progressMode(j.label);poll(0,j.ids||[])}
-async function tagAsk(op){const ids=vi>=0&&!sel.size?[items[vi].id]:selIds();if(!ids.length)return;
- const t=prompt((op==="add"?"Add":"Remove")+" a tag of yours on "+ids.length+" item(s). Not Project|, Source|, Event|, Place|, Label|, Review|, AI|, Used|, Owner| (the tools' own):");
- if(!t)return;try{const j=await api("/api/tag",{ids,tag:t,op});toast(j.result);loadFacets();refreshAfter(ids,false,j.items)}catch(e){alert("Refused: "+e.message)}}
-async function rot(ids,dir){try{const j=await api("/api/rotate",{ids,dir});toast(j.result);refreshAfter(ids,true,j.items)}catch(e){alert("Refused: "+e.message)}}
+/* Your tags: the same refusals as the server (gallery.py tag(): TAG_RE, TOOL_PREFIXES), checked first so the field
+   says why at once; the server checks again. Suggestions: every tag of yours in the library (#mytags). */
+const TOOL_NS=["project|","source|","event|","place|","label|","review|","ai|","used|","owner|"];
+function tagProblem(t){if(!t||[...t].length>64||/[\x00-\x1f\x7f]/.test(t)||t.startsWith("-")||t.includes("@@sep@@"))return "a tag is 1-64 characters on one line";
+ if(TOOL_NS.some(p=>t.toLowerCase().startsWith(p)))return "Project|, Source|, Event|, Place|, Label|, Review|, AI|, Used| and Owner| belong to the tools; pick another name";return ""}
+function tagAsk(op){const ids=vi>=0&&!sel.size?[items[vi].id]:selIds();if(!ids.length)return;const n=ids.length+" item"+(ids.length>1?"s":"");
+ askField(op==="add"?"Add a tag of yours to "+n+"?":"Remove a tag of yours from "+n+"?",[names(ids),"Your own tags only, not the tools' (Project|, Source|, Event|, Place|, Label|, Review|, AI|, Used|, Owner|). A | makes a hierarchy, like Trips|Spain. Only the sidecars change."],
+  "Tag (yours: suggestions as you type)","",async()=>{const t=$("#mfield").value.trim(),why=tagProblem(t);if(why)throw new Error(why);
+   const j=await api("/api/tag",{ids,tag:t,op});closeModal();toast(j.result,j.undo);loadFacets();refreshAfter(ids,false,j.items)},"mytags")}
+async function rot(ids,dir){try{const j=await api("/api/rotate",{ids,dir});toast(j.result,j.undo);refreshAfter(ids,true,j.items)}catch(e){errorToast("Rotate refused: "+e.message)}}
 function refreshAfter(ids,thumbs,fresh){patchTiles(fresh);if(thumbs)ids.forEach(id=>{const t=$("#t"+id);if(t){const im=t.querySelector("img");if(im)im.src="/t/"+id+"?r="+Date.now()}});
  if(vi>=0)openViewer(vi,{keep:true});else if(view==="sug")reset()}
 $("#bkeep").onclick=()=>doKeep(selIds());$("#btrash").onclick=()=>askTrash(selIds());$("#berase").onclick=()=>askErase(selIds());
@@ -2185,7 +2405,7 @@ $("#btag").onclick=()=>tagAsk("add");$("#buntag").onclick=()=>tagAsk("remove");$
 $("#ball").onclick=selectAll;$("#bevent").onclick=()=>askSetEvent(selIds());$("#bshare").onclick=()=>askShare(selIds());$("#bnone").onclick=()=>{sel.clear();paintSel()};
 $("#sugapply").onclick=()=>{const keep=Object.keys(dec).filter(k=>dec[k]==="keep").map(Number),trash=Object.keys(dec).filter(k=>dec[k]==="trash").map(Number);
  confirmBox(`Apply: ${keep.length} keep, ${trash.length} trash?`,[keep.length?"Keep: Owner|keep + Owner|not-trash in the sidecar (never suggested again).":"",trash.length?"Trash ("+names(trash)+"): plain delete, never taken in again (Owner|trash: the sha256 in trashed.json; copies left on disk are marked).":""].filter(Boolean),false,
-  async()=>{const j=await api("/api/decide",{keep,trash,confirm:true});if(trash.length){progressMode("trash");$("#mout").textContent=j.result+"\n";poll(0,trash)}else{$("#modal").classList.remove("on");toast(j.result);loadFacets();reset()}})};
+  async()=>{const j=await api("/api/decide",{keep,trash,confirm:true});if(trash.length){progressMode("trash");$("#mout").textContent=j.result+"\n";poll(0,trash)}else{closeModal();toast(j.result);loadFacets();reset()}})};
 // ---------------------------------------------------------------- large view
 function curVideo(){return $("#media video")}
 function stopVideo(){const v=curVideo();if(v){v.pause();v.removeAttribute("src");v.load()}}  // releases the file
@@ -2195,7 +2415,7 @@ addEventListener("resize",fitMedia);
 // the browser can't show it: the thumbnail, large, and a button that opens the file in the desktop's own player
 function cantPlay(d,why){stopVideo();const M=$("#media");M.replaceChildren();const box=el("div","nop"),im=el("img");im.alt=d.name;im.src="/t/"+d.id;im.onerror=()=>im.remove();
  const c=el("div","cant");c.append(el("span",null,why));const o=el("button",null,"Open in the system player");o.type="button";
- o.onclick=async()=>{try{toast((await api("/api/open",{ids:[d.id]})).result)}catch(e){alert("Refused: "+e.message)}};c.append(o);
+ o.onclick=async()=>{try{toast((await api("/api/open",{ids:[d.id]})).result)}catch(e){errorToast("Refused: "+e.message)}};c.append(o);
  box.append(im,c);M.append(box);const u=$("#unmute");if(u)u.remove()}
 function startVideo(v){const ok=()=>{const u=$("#unmute");if(u)u.remove()};
  v.play().then(ok).catch(()=>{if(curVideo()!==v)return;v.muted=true;v.play().then(()=>{if(curVideo()!==v||$("#unmute"))return;const u=el("button",null,"Unmute");u.id="unmute";u.type="button";
@@ -2232,10 +2452,11 @@ async function openViewer(n,opt){opt=opt||{};if(n<0||n>=items.length)return;if(v
  const det=el("div");det.append(el("p","sh","Details"),dl);s.append(det);
  const tg=el("div"),tl=el("div","tags");tg.append(el("p","sh","Tags"),tl);
  d.tags.forEach(t=>{const c=el("span","tag");c.append(el("span",null,t));if(d.mine.includes(t)){const b=el("button",null,"×");b.type="button";b.title="Remove my tag";b.setAttribute("aria-label","Remove my tag "+t);
-  b.onclick=async()=>{try{patchTiles((await api("/api/tag",{ids:[d.id],tag:t,op:"remove"})).items);openViewer(n,{keep:true});loadFacets()}catch(e){alert(e.message)}};c.append(b)}tl.append(c)});
+  b.onclick=async()=>{try{const j=await api("/api/tag",{ids:[d.id],tag:t,op:"remove"});patchTiles(j.items);toast(j.result,j.undo);openViewer(n,{keep:true});loadFacets()}catch(e){errorToast("Refused: "+e.message)}};c.append(b)}tl.append(c)});
  if(!d.tags.length)tl.append(el("span","tag","none"));
- const add=el("input");add.placeholder="Add my tag, Enter";add.setAttribute("aria-label","Add my tag");
- add.onkeydown=async ev=>{if(ev.key==="Enter"&&add.value.trim()){ev.stopPropagation();try{patchTiles((await api("/api/tag",{ids:[d.id],tag:add.value.trim(),op:"add"})).items);loadFacets();openViewer(n,{keep:true})}catch(e){alert(e.message)}}};
+ const add=el("input");add.placeholder="Add my tag, Enter";add.setAttribute("aria-label","Add my tag");add.setAttribute("list","mytags");add.autocomplete="off";
+ add.onkeydown=async ev=>{if(ev.key==="Enter"&&add.value.trim()){ev.stopPropagation();const t=add.value.trim(),why=tagProblem(t);if(why){errorToast("Refused: "+why);return}
+  try{const j=await api("/api/tag",{ids:[d.id],tag:t,op:"add"});patchTiles(j.items);toast(j.result,j.undo);loadFacets();openViewer(n,{keep:true})}catch(e){errorToast("Refused: "+e.message)}}};
  tg.append(add);s.append(tg);
  s.append(el("p","fine","Rotate writes XMP-tiff:Orientation in the sidecar only; the original is never touched. No crop here: make crops as copies in an editor."));
  if(!opt.keep)$("#viewer").focus({preventScroll:true});
@@ -2249,17 +2470,23 @@ $("#stage").addEventListener("touchstart",ev=>{swipe=ev.touches.length===1&&$("#
 $("#stage").addEventListener("touchend",ev=>{if(!swipe||vi<0)return;const t=ev.changedTouches[0],dx=t.clientX-swipe[0],dy=t.clientY-swipe[1];swipe=null;if(dy>80&&Math.abs(dx)<dy/2)closeViewer()},{passive:true});
 $("#vprev").onclick=()=>openViewer(stepVis(vi,-1));$("#vnext").onclick=()=>openViewer(stepVis(vi,1));
 // ---------------------------------------------------------------- keys
-document.addEventListener("keydown",ev=>{const tg=ev.target,modal=$("#modal").classList.contains("on");
+document.addEventListener("keydown",ev=>{const tg=ev.target,modal=isOn("#modal");
+ if(ev.key==="Tab"){const d=topDialog();if(d)trapTab(ev,d);return}
+ // the shortcut list: Esc or ? closes it; no other page key acts while it is open
+ if(isOn("#keys")){if(ev.key==="Escape"||ev.key==="?"){ev.preventDefault();closeKeys()}return}
  // a ticked checkbox (or a slider) keeps focus but takes no letters, so the keys still act on the selection
  const typing=(tg.tagName==="INPUT"&&!["checkbox","radio","range"].includes(tg.type))||tg.tagName==="SELECT"||tg.tagName==="TEXTAREA";
  // Ctrl+A / Cmd+A selects every tile shown; in a text field it stays the field's own select-all
  if((ev.key==="a"||ev.key==="A")&&(ev.ctrlKey||ev.metaKey)&&!ev.altKey&&!ev.shiftKey&&!typing&&!modal&&vi<0&&canSelectAll()){
   ev.preventDefault();selectAll();return}
+ // Ctrl+Z / Cmd+Z: the Undo on the message shown (a text field keeps its own undo)
+ if((ev.key==="z"||ev.key==="Z")&&(ev.ctrlKey||ev.metaKey)&&!ev.altKey&&!ev.shiftKey&&!typing&&!modal&&undoTok){ev.preventDefault();doUndo();return}
  if(typing||ev.ctrlKey||ev.metaKey||ev.altKey||modal){
-  if(ev.key==="Escape"){if(modal){$("#modal").classList.remove("on");tg.blur()}  // blur: the next key goes to the page, not the hidden input
+  if(ev.key==="Escape"){if(modal)closeModal()
    else if(tg.id==="q"&&tg.value){tg.value="";syncUI();reset()}}
   return}
  const k=ev.key;
+ if(k==="?"){ev.preventDefault();openKeys();return}
  if(vi>=0){const id=items[vi].id;
   if(k==="Escape")closeViewer();else if(k==="ArrowRight")openViewer(stepVis(vi,1));else if(k==="ArrowLeft")openViewer(stepVis(vi,-1));
   else if(k===" "){if(tg.tagName==="VIDEO"||tg.tagName==="BUTTON")return;const v=curVideo();if(!v)return;v.paused?v.play().catch(()=>{}):v.pause()}
@@ -2285,7 +2512,8 @@ $$(".nv[data-v]").forEach(b=>b.onclick=()=>{const v=b.dataset.v;
  else{F={aimin:F.aimin};if(v==="recent")F.added=String((facets&&facets.recent_days)||30);if(v==="child")F.review="child-in-shot";if(v==="untagged")F.review="untagged";$("#q").value="";setView("lib")}
  if(mqPhone.matches&&drawer){drawer=false;layout()}});
 let qt=null;$("#q").oninput=()=>{clearTimeout(qt);qt=setTimeout(()=>{simId=null;syncUI();reset()},500)};
-$("#close").onclick=async()=>{if(!confirm("Stop the gallery server?"))return;try{await api("/api/close",{})}catch(e){}document.body.replaceChildren(el("p","empty big","Gallery stopped. You can close this tab."))};
+$("#close").onclick=()=>{confirmBox("Stop the gallery server?",["The page stops working until you run media-intake gallery again. A Trash, Erase or Share-safe copy that is already running keeps going on its own."],false,
+ async()=>{try{await api("/api/close",{})}catch(e){}document.body.replaceChildren(el("p","empty big","Gallery stopped. You can close this tab."))});$("#mgo").textContent="Stop the server"};
 new IntersectionObserver(es=>{if(es.some(e=>e.isIntersecting))more()},{rootMargin:"800px"}).observe($("#sentinel"));
 // thumbnail size (a per-browser convenience)
 let ts=+LS.get("tile",mqPhone.matches?"92":"168");if(!(ts>=80&&ts<=320))ts=168;$("#tsize").value=ts;document.documentElement.style.setProperty("--tile",ts+"px");

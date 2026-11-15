@@ -9,6 +9,9 @@ can reach: the library, the phone, the backup drive, thumbnails and caches.
 
 Fedora Linux first. Python, no service, no account.
 
+New here? [docs/getting-started.md](docs/getting-started.md) walks through a
+first run on a folder of test photos, from install to the gallery.
+
 ## Privacy guarantees
 
 - **Everything runs locally.** No cloud API, no telemetry, no remote model.
@@ -77,7 +80,23 @@ bash setup.sh            # venv, SigLIP vision model, GeoNames, ~/.local/bin/med
 media-intake doctor      # what's installed, checksums, and the dnf line for what's missing
 ```
 
-`setup.sh` is safe to re-run (it only re-verifies checksums). Options:
+`doctor` groups its checks under headings (config and folders, system tools,
+Python modules, optional extras, venv/models/data, Ollama). Every line starts
+with its status (`ok`, `MISSING`, `BAD`, `optional`, `absent`), so `media-intake
+doctor | grep -E '^(MISSING|BAD)'` lists the problems. It ends with a count
+and, when something is missing, one `sudo dnf install -y ...` line for the
+required packages and a separate one for the optional ones. It exits 1 only
+when something required is missing or a pinned file is wrong. Colour is used
+only on a terminal and never when `NO_COLOR` is set.
+
+`setup.sh` prints a `==> [n/N]` heading per step and ends with a summary of
+what it installed or found already present, and where, then `next:
+media-intake doctor`. If a step fails it names the step and the likely fix:
+the exact `sudo dnf install -y ...` line for a missing package, no network, or
+a download that didn't match its sha256 pin (that file is deleted and nothing
+is installed from it; re-run, and never skip the check). Colour only on a
+terminal, and never with `NO_COLOR` set.
+It is safe to re-run (it only re-verifies checksums). Options:
 `--build-labels` (text model for semantic search, and to rebuild
 `labels.npz` after editing `labels.yaml` or moving the SigLIP pin), `--refresh-geo` (accept a new
 GeoNames snapshot), `--no-launcher`. For HEVC video (most phones) Fedora's
@@ -128,8 +147,10 @@ media-intake offload phone-1 --phone <device root> --yes   # after a backup: fre
 | `share-copy` | Copy files with GPS and metadata stripped, for posting |
 | `doctor` | Check the install |
 
-`media-intake <command> --help` for options. Details:
-[intake](docs/intake.md), [review page](docs/review-ui.md),
+`media-intake <command> --help` for options; `media-intake` alone (or
+`--help`) lists the commands, and a mistyped command exits 2 with the nearest
+real one. Details:
+[getting started](docs/getting-started.md), [intake](docs/intake.md), [review page](docs/review-ui.md),
 [gallery](docs/gallery.md), [search and VLM](docs/search.md),
 [drive and folder queue](docs/queue.md), [backup](docs/backup.md), [configuration](docs/configuration.md),
 [plugins](docs/plugins.md), [releases](docs/release.md).

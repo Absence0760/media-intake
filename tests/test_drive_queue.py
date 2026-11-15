@@ -7,11 +7,10 @@ stage, plan, apply and offload are the real intake.py; scan, tag, the semantic
 index and the VLM are simulated (scan.json, a sidecar, exit codes), so no model
 runs. MEDIA_INTAKE_TEST_MOUNT/UUID stand in for findmnt. Never touches a real drive.
 """
-import hashlib, importlib.util, io, json, os, shutil, subprocess, sys, tempfile, unittest
+import contextlib, datetime, hashlib, importlib.util, io, json, os, shutil, subprocess, sys, tempfile, time, unittest
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import support  # noqa: E402,F401  (hermetic config)
-from contextlib import redirect_stdout
 
 HERE = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "media_intake")
 from PIL import Image, ImageDraw  # noqa: E402
@@ -122,9 +121,12 @@ class Queue(unittest.TestCase):
 
     def qrun(self, *args):
         out = io.StringIO()
-        with redirect_stdout(out):
+        with contextlib.redirect_stdout(out):
             self.q.main(list(args))
         return out.getvalue()
+
+    def status_json(self):
+        return json.loads(self.qrun("status", "--json"))
 
     def state_q(self):
         return jload(os.path.join(self.state, "queue.json"))
@@ -255,7 +257,8 @@ class Queue(unittest.TestCase):
         self.assertEqual(src["chunks"]["1"]["summary"]["files"], 2)
         self.assertIn("summary:", out)
         st = self.qrun("status")
-        self.assertIn("chunks done 3/3", st)
+        self.assertEqual(self.status_json()["sources"][0]["chunks_done"], 3)
+        self.assertIn("needs your review", st)
         self.assertIn("trash suggestions 1", st)
         self.assertIn("media-intake review", st)
         n = len(self.calls)
@@ -294,7 +297,7 @@ class Queue(unittest.TestCase):
         with self.assertRaises(SystemExit) as e:
             self.qrun("run")
         self.assertIn("scan failed", str(e.exception))
-        self.assertIn("ERROR scan failed", self.qrun("status"))
+        self.assertIn("failed at scan: scan failed (exit 1)", self.qrun("status"))
         self.fails, self.calls = {}, []
         self.qrun("run")
         self.assertEqual(self.calls[0][0], "scan")
@@ -307,6 +310,211 @@ class Queue(unittest.TestCase):
             self.qrun("run")
         self.assertIn("not mounted", str(e.exception))
         self.assertEqual(self.calls, [])
+
+    # ------------------------------------------------------------ status (synthetic queue state only)
+    def synth(self, sources):
+        """Write queue.json and each source's files.json; sources: (label, root, kind, files, chunks) where chunks
+        maps "n" to a chunk record. No media, no run: status reads only this state and the quarantine counts."""
+        q = {"sources": {}}
+        for label, root, kind, nfiles, chunks in sources:
+            d = os.path.join(self.state, "queue", label)
+            os.makedirs(d, exist_ok=True)
+            jsave(os.path.join(d, "files.json"), [[f"f{i}.jpg", 10] for i in range(nfiles)])
+            src = dict(label=label, kind=kind, root=root, mount=None, uuid=None, added="2026-01-02T03:04:05",
+                       events=[], files=nfiles, bytes=10 * nfiles, chunk=2, chunks=chunks, offloaded=[])
+            if chunks and all(c.get("done") for c in chunks.values()) and len(chunks) * 2 >= nfiles:
+                src["finished"] = max(c["done"] for c in chunks.values())
+            q["sources"][label] = src
+        jsave(os.path.join(self.state, "queue.json"), q)
+
+    @staticmethod
+    def done_chunk(batch, at, maybe_trash=0):
+        steps = {s: dict(at=at, note="exit 0") for s in ("stage", "plan", "scan", "apply", "tag", "index", "vlm")}
+        return dict(batch=batch, files=2, steps=steps, summary=dict(maybe_trash=maybe_trash), done=at)
+
+    def quarantine(self, batch, n):
+        jsave_dir = os.path.join(self.state, "quarantine", batch)
+        os.makedirs(jsave_dir, exist_ok=True)
+        jsave(os.path.join(jsave_dir, "quarantine.json"), {f"q{i}.jpg": {} for i in range(n)})
+
+    def every_state(self):
+        long_root = "/run/media/someone/A drive with a long name/" + "deep/" * 6 + "Old photos 2009"
+        self.synth([
+            ("busy", "/mnt/d/busy", "drive", 4,
+             {"1": self.done_chunk("b-busy-1", "2026-01-03T10:00:00"),
+              "2": dict(batch="b-busy-2", files=2, steps={"stage": dict(at="2026-01-03T11:30:00", note="exit 0")})}),
+            ("idle", "/mnt/d/idle", "drive", 3, {}),
+            ("broken", "/mnt/d/broken", "drive", 2,
+             {"1": dict(batch="b-broken-1", files=2, steps={"stage": dict(at="2026-01-04T08:00:00", note="exit 0"),
+                                                            "plan": dict(at="2026-01-04T08:05:00", note="exit 0")},
+                        error="scan failed (exit 1); log /state/queue/broken/b-broken-1.log")}),
+            ("review", long_root, "drive", 2, {"1": self.done_chunk("b-review-1", "2026-01-05T09:00:00", 2)}),
+            ("clean", "/mnt/d/clean", "drive", 2, {"1": self.done_chunk("b-clean-1",
+                                                                                          "2026-01-06T12:00:00")}),
+            ("pics", os.path.join(self.home, "Pictures", "From old laptop"), "folder", 2,
+             {"1": self.done_chunk("b-pics-1", "2026-01-07T13:00:00")}),
+        ])
+        self.quarantine("b-review-1", 3)
+        self.quarantine("near-b-review-1", 1)
+        return long_root
+
+    @contextlib.contextmanager
+    def held_run_lock(self):
+        """Hold <state>/queue/run.lock as a `queue run` does, for the with-block."""
+        os.makedirs(os.path.join(self.state, "queue"), exist_ok=True)
+        import fcntl
+        with open(os.path.join(self.state, "queue", "run.lock"), "a") as f:
+            fcntl.flock(f, fcntl.LOCK_EX | fcntl.LOCK_NB)
+            yield
+
+    def test_status_table_rows_for_every_state(self):
+        long_root = self.every_state()
+        with self.held_run_lock():  # a run is going: the first unfinished source is the one it works on
+            out = self.qrun("status")
+        lines = out.splitlines()
+        self.assertTrue(all(len(x) <= 80 for x in lines[:7]), "the table fits 80 columns")
+        self.assertEqual(lines[0].split(), ["SOURCE", "STATE", "FILES", "QUAR", "REVIEW", "CHANGED"])
+        cols = [lines[0].index(h) for h in ("STATE", "CHANGED")]
+        rows = {}
+        for x in lines[1:7]:
+            self.assertEqual(x[cols[1]:cols[1] + 16].count(":"), 1, x)  # CHANGED column aligned
+            rows[x[cols[0]:].split("  ")[0].strip()] = x
+        self.assertEqual(sorted(rows), ["done", "failed", "needs your review", "running", "waiting"])
+        busy = lines[1]
+        self.assertTrue(busy.startswith("/mnt/d/busy  "))
+        self.assertEqual(busy[cols[0]:].split()[:1] + busy[cols[0]:].split()[1:4],
+                         ["running", "4", "0", "0"])
+        self.assertTrue(busy.endswith("2026-01-03 11:30"), "the newest recorded time")
+        self.assertIn("waiting", lines[2])
+        self.assertTrue(lines[2].endswith("2026-01-02 03:04"), "never run: the time it was added")
+        self.assertIn("failed", lines[3])
+        review = lines[4]
+        self.assertEqual(review[cols[0]:].split()[:5], ["needs", "your", "review", "2", "4"])
+        self.assertEqual(review[cols[0]:].split()[5], "2")  # 2 trash suggestions, 0 in the review folder
+        self.assertIn("\u2026", review, "a long path is shortened in the middle")
+        self.assertIn("Old photos 2009", review, "and keeps its end")
+        self.assertTrue(review.startswith("/run/"))
+        self.assertNotIn(long_root, out.split("Waiting for you:")[0])
+        self.assertEqual([x[cols[0]:].split()[0] for x in lines[5:7]], ["done", "done"])
+
+    def skew_tz(self, tz):
+        """Run under TZ=tz (time.tzset), put back for whatever the runner set (CI: America/New_York)."""
+        old = os.environ.get("TZ")
+
+        def restore():
+            if old is None:
+                os.environ.pop("TZ", None)
+            else:
+                os.environ["TZ"] = old
+            time.tzset()
+        self.addCleanup(restore)
+        os.environ["TZ"] = tz
+        time.tzset()
+
+    def test_status_changed_is_local_time_under_a_skewed_tz(self):
+        """CHANGED shows the time the queue recorded as local wall-clock time, whatever TZ the runner has: here
+        UTC+13:45 (a POSIX zone, no tzdata needed), which never shares a minute with UTC."""
+        self.skew_tz("XST-13:45")
+        before = time.time()
+        self.qrun("add", self.root, "--label", "d")
+        after = time.time()
+        minute = lambda t, tz=None: datetime.datetime.fromtimestamp(t, tz).strftime("%Y-%m-%d %H:%M")  # noqa: E731
+        local = {minute(before), minute(after)}  # the add may straddle a minute
+        lines = self.qrun("status").splitlines()
+        self.assertEqual(lines[0].split()[-1], "CHANGED")
+        changed = lines[1][lines[0].index("CHANGED"):].strip()
+        self.assertIn(changed, local)
+        self.assertNotIn(changed, {minute(before, datetime.timezone.utc), minute(after, datetime.timezone.utc)})
+        self.assertEqual(self.status_json()["sources"][0]["changed"][:16].replace("T", " "), changed)
+
+    def test_status_waiting_section_and_next(self):
+        self.every_state()
+        out = self.qrun("status")
+        table, rest = out.split("\nWaiting for you:\n")
+        self.assertIn("waiting", table.splitlines()[1], "no run is going: nothing shows as running")
+        self.assertNotIn("running", table)
+        waiting, nxt = rest.rstrip("\n").split("\n\n")
+        self.assertIn("review, chunk 1 (b-review-1): quarantine 3, near and messaging copies 1, review folder 0, "
+                      "trash suggestions 2", " ".join(x.strip() for x in waiting.splitlines()))
+        self.assertIn("review page:        media-intake review b-review-1", waiting)
+        self.assertIn(f"quarantine:         xdg-open {os.path.join(self.state, 'quarantine', 'b-review-1')}", waiting)
+        self.assertIn("media-intake suggest-trash --batch b-review-1", waiting)
+        self.assertIn("broken, chunk 1 (b-broken-1) failed at scan: scan failed (exit 1); log "
+                      "/state/queue/broken/b-broken-1.log", " ".join(x.strip() for x in waiting.splitlines()))
+        self.assertIn("fix it, then retry: media-intake queue run --inhibit", waiting)
+        self.assertIn("media-intake queue offload clean --yes", waiting)
+        self.assertNotIn("offload busy", waiting, "an unfinished source is never offered for offload")
+        self.assertNotIn("offload review", waiting, "nor one with decisions left")
+        self.assertNotIn("offload pics", waiting, "nor a laptop folder")
+        self.assertIn("pics: everything is reviewed; delete the source folder yourself", waiting)
+        self.assertNotIn("delete the source folder", waiting.split("pics:")[0])
+        for x in waiting.splitlines():
+            if "media-intake" not in x and "/" not in x:
+                self.assertLessEqual(len(x), 80, x)
+        self.assertEqual(nxt.splitlines(), ["next: fix broken (see above), then media-intake queue run --inhibit"])
+        # Each fix moves the next line on to the following decision.
+        q = self.state_q()
+        del q["sources"]["broken"]
+        jsave(os.path.join(self.state, "queue.json"), q)
+        self.assertTrue(self.qrun("status").endswith("next: media-intake review b-review-1\n"))
+        del q["sources"]["review"]
+        jsave(os.path.join(self.state, "queue.json"), q)
+        self.assertTrue(self.qrun("status").endswith("next: media-intake queue offload clean --yes\n"))
+        del q["sources"]["clean"], q["sources"]["busy"]["chunks"]["1"]
+        jsave(os.path.join(self.state, "queue.json"), q)
+        self.assertIn("next: check the library, then delete", self.qrun("status"))
+        del q["sources"]["pics"]
+        jsave(os.path.join(self.state, "queue.json"), q)
+        self.assertTrue(self.qrun("status").endswith("next: media-intake queue run --inhibit\n"))
+        with self.held_run_lock():
+            self.assertIn("next: nothing yet: the run is going", self.qrun("status"))
+
+    def test_status_nothing_waits(self):
+        self.synth([("one", "/mnt/d/one", "drive", 2,
+                     {"1": self.done_chunk("b-one-1", "2026-01-06T12:00:00")})])
+        q = self.state_q()
+        q["sources"]["one"]["offloaded"] = [1]
+        jsave(os.path.join(self.state, "queue.json"), q)
+        out = self.qrun("status")
+        self.assertIn("Waiting for you:\n  nothing\n", out)
+        self.assertTrue(out.endswith("next: nothing waits; add another folder: media-intake queue add PATH --label NAME\n"))
+
+    def test_shorten_keeps_the_end(self):
+        s = self.q.shorten
+        self.assertEqual(s("/short", 20), "/short")
+        cut = s("/run/media/someone/Drive/a/b/c/Holiday 2011", 20)
+        self.assertEqual(len(cut), 20)
+        self.assertTrue(cut.startswith("/run") and cut.endswith("/c/Holiday 2011"))
+        self.assertEqual(cut.count("\u2026"), 1)
+
+    def test_status_empty_queue(self):
+        out = self.qrun("status")
+        self.assertEqual(out.count("\n"), 1, "one line")
+        self.assertIn("queue is empty", out)
+        self.assertIn("media-intake queue add PATH --label NAME", out)
+        self.assertEqual(self.status_json(), dict(sources=[], waiting=[], next="media-intake queue add PATH --label NAME"))
+        self.assertFalse(os.path.exists(os.path.join(self.state, "queue")), "status creates nothing")
+
+    def test_status_json_shape(self):
+        self.every_state()
+        m = self.status_json()
+        self.assertEqual(sorted(m), ["next", "sources", "waiting"])
+        self.assertEqual([r["label"] for r in m["sources"]], ["busy", "idle", "broken", "review", "clean", "pics"])
+        self.assertEqual([r["state"] for r in m["sources"]],
+                         ["waiting", "waiting", "failed", "needs your review", "done", "done"])
+        r = m["sources"][3]
+        self.assertEqual(sorted(r), ["bytes", "changed", "chunks", "chunks_done", "chunks_total", "files", "in_review",
+                                     "kind", "label", "offloaded", "quarantined", "root", "state"])
+        self.assertEqual((r["files"], r["quarantined"], r["in_review"], r["changed"]),
+                         (2, 4, 2, "2026-01-05T09:00:00"))
+        self.assertEqual(r["chunks"], [dict(chunk=1, batch="b-review-1", files=2, done=True, quarantine=3,
+                                            near_and_messaging=1, review_folder=0, trash_suggestions=2)])
+        self.assertEqual(m["sources"][2]["chunks"][0]["step"], "scan")
+        self.assertEqual([(w["what"], w["label"]) for w in m["waiting"]],
+                         [("failed", "broken"), ("review", "review"), ("offload", "clean"), ("delete-folder", "pics")])
+        self.assertEqual(m["waiting"][0]["commands"], ["media-intake queue run --inhibit"])
+        self.assertEqual(m["waiting"][1]["commands"][0], "media-intake review b-review-1")
+        self.assertTrue(m["next"].startswith("fix broken"))
 
     # ------------------------------------------------------------ offload
     def test_offload_guards(self):
@@ -452,7 +660,7 @@ class Queue(unittest.TestCase):
         self.assertEqual(self.state_q(), q1, "chunk size, steps, summaries and finished time unchanged")
         self.assertEqual(self.folder_library(), lib1)
         self.assertEqual(sorted(os.listdir(os.path.join(self.state, "batches"))), batches1)
-        self.assertIn("chunks done 2/2", self.qrun("status"))
+        self.assertEqual(self.status_json()["sources"][0]["chunks_done"], 2)
         self.assertEqual(sorted(os.listdir(os.path.join(f, "2018"))), before)
 
     def test_folder_kill_mid_chunk_then_resume(self):
@@ -469,7 +677,8 @@ class Queue(unittest.TestCase):
         self.assertTrue(src["chunks"]["1"].get("done"))
         self.assertFalse(src["chunks"].get("2", {}).get("steps"), "the killed stage was never marked")
         self.assertNotIn("finished", src)
-        self.assertIn("chunks done 1/2", self.qrun("status"))
+        self.assertEqual((self.status_json()["sources"][0]["chunks_done"], self.status_json()["sources"][0]["state"]),
+                         (1, "needs your review"), "chunk 1's trash suggestion waits for you while chunk 2 is left")
         b2 = self.q.batch_name(src, 2)
         raw2 = os.path.join(self.state, "batches", b2, "raw")
         staged = [x for _, _, fs in os.walk(raw2) for x in fs]

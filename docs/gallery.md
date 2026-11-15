@@ -27,8 +27,8 @@ copies there go too.
   opens as a drawer): the views with counts (Library, Trash suggestions, any
   plugin tab; quick views Recently added = filed in the last 30 days, by the
   file's inode change time, Possible child = `Review|child-in-shot`,
-  Untagged; then **Events** with counts, the eight largest and "All N events"),
-  the search box (a one-line hint when semantic search is off, the
+  Untagged; then **Events** with counts, the eight largest and "All N events";
+  then **Keyboard shortcuts**, the `?` list below), the search box (a one-line hint when semantic search is off, the
   full reason under "why"), then the filters as collapsible sections with
   counts (open / closed remembered per section) and "Clear filters (N)".
   Counts are for the whole library, not narrowed by the other filters.
@@ -67,8 +67,41 @@ copies there go too.
   scroll, a downward swipe on the photo closes the view (not while scrolled
   down to the info pane), and a reopened view starts at the photo.
 
+- **Messages and dialogs**: the page never uses the browser's own `alert`,
+  `confirm` or `prompt`. What an action did shows in a message at the bottom
+  (`role=status`) that fades after a few seconds; one with **Undo** (below)
+  stays 10 s, longer while the pointer or focus is on it. An error (the
+  server's own message: a refusal, a 409 naming who holds the library lock)
+  shows at the top as an alert (`role=alert`, read out at once) and stays
+  until **Dismiss**. The confirm dialogs (Trash, Erase, Set event, a tag,
+  Stop the server, ...) and the shortcut list take focus when they open, keep
+  it inside on Tab, close on Esc (or Cancel) and give focus back to where it
+  was; the large view keeps Tab inside it too (and its messages).
+
 The sidebar rail, open sections and tile size live in the browser's
 `localStorage` (a per-browser convenience; the page works without it).
+
+## Keys
+
+`?` (not while typing in a field), or **Keyboard shortcuts** in the sidebar,
+opens the list of every key the page handles; Esc, `?` or a click outside
+closes it, and no other key acts while it is open.
+
+- **Grid**: Enter opens the focused tile; Space ticks it (Shift+Space the
+  range from the last one); Shift-click a range, Ctrl-click one tile; Ctrl+A /
+  Cmd+A selects every tile shown; K / T / E Keep, Trash, Erase the selection;
+  Esc clears it (or closes the drawer at phone width; in the search box it
+  clears the search); `/` jumps to the search box; Ctrl+Z / Cmd+Z undoes the
+  last Keep, tag, Rotate or Set event while its message shows.
+- **Bursts**: X opens or closes the focused tile's stack.
+- **Large view**: ← / → previous / next, Space plays / pauses, K / T / E,
+  R / Shift+R rotate, Esc closes.
+- **Trash suggestions**: arrows (and J) move the outline, K / T mark it,
+  Enter opens it.
+- **Dialogs**: Esc cancels, Enter in the text field confirms, Tab stays inside.
+
+`tests/browser/test_browser_gallery_dialogs.py` reads the key names from the
+page's own handlers and fails when the list leaves one out.
 
 ## What it shows
 
@@ -185,7 +218,9 @@ in the grid as it is now: after the grid reloads, for another view or filter,
 a shift-click starts a new selection; Ctrl-click on a tile ticks or unticks
 it; Space on a focused tile ticks it; **Select all** in the header, or Ctrl+A /
 Cmd+A, ticks every tile shown), then the bottom bar's buttons or keys:
-**K** Keep, **T** Trash, **E** Erase, **+ tag** / **− tag**, **Set event…**,
+**K** Keep, **T** Trash, **E** Erase, **+ tag** / **− tag** (a field that
+suggests your tags as you type, from `/api/facets`' My tags, and refuses the
+tools' namespaces before anything is sent, as the server does), **Set event…**,
 **Rotate ⟳**, **Share-safe copy**; Esc or **Clear selection** clears it. Each
 applies to every selected item through the same endpoint as one item, photos
 and videos alike (one unknown or removed id refuses the whole request, and so
@@ -220,10 +255,42 @@ loading turns the line back into a plain count. Esc clears.
 | Rotate | sidecar `XMP-tiff:Orientation` only (1/6/3/8), each item from its own orientation. The original is never re-encoded or written; digiKam reads the same field. |
 | Set event | `POST /api/event/set` (`{"ids": [...], "event": slug}`): sidecar `Event\|<slug>` (and `XMP-iptcExt:Event`), replacing the item's other `Event\|` tags; `"event": ""` takes the items out of every event. Nothing else. |
 | Share-safe copy | nothing in the library: `media-intake share-copy` into a new folder (below). |
+| Undo | `POST /api/undo` (`{"undo": token}`): puts back what one Keep, my tag + / -, Rotate or Set event changed, below. Never offered for Trash, Erase, Share-safe copy, Trash suggestions' Apply, Rename or Merge. |
 | Open in the system player | nothing: `POST /api/open` with one id (`{"ids": [id]}`) runs `xdg-open <file>` (an argument list, no shell, detached) for the one item, only on that button's POST, and only for a regular file inside a library root after resolving links, not in a running job and not flagged, quarantined or erased (else 400). |
 
+### Undo
+
+The message after **Keep**, a tag of yours added or removed (bar or large
+view), **Rotate** and **Set event** has an **Undo** button (or Ctrl+Z / Cmd+Z
+while it shows). Trash, Erase and Share-safe copy never offer it: a deleted
+file can't come back, and a copy made is out of the library.
+
+- **What it restores**: when the action writes, the server reads each sidecar
+  as it was and as it is after, and keeps the difference (the last 50
+  actions, in memory, until the gallery stops); the reply carries a token.
+  Undo applies the reverse: the same tags (`HierarchicalSubject`) and
+  `dc:Subject` leaves as before, `XMP-tiff:Orientation` and
+  `XMP-iptcExt:Event` set back, or deleted when there were none. For Keep
+  that means `Owner|keep` / `Owner|not-trash` off again (unless they were
+  there) and `Review|maybe-trash`, an older `Owner|trash` and the legacy
+  `Review|not-trash` back with their leaves, exactly as each item had them.
+  A sidecar the action had to create stays, holding none of it. Tags come
+  back as the same set; their order in the sidecar may differ (it is an
+  unordered list).
+- **Only that action's change**: the record is the server's, never the
+  page's, and an undo refuses (400, nothing written) a difference outside
+  what that action writes: Keep only its `Owner|` / `Review|` tags, my tags
+  only tags of yours (never the tools' namespaces), Set event only `Event|`
+  tags and `XMP-iptcExt:Event`, Rotate only the orientation.
+- **Never over a later change**: it holds the library lock like the action
+  (409 while a job, a review run or the CLI holds it; the token stays good),
+  and it refuses with 409, writing nothing, when any of the items' sidecars
+  changed since (another action, `media-intake tag`, digiKam: their bytes
+  are compared), or an item left the library. Each token undoes once.
+- The reply carries the items' grid summaries, like the action's own.
+
 Every action holds the library lock ([intake.md](intake.md), "One writer at
-a time"): Keep, my tags, Rotate, Set event, Rename, Merge and a plugin view's
+a time"): Keep, my tags, Rotate, Set event, Undo, Rename, Merge and a plugin view's
 POST for the write ([plugins.md](plugins.md)), Trash, Erase and Share-safe copy
 for their whole job. While a CLI command (`apply`, `erase`, ...), a review run or
 another gallery's job holds it, the action gets 409 naming the holder and
@@ -457,6 +524,23 @@ refused without the token, with a wrong CSRF value, another Origin or Host
 share-safe copy (Pillow's re-encode when exiftool is missing) into its own
 0700 folder, with its refusals.
 
+`tests/test_gallery_undo.py`: Undo of Keep (every tag and leaf it removed back,
+a file that had no sidecar), a tag added and removed, Rotate (an orientation
+back, and none where there was none) and Set event (both fields, two events,
+cleared), each compared field by field with the sidecar before; refused (409,
+nothing written) after another action or another tool changed an item, and
+while a job holds the library lock (then working once it ends); a token used
+once; no token from Trash, Erase, Share-safe copy, Apply or an action that
+changed nothing; `undo_block` refusing a difference outside the action's
+namespaces. `tests/browser/test_browser_gallery_dialogs.py` does it on the
+page with a listener that fails on any native dialog: the tag field's
+suggestions and refusals, focus kept in a dialog and given back on Esc, an
+error message staying past the time a plain one fades (Playwright's clock) until
+dismissed, a 409 while a job holds the lock shown as one, the `?` list naming
+every key the handlers check, Undo of Rotate, Keep (Ctrl+Z), Set event and a
+tag added in the large view restoring the sidecars, Undo refused after the
+item changed, and none after Trash, Erase or a Share-safe copy.
+
 `tests/test_gallery_bursts.py`: which files stack (planned shots in time
 order, a camera burst id over the clock, a near-copy of the same second, a
 copy from another device, an unplanned file without a marker and a video
@@ -523,7 +607,8 @@ with the original and frees the slot.
 In headless Chromium (`tests/browser/test_browser_gallery.py`, see
 CONTRIBUTING.md, Tests): keys, click and shift-click selection, the bottom
 selection bar appearing only while something is selected, a sidebar quick
-view and its chip, the Trash, Erase (ERASE typed) and Close confirms, the
+view and its chip, the Trash, Erase (ERASE typed) and Close confirms (all in
+the page), the
 lightbox video playing by itself, Space pausing and resuming it, seeking by
 Range, and the job dialog's progress, re-attach after a reload and crash
 message, Erase's status line shown while its output is still empty (a

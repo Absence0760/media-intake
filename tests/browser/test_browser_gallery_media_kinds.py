@@ -181,10 +181,13 @@ class GalleryMediaKindsBrowserTest(B.BrowserCase):
         page = self.page_for(s)
         bar = self.bar(page)
         self.select_all_by_range(page)
-        page.once("dialog", lambda d: d.accept("Trips|Spain"))
+        dlg = page.locator("[data-dialog=confirm]")
+        bar.get_by_role("button", name="+ tag").click()
+        dlg.get_by_label("Tag (yours").fill("Trips|Spain")
         with page.expect_response(lambda r: r.url.endswith("/api/tag")) as resp:
-            bar.get_by_role("button", name="+ tag").click()
+            dlg.get_by_role("button", name="Confirm").click()
         self.assertEqual(resp.value.status, 200)
+        B.expect(dlg).to_be_hidden()
         for n, p in self.path.items():
             h, dc, _ = G.tags_of(p)
             self.assertIn("Trips|Spain", h, n)
@@ -193,9 +196,10 @@ class GalleryMediaKindsBrowserTest(B.BrowserCase):
         page.keyboard.press("Escape")
         for n in ("a.jpg", "v.mp4"):
             self.box(page, n).click()
-        page.once("dialog", lambda d: d.accept("Trips|Spain"))
+        bar.get_by_role("button", name="− tag").click()
+        dlg.get_by_label("Tag (yours").fill("Trips|Spain")
         with page.expect_response(lambda r: r.url.endswith("/api/tag")) as resp:
-            bar.get_by_role("button", name="− tag").click()
+            dlg.get_by_label("Tag (yours").press("Enter")
         self.assertEqual(resp.value.status, 200)
         self.assertEqual([n for n, p in self.path.items() if "Trips|Spain" in G.tags_of(p)[0]], ["b.png", "w.MOV"])
         self.assertIn("Trips|coast", G.tags_of(self.path["v.mp4"])[0])  # the video's other tag of mine stays
@@ -203,7 +207,6 @@ class GalleryMediaKindsBrowserTest(B.BrowserCase):
         page.keyboard.press("Escape")
         self.select_all_by_range(page)
         bar.get_by_role("button", name="Set event…").click()
-        dlg = page.locator("[data-dialog=confirm]")
         B.expect(dlg.get_by_role("heading")).to_have_text("Set the event on 4 items?")
         dlg.get_by_label("Event (a slug").fill("beach")
         with page.expect_response(lambda r: r.url.endswith("/api/event/set")) as resp:

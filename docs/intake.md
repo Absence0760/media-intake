@@ -173,13 +173,55 @@ media-intake backup MOUNT [--verify] [--dry-run]   # library, videos, sidecars t
 [gallery.md](gallery.md), the drive and laptop-folder queue [queue.md](queue.md),
 the backup to a mounted drive [backup.md](backup.md),
 semantic search and the VLM trash check [search.md](search.md). `media-intake
-doctor` checks system packages (and prints the `sudo dnf install` line for
-what's missing), the venv, the model files' sha256 and the local Ollama
-model's digest against `media_intake/pins.json`, and the config.
+doctor` checks system packages, the venv, the model files' sha256 and the
+local Ollama model's digest against `media_intake/pins.json`, and the config,
+grouped under headings, and ends with a summary: the problem count and one
+`sudo dnf install -y` line for missing required packages and another for
+optional ones ([README](../README.md#install-fedora)).
 
 A typical phone batch: `stage` the phone's storage root, `plan` (add
 `--event` for a shoot), `scan`, `apply`, open the review page, `tag`, then,
 once the library is backed up, `offload` to free the phone.
+
+### Progress and the `next:` line
+
+The long steps print counts-only progress, so a big batch never sits
+silent: one line when the step starts, then one every 10,000 files or 2
+seconds, whichever comes first (`MEDIA_INTAKE_PROGRESS_EVERY` and
+`MEDIA_INTAKE_PROGRESS_SECS` override both; the HOME sweep and the
+near-duplicate search use the same lines):
+
+- `stage: 5,000 of 12,000 files staged` while it copies;
+- `plan: 5,000 of 12,000 files hashed` (sha256, dHash, video hash), then
+  `plan: ... photos compared` / `videos compared` in the near-copy search;
+- `apply: 5,000 of 12,000 files done`;
+- `tag` (and `tag-files`): a line per phase (place names, content labels: one
+  pass with no per-file lines), then `tag: 400 of 12,000 sidecars written`
+  as exiftool writes them 200 at a time.
+
+`scan` keeps its own `[scan] N/TOTAL` lines on stderr. A progress line never
+names a file, and each is a whole line ending in a newline, on a terminal
+too: the review page and gallery jobs and the drive queue's step logs read
+them line by line.
+
+At a terminal, each step of the flow ends with one line naming the command to
+run next, with the batch's real name:
+
+```
+next: media-intake plan BATCH          # after stage (nothing staged: no line)
+next: media-intake scan BATCH          # after plan
+next: media-intake apply BATCH         # after scan
+next: media-intake review BATCH        # after apply, while anything is in quarantine or the review folder
+next: media-intake tag BATCH           # after apply, when nothing is
+next: media-intake backup <MOUNT>, then media-intake offload BATCH --phone ROOT   # after tag
+next: media-intake gallery             # after tag, for a laptop folder batch (no offload)
+```
+
+`apply` decides from what is there, not from that run's counts, so a second
+`apply` still points at the review. A failed step prints no `next:` line. With
+stdout not a terminal (a job log, the drive queue, a pipe, the tests) there
+is no `next:` line at all, so `scan`'s last line stays its JSON summary;
+`MEDIA_INTAKE_NEXT_HINT=1` turns it on anyway and `=0` off at a terminal too.
 
 ### Confirmation prompts
 
@@ -1117,7 +1159,7 @@ Rejected:
 
 `python3 -I -m unittest discover -s tests` (synthetic media, a throwaway HOME,
 a hermetic config), or one module: `python3 -I -m unittest discover -s tests -p test_intake.py`
-(also `test_dates`, `test_devices`, `test_sources`, `test_exports` (Google Takeout and iCloud export metadata), `test_tagging`, `test_config`, and `test_device_case`: offload,
+(also `test_intake_output`: the progress lines of stage, plan, apply and tag by count, none naming a file, and the `next:` line for a clean, quarantined and review batch, on a terminal and off it; `test_dates`, `test_devices`, `test_sources`, `test_exports` (Google Takeout and iCloud export metadata), `test_tagging`, `test_config`, and `test_device_case`: offload,
 erase and trash on fake MTP, gphoto2 and drive trees with case-only collisions, in the manifests or only in the live listing, and a listing that fails; `test_device_ops_media_kinds`:
 stage, plan, apply, erase, offload and verify-gone with photos, videos and a mix from a phone, a GoPro card,
 a drive, a laptop folder and the drive queue, and erase's and offload's prompts (a wrong answer or closed

@@ -17,8 +17,36 @@ review files it prints `nothing to review for BATCH` and exits 0.
   (see "Quarantine is Erase-only" below). **Review** tab:
   `batches/BATCH/review` with plan.json's `why`; Keep, Delete or Trash. Keys:
   K keep, E (or D) erase/delete, T trash (not in Quarantine), X opens or
-  closes a burst stack, arrows move. Submit unlocks when every
+  closes a burst stack, arrows (and J) move. Submit unlocks when every
   item is decided, shows a summary and needs ERASE typed.
+- **Keyboard and screen readers.**
+  - `?` (or the header's "Keys (?)") opens a list of every key the page
+    handles and where each applies: K everywhere; E or D in Quarantine and
+    Review (nothing in Maybe trash); T in Review and Maybe trash (nothing in
+    Quarantine); X on a stack; → ↓ J next, ← ↑ previous; on a tab, ← → Home
+    End switch lists; Esc closes a dialog. Letter keys and `?` do nothing
+    while you type.
+  - The tabs are a tablist (`role="tab"`, `aria-selected`, one Tab stop:
+    the selected tab); ↑ ↓ on a tab still move between items. Each card is
+    a labelled group ("<name>, item 2 of 5: decided erase" or "undecided"),
+    and the Keep / Erase / Delete / Trash buttons carry `aria-pressed`.
+  - Keyboard focus shows a 3 px outline in the focus colour (6:1 or more
+    against the page and the cards, light and dark). The focus follows the
+    outlined card after a key decision or move, stays on the stack's cover
+    when it opens or closes, and Tab onto a card or its buttons outlines
+    that card, so K acts there.
+  - The ERASE confirm is a modal dialog (`aria-modal`, labelled "Confirm",
+    described by the summary): the page behind is inert, Tab stays inside,
+    Esc is Back, and the focus returns to Submit.
+  - The header shows "N of M decided" (`role="status"`, so a screen reader
+    hears it) beside the per-tab undecided count.
+  - A refused submit (409 or 400 from the server, or no answer) shows the
+    server's message in a dismissible `role="alert"` banner ("Refused: the
+    library is busy: ..."), inside the confirm while it is open and above
+    the list after Back; Run stays available to retry. The page opens no
+    native `alert()`, `confirm()` or `prompt()`.
+  - While a run goes, its step line is a polite live region and its output
+    a `role="log"`, so new lines are announced as they arrive.
 - **Colours** follow the system's light or dark scheme (the page declares
   `color-scheme: light dark`, so form controls and scroll bars follow too).
   Every label meets WCAG 2's 4.5:1 contrast in both: the burst badge, a
@@ -207,13 +235,20 @@ CONTRIBUTING.md, Tests): the keys and arrows, no Trash button or T on a
 quarantined card (and the 400 for a trash posted anyway) while Erase still
 runs, Submit unlocking, the ERASE
 panel, a card's video seeking by Range, and the run's progress and re-attach
-after a reload. `tests/browser/test_browser_gallery_layout.py` checks the
+after a reload. Its `ReviewA11yBrowserTest` covers the tablist and its arrow
+keys, the focus outline at 3:1 or more in light and dark, the focus kept
+after a decision and a stack opening or closing, the confirm as a modal
+dialog (Tab trapped, Esc, focus back on Submit), the `?` keys list, a
+refused submit (the library lock held) shown in the banner and then retried,
+and the "N of M decided" counter; every test there fails if a native dialog
+opens. `tests/browser/test_browser_gallery_layout.py` checks the
 burst badge, a pressed Keep and Submit at 4.5:1 or more in light and dark,
 and the `color-scheme` declaration. `tests/browser/test_browser_review_media_kinds.py`: burst
 stacks (K on a closed stack, X, "Keep this one" in Quarantine and Review) with
 a video beside each that is never stacked, the cards for files the browser
 can't decode, and a messaging copy of a video beside its original.
 
-Not verified: the crash message in a real browser (the HTTP tests cover the
+Not verified: a real screen reader (the tests check roles, names and
+`aria-*` attributes, not what one announces), the crash message in a real browser (the HTTP tests cover the
 crash itself), a real HEVC file (the test stands in a file with sound and no
 picture), the layout beyond those colours, and any browser but Chromium.

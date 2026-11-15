@@ -30,10 +30,12 @@ Refused, never sent: anything under the state's quarantine/ or batches/
 
 The model is pinned by its local digest; a different digest refuses to run.
 Progress (path, size, mtime, digest, verdict) goes to vlm-progress.json in the
-state dir every CHUNK files, so a killed run continues where it stopped. The
+state dir every CHUNK files, so a killed run continues where it stopped. stderr gets
+counts-only progress lines (meter.py: done/total, rate, time left) and a summary line;
+stdout ends with the counts as one JSON line (the machine form tests and logs read). The
 last request uses keep_alive 0, which unloads the model from the GPU.
 """
-import argparse, base64, collections, datetime, io, json, os, shutil, subprocess, sys, tempfile, time
+import argparse, base64, collections, io, json, os, shutil, subprocess, sys, tempfile, time
 import urllib.error, urllib.parse, urllib.request
 
 HERE = os.path.dirname(os.path.abspath(__file__))
@@ -45,6 +47,7 @@ HOME = os.path.expanduser("~")
 STATE = label.STATE
 import config  # noqa: E402
 import library_lock  # noqa: E402  (stdlib only)
+import meter  # noqa: E402  (counts-only progress, stdlib)
 ROOTS = config.library_roots()
 PROTECTED = config.protected_tags()
 IMG = label.IMG | {".dng", ".gpr"}
@@ -424,6 +427,7 @@ def main(argv=None):
     counts["todo"] = len(todo)
     if a.dry_run or not todo:
         print(json.dumps(dict(counts)))
+        print(summary(counts, dry_run=a.dry_run), file=sys.stderr)
         return 0
     try:
         check_digest(host)
@@ -435,6 +439,8 @@ def main(argv=None):
         return 2
 
     t0, pending, timed = time.monotonic(), [], 0
+    m = meter.Meter("vlm-trash", len(todo))
+    m.say(f"vlm-trash: {len(todo):,} files to judge")
     try:
         for i, p in enumerate(todo, 1):
             t = time.monotonic()
@@ -458,16 +464,15 @@ def main(argv=None):
                           "and it holds most of the RAM); stopping. --allow-cpu to run anyway", file=sys.stderr)
                     counts["stopped-not-on-gpu"] = 1
                     break
+            m.update(i)
             if len(pending) >= CHUNK or i == len(todo):
                 write_verdicts(pending, tags)
                 for p2, verdict, _, _ in pending:
                     prog[p2] = {"digest": DIGEST, "stamp": stamp(p2), "verdict": verdict}
                 save_progress(prog)
                 pending = []
-                per = timed / i
-                eta = datetime.timedelta(seconds=int(per * (len(todo) - i)))
-                print(f"[vlm] {i}/{len(todo)}  {per:.2f} s/file  ETA {eta}", file=sys.stderr, flush=True)
     finally:
+        m.close()
         if pending:  # interrupted: keep what was judged
             write_verdicts(pending, tags)
             for p2, verdict, _, _ in pending:
@@ -477,7 +482,30 @@ def main(argv=None):
     counts["seconds"] = round(time.monotonic() - t0, 1)
     counts["s_per_file"] = round(timed / max(1, len(todo)), 2)
     print(json.dumps(dict(counts)))
+    m.say(summary(counts))
     return 0
+
+
+def summary(c, dry_run=False):
+    """One counts-only line for a person; the JSON on stdout stays the machine form."""
+    judged = c["keep"] + c["trash"] + c["trash-low"] - c["protected"]
+    skipped = c["already"] + c["owner-decided"] + c["refused"]
+    why = ", ".join(f"{c[k]:,} {name}" for k, name in (("already", "already judged"), ("owner-decided", "your decision"),
+                                                        ("refused", "refused")) if c[k])
+    skip = f"skipped {skipped:,}" + (f" ({why})" if why else "")
+    if dry_run:
+        return f"vlm-trash: would judge {c['todo']:,}, {skip}; nothing sent (--dry-run)"
+    if not c["todo"]:
+        return f"vlm-trash: nothing to judge, {skip}"
+    out = (f"vlm-trash: judged {judged:,} ({c['trash']:,} trash, {c['trash-low']:,} low-confidence trash, "
+           f"{c['keep'] - c['protected']:,} keep), {skip}")
+    out += f"; {c['protected']:,} protected (kept, not sent)" if c["protected"] else ""
+    out += f"; {c['undecodable']:,} undecodable" if c["undecodable"] else ""
+    if c["stopped-not-on-gpu"]:
+        out += "; stopped: the model is not fully on the GPU (--allow-cpu to run anyway)"
+    if "seconds" in c:
+        out += f"; took {meter.duration(c['seconds'])}"
+    return out
 
 
 if __name__ == "__main__":

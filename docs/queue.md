@@ -18,7 +18,7 @@ media-intake queue add "/run/media/$USER/<drive>/<folder>" --label <name>
 media-intake queue add "$HOME/<folder>" --label <name> --kind folder   # a folder on the laptop
 media-intake queue add ... --event [PROJECT/]SLUG@YYYY-MM-DD           # repeatable: shoot days, as plan --event
 media-intake queue run --inhibit            # overnight; --chunk 2000 is the default
-media-intake queue status
+media-intake queue status                   # add --json for scripts
 media-intake queue offload <name> --yes     # deletes the drive originals: only when you mean it
                                             # (refused for --kind folder: you delete the folder yourself)
 ```
@@ -143,17 +143,72 @@ drive sits at that path, or a folder source is refused now. `--inhibit` holds `s
 summary.
 
 **It never makes your decisions**: quarantine review, trash suggestions and
-offload all wait. `status` lists, per finished chunk, the quarantine,
-near and messaging copy (the rest of that review page), review-folder and
-trash-suggestion counts with the commands to
-open them (`media-intake review <batch>`, the quarantine `xdg-open` line,
-`media-intake gallery` or `media-intake suggest-trash --batch <batch>`).
+offload all wait. `status` says what waits for you and the command for each.
 
 To run it overnight in the background, on AC power:
 
 ```
 nohup media-intake queue run --inhibit > ~/.local/share/media-intake/queue-run.log 2>&1 &
 ```
+
+## Status
+
+`media-intake queue status` prints one row per queued source, then what waits
+for you, then one `next:` line (synthetic example):
+
+```
+SOURCE                  STATE              FILES  QUAR  REVIEW  CHANGED
+/run/…dia/u/DRIVE/busy  running                4     0       0  2026-01-03 11:30
+/run/…dia/u/DRIVE/idle  waiting                3     0       0  2026-01-02 03:04
+/run/…a/u/DRIVE/broken  failed                 2     0       0  2026-01-04 08:05
+/run/…ckup/Photos 2009  needs your review      2     4       2  2026-01-05 09:00
+/run/…ia/u/DRIVE/clean  done                   2     0       0  2026-01-06 12:00
+
+Waiting for you:
+  broken, chunk 1 (2026-01-02-broken-1) failed at scan: scan failed (exit 1);
+    log <state>/queue/broken/2026-01-02-broken-1.log
+    fix it, then retry: media-intake queue run --inhibit
+  review, chunk 1 (2026-01-02-review-1): quarantine 3, near and messaging copies
+    1, review folder 0, trash suggestions 2
+    review page:        media-intake review 2026-01-02-review-1
+    quarantine:         xdg-open <state>/quarantine/2026-01-02-review-1
+    trash suggestions:  media-intake gallery   (or media-intake suggest-trash --batch 2026-01-02-review-1)
+  clean: every chunk is reviewed; OK to offload (delete the drive originals):
+    media-intake queue offload clean --yes
+
+next: fix broken (see above), then media-intake queue run --inhibit
+```
+
+- **SOURCE** is the path as queued; a long one is shortened in the middle
+  with `…` so the end (the folder that tells sources apart) stays. The table
+  fits 80 columns; command lines are never cut, so they stay copyable.
+- **STATE**: `running` (a `queue run` holds `<state>/queue/run.lock` and is
+  on this source), `failed` (a step failed; the reason and log are under
+  Waiting for you), `needs your review` (a finished chunk has quarantine,
+  review-folder or trash-suggestion files), `waiting` (chunks left to run),
+  `done` (every chunk finished and reviewed).
+- **FILES** is the files queued; **QUAR** the files in every quarantine the
+  chunks' review pages show (`quarantine/<batch>` and its near- and
+  messaging cross-check levels); **REVIEW** the review-folder files plus the
+  trash suggestions; **CHANGED** the newest time the queue recorded for the
+  source (added, a step or chunk finished).
+- **Waiting for you** lists each finished chunk with decisions left (its
+  counts and the commands to open them), each failed chunk (reason, log,
+  retry command), drive sources ready to offload, and laptop folders that are
+  fully reviewed (delete the folder yourself, after checking the library).
+- **next:** the first of: fix a failure, review a batch, offload, delete a
+  reviewed folder, start the run, or nothing waits (add another folder).
+- An empty queue prints one line with the `queue add` command.
+
+`media-intake queue status --json` prints the same as JSON for scripts:
+`sources` (per source: `label`, `kind`, `root`, `state`, `files`, `bytes`,
+`quarantined`, `in_review`, `changed`, `chunks_total`, `chunks_done`,
+`offloaded`, and `chunks`, each with its `batch`, `files`, `done` and either
+the next `step` (and `error`) or its `quarantine`, `near_and_messaging`,
+`review_folder` and `trash_suggestions` counts), `waiting` (per item: `what`
+is `failed`, `review`, `offload` or `delete-folder`, with `label`,
+`commands` and its counts or reason) and `next`. Counts and paths only, as
+everywhere.
 
 ## Offload
 
@@ -177,5 +232,6 @@ prints what it would do.
 `python3 -I -m unittest discover -s tests -p test_drive_queue.py` (fake drive, fake backup
 markers, simulated kills, chunking, free-space guard, UUID mismatch, a laptop
 folder end to end with an `--event` day, its refused roots and offload
-refusals) and `-p test_sources.py` (every `check_folder_root` refusal, git
+refusals, the status table, Waiting for you, `next:` and `--json` on
+synthetic queue state) and `-p test_sources.py` (every `check_folder_root` refusal, git
 trees skipped inside a folder).
