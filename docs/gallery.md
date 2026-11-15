@@ -33,10 +33,16 @@ copies there go too.
   counts (open / closed remembered per section) and "Clear filters (N)".
   Counts are for the whole library, not narrowed by the other filters.
 - **Main area**: a slim header (view, item count, **Select all**,
-  thumbnail-size slider, Close), the active filters as removable chips (in an event: the event's
+  thumbnail-size slider, Close; at phone width the item count is left out and
+  Close is an icon, so the header fits beside a long title, which shortens with
+  an ellipsis), the active filters as removable chips (in an event: the event's
   **Rename…** and **Merge into…** bar), the month grid. The
   selection actions sit in a bar at the bottom that appears only while
-  something is selected (Trash suggestions keeps its Apply bar there).
+  something is selected (Trash suggestions keeps its Apply bar there). It
+  floats over the grid while you scroll and takes its own room at the end, so
+  the last row is never stuck under it, however many rows its buttons wrap to.
+  On a small tile a burst's badge and X button shorten with an ellipsis rather
+  than cover the checkbox.
 - **Large view**: the photo or video fills everything left of the info pane.
   A video starts playing on open (muted, with an Unmute button, if the
   browser refuses sound), Space plays / pauses, Prev / Next play the next one,
@@ -452,6 +458,12 @@ cover, badge and X, `x` and `X` with focus back on the cover, a near-copy
 never stacked, a closed stack's range selection and Keep reaching only the
 cover, closing a stack unselecting its hidden shots, and the large view's
 arrows over a closed and an open stack.
+`tests/browser/test_browser_gallery_layout.py` checks the layout at 390 px
+(phone) and 800 px (just above the phone breakpoint): no sideways page
+scroll, the header's title shown and its controls inside the header, a burst
+badge and X button inside their tile and clear of its checkbox (stack closed
+and open), Select all's long label wrapping inside the bar, and the last row
+of tiles above the selection bar at the end of the page.
 
 `tests/test_gallery_media_kinds.py` runs every operation on a photo, a video and
 a mixed selection (JPEG, PNG, H.264 in .mp4 and an upper-case .MOV): the
