@@ -340,6 +340,7 @@ def cmd_plan(a):
         rows.append(dict(rel=rel, sha=sha256(p), size=os.path.getsize(p), date=dd.dt.isoformat(), date_src=dd.src,
                          date_tz=dd.tz, date_from=dd.base, date_note=dd.note, date_suspect=dd.suspect,
                          chapter_of=dd.chapter_of, device=dd.device, device_model=dd.model,
+                         burst_id=dd.burst_id,  # the camera's BurstUUID / GCamera BurstID, for bursts.py
                          cat=category(rel, kind), dhash=dh, w=w, h=h, ext=ext))
 
     pref = {"photo": 5, "video": 5, "gopro": 5, "screenshot": 3, "screenrec": 3}

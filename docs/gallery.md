@@ -91,10 +91,50 @@ The sidebar rail, open sections and tile size live in the browser's
 - **Plugin tabs**: any view a plugin adds through `gallery_views()`, with its
   routes under `/plugin/<id>/` ([plugins.md](plugins.md)).
 
+- **Burst stacks** (Library and the filtered timeline): below.
+
 Dates come from the sidecar's `XMP-exif:DateTimeOriginal`, else the file
 name, else the `YYYY-MM` folder (with the file's own time when it agrees),
 else the file time. Project and source fall back to where the file sits
 (`intake.infer`) when the sidecar has none.
+
+## Burst stacks
+
+Shots of one burst (one camera, a moment apart) show as one stack, the same
+look and keys as the review page ([review-ui.md](review-ui.md)): the cover
+(the burst's first shot) with a stacked edge, a count badge ("Burst: 4
+shots") and a **Show all 4 (X)** button. **X** or `x` on a focused shot, or
+the button, opens the stack (every shot follows the cover, each with the
+badge) or closes it, and focus goes back to the cover either way. A line
+above the grid says what a stack is and how actions behave.
+
+- **A closed stack acts on its cover only.** Selecting (Space, a click, a
+  shift-click range across it), K / T / E and every bar action reach only
+  the cover; the hidden shots are never selected, and closing a stack
+  unselects any of its shots that were (the page says how many). Open the
+  stack to act on the others. Nothing ever acts on a file you can't see,
+  so a Trash or Erase never takes a whole burst by surprise. The large view's
+  arrows step over a closed stack's hidden shots.
+- **Grouping** is `media_intake/bursts.py`, the review page's rules: same
+  device, images only, each shot at most 2 s after the one before, dHashes
+  at most 10 bits apart, and a camera's own marker (a Pixel / Huawei burst
+  file name, or `burst_id`: the BurstUUID or GCamera BurstID `plan`
+  records, [intake.md](intake.md), "Burst id") over the clock. A shot's date
+  (with seconds), device, dHash and burst id come from the `plan.json` entry
+  intake wrote for it (every batch under `<state>/batches/`, by `dst`, or
+  `lib_dst` for a file released from quarantine or review; a later batch
+  wins; the dHash also from `index.json`). No file is opened.
+- **Never stacked**: a file `plan` sent to review as a near-duplicate (a copy
+  of another picture, however close in time and look), videos, and a library
+  file with no plan entry unless it carries a camera marker (a burst file
+  name, or an `XMP-GCamera:BurstID` some tool wrote in its sidecar): its
+  device is unknown, so the clock alone never stacks it.
+- **Where**: the timeline (Library, events, quick views and every filter).
+  Only the listed shots stack: a filter that leaves one shot of a burst
+  shows it as a plain tile, and the badge counts the shots listed. Ranked
+  lists (search results, Similar, Trash suggestions) are never stacked,
+  since their order is not time. A burst's shots sit together at the place
+  of the newest one, in time order.
 
 ## Filters (all combinable)
 
@@ -335,6 +375,19 @@ refused without the token, with a wrong CSRF value, another Origin or Host
 share-safe copy (Pillow's re-encode when exiftool is missing) into its own
 0700 folder, with its refusals.
 
+`tests/test_gallery_bursts.py`: which files stack (planned shots in time
+order, a camera burst id over the clock, a near-copy of the same second, a
+copy from another device, an unplanned file without a marker and a video
+never; a released file found by `lib_dst`; a later batch winning; unplanned
+files by a burst name or a sidecar's GCamera BurstID), and `/api/list`
+putting a burst's shots after their cover across pages, no stack of one
+under a filter, and none in Trash suggestions.
+`tests/browser/test_browser_gallery_bursts.py` does it on the page: the
+cover, badge and X, `x` and `X` with focus back on the cover, a near-copy
+never stacked, a closed stack's range selection and Keep reaching only the
+cover, closing a stack unselecting its hidden shots, and the large view's
+arrows over a closed and an open stack.
+
 `tests/test_gallery_media_kinds.py` runs every operation on a photo, a video and
 a mixed selection (JPEG, PNG, H.264 in .mp4 and an upper-case .MOV): the
 listing, kind filter and counts, item detail, media with Range, the photo-only
@@ -390,6 +443,9 @@ selection and a Share-safe copy ending in "Done: share-safe copies in ...".
   dark), infinite scroll and HEVC posters through GStreamer in a real
   browser, the "can't decode" fallback in a browser that really can't play a
   file, a real `xdg-open`, and any browser but Chromium.
+- Burst stacks from a real iPhone or Pixel burst: the tests write the plan
+  entries and a GCamera BurstID by hand; Apple's MakerNotes BurstUUID is
+  read through exiftool's `BurstUUID` tag on no real file here.
 - Semantic search and Similar through the venv: tested only as "unavailable,
   falls back", not with the real model.
 - Start-up time on a large real library read from disk.
