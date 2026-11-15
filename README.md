@@ -77,6 +77,15 @@ bash setup.sh            # venv, SigLIP vision model, GeoNames, ~/.local/bin/med
 media-intake doctor      # what's installed, checksums, and the dnf line for what's missing
 ```
 
+`doctor` groups its checks under headings (config and folders, system tools,
+Python modules, optional extras, venv/models/data, Ollama). Every line starts
+with its status (`ok`, `MISSING`, `BAD`, `optional`, `absent`), so `media-intake
+doctor | grep -E '^(MISSING|BAD)'` lists the problems. It ends with a count
+and, when something is missing, one `sudo dnf install -y ...` line for the
+required packages and a separate one for the optional ones. It exits 1 only
+when something required is missing or a pinned file is wrong. Colour is used
+only on a terminal and never when `NO_COLOR` is set.
+
 `setup.sh` is safe to re-run (it only re-verifies checksums). Options:
 `--build-labels` (text model for semantic search, and to rebuild
 `labels.npz` after editing `labels.yaml` or moving the SigLIP pin), `--refresh-geo` (accept a new
@@ -128,7 +137,9 @@ media-intake offload phone-1 --phone <device root> --yes   # after a backup: fre
 | `share-copy` | Copy files with GPS and metadata stripped, for posting |
 | `doctor` | Check the install |
 
-`media-intake <command> --help` for options. Details:
+`media-intake <command> --help` for options; `media-intake` alone (or
+`--help`) lists the commands, and a mistyped command exits 2 with the nearest
+real one. Details:
 [intake](docs/intake.md), [review page](docs/review-ui.md),
 [gallery](docs/gallery.md), [search and VLM](docs/search.md),
 [drive and folder queue](docs/queue.md), [backup](docs/backup.md), [configuration](docs/configuration.md),

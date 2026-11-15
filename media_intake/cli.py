@@ -12,10 +12,13 @@
   media-intake vlm-trash ...             local vision-model second opinion on trash  (venv, Ollama)
   media-intake doctor                    check system packages, venv, model checksums, Ollama digest, config
 
+`media-intake` alone, `--help` or `-h` prints this; an unknown command prints
+the nearest real one and exits 2.
+
 `media-intake <command> --help` shows each command's options. Commands marked
 (venv) run in the venv setup.sh builds; the rest need only the system Python.
 """
-import importlib, os, shutil, subprocess, sys
+import difflib, importlib, os, shutil, subprocess, sys
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 if HERE not in sys.path:
@@ -81,13 +84,57 @@ def _short(h):
     return str(h)[:12]
 
 
-def doctor(probe=None, out=print):
-    """Report what is installed; exit 1 if something required is missing or a pinned file is wrong."""
+# Doctor's line shapes: `<status:8> <text>` under a heading, so `grep '^MISSING'` still finds every problem.
+STATUS_COLOURS = {"ok": "32", "MISSING": "1;31", "BAD": "1;31", "optional": "33", "absent": "33"}
+PROBLEMS = ("MISSING", "BAD")
+
+
+def use_colour(stream):
+    """Colour only on a terminal, and never when NO_COLOR is set to anything non-empty (no-color.org)."""
+    try:
+        tty = stream.isatty()
+    except (AttributeError, ValueError):
+        return False
+    return bool(tty) and not os.environ.get("NO_COLOR")
+
+
+def doctor(probe=None, out=print, colour=None):
+    """Report what is installed, grouped under headings, then a summary with one `sudo dnf install -y` line
+    for missing required packages and one for optional ones. Exit 1 if something required is missing or a
+    pinned file is wrong. `colour` defaults to on only when printing to a terminal without NO_COLOR."""
     probe = probe or Probe()
+    if colour is None:
+        colour = out is print and use_colour(sys.stdout)
     ok, need, want = True, [], []   # need/want: Fedora packages missing (required / optional)
+    counts, first = {"problems": 0, "optional": 0}, True
+
+    def paint(text, code):
+        return f"\033[{code}m{text}\033[0m" if colour and code else text
+
+    def heading(title):
+        nonlocal first
+        if not first:
+            out("")
+        first = False
+        out(paint(f"== {title} ==", "1"))
 
     def report(status, text):
-        out(f"{status:8} {text}")
+        if status in PROBLEMS:
+            counts["problems"] += 1
+        elif status == "optional":
+            counts["optional"] += 1
+        out(paint(status, STATUS_COLOURS.get(status)) + " " * max(1, 9 - len(status)) + text)
+
+    def summary():
+        n, o = counts["problems"], counts["optional"]
+        heading("Summary")
+        out(f"{n or 'no'} problem{'' if n == 1 else 's'}, {o or 'no'} optional item{'' if o == 1 else 's'} not available")
+        if need:
+            out("Install the required packages:")
+            out("sudo dnf install -y " + " ".join(dict.fromkeys(need)))
+        if want:
+            out("Optional packages:")
+            out("sudo dnf install -y " + " ".join(dict.fromkeys(want)))
 
     def missing(package, text):
         nonlocal ok
@@ -96,34 +143,41 @@ def doctor(probe=None, out=print):
         ok &= optional
         report("optional" if optional else "MISSING", f"{text} ({package})")
 
+    heading("Config and folders")
     try:
         cfg = config.load()
         report("ok", f"config {cfg['path']}" + ("" if os.path.isfile(cfg["path"]) else " (absent: defaults)"))
     except config.ConfigError as e:
         report("BAD", f"config: {e}")
+        summary()
         return 1
     for k in ("library", "videos", "state"):
         report("ok" if os.path.isdir(cfg[k]) else "absent", f"{k} {cfg[k]}")
     for p in cfg["projects"].values():
         report("ok" if os.path.isdir(p["folder"]) else "absent", f"project {p['name']} {p['folder']}")
 
+    heading("System tools")
     for tool, package in SYSTEM_TOOLS.items():
         if probe.which(tool):
             report("ok", tool)
         else:
             missing(package, tool)
-    for module, package in SYSTEM_MODULES.items():
-        if probe.importable(module):
-            report("ok", package)
-        else:
-            missing(package, f"python module {module}")
     if probe.which("tesseract"):
         if "eng" in probe.output(["tesseract", "--list-langs"]).split():
             report("ok", "tesseract eng language data")
         else:
             missing(TESSERACT_ENG, "tesseract eng language data")
-    if probe.which("gst-inspect-1.0"):
-        plugins = probe.output(["gst-inspect-1.0"])
+
+    heading("Python modules")
+    for module, package in SYSTEM_MODULES.items():
+        if probe.importable(module):
+            report("ok", package)
+        else:
+            missing(package, f"python module {module}")
+
+    heading("Optional extras")
+    plugins = probe.output(["gst-inspect-1.0"]) if probe.which("gst-inspect-1.0") else None
+    if plugins is not None:
         if any(d in plugins for d in HEVC_DECODERS):
             report("ok", "GStreamer HEVC decoder")
         else:
@@ -133,7 +187,7 @@ def doctor(probe=None, out=print):
         encs = probe.output(["ffmpeg", "-hide_banner", "-encoders"])
         if " hevc " in probe.output(["ffmpeg", "-hide_banner", "-decoders"]):
             h264 = next((f"ffmpeg {e}" for e in FFMPEG_H264_ENCODERS if f" {e} " in encs), None)
-    if not h264 and probe.which("gst-inspect-1.0"):
+    if not h264 and plugins is not None:
         h264 = next((e for e in GST_H264_ENCODERS if e in plugins), None)
     if h264:
         report("ok", f"H.264 encoder for the gallery's HEVC proxies ({h264})")
@@ -149,6 +203,7 @@ def doctor(probe=None, out=print):
     else:
         missing(XDG_PACKAGE, f"{XDG_OPEN} (the gallery's Open in the system player button)")
 
+    heading("Venv, models and data")
     vp = venv_python()
     have = probe.exists(vp)
     report("ok" if have else "MISSING", f"venv {vp}" + ("" if have else " (bash setup.sh)"))
@@ -158,12 +213,11 @@ def doctor(probe=None, out=print):
     have = probe.exists(geo)
     report("ok" if have else "MISSING", "GeoNames data" + ("" if have else " (bash setup.sh)"))
     ok &= have
+
+    heading("Ollama (local, 127.0.0.1)")
     ok &= _check_ollama(probe, report)
 
-    if need:
-        out("Install what's missing:  sudo dnf install " + " ".join(dict.fromkeys(need)))
-    if want:
-        out("Optional:  sudo dnf install " + " ".join(dict.fromkeys(want)))
+    summary()
     return 0 if ok else 1
 
 
@@ -220,38 +274,79 @@ def _check_ollama(probe, report):
     return True
 
 
+def _queue(rest):
+    import drive_queue
+    drive_queue.main(rest, prog="media-intake queue")
+    return 0
+
+
+def _review(rest):
+    import review_ui
+    return review_ui.main(rest)
+
+
+def _backup(rest):
+    import backup
+    return backup.main(rest)
+
+
+def _gallery(rest):  # here, not in intake.py: gallery imports intake, so intake never imports gallery
+    import gallery
+    return gallery.main(rest)
+
+
+def _prune_cache(rest):  # cli.py's too: it reads the library as the gallery does (cache_prune imports gallery)
+    import cache_prune
+    return cache_prune.main(rest)
+
+
+# cli.py's own commands; VENV_SCRIPTS run in the venv; everything else goes to intake.py's parser.
+COMMANDS = {"doctor": lambda rest: doctor(), "queue": _queue, "review": _review, "backup": _backup,
+            "gallery": _gallery, "prune-cache": _prune_cache}
+HELP = ("-h", "--help", "help")
+
+
+def intake_commands():
+    """intake.py's subcommand names, read from its parser (never a copied list)."""
+    import argparse, intake
+    return [name for a in intake.build_parser("media-intake")._actions
+            if isinstance(a, argparse._SubParsersAction) for name in a.choices]
+
+
+def command_names():
+    return sorted({*COMMANDS, *VENV_SCRIPTS, *intake_commands()})
+
+
+def unknown_command(cmd, err=None):
+    """One-line error (with a "did you mean" when a real command is close), the short usage; exit code 2."""
+    err = err or sys.stderr
+    names = command_names()
+    close = difflib.get_close_matches(cmd, names, n=1)
+    print(f"media-intake: unknown command {cmd!r}" + (f"; did you mean {close[0]!r}?" if close else ""), file=err)
+    print("usage: media-intake <command> [options]\ncommands: " + ", ".join(names)
+          + "\n'media-intake --help' describes them; 'media-intake <command> --help' shows a command's options",
+          file=err)
+    return 2
+
+
 def main(argv=None):
     argv = list(sys.argv[1:] if argv is None else argv)
-    if not argv or argv[0] in ("-h", "--help", "help"):
+    if not argv or argv[0] in HELP:
         import intake
         print(__doc__.strip() + "\n\nIntake commands:\n")
         intake.build_parser("media-intake").print_help()
         return 0
     cmd, rest = argv[0], argv[1:]
-    if cmd == "doctor":
-        return doctor()
-    if cmd == "queue":
-        import drive_queue
-        drive_queue.main(rest, prog="media-intake queue")
-        return 0
-    if cmd == "review":
-        import review_ui
-        return review_ui.main(rest)
-    if cmd == "backup":
-        import backup
-        return backup.main(rest)
-    if cmd == "gallery":  # here, not in intake.py: gallery imports intake, so intake never imports gallery
-        import gallery
-        return gallery.main(rest)
-    if cmd == "prune-cache":  # cli.py's too: it reads the library as the gallery does (cache_prune imports gallery)
-        import cache_prune
-        return cache_prune.main(rest)
+    if cmd in COMMANDS:
+        return COMMANDS[cmd](rest)
     if cmd in VENV_SCRIPTS:
         script, pre = VENV_SCRIPTS[cmd]
         vp = venv_python()
         if not os.path.exists(vp):
             sys.exit(f"no venv at {vp}: run bash setup.sh first")
         os.execv(vp, [vp, "-I", os.path.join(HERE, script), *pre, *rest])
+    if cmd not in intake_commands():
+        return unknown_command(cmd)
     import intake
     intake.main(argv, prog="media-intake")
     return 0
