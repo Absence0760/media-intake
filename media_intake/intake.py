@@ -662,8 +662,10 @@ def file_uris(path):
 # still exists. The database is never edited by hand. Checked 2026-11-14 against
 # https://gitlab.gnome.org/GNOME/glib/-/raw/main/gio/glocalfile.c, .../gio/gio-tool-info.c,
 # .../docs/reference/gio/gio.rst and https://gitlab.gnome.org/GNOME/gvfs/-/raw/master/client/gdaemonvfs.c.
-GIO_TIMEOUT = 20  # seconds per gio call; after one times out (a hung gvfsd-metadata) the rest are skipped
-_gio_hung = False
+GIO_TIMEOUT = 20  # seconds per gio or localsearch call; after one times out the rest of the erase skips that tool
+# Which tools timed out in this process (a hung gvfsd-metadata or localsearch miner). A dict, not a module flag
+# set through `global`: one shared object both the setter and the readers see, and the tests reset.
+HUNG = {"gio": False, "localsearch": False}
 
 
 def gio_metadata_on():
@@ -676,12 +678,11 @@ def gvfs_meta_forget(path, stats=None):
     Returns 1 when it had an entry and every key went. stats (a Counter) gets "gvfs-metadata cleared" for
     that, and "gvfs-metadata not cleared" when gio failed, timed out or left a key: the coverage report then
     says so instead of reading as clean. Never fatal: the erase goes on either way."""
-    global _gio_hung
     gio = gio_metadata_on()
     if not gio or not os.path.lexists(path) or os.path.islink(path):
         return 0
     stats = collections.Counter() if stats is None else stats
-    if _gio_hung:
+    if HUNG["gio"]:
         stats["gvfs-metadata not cleared"] += 1
         return 0
     path, env = os.path.abspath(path), dict(os.environ, LC_ALL="C")
@@ -695,7 +696,8 @@ def gvfs_meta_forget(path, stats=None):
         done = sum(subprocess.run([gio, "set", "-n", "-t", "unset", path, k], capture_output=True, env=env,
                                   timeout=GIO_TIMEOUT).returncode == 0 for k in keys)
     except (OSError, subprocess.SubprocessError) as e:
-        _gio_hung = _gio_hung or isinstance(e, subprocess.TimeoutExpired)
+        if isinstance(e, subprocess.TimeoutExpired):
+            HUNG["gio"] = True
         stats["gvfs-metadata not cleared"] += 1
         return 0
     if keys and done == len(keys):
@@ -1012,23 +1014,73 @@ def prune_app_traces(uris, prefixes):
     # `reset --file` forces it for each erased path inside an indexed folder, and `localsearch info` then
     # checks the index holds nothing for it (a stored file has a nie:url; none prints "No metadata").
     if localsearch_on():
-        r = subprocess.run(["localsearch", "index"], capture_output=True, text=True)
+        r = localsearch("index")
+        if r is None:
+            n["localsearch could not check"] += 1  # no list of indexed folders: nothing could be reset or checked
+            return n
         rows = re.findall(r"^(/.*?)\s+([*-])\s*$", re.sub(r"\x1b\[[0-9;]*m", "", r.stdout), re.M)
         for u in uris:
             if not u.startswith("file://"):
                 continue
             path = urllib.parse.unquote(u[7:])
             if any(os.path.dirname(path) == d or (rec == "*" and path.startswith(d + os.sep)) for d, rec in rows):
-                if subprocess.run(["localsearch", "reset", "--file", path], capture_output=True).returncode == 0:
+                reset = localsearch("reset", "--file", path)
+                if reset is not None and reset.returncode == 0:
                     n["localsearch resets"] += 1
-                info = subprocess.run(["localsearch", "info", path], capture_output=True, text=True,
-                                      env=dict(os.environ, LC_ALL="C"))
-                if info.returncode != 0:  # a miner not running, a D-Bus error: no answer, not "forgotten"
+                info = localsearch("info", path)
+                if info is None or info.returncode != 0:  # hung, no miner, a D-Bus error: no answer, not "forgotten"
                     n["localsearch could not check"] += 1
                     continue
                 n["localsearch checked"] += 1
                 n["localsearch still indexed"] += "nie:url" in info.stdout
     return n
+
+
+def prune_backup_records(gone, shas):
+    """Drop erased content from every backup record (<state>/backup/*.json, backup.py's manifest: files keyed
+    by the path under media-intake-backup/, each with its sha256): the record keeps names, which must not
+    outlive the file. An entry goes when its path is an erased or moved library path, or its sha256 an erased
+    item's (a copy filed under another name), and so does the .xmp sidecar entry of a media entry that went.
+    Only bookkeeping: a dropped entry that still has a file is hashed again by the next backup. The copies on
+    the drive are erase --drive's job (by checksum). Returns (entries dropped, records it could not rewrite)."""
+    recs = sorted(glob.glob(os.path.join(STATE, "backup", "*.json")))
+    if not recs:
+        return 0, 0
+    import backup  # lazily: backup imports this module
+    rels = set()
+    for p in gone:
+        for src, sub in backup.roots(CFG):
+            if backup._within(p, src):
+                rels.add(os.path.join(sub, os.path.relpath(os.path.realpath(p), os.path.realpath(src))))
+    n = failed = 0
+    for rec in recs:
+        files = backup.load_manifest(rec)
+        drop = {r for r, e in files.items() if r in rels or (isinstance(e, dict) and e.get("sha") in shas)}
+        drop |= {r for r in files if r.lower().endswith(".xmp") and r[:-4] in drop}
+        if not drop:
+            continue
+        try:
+            backup.save_manifest(rec, {r: e for r, e in files.items() if r not in drop})
+        except OSError:
+            failed += 1  # the names stay in it: counted under left, never fatal (the erase is done)
+            continue
+        n += len(drop)
+    return n, failed
+
+
+def localsearch(*args):
+    """Run localsearch (C locale, GIO_TIMEOUT). None when it timed out, or an earlier call in this erase did
+    (HUNG): the caller counts that as could not check, never as done."""
+    if HUNG["localsearch"]:
+        return None
+    try:
+        return subprocess.run(["localsearch", *args], capture_output=True, text=True,
+                              env=dict(os.environ, LC_ALL="C"), timeout=GIO_TIMEOUT)
+    except subprocess.TimeoutExpired:
+        HUNG["localsearch"] = True
+        return None
+    except OSError:
+        return None
 
 
 def localsearch_on():
@@ -1301,6 +1353,8 @@ CANT_REACH = (
     "other computers and devices, and backup drives not named with --drive",
     "filesystem snapshots (btrfs snapshots of /home) and blocks an SSD or flash drive keeps aside",
     "re-encoded or trimmed copies of a video (only exact copies are found)",
+    "a cloud export's Google Takeout JSON or iCloud CSV row left beside an erased file on its source drive "
+    "(it can hold the date, place and description)",
 )
 COVERAGE_RX = re.compile(r"^(\S+ \S+) (\S+) coverage (\{.*\})$")
 
@@ -1393,7 +1447,8 @@ def cmd_erase(a):
             if dh is not None:
                 root = v.get("of") if isinstance(v.get("of"), str) else v.get("root_of")
                 refs.append((dh, land, v["sha"], root if isinstance(root, str) else None))
-    gone = set()  # every path erased or moved: for recent files, app state and the index
+    gone = set()  # every path erased or moved: for recent files, app state, the index and backup records
+    gone |= set(getattr(a, "forget_paths", ()))  # forget's library paths (their quarantine entries keep no dst)
     # Exact duplicates of a quarantined file were dropped by `apply`, but their
     # phone originals (e.g. DCIM/Restored copies) are just as sensitive.
     phone_rels = [rel for rel in q if q[rel]["sha"] in shas]
@@ -1473,6 +1528,7 @@ def cmd_erase(a):
     prefixes = [file_uris(STATE)[0] + "/"]  # quarantine and staging, any batch
     recent = prune_recent(uris, prefixes)
     traces = prune_app_traces(uris, prefixes)
+    backups, backups_failed = prune_backup_records(gone, set(shas))
     with open(os.path.join(STATE, "erase-log.txt"), "a") as f:
         for s, (size, _) in shas.items():
             f.write(f"{datetime.datetime.now():%Y-%m-%d %H:%M} {a.batch} sha256:{s} size:{size}\n")
@@ -1524,7 +1580,8 @@ def cmd_erase(a):
                                 "phone thumbnails the phone refused to delete": prefused,
                                 "files localsearch still has indexed": traces["localsearch still indexed"],
                                 "files localsearch could not check": traces["localsearch could not check"],
-                                "gvfs-metadata entries gio could not clear": stats["gvfs-metadata not cleared"]})
+                                "gvfs-metadata entries gio could not clear": stats["gvfs-metadata not cleared"],
+                                "backup records that could not be rewritten (they keep the names)": backups_failed})
     ok = verify_gone(sig, a.drive, left)
     # The coverage report: every place this erase reached (counts), what it left, what it could not check.
     reached = {"quarantined files (state folder, quarantine/)": len(q),
@@ -1538,7 +1595,8 @@ def cmd_erase(a):
                "Showtime playback positions and log lines (~/.local/state/showtime)":
                    traces["showtime positions"] + traces["showtime log lines"],
                "localsearch error reports (~/.cache/tracker3/files/errors)": traces["localsearch error reports"],
-               "near-duplicates moved to quarantine (not deleted)": near}
+               "near-duplicates moved to quarantine (not deleted)": near,
+               "backup records: erased files dropped (state folder, backup/)": backups}
     not_checked = []
     if gio_metadata_on():
         reached["gvfs-metadata entries cleared (~/.local/share/gvfs-metadata)"] = stats["gvfs-metadata cleared"]
@@ -1612,6 +1670,7 @@ def cmd_forget(a):
     save(os.path.join(quar, "quarantine.json"), q)
     save(os.path.join(STATE, "index.json"), index)
     a.batch, a.phone, a.forget_stats = batch, None, stats  # erase's coverage report counts these too
+    a.forget_paths = files
     cmd_erase(a)
 
 

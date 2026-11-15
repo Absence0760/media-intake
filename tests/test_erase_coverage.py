@@ -6,10 +6,12 @@
 Synthetic only: random bytes stand in for media, a fake `gio` and a fake `localsearch` first on PATH record
 every call (and whether the file still existed when it came), in a throwaway HOME.
 """
-import hashlib, json, os, shutil, subprocess, sys, tempfile, unittest
+import collections, hashlib, json, os, shutil, subprocess, sys, tempfile, unittest
+from unittest import mock
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import support  # noqa: E402  (hermetic config)
+import intake  # noqa: E402  (in-process: the hung-tool and symlink cases)
 
 INTAKE = os.path.join(support.PKG, "intake.py")
 PY = sys.executable
@@ -17,10 +19,14 @@ PY = sys.executable
 # gio info lists metadata:: keys for the paths in FAKE_GIO_META; gio set records the call and whether the file
 # still existed; gio remove deletes (device_remove). FAKE_GIO_FAIL=info fails every info, =<key> that key's set.
 FAKE_GIO = '''#!{py} -I
-import os, sys
+import os, sys, time
 args = sys.argv[1:]
 p = args[-1] if args[0] in ("info", "remove") else args[-2]
 state = "exists" if os.path.lexists(p) else "missing"
+if os.environ.get("FAKE_GIO_HANG"):  # a hung gvfsd-metadata: log the call, then never answer
+    with open(os.environ["FAKE_GIO_LOG"], "a") as f:
+        f.write(f"hang {{args[0]}} {{p}}\\n")
+    time.sleep(60)
 try:
     with open(os.environ["FAKE_GIO_META"]) as f:
         meta = p in f.read().splitlines()
@@ -49,12 +55,14 @@ with open(os.environ["FAKE_GIO_LOG"], "a") as f:
 # localsearch: Downloads is indexed (not recursively); reset --file forgets a path unless FAKE_LS_STUCK;
 # info prints a nie:url only for a path still in FAKE_LS_INDEXED, and fails with FAKE_LS_INFO_FAIL.
 FAKE_LS = '''#!{py} -I
-import os, sys
+import os, sys, time
 args, idx = sys.argv[1:], os.environ["FAKE_LS_INDEXED"]
 with open(idx) as f:
     have = f.read().splitlines()
 with open(os.environ["FAKE_LS_LOG"], "a") as f:
     f.write(" ".join(args) + "\\n")
+if os.environ.get("FAKE_LS_HANG") == args[0]:  # a hung miner: never answers this command
+    time.sleep(60)
 if args[0] == "index":
     print(os.path.join(os.environ["HOME"], "Downloads") + "  -")
 elif args[:2] == ["reset", "--file"] and not os.environ.get("FAKE_LS_STUCK"):
@@ -196,9 +204,9 @@ class EraseCoverage(unittest.TestCase):
         self.assertEqual(cov["left"], {})
         self.assertIn("phone or camera: no --phone", cov["not_checked"])
         self.assertIn("backup drive unused space: not overwritten (--no-wipe-free)", cov["not_checked"])
-        self.assertEqual(len(cov["cant_reach"]), 6)
+        self.assertEqual(len(cov["cant_reach"]), 7)
         for want in ("cloud services", "chat apps", "app-private storage", "backup drives not named",
-                     "filesystem snapshots"):
+                     "filesystem snapshots", "Google Takeout JSON or iCloud CSV row left beside an erased file"):
             self.assertTrue(any(want in x for x in cov["cant_reach"]), want)
         log = read(os.path.join(self.state, "erase-log.txt"))
         for name in ("IMG-77", "clip.mp4", "Downloads", self.home):
@@ -378,6 +386,81 @@ class EraseCoverage(unittest.TestCase):
                                                                 "not_checked": [], "cant_reach": []}) + "\n")
         self.assertEqual(label.flagged(self.state), {self.sha: len(self.data)})
 
+    def backup(self):
+        r = subprocess.run([PY, "-I", os.path.join(support.PKG, "cli.py"), "backup", self.drive], env=self.env,
+                           capture_output=True, text=True)
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+
+    def record(self):
+        recs = [os.path.join(self.state, "backup", f) for f in os.listdir(os.path.join(self.state, "backup"))]
+        self.assertEqual(len(recs), 1)
+        with open(recs[0]) as f:
+            return json.load(f)["files"]
+
+    def test_erase_and_forget_drop_backup_records_and_drive_copies(self):
+        """backup, then erase --drive and forget: the record forgets the names, the drive copies go by checksum,
+        verify-gone finds none, and the next backup doesn't bring them back."""
+        self.env.update(MEDIA_INTAKE_TEST_MOUNT=self.drive, MEDIA_INTAKE_TEST_UUID="TEST-UUID")
+        lib = write(self.H("Pictures/library/2026/2026-11/clip.mp4"), self.data)
+        write(lib + ".xmp", b"tags")  # its sidecar is backed up too, under the erased file's name
+        other = os.urandom(2048)
+        lib2 = write(self.H("Pictures/library/2026/2026-11/later.mp4"), other)
+        keep = write(self.H("Pictures/library/2026/2026-11/keep.mp4"), os.urandom(1024))
+        os.makedirs(self.state, exist_ok=True)
+        with open(os.path.join(self.state, "index.json"), "w") as f:
+            json.dump({lib: {"sha": self.sha, "size": len(self.data)}}, f)
+        self.backup()
+        dest = os.path.join(self.drive, "media-intake-backup", "library", "2026", "2026-11")
+        rels = {"library/2026/2026-11/" + n for n in ("clip.mp4", "clip.mp4.xmp", "later.mp4", "keep.mp4")}
+        self.assertEqual(set(self.record()), rels)
+        # A stale entry for the same content under a name no longer in the library (renamed since the
+        # backup): not in the erase's paths, dropped by its sha256.
+        rec = os.path.join(self.state, "backup", os.listdir(os.path.join(self.state, "backup"))[0])
+        with open(rec) as f:
+            m = json.load(f)
+        m["files"]["library/2026/old-name.mp4"] = dict(m["files"]["library/2026/2026-11/clip.mp4"])
+        with open(rec, "w") as f:
+            json.dump(m, f)
+        batch = "2026-11-14-backup"
+        self.quarantine(batch)
+        self.intake("erase", batch, "--yes", "--drive", self.drive, "--no-wipe-free")
+        self.assertFalse(os.path.lexists(lib))
+        self.assertFalse(os.path.lexists(os.path.join(dest, "clip.mp4")), "the drive copy goes by checksum")
+        self.assertEqual(set(self.record()), rels - {"library/2026/2026-11/clip.mp4", "library/2026/2026-11/clip.mp4.xmp"})
+        self.assertNotIn(self.sha, json.dumps(self.record()))
+        self.assertEqual(self.coverage()["reached"]["backup records: erased files dropped (state folder, backup/)"], 3)
+        self.intake("forget", lib2, "--yes", "--drive", self.drive, "--no-wipe-free")
+        self.assertEqual(set(self.record()), {"library/2026/2026-11/keep.mp4"})
+        self.assertFalse(os.path.lexists(os.path.join(dest, "later.mp4")))
+        self.assertIn("no copy of 1 erased items in HOME or on the drive",
+                      self.intake("verify-gone", batch, "--drive", self.drive))
+        self.backup()
+        self.assertEqual(sorted(os.listdir(dest)), ["keep.mp4"], "the next backup brings nothing back")
+        self.assertEqual(set(self.record()), {"library/2026/2026-11/keep.mp4"})
+        self.assertTrue(os.path.isfile(keep))
+
+    def test_a_record_it_cannot_rewrite_is_counted_as_left(self):
+        """A backup record erase cannot rewrite (its temporary name taken by a folder) keeps the names: the
+        report says so under left, and the erase itself still finishes."""
+        self.env.update(MEDIA_INTAKE_TEST_MOUNT=self.drive, MEDIA_INTAKE_TEST_UUID="TEST-UUID")
+        lib = write(self.H("Pictures/library/2026/2026-11/clip.mp4"), self.data)
+        os.makedirs(self.state, exist_ok=True)
+        with open(os.path.join(self.state, "index.json"), "w") as f:
+            json.dump({lib: {"sha": self.sha, "size": len(self.data)}}, f)
+        self.backup()
+        rdir = os.path.join(self.state, "backup")
+        rec = os.path.join(rdir, os.listdir(rdir)[0])
+        os.mkdir(rec + ".tmp")  # intake.save writes <record>.tmp first
+        batch = "2026-11-14-ro"
+        self.quarantine(batch)
+        self.intake("erase", batch, "--yes", "--no-wipe-free")
+        self.assertFalse(os.path.lexists(lib))
+        cov = self.coverage()
+        self.assertEqual(cov["left"]["backup records that could not be rewritten (they keep the names)"], 1)
+        self.assertEqual(cov["reached"]["backup records: erased files dropped (state folder, backup/)"], 0)
+        with open(rec) as f:
+            self.assertEqual(set(json.load(f)["files"]), {"library/2026/2026-11/clip.mp4"})
+
     def test_verify_gone_without_a_report(self):
         os.makedirs(self.state)
         with open(os.path.join(self.state, "erase-log.txt"), "w") as f:
@@ -386,6 +469,89 @@ class EraseCoverage(unittest.TestCase):
         out = self.intake("verify-gone", "old-batch")
         self.assertIn("no copy of 1 erased items", out)
         self.assertIn("no erase coverage report for old-batch (erased before reports were kept)", out)
+
+
+
+class HungTools(unittest.TestCase):
+    """In process: a gio or localsearch that never answers costs one GIO_TIMEOUT, then the rest of the erase
+    skips that tool and counts what it skipped as not done. A symlink is never handed to gio."""
+
+    def setUp(self):
+        intake.HUNG.update(gio=False, localsearch=False)
+        self.addCleanup(intake.HUNG.update, gio=False, localsearch=False)
+        self.tmp = tempfile.mkdtemp(prefix="intake-hung-")
+        self.addCleanup(shutil.rmtree, self.tmp, True)
+        b = os.path.join(self.tmp, "bin")
+        os.makedirs(b)
+        for name, body in (("gio", FAKE_GIO), ("localsearch", FAKE_LS)):
+            with open(os.path.join(b, name), "w") as f:
+                f.write(body.format(py=PY))
+            os.chmod(os.path.join(b, name), 0o700)
+        self.gio_log, self.ls_log = os.path.join(self.tmp, "gio.log"), os.path.join(self.tmp, "ls.log")
+        self.home = os.path.join(self.tmp, "home")
+        self.indexed = write(os.path.join(self.tmp, "ls-indexed"), b"")
+        env = mock.patch.dict(os.environ, PATH=b + os.pathsep + os.environ.get("PATH", ""), HOME=self.home,
+                              FAKE_GIO_LOG=self.gio_log, FAKE_GIO_META=os.path.join(self.tmp, "none"),
+                              FAKE_LS_LOG=self.ls_log, FAKE_LS_INDEXED=self.indexed)
+        env.start()
+        self.addCleanup(env.stop)
+        for k in ("MEDIA_INTAKE_NO_GVFS_METADATA", "MEDIA_INTAKE_NO_LOCALSEARCH", "FAKE_GIO_HANG", "FAKE_LS_HANG"):
+            os.environ.pop(k, None)  # patch.dict puts them back
+        for name, value in (("GIO_TIMEOUT", 0.5), ("HOME", self.home)):
+            p = mock.patch.object(intake, name, value)
+            p.start()
+            self.addCleanup(p.stop)
+
+    def lines(self, p):
+        if not os.path.exists(p):
+            return []
+        with open(p) as f:
+            return f.read().splitlines()
+
+    def test_hung_gio_sets_the_flag_and_later_files_skip(self):
+        a = write(os.path.join(self.home, "a.mp4"), b"a")
+        b = write(os.path.join(self.home, "b.mp4"), b"b")
+        os.environ["FAKE_GIO_HANG"] = "1"
+        stats = collections.Counter()
+        self.assertEqual(intake.gvfs_meta_forget(a, stats), 0)
+        self.assertTrue(intake.HUNG["gio"], "the timeout in gvfs_meta_forget sets the flag")
+        self.assertEqual(intake.gvfs_meta_forget(b, stats), 0)
+        self.assertEqual(stats["gvfs-metadata not cleared"], 2)
+        self.assertEqual(self.lines(self.gio_log), [f"hang info {a}"], "after the timeout gio is not called again")
+
+    def test_a_symlink_is_never_passed_to_gio(self):
+        target = write(os.path.join(self.home, "target.mp4"), b"t")
+        link, dangling = os.path.join(self.home, "link.mp4"), os.path.join(self.home, "dangling.mp4")
+        os.symlink(target, link)
+        os.symlink(os.path.join(self.home, "nowhere.mp4"), dangling)
+        stats = collections.Counter()
+        for p in (link, dangling):
+            self.assertEqual(intake.gvfs_meta_forget(p, stats), 0)
+        self.assertEqual(self.lines(self.gio_log), [])
+        self.assertEqual(stats, collections.Counter())
+        self.assertEqual(intake.gvfs_meta_forget(target, stats), 0)  # a plain file still is
+        self.assertEqual(self.lines(self.gio_log), [f"info exists {target}"])
+
+    def test_hung_localsearch_sets_the_flag_and_later_files_skip(self):
+        d = os.path.join(self.home, "Downloads")  # the fake's indexed folder
+        uris = sorted(intake.file_uris(os.path.join(d, n))[0] for n in ("a.mp4", "b.mp4"))
+        os.environ["FAKE_LS_HANG"] = "reset"
+        n = intake.prune_app_traces(set(uris), [])
+        self.assertTrue(intake.HUNG["localsearch"])
+        self.assertEqual(n["localsearch could not check"], 2)
+        self.assertEqual(n["localsearch checked"], 0)
+        self.assertEqual(len([ln for ln in self.lines(self.ls_log) if ln.startswith("reset ")]), 1,
+                         "one hung reset, then no more localsearch calls")
+        self.assertFalse([ln for ln in self.lines(self.ls_log) if ln.startswith("info ")])
+
+    def test_hung_localsearch_index_skips_every_reset_and_check(self):
+        uris = {intake.file_uris(os.path.join(self.home, "Downloads", "a.mp4"))[0]}
+        os.environ["FAKE_LS_HANG"] = "index"
+        n = intake.prune_app_traces(uris, [])
+        self.assertTrue(intake.HUNG["localsearch"])
+        self.assertEqual(n["localsearch could not check"], 1)
+        self.assertEqual((n["localsearch resets"], n["localsearch checked"]), (0, 0))
+        self.assertEqual(self.lines(self.ls_log), ["index"])
 
 
 if __name__ == "__main__":
