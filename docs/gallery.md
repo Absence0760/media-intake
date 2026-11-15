@@ -340,7 +340,8 @@ and serves that instead; every other video is served as it is.
   original through a link `in` in a private work folder
   (`proxies/.work-*`, 0700) and writes `out.mp4` beside it, both paths made
   by the tool; if that folder's path holds anything but letters, digits and
-  `._/+-` (an unusual HOME), GStreamer is not tried.
+  `._/+-` (an unusual HOME), GStreamer is not tried, and the gallery says so
+  once per folder on stderr (`[gst] fallback skipped: ...`, the path only).
 - **Cached** in `~/.cache/media-intake/proxies/<sha256>.mp4` (folder 0700,
   files 0600), written in the work folder first (removed afterwards) and kept
   only when ffprobe reads it back as H.264. They are copies of video content, so
@@ -441,7 +442,8 @@ GStreamer fallback's two `gst-launch-1.0` runs (with and without sound) for a
 file named with `!`, spaces and double quotes: two `location=` arguments, the
 work folder's link (resolving to the original) and output, and no part of the
 name in any argument; `proxy_commands` in-process with a hostile name, and
-skipping GStreamer for an unsafe work path; the race where a video is trashed
+skipping GStreamer for an unsafe work path (one stderr note per folder, none
+when no GPU decoder would have been tried); the race where a video is trashed
 while its proxy is made (a gated ffmpeg that has written the proxy waits on a
 FIFO): with the trash job still running the fresh proxy is deleted and the
 original served, and after the trash ends it is deleted and nothing served,

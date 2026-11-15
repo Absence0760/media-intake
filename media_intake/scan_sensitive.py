@@ -192,6 +192,7 @@ def _video_frames(path, fd, max_frames):
     work = os.path.abspath(tempfile.mkdtemp(prefix=".gst-", dir=fd))
     try:
         if not SAFE_GST_PATH.fullmatch(work):
+            note_gst_skipped(fd, "clip left not checked")
             return []
         os.symlink(os.path.abspath(path), os.path.join(work, "in"))
         r = subprocess.run(gst_frames_command(dec, work, every), capture_output=True, timeout=1800,
@@ -207,6 +208,18 @@ def _video_frames(path, fd, max_frames):
 
 
 SAFE_GST_PATH = re.compile(r"[A-Za-z0-9._/+-]+")  # what may stand as a location= value (as gallery.SAFE_GST_PATH)
+_GST_SKIP_NOTED = set()
+
+
+def note_gst_skipped(folder, outcome):
+    """Say once per folder per run, on stderr, why GStreamer was not tried: the work folder's path (made by
+    the tool, never a clip's name) holds a character SAFE_GST_PATH refuses. The path only, no media content."""
+    folder = os.path.abspath(folder)
+    if folder in _GST_SKIP_NOTED:
+        return
+    _GST_SKIP_NOTED.add(folder)
+    print(f"[gst] fallback skipped: work folder path has characters GStreamer can't take safely "
+          f"(only letters, digits and ._/+- are): {folder}; {outcome}", file=sys.stderr, flush=True)
 
 
 def gst_frames_command(dec, work, every):

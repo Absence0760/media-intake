@@ -435,6 +435,8 @@ class ScanGstPipeline(Base):
         os.makedirs(os.path.dirname(self.clip))
         with open(self.clip, "wb") as f:
             f.write(b"not really hevc")
+        scan_sensitive._GST_SKIP_NOTED.clear()  # the skip note is once per folder per process
+        self.addCleanup(scan_sensitive._GST_SKIP_NOTED.clear)
 
     def runs(self, name):
         if not os.path.exists(self.log):
@@ -445,7 +447,10 @@ class ScanGstPipeline(Base):
     def test_hostile_name_never_reaches_the_pipeline(self):
         fd = tempfile.mkdtemp(dir=self.d)
         orig = sha(self.clip)
-        self.assertEqual(scan_sensitive.video_frames(self.clip, fd), ["001.jpg", "002.jpg"])
+        err = io.StringIO()
+        with contextlib.redirect_stderr(err):
+            self.assertEqual(scan_sensitive.video_frames(self.clip, fd), ["001.jpg", "002.jpg"])
+        self.assertEqual(err.getvalue(), "")  # a safe work folder: no skip note
         self.assertEqual(sorted(os.listdir(fd)), ["001.jpg", "002.jpg"])  # the work folder is gone
         self.assertEqual(sha(self.clip), orig)  # removing the work folder (and its link) left the original
         self.assertEqual(self.runs("gst-mode"), [["0o700", "0o700"]])  # private while GStreamer ran
@@ -470,12 +475,23 @@ class ScanGstPipeline(Base):
     def test_unsafe_work_folder_skips_gstreamer_and_is_not_clean(self):
         tmp = os.path.join(self.d, "work dir ! x")
         os.makedirs(tmp, mode=0o700)
-        self.assertEqual(scan_sensitive.scan_file(FakeNudeDetector(), self.clip, tmp), ["unscanned-video"])
+        err = io.StringIO()
+        with contextlib.redirect_stderr(err):
+            for _ in range(3):  # a batch of clips: one note for the folder, not one per clip
+                self.assertEqual(scan_sensitive.scan_file(FakeNudeDetector(), self.clip, tmp), ["unscanned-video"])
         self.assertEqual(self.runs("gst-launch-1.0"), [])
         self.assertEqual(os.listdir(tmp), [])  # nothing left behind
+        frames = os.path.join(tmp, "frames")
+        self.assertEqual(err.getvalue().splitlines(), [
+            "[gst] fallback skipped: work folder path has characters GStreamer can't take safely "
+            f"(only letters, digits and ._/+- are): {frames}; clip left not checked"])
+        self.assertNotIn("y.MOV", err.getvalue())  # the folder, never the clip's name
         fd = tempfile.mkdtemp(prefix='q"', dir=self.d)
-        self.assertEqual(scan_sensitive.video_frames(self.clip, fd), [])
+        err = io.StringIO()
+        with contextlib.redirect_stderr(err):
+            self.assertEqual(scan_sensitive.video_frames(self.clip, fd), [])
         self.assertEqual((os.listdir(fd), self.runs("gst-launch-1.0")), ([], []))
+        self.assertIn(f": {os.path.abspath(fd)}; clip left not checked", err.getvalue())  # another folder: its own note
 
 
 class FfmpegInputIsAFile(Base):
