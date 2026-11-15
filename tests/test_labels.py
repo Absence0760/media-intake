@@ -84,7 +84,7 @@ class TextEmbeddings(unittest.TestCase):
 # For the main and tag tests below (kept apart from the import block above).
 import io, json, subprocess, types  # noqa: E402
 from contextlib import redirect_stdout  # noqa: E402
-from unittest import mock  # noqa: E402
+import unittest.mock as mock  # noqa: E402
 
 
 def stale_npz(path, how):
