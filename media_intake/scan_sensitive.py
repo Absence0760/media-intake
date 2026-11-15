@@ -162,17 +162,20 @@ def video_frames(path, fd, max_frames=90):
 
 
 def _video_frames(path, fd, max_frames):
+    # file: + an absolute path: a name (or a relative source) like "concat:..." or "http:..." is a file, never
+    # a protocol ffmpeg would follow.
+    src = "file:" + os.path.abspath(path)
     try:
         dur = float(subprocess.run(["ffprobe", "-v", "error", "-show_entries", "format=duration",
-                                    "-of", "csv=p=0", path], capture_output=True, text=True, timeout=60).stdout or 0)
+                                    "-of", "csv=p=0", src], capture_output=True, text=True, timeout=60).stdout or 0)
     except ValueError:
         dur = 0
     every = max(2.0, dur / max_frames) if dur else 2.0
     # eof_action=pass: without it the fps filter drops the only frame of a clip shorter than
     # about half the sampling period (a 0.5 s clip gave no frame at all).
-    r = subprocess.run(["ffmpeg", "-v", "error", "-nostdin", "-i", path,
+    r = subprocess.run(["ffmpeg", "-v", "error", "-nostdin", "-i", src,
                         "-vf", f"fps=1/{every:.3f}:eof_action=pass,scale=960:-2",
-                        "-frames:v", str(max_frames), os.path.join(fd, "%03d.jpg")],
+                        "-frames:v", str(max_frames), "file:" + os.path.join(os.path.abspath(fd), "%03d.jpg")],
                        capture_output=True, timeout=900)
     frames = sorted(os.listdir(fd))
     if r.returncode == 0 and frames:
