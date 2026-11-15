@@ -4,9 +4,12 @@
   python3 -I -m unittest discover -s tests -p test_semantic.py
 
 Skips when setup.sh hasn't run (no venv or vision model); the text-search cases
-also skip when the text model isn't in ~/.cache/media-intake-build.
+also skip when the text model isn't in ~/.cache/media-intake-build. The UI cases
+(progress, summary, output formats, missing index/model messages) use fakes in
+place of the models and need only numpy.
 """
-import hashlib, json, os, shutil, subprocess, sys, tempfile, time, unittest
+import contextlib, hashlib, io, json, os, re, shutil, subprocess, sys, tempfile, time, types, unittest
+import unittest.mock as mock
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import support  # noqa: E402,F401  (hermetic config)
@@ -179,6 +182,272 @@ class Semantic(unittest.TestCase):
         r = self.sem("search", "red", ok=False)
         self.assertNotEqual(r.returncode, 0)
         self.assertIn("only `similar` works", r.stderr)
+
+
+try:
+    import numpy
+except ImportError:
+    numpy = None
+
+import label  # noqa: E402
+import meter  # noqa: E402
+import semantic  # noqa: E402
+
+GALLERY_PARSE = r're.match(r"^\s*(-?\d+(?:\.\d+)?)\s+(/.*)$", ln)'  # gallery.py, App.semantic
+
+
+class Clock:
+    def __init__(self, step=0.0):
+        self.t, self.step = 100.0, step
+
+    def __call__(self):
+        self.t += self.step
+        return self.t
+
+
+class Tty(io.StringIO):
+    def isatty(self):
+        return True
+
+
+class Meter(unittest.TestCase):
+    """meter.py: cadence, content, terminal rewrite."""
+
+    def env(self, every, secs):
+        return mock.patch.dict(os.environ, {"MEDIA_INTAKE_PROGRESS_EVERY": str(every),
+                                            "MEDIA_INTAKE_PROGRESS_SECS": str(secs)})
+
+    def test_every_n_items(self):
+        out, clock = io.StringIO(), Clock()
+        with self.env(3, "inf"):
+            m = meter.Meter("index", 7, out=out, tty=False, clock=clock)
+        for i in range(1, 8):
+            clock.t += 2.0  # 0.5 files/s
+            m.update(i)
+        lines = out.getvalue().splitlines()
+        self.assertEqual(lines, ["index: 3/7 files (42%), 2.0 s per file, about 8s left",
+                                 "index: 6/7 files (85%), 2.0 s per file, about 2s left"])
+
+    def test_every_n_seconds(self):
+        out, clock = io.StringIO(), Clock()
+        with self.env(1000, 5):
+            m = meter.Meter("vlm-trash", 100, out=out, tty=False, clock=clock)
+        for i in range(1, 11):
+            clock.t += 2.0
+            m.update(i)
+        lines = out.getvalue().splitlines()
+        self.assertEqual([l.split(",")[0] for l in lines], ["vlm-trash: 3/100 files (3%)", "vlm-trash: 6/100 files (6%)",
+                                                            "vlm-trash: 9/100 files (9%)"])
+
+    def test_rate_and_time_left(self):
+        out, clock = io.StringIO(), Clock()
+        with self.env(10, "inf"):
+            m = meter.Meter("index", 4000, out=out, tty=False, clock=clock)
+        clock.t += 4.0
+        m.update(10)  # 2.5 files/s, 3990 left: 1596 s
+        self.assertEqual(out.getvalue(), "index: 10/4,000 files (0%), 2.5 files/s, about 26m 36s left\n")
+
+    def test_terminal_rewrites_one_line(self):
+        out, clock = Tty(), Clock()
+        with self.env(1, "inf"):
+            m = meter.Meter("index", 3, out=out, clock=clock)  # tty detected from the stream
+        self.assertTrue(m.tty)
+        m.update(1)
+        m.update(2)
+        self.assertNotIn("\n", out.getvalue())
+        self.assertEqual(out.getvalue().count("\r"), 2)
+        m.say("index: done")  # overwrites the progress line, padded over its tail, then ends the line
+        last = out.getvalue().split("\r")[-1]
+        self.assertEqual((last.rstrip(), last.endswith("\n"), len(last)), ("index: done", True,
+                                                                           len(out.getvalue().split("\r")[-2]) + 1))
+        m.update(3)
+        m.close()
+        self.assertTrue(out.getvalue().endswith("\n"))
+        m.close()  # nothing pending: no extra newline
+        self.assertFalse(out.getvalue().endswith("\n\n"))
+
+    def test_default_terminal_cadence_is_faster(self):
+        with mock.patch.dict(os.environ, {"MEDIA_INTAKE_PROGRESS_EVERY": "", "MEDIA_INTAKE_PROGRESS_SECS": ""}):
+            self.assertEqual(meter.Meter("x", 1, out=io.StringIO(), tty=True).secs, meter.TTY_SECS)
+            self.assertEqual(meter.Meter("x", 1, out=io.StringIO(), tty=False).secs, meter.SECS)
+            self.assertEqual(meter.Meter("x", 1, out=io.StringIO(), tty=False, every=1000).every, 1000)
+
+    def test_duration(self):
+        self.assertEqual([meter.duration(x) for x in (0, 45.4, 60, 1596, 3600, 3725)],
+                         ["0s", "45s", "1m 00s", "26m 36s", "1h 00m", "1h 02m"])
+
+
+@unittest.skipUnless(numpy, "numpy missing")
+class Ui(unittest.TestCase):
+    """Index progress and summary, search/similar output, missing index/model messages, with fakes for
+    the encoders: nothing loads a model."""
+
+    def setUp(self):
+        self.d = tempfile.mkdtemp(prefix="semantic-ui-test-")
+        self.state = os.path.join(self.d, "state")
+        self.lib = os.path.join(self.d, "Pictures", "library")
+        self.patches = [mock.patch.object(semantic, "STATE", self.state),
+                        mock.patch.object(semantic, "STORE", os.path.join(self.state, "embeddings.npz")),
+                        mock.patch.object(semantic, "BUILD", os.path.join(self.d, "nobuild")),
+                        mock.patch.object(label, "flagged", lambda state: {}),
+                        mock.patch.object(label, "refused", lambda paths: []),
+                        mock.patch.dict(sys.modules, {"onnxruntime": types.ModuleType("onnxruntime")}),
+                        mock.patch.dict(os.environ, {"MEDIA_INTAKE_PROGRESS_EVERY": "2",
+                                                     "MEDIA_INTAKE_PROGRESS_SECS": "inf"})]
+        for p in self.patches:
+            p.start()
+
+    def tearDown(self):
+        for p in reversed(self.patches):
+            p.stop()
+        shutil.rmtree(self.d, ignore_errors=True)
+
+    def file(self, rel, content):
+        p = os.path.join(self.lib, rel)
+        os.makedirs(os.path.dirname(p), exist_ok=True)
+        with open(p, "wb") as f:
+            f.write(content)
+        return p
+
+    @staticmethod
+    def vec(*xs):
+        v = numpy.zeros(768, numpy.float32)
+        v[:len(xs)] = xs
+        return v / numpy.linalg.norm(v)
+
+    def run_main(self, *argv, stdout=None):
+        out, err = stdout or io.StringIO(), io.StringIO()
+        code = 0
+        with contextlib.redirect_stdout(out), contextlib.redirect_stderr(err):
+            try:
+                semantic.main(list(argv))
+            except SystemExit as e:
+                code = e.code
+        return code, out.getvalue(), err.getvalue()
+
+    # ---- index
+    def index_fixture(self):
+        names = {"secretname-a.jpg": b"a", "secretname-b.jpg": b"b", "secretname-copy.jpg": b"a",
+                 "secretname-bad.jpg": b"bad", "secretname-c.jpg": b"c"}
+        paths = [self.file(os.path.join("2026", "2026-11", n), c) for n, c in names.items()]
+
+        def embed(sess, path, np):
+            with open(path, "rb") as f:
+                c = f.read()
+            return None if c == b"bad" else self.vec(*(c[0], 1.0))
+        return paths, embed
+
+    def index(self, paths, embed):
+        with mock.patch.object(semantic, "library_files", lambda: sorted(paths)), \
+                mock.patch.object(semantic, "vision", lambda ort: "session"), \
+                mock.patch.object(semantic, "embed_file", embed):
+            return self.run_main("index")
+
+    def test_index_progress_and_summary(self):
+        paths, embed = self.index_fixture()
+        code, out, err = self.index(paths, embed)
+        self.assertEqual(code, 0)
+        c = json.loads(out.strip().splitlines()[-1])  # the machine form, unchanged
+        self.assertEqual((c["files"], c["vectors"], c["new_images"], c["undecodable"]), (4, 3, 3, 1))
+        lines = err.splitlines()
+        self.assertNotIn("secretname", err)  # never a file name
+        self.assertTrue(all(l.startswith("index") for l in lines), lines)
+        self.assertEqual(lines[2], "index: 5 files to embed, 0 already indexed")  # after the hashing lines
+        prog = [l for l in lines if re.match(r"index: \d+/5 files", l)]
+        head = lambda l: re.match(r"^.*? \d+/\d+ files", l).group(0)  # noqa: E731
+        self.assertEqual([head(l) for l in prog], ["index: 2/5 files", "index: 4/5 files"])
+        self.assertEqual([head(l) for l in lines if l.startswith("index (checking)")],
+                         ["index (checking): 2/5 files", "index (checking): 4/5 files"])
+        self.assertRegex(lines[-1], r"^index: indexed 3 new \(3 photos, 0 videos\), 0 unchanged, 1 failed "
+                                    r"\(undecodable\), 1 copies of new files; 0 refused, 0 dropped; took \d+s$")
+        # again: the undecodable file is tried again, the rest is unchanged
+        code, out, err = self.index(paths, embed)
+        self.assertIn("index: 1 files to embed, 4 already indexed", err)
+        self.assertRegex(err.splitlines()[-1], r"^index: indexed 0 new \(0 photos, 0 videos\), 4 unchanged, 1 failed")
+
+    # ---- search / similar output
+    def store(self):
+        a = self.file(os.path.join("2026", "2026-11", "IMG_20261108_071502.jpg"), b"1")
+        b = self.file(os.path.join("2026", "2026-10", "b.jpg"), b"2")
+        c = self.file(os.path.join("misc", "c.jpg"), b"3")
+        files = {p: [os.path.getsize(p), 0, s] for p, s in ((a, "sa"), (b, "sb"), (c, "sc"))}
+        semantic.save_store(numpy, ["sa", "sb", "sc"],
+                            numpy.stack([self.vec(1, 0), self.vec(0.8, 0.6), self.vec(0, 1)]), files)
+        return a, b, c
+
+    def test_search_human_list(self):
+        a, b, c = self.store()
+        with mock.patch.object(semantic, "text_available", lambda: None), \
+                mock.patch.object(semantic, "embed_text", lambda q, np, ort: self.vec(1, 0)):
+            code, out, err = self.run_main("search", "anything", "--format", "human")
+        self.assertEqual(code, 0)
+        self.assertEqual(out.splitlines(), [
+            f"1. 1.00  2026-11-08  {a}",
+            f"2. 0.80  2026-10     {b}",
+            f"3. 0.00              {c}",
+            "3 results, best first (score: cosine, compare within one query)"])
+        self.assertEqual(err, "")
+
+    def test_auto_is_human_on_a_terminal_only(self):
+        a, b, c = self.store()
+        code, out, _ = self.run_main("similar", a, "-n", "1", stdout=Tty())
+        self.assertEqual(out.splitlines()[0], f"1. 0.80  2026-10     {b}")
+        code, out, err = self.run_main("similar", a, "-n", "1")  # captured, as the gallery runs it
+        self.assertEqual(out, f"0.800  {b}\n")
+
+    def test_machine_format_is_what_the_gallery_parses(self):
+        a, b, c = self.store()
+        with open(os.path.join(os.path.dirname(semantic.__file__), "gallery.py")) as f:
+            self.assertIn(GALLERY_PARSE, f.read())  # gallery parsing changed: re-check this format
+        for argv in (("similar", a), ("similar", a, "--format", "machine")):
+            code, out, err = self.run_main(*argv)
+            self.assertEqual(code, 0)
+            self.assertEqual(out, f"0.800  {b}\n0.000  {c}\n")  # byte for byte: `%.3f  path`
+            self.assertEqual(err, "2 results\n")
+            got = [re.match(r"^\s*(-?\d+(?:\.\d+)?)\s+(/.*)$", ln) for ln in out.splitlines()]
+            self.assertEqual([(float(m.group(1)), m.group(2)) for m in got], [(0.8, b), (0.0, c)])
+
+    def test_no_results_says_so(self):
+        a, b, c = self.store()
+        code, out, _ = self.run_main("similar", a, "--videos", "--format", "human")
+        self.assertEqual(out, "No results. Try without --project/--unused-since/--clean/--photos/--videos.\n")
+        code, out, err = self.run_main("similar", a, "--videos")
+        self.assertEqual((out, err), ("", "0 results\n"))
+
+    # ---- missing index or model: one line naming the fix, no traceback
+    def test_missing_index_names_the_command(self):
+        boom = mock.Mock(side_effect=AssertionError("must not load the text model first"))
+        with mock.patch.object(semantic, "embed_text", boom):
+            code, out, err = self.run_main("search", "dog")
+        self.assertIn("no search index yet", code)
+        self.assertIn("media-intake index", code)
+        self.assertEqual(len(code.splitlines()), 1)
+        f = self.file("x.jpg", b"x")
+        code, _, _ = self.run_main("similar", f)
+        self.assertIn("media-intake index", code)
+        semantic.save_store(numpy, [], numpy.zeros((0, 768), numpy.float32), {})
+        code, _, _ = self.run_main("search", "dog")
+        self.assertIn("it holds no files", code)
+
+    def test_missing_text_model_names_setup(self):
+        self.store()
+        code, out, err = self.run_main("search", "dog")
+        self.assertIn("only `similar` works", code)
+        self.assertIn("bash setup.sh --build-labels", code)
+        self.assertEqual(out, "")
+
+    def test_missing_venv_modules_name_setup(self):
+        with mock.patch.dict(sys.modules, {"onnxruntime": None}):
+            code, _, _ = self.run_main("search", "dog")
+        self.assertIn("onnxruntime is missing", code)
+        self.assertIn("media-intake search", code)
+        self.assertIn("setup.sh", code)
+
+    def test_path_date(self):
+        for p, want in (("/l/2026/2026-11/IMG_20261108_071502.jpg", "2026-11-08"), ("/l/2026/2026-11/red.jpg", "2026-11"),
+                        ("/f/originals/2026-11-08-race/phone/g.jpg", "2026-11-08"), ("/v/GX010123.MP4", ""),
+                        ("/l/2026/2026-13/a.jpg", ""), ("/l/2026-1108.jpg", ""), ("/l/20261340.jpg", "")):
+            self.assertEqual(semantic.path_date(p), want, p)
 
 
 if __name__ == "__main__":

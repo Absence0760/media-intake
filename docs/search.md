@@ -73,9 +73,43 @@ media-intake similar ~/Videos/personal/2026/2026-05/GX010123.MP4 -n 20
   `AI|vlm/*/trash/*` unless you kept the file: `Owner|keep`, `Owner|not-trash`
   or the legacy `Review|not-trash` outrank a trash flag; `Owner|trash` is always
   dropped, and `Review|child-in-shot` is never cleared by a keep).
-- Output: `score  path`, best first; the score is the cosine (SigLIP
-  text-image cosines are small, about 0.05-0.2; compare within one query
-  only).
+- Output, best first; the score is the cosine (SigLIP text-image cosines
+  are small, about 0.05-0.2; compare within one query only). Two forms
+  (`--format`):
+  - **human** (the default on a terminal): a numbered list with the score
+    to 2 decimals, the date the path carries (a day in the file or folder
+    name such as `20261108` or `2026-11-08-race`, else intake's
+    `YYYY/YYYY-MM` library folder as `YYYY-MM`; blank when neither, and no
+    file is opened for it), and the path, then a count line. No hits says
+    so, and suggests dropping the filters when any were given.
+
+    ```
+    1. 0.14  2026-11-08  /home/you/Pictures/library/2026/2026-11/IMG_20261108_071502.jpg
+    2. 0.12  2026-10     /home/you/Pictures/library/2026/2026-10/IMG_0042.jpg
+    2 results, best first (score: cosine, compare within one query)
+    ```
+  - **machine** (the default when stdout is piped or captured): `score  path`
+    lines, score to 3 decimals, and `N results` on stderr. The gallery's
+    search box and Similar read this form (they run `semantic.py` with
+    captured output), so it stays byte for byte as it is; `--format machine`
+    forces it on a terminal.
+- Nothing to search yet: `search` and `similar` stop with one line naming
+  the fix instead of a traceback: no index (or an empty one) says `build it
+  with: media-intake index`; no text model says `bash setup.sh
+  --build-labels`; run outside the venv (numpy or onnxruntime missing) says
+  to go through `media-intake search` / `similar` or run `bash setup.sh`.
+  The index is checked before the text model is loaded.
+- Progress (`index`): counts only, on stderr, never a file name. A
+  start line (`index: N files to embed, M already indexed`), then
+  `index: done/total files (pct), rate, about <time> left` every 100 files
+  or 10 s, whichever comes first (on a terminal one line rewritten in place
+  every second); hashing on a first run shows as `index (checking): ...`
+  every 1,000 files. It ends with a summary: `index: indexed N new (photos,
+  videos), M unchanged, K failed (undecodable)[, C copies of new files];
+  R refused, D dropped; took T`. stdout still ends with the counts as one
+  JSON line (what the queue log and the tests read).
+  `MEDIA_INTAKE_PROGRESS_EVERY` / `MEDIA_INTAKE_PROGRESS_SECS` override the
+  cadence, as for intake's sweeps.
 
 A workflow for finding unused, cleared footage: `search "..." --videos
 --unused-since 30d --clean`, pick a hit, `similar <hit>` with the same filters
@@ -162,8 +196,17 @@ AI|vlm/qwen3-vl-2b/conf/<0.0-1.0>     the model's confidence, one decimal
   files; a file is skipped when that record matches and its sidecar has this
   model's verdict tag. A kill loses at most 25 judgements.
 - `--inhibit` re-execs under `systemd-inhibit --what=sleep:idle`.
-- Progress lines on stderr: `[vlm] done/total  s/file  ETA h:mm:ss`, from the
-  measured time per file so far.
+- Progress on stderr, counts only, never a file name: a start line
+  (`vlm-trash: N files to judge`), then `vlm-trash: done/total files (pct),
+  rate, about <time> left` every 100 files or 10 s (on a terminal one line
+  rewritten in place every second; `MEDIA_INTAKE_PROGRESS_EVERY` /
+  `_SECS` override), from the wall-clock rate so far. Verdicts are still
+  written every 25 files.
+- A summary line on stderr at the end: `vlm-trash: judged N (T trash, L
+  low-confidence trash, K keep), skipped M (already judged, your decision,
+  refused)`, plus protected, undecodable and a GPU stop when they happen,
+  and the time taken; `--dry-run` says `would judge N`. stdout still ends
+  with the counts as one JSON line (the machine form).
 
 Start it in the background (the log has counts only):
 
@@ -240,7 +283,9 @@ At 54 s a photo an overnight run covers only about 600 photos. This is why
 
 `python3 -I -m unittest discover -s tests -p test_semantic.py` and `-p test_vlm_trash.py` (a stub
 Ollama server; it doesn't measure model speed). `VLM_REAL=1` adds real calls
-against the local Ollama.
+against the local Ollama. The progress, summary and output-format cases in
+`test_semantic.py` (`Meter`, `Ui`) fake the encoders and need only numpy; they
+also check that the gallery still parses the machine form.
 
 ## Unverified
 

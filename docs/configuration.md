@@ -33,7 +33,9 @@ at once, at most 86400) is how long a CLI command waits for the library lock
 before it exits 75 ([intake.md](intake.md), "One writer at a time").
 `MEDIA_INTAKE_PROGRESS_EVERY` (files, default 10000) and
 `MEDIA_INTAKE_PROGRESS_SECS` (seconds, default 2) set how often the long
-sweeps in erase, forget and verify-gone print a counts-only progress line.
+sweeps in erase, forget and verify-gone print a counts-only progress line;
+the same two set it for `media-intake index` and `vlm-trash` (defaults there
+100 files and 10 s, 1 s on a terminal: [search.md](search.md)).
 `MEDIA_INTAKE_NO_GVFS_METADATA=1` stops erase clearing GNOME's per-file
 metadata through `gio`, and `MEDIA_INTAKE_NO_LOCALSEARCH=1` stops it resetting
 and checking the desktop search index; the tests set both, and the erase

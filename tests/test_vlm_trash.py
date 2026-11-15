@@ -6,7 +6,7 @@
 
 The real call is skipped unless VLM_REAL=1 and Ollama answers on 127.0.0.1:11434.
 """
-import base64, hashlib, http.server, io, json, os, shutil, subprocess, sys, tempfile, threading, time, unittest
+import base64, collections, hashlib, http.server, io, json, os, re, shutil, subprocess, sys, tempfile, threading, time, unittest
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import support  # noqa: E402,F401  (hermetic config)
@@ -379,6 +379,40 @@ class VlmTrash(unittest.TestCase):
         Stub.requests = []
         self.run_v("--redo", v)
         self.assertEqual(ai(v), [NS + "conf/0.9", NS + "keep"])
+
+    # ---- progress and summary (stderr; the JSON on stdout stays the machine form)
+    def test_progress_lines_and_summary(self):
+        for i in range(5):
+            img(os.path.join(self.lib, "2026", f"secretname{i}.jpg"), color=(i * 20, 10, 10))
+        self.env.update(MEDIA_INTAKE_PROGRESS_EVERY="2", MEDIA_INTAKE_PROGRESS_SECS="inf")
+        code, c, err = self.run_v("--all")
+        self.assertEqual((code, c["trash"]), (0, 5))  # stdout JSON as before
+        self.assertNotIn("secretname", err)  # never a file name
+        lines = [l for l in err.splitlines() if l.startswith("vlm-trash")]
+        self.assertEqual(lines[0], "vlm-trash: 5 files to judge")
+        prog = [l for l in lines if re.match(r"vlm-trash: \d+/5 files", l)]
+        self.assertEqual([l.split(" (")[0] for l in prog], ["vlm-trash: 2/5 files", "vlm-trash: 4/5 files"])
+        for l in prog:
+            self.assertRegex(l, r"^vlm-trash: \d/5 files \(\d+%\), [\d.]+ (files/s|s per file), about \S+ left$")
+        self.assertRegex(lines[-1], r"^vlm-trash: judged 5 \(5 trash, 0 low-confidence trash, 0 keep\), "
+                                    r"skipped 0; took \d+s$")
+        # nothing left: the summary says what was skipped and why
+        code, c, err = self.run_v("--all")
+        self.assertEqual(err.strip().splitlines()[-1], "vlm-trash: nothing to judge, skipped 5 (5 already judged)")
+        img(os.path.join(self.lib, "2026", "secretname-new.jpg"))
+        code, c, err = self.run_v("--all", "--dry-run")
+        self.assertEqual(err.strip().splitlines()[-1],
+                         "vlm-trash: would judge 1, skipped 5 (5 already judged); nothing sent (--dry-run)")
+
+    def test_summary_line(self):
+        import vlm_trash
+        c = collections.Counter({"todo": 6, "keep": 3, "protected": 1, "trash": 1, "trash-low": 1, "undecodable": 1,
+                                 "already": 2, "owner-decided": 1, "refused": 1, "seconds": 75.2})
+        self.assertEqual(vlm_trash.summary(c), "vlm-trash: judged 4 (1 trash, 1 low-confidence trash, 2 keep), "
+                                               "skipped 4 (2 already judged, 1 your decision, 1 refused); "
+                                               "1 protected (kept, not sent); 1 undecodable; took 1m 15s")
+        c = collections.Counter({"todo": 3, "keep": 1, "stopped-not-on-gpu": 1, "seconds": 3})
+        self.assertIn("stopped: the model is not fully on the GPU (--allow-cpu", vlm_trash.summary(c))
 
 
 @unittest.skipUnless(os.environ.get("VLM_REAL") == "1", "set VLM_REAL=1 for the real Ollama call")
