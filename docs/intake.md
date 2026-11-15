@@ -385,8 +385,16 @@ camera's clock).
   media extensions are walked). A Takeout puts the same photo in its year
   folder and in each album folder; `plan` drops the copies by sha256 against
   the batch and the library like any other duplicate ("Duplicates", below).
-- Only these small files (at most 1 MiB for a JSON, 64 MiB for a CSV) are
-  read, never through a symlink; nothing is written to the export. Offload of
+- Only these small files (at most 1 MiB for a JSON, `JSON_MAX`; 64 MiB for a
+  CSV, `CSV_MAX`) are read, never through a symlink, and a CSV must be UTF-8;
+  nothing is written to the export (its files, mtimes and folders are left
+  exactly as they were). A metadata file that breaks one of these rules, or
+  isn't a regular file, or fails to read, is skipped without stopping
+  `stage`, its media are staged without an export date, and `stage` reports
+  each reason it hit: `skipped N symlinked cloud export metadata files (never
+  followed)`, `... over the size cap`, `skipped N cloud export CSV files that
+  are not UTF-8`, `... that are not regular files or could not be read`
+  (`exports.REFUSED`; each file counted once). Offload of
   a drive deletes only the media originals: the JSON and CSV files stay on
   the drive, as does `erase`'s reach: an erased file's Takeout JSON or CSV row
   (which can hold its date, place and description) is not deleted; delete

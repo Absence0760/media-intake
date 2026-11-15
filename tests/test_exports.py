@@ -5,8 +5,10 @@
 
 Synthetic exports only, in a throwaway HOME: fabricated Takeout folders with JSON sidecars
 (new and old names, truncated long names, a (1) duplicate, an -edited copy, a Live Photo pair,
-0,0 places, a symlinked and a non-Takeout JSON) and an iCloud folder with its CSV. Every name
-and row is made up here from the naming rules in docs/intake.md ("Cloud exports").
+0,0 places, a symlinked and a non-Takeout JSON) and an iCloud folder with its CSV, plus the
+metadata files scan refuses (symlinked, over the size cap, a non-UTF-8 CSV, a FIFO). Every name
+and row is made up here from the naming rules in docs/intake.md ("Cloud exports"). stage is
+checked to leave the source tree byte-identical, with the same mtimes and no new entries.
 """
 import datetime, hashlib, json, os, shutil, subprocess, sys, tempfile, types, unittest
 from unittest import mock
@@ -52,6 +54,30 @@ def sha_tree(root):
             with open(p, "rb") as f:
                 out[os.path.relpath(p, root)] = hashlib.sha256(f.read()).hexdigest()
     return out
+
+
+def snapshot(root):
+    """{rel: (kind, sha256 or link target, size, mtime_ns, mode)} of every entry under root, dirs and
+    symlinks included (lstat, never followed): any write, touch, chmod or new file changes it."""
+    out = {}
+    for r, ds, fs in os.walk(root):
+        for n in ds + fs:
+            p = os.path.join(r, n)
+            st = os.lstat(p)
+            if os.path.islink(p):
+                kind, body = "link", os.readlink(p)
+            elif os.path.isdir(p):
+                kind, body = "dir", None
+            else:
+                with open(p, "rb") as f:
+                    kind, body = "file", hashlib.sha256(f.read()).hexdigest()
+            out[os.path.relpath(p, root)] = (kind, body, st.st_size, st.st_mtime_ns, st.st_mode)
+    return out
+
+
+def counts(**kw):
+    """scan()'s counts: zero for every key not given."""
+    return {**dict(google=0, icloud=0, places=0, ambiguous=0, unreadable=0), **dict.fromkeys(exports.REFUSED, 0), **kw}
 
 
 def jpg(path, seed):
@@ -166,7 +192,8 @@ class Scan(unittest.TestCase):
         self.assertEqual(out[rel("IMG_0042.MP4")]["time"], "2019-05-10 12:00:00Z", "Live Photo video: the still's")
         for n in (a, b, "IMG_0004.jpg", "IMG_0005.jpg"):
             self.assertNotIn(rel(n), out, n)
-        self.assertEqual(c, dict(google=8, icloud=0, places=2, ambiguous=2, unreadable=0))
+        self.assertEqual(c, counts(google=8, places=2, ambiguous=2, refused_link=1),
+                         "the symlinked sidecar is refused and counted; the non-Takeout JSONs are not")
 
     def test_icloud_csv(self):
         d = os.path.join(self.root, "iCloud Photos Part 1 of 1", "Photos")
@@ -186,7 +213,7 @@ class Scan(unittest.TestCase):
         r = os.path.join("iCloud Photos Part 1 of 1", "Photos")
         self.assertEqual(out, {os.path.join(r, "IMG_0501.HEIC"): dict(
             time="2015-03-03 19:45:00Z", via="icloud", sidecar=os.path.join(r, "Photo Details.csv"))})
-        self.assertEqual(c, dict(google=0, icloud=1, places=0, ambiguous=1, unreadable=0))
+        self.assertEqual(c, counts(icloud=1, ambiguous=1))
 
 
     def test_limits_encoding_and_symlinks(self):
@@ -214,13 +241,43 @@ class Scan(unittest.TestCase):
         with open(real, "w") as f:
             f.write(head + row.format("IMG_0104.jpg"))
         os.symlink(real, os.path.join(link, "Photo Details.csv"))
+        jl = os.path.join(self.root, "jsonlink")
+        touch(os.path.join(jl, "IMG_0105.jpg"))
+        takeout_json(os.path.join(self.root, "real.json"), T2019)
+        os.symlink(os.path.join(self.root, "real.json"), os.path.join(jl, "IMG_0105.jpg.json"))
         with mock.patch.object(exports, "CSV_MAX", 512):
             out, c = exports.scan(self.root, self.files())
-        self.assertEqual(out, {}, "an oversized JSON or CSV, a non-UTF-8 CSV and a symlinked CSV are all ignored")
-        self.assertEqual(c, dict(google=0, icloud=0, places=0, ambiguous=0, unreadable=0))
+        self.assertEqual(out, {}, "an oversized JSON or CSV, a non-UTF-8 CSV and symlinked CSV/JSON are all ignored")
+        self.assertEqual(c, counts(refused_size=2, refused_encoding=1, refused_link=2), "each skip is counted by reason")
         with mock.patch.object(exports, "CSV_MAX", 1 << 20):  # the same CSV under the cap is read
-            out, _ = exports.scan(self.root, self.files())
+            out, c = exports.scan(self.root, self.files())
         self.assertEqual(list(out), [os.path.join("big", "IMG_0102.jpg")])
+        self.assertEqual(c["refused_size"], 1, "only the oversized JSON is left")
+
+    def test_refused_counted_once(self):
+        """A symlinked JSON two media files fall back to (an original and its -edited copy) counts once."""
+        d = os.path.join(self.root, "export")
+        touch(os.path.join(d, "IMG_0301.jpg"))
+        touch(os.path.join(d, "IMG_0301-edited.jpg"))
+        takeout_json(os.path.join(self.root, "real.json"), T2019)
+        os.symlink(os.path.join(self.root, "real.json"), os.path.join(d, "IMG_0301.jpg.supplemental-metadata.json"))
+        out, c = exports.scan(self.root, self.files())
+        self.assertEqual((out, c), ({}, counts(refused_link=1)))
+
+    def test_read_small_refusals(self):
+        """_read_small never blocks on a FIFO and never raises on an I/O error mid-read."""
+        fifo = os.path.join(self.root, "x.json")
+        os.mkfifo(fifo)
+        refused = {}
+        self.assertIsNone(exports._read_small(fifo, 10, refused))
+        self.assertEqual(refused, {fifo: "refused_unreadable"})
+        ok = os.path.join(self.root, "ok.json")
+        touch(ok, b"{}")
+        refused = {}
+        with mock.patch.object(exports.os, "fdopen", side_effect=OSError(5, "I/O error")):
+            self.assertIsNone(exports._read_small(ok, 10, refused))
+        self.assertEqual(refused, {ok: "refused_unreadable"})
+        self.assertEqual(exports._read_small(ok, 10), b"{}", "no refused dict: still works")
 
     def test_unreadable_folder_counted(self):
         d = os.path.join(self.root, "export")
@@ -229,7 +286,7 @@ class Scan(unittest.TestCase):
         files = self.files()  # listed first: os.walk uses scandir too
         with mock.patch.object(exports.os, "scandir", side_effect=PermissionError(13, "denied")):
             out, c = exports.scan(self.root, files)
-        self.assertEqual((out, c["unreadable"], c["google"]), ({}, 1, 0))
+        self.assertEqual((out, c), ({}, counts(unreadable=1)))
 
 
 class Dates(unittest.TestCase):
@@ -305,8 +362,9 @@ class StagePlan(unittest.TestCase):
             f.write("imgName,fileChecksum,favorite,hidden,deleted,originalCreationDate,viewCount,importDate\n"
                     'IMG_0601.jpg,s,no,no,no,"Tuesday March 3,2015 7:45 PM GMT",0,"x"\n')
         src = os.path.dirname(os.path.dirname(gp))
-        before = sha_tree(src)
+        before, before_snap = sha_tree(src), snapshot(src)
         out = self.intake("stage", src, "--kind", "folder", "--batch", "takeout-1")
+        self.assertEqual(snapshot(src), before_snap, "stage leaves the source byte-identical, same mtimes, nothing new")
         self.assertIn("staged 5 media files", out)
         self.assertIn("Google Takeout 4, iCloud 1, with a place 1, ambiguous (ignored) 0", out)
         self.assertNotIn("could not be read", out)
@@ -335,6 +393,36 @@ class StagePlan(unittest.TestCase):
         ip = plan[os.path.join("iCloud Photos", "Photos", "IMG_0601.jpg")]
         self.assertEqual((ip["date_src"], ip["date"]), ("export", "2015-03-03T19:45:00"))
         self.assertEqual(sha_tree(src), before, "the export's JSON, CSV and media are never written")
+        self.assertEqual(snapshot(src), before_snap, "nor touched, nor added to, by plan")
+
+    def test_refused_metadata_reported(self):
+        """stage skips a symlinked JSON, an oversized JSON and a non-UTF-8 CSV, says so, stages their
+        media without export dates, and leaves the source as it was."""
+        src = os.path.join(self.home, "export")
+        jpg(os.path.join(src, "big", "IMG_0701.jpg"), 1)
+        takeout_json(os.path.join(src, "big", "IMG_0701.jpg.json"), T2019,
+                     title="x" * (exports.JSON_MAX + 1))  # over the 1 MiB cap
+        jpg(os.path.join(src, "link", "IMG_0702.jpg"), 2)
+        outside = os.path.join(self.tmp, "outside.json")
+        takeout_json(outside, T2019)
+        os.symlink(outside, os.path.join(src, "link", "IMG_0702.jpg.json"))
+        jpg(os.path.join(src, "latin", "IMG_0703.jpg"), 3)
+        with open(os.path.join(src, "latin", "Photo Details.csv"), "wb") as f:
+            f.write(("imgName,fileChecksum,favorite,hidden,deleted,originalCreationDate,viewCount,importDate\n"
+                     'IMG_0703.jpg,s,no,no,no,"Tuesday March 3,2015 7:45 PM GMT",0,"caf\xe9"\n').encode("latin-1"))
+        jpg(os.path.join(src, "good", "IMG_0704.jpg"), 4)
+        takeout_json(os.path.join(src, "good", "IMG_0704.jpg.json"), T2020)
+        before = snapshot(src)
+        out = self.intake("stage", src, "--kind", "folder", "--batch", "refused-1")
+        self.assertIn("staged 4 media files", out)
+        self.assertIn("Google Takeout 1, iCloud 0", out, "the good sidecar still counts")
+        for k in ("refused_link", "refused_size", "refused_encoding"):
+            self.assertIn(f"skipped 1 {exports.REFUSED[k]}", out)
+        self.assertNotIn(exports.REFUSED["refused_unreadable"], out)
+        with open(os.path.join(self.state, "batches", "refused-1", "manifest.json")) as f:
+            man = json.load(f)["files"]
+        self.assertEqual(sorted(r for r, e in man.items() if "export" in e), [os.path.join("good", "IMG_0704.jpg")])
+        self.assertEqual(snapshot(src), before, "the source is untouched")
 
 
 class TagPlace(unittest.TestCase):

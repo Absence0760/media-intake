@@ -22,6 +22,9 @@ export keeps the date beside them:
 Neither format is documented by its vendor; the rules above, and where they were checked, are in
 docs/intake.md ("Cloud exports"). Nothing here touches the network or writes a file: scan() only
 lists the media's own folders and reads these small metadata files (never through a symlink).
+A metadata file it won't read (a symlink, over JSON_MAX / CSV_MAX, a CSV that isn't UTF-8, not a
+regular file or failing to read) is skipped and counted by reason in scan()'s counts (REFUSED),
+so intake's stage reports it; the media beside it is staged without an export date.
 Matching is by exact candidate names, never by a loose prefix: two media files that would claim
 the same JSON both get none, and an iCloud name listed with two different dates gets none.
 
@@ -35,7 +38,12 @@ GOOGLE_LIMIT = 46            # characters of "<name><suffix>" kept before "(N).j
 SUPPLEMENTAL = ".supplemental-metadata"
 EDITED = "-edited"           # Google Photos' (English) suffix for an edited copy
 JSON_MAX = 1 << 20           # a Takeout sidecar is a few KB; anything bigger is not one
-CSV_MAX = 64 << 20
+CSV_MAX = 64 << 20           # an iCloud Photo Details CSV lists a few thousand rows per part
+# scan() counts keys for metadata files it refused to read, and what stage prints for each.
+REFUSED = {"refused_link": "symlinked cloud export metadata files (never followed)",
+           "refused_size": "cloud export metadata files over the size cap",
+           "refused_encoding": "cloud export CSV files that are not UTF-8",
+           "refused_unreadable": "cloud export metadata files that are not regular files or could not be read"}
 INDEX_RX = re.compile(r"(.+)\((\d+)\)")
 DETAILS_RX = re.compile(r"photos? details", re.I)
 ICLOUD_FORMATS = ("%A %B %d, %Y %I:%M %p", "%A %B %d, %Y %H:%M", "%a %b %d, %Y %I:%M %p",
@@ -88,17 +96,36 @@ def _utc_text(dt):
     return dt.astimezone(UTC).strftime("%Y-%m-%d %H:%M:%SZ")
 
 
-def _read_small(path, limit):
-    """The bytes of a regular file of at most limit bytes, never through a symlink; None otherwise."""
-    try:
-        fd = os.open(path, os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0))
+def _refuse(refused, path, key):
+    if refused is not None:
+        refused[path] = key
+
+
+def _read_small(path, limit, refused=None):
+    """The bytes of a regular file of at most limit bytes, never through a symlink; None otherwise,
+    with the reason (a REFUSED key) recorded in refused[path] when refused is a dict."""
+    try:  # O_NONBLOCK: a FIFO swapped in after the listing must not hang stage on open()
+        fd = os.open(path, os.O_RDONLY | os.O_NONBLOCK | getattr(os, "O_NOFOLLOW", 0))
     except OSError:
+        _refuse(refused, path, "refused_link" if os.path.islink(path) else "refused_unreadable")
         return None
-    with os.fdopen(fd, "rb") as f:
-        st = os.fstat(f.fileno())
-        if not stat.S_ISREG(st.st_mode) or st.st_size > limit:
-            return None
-        return f.read(limit + 1)
+    try:
+        with os.fdopen(fd, "rb") as f:
+            st = os.fstat(f.fileno())
+            if not stat.S_ISREG(st.st_mode):
+                _refuse(refused, path, "refused_unreadable")
+                return None
+            if st.st_size > limit:  # don't read 64 MiB just to refuse it
+                _refuse(refused, path, "refused_size")
+                return None
+            data = f.read(limit + 1)
+    except OSError:  # an I/O error mid-read (an unplugged drive): skip this file, don't stop stage
+        _refuse(refused, path, "refused_unreadable")
+        return None
+    if len(data) > limit:  # checked on what was read, not st_size: the file may grow after fstat
+        _refuse(refused, path, "refused_size")
+        return None
+    return data
 
 
 def _coord(g):
@@ -113,9 +140,10 @@ def _coord(g):
     return float(lat), float(lon)
 
 
-def read_google(path):
-    """{"time": "YYYY-MM-DD HH:MM:SSZ", "lat", "lon"} from one Takeout JSON, or None if it isn't one."""
-    raw = _read_small(path, JSON_MAX)
+def read_google(path, refused=None):
+    """{"time": "YYYY-MM-DD HH:MM:SSZ", "lat", "lon"} from one Takeout JSON, or None if it isn't one
+    (or wasn't read: see _read_small for refused)."""
+    raw = _read_small(path, JSON_MAX, refused)
     try:
         d = json.loads(raw) if raw is not None else None
     except ValueError:
@@ -152,15 +180,16 @@ def parse_icloud_date(s):
     return None
 
 
-def read_icloud(path):
+def read_icloud(path, refused=None):
     """({NFC imgName: "YYYY-MM-DD HH:MM:SSZ"}, ambiguous names) from one Photo Details CSV;
-    ({}, set()) when it isn't one."""
-    raw = _read_small(path, CSV_MAX)
+    ({}, set()) when it isn't one (or wasn't read: see _read_small for refused)."""
+    raw = _read_small(path, CSV_MAX, refused)
     if raw is None:
         return {}, set()
     try:
         text = raw.decode("utf-8-sig")
-    except UnicodeDecodeError:
+    except UnicodeDecodeError:  # Apple writes UTF-8; anything else is not its CSV, and guessing could misname rows
+        _refuse(refused, path, "refused_encoding")
         return {}, set()
     rows = csv.reader(text.splitlines())
     header = [h.strip() for h in next(rows, [])]
@@ -182,32 +211,36 @@ def read_icloud(path):
 
 
 def _listing(d):
-    """({NFC name: real name} of the regular .json files, [Photo Details CSVs]) in folder d (no symlinks);
-    None when d can't be listed."""
+    """({NFC name: real name} of the .json files, [Photo Details CSVs]) in folder d, None when d can't
+    be listed. Symlinks are listed too, so a symlinked sidecar is refused and counted by
+    _read_small (which never follows one) instead of vanishing silently; directories are not."""
     js, cs = {}, []
     try:
         with os.scandir(d) as it:
             for e in it:
-                if e.name.startswith(".") or not e.is_file(follow_symlinks=False):
+                if e.name.startswith(".") or not (e.is_symlink() or e.is_file(follow_symlinks=False)):
                     continue
                 low = e.name.lower()
                 if low.endswith(".json"):
                     js[nfc(e.name)] = e.name
                 elif low.endswith(".csv") and DETAILS_RX.match(nfc(e.name)):
                     cs.append(e.name)
-    except OSError:
-        return None  # the folder can't be listed (permissions, unplugged): scan counts it as unreadable
+    except OSError:  # permissions, an unplugged drive: scan() counts the folder as unreadable
+        return None
     return js, sorted(cs)
 
 
 def scan(root, files):
     """({rel: {"time", "via", "sidecar", ["lat", "lon"]}}, counts) for the walked media files
-    [(abs path, rel)] whose export metadata was found. counts: google, icloud, places, ambiguous, and
-    unreadable (folders that couldn't be listed, so their files go without export metadata)."""
+    [(abs path, rel)] whose export metadata was found. counts: google, icloud, places, ambiguous,
+    unreadable (folders that couldn't be listed, so their files go without export metadata), and one
+    REFUSED key per reason a metadata file was skipped (each file counted once)."""
     by_dir = {}
     for path, rel in files:
         by_dir.setdefault(os.path.dirname(path), []).append((path, rel))
     out, counts = {}, dict(google=0, icloud=0, places=0, ambiguous=0, unreadable=0)
+    counts.update(dict.fromkeys(REFUSED, 0))
+    refused = {}  # {path: REFUSED key}: a JSON tried for several media files still counts once
     for d, items in sorted(by_dir.items()):
         listing = _listing(d)
         if listing is None:
@@ -224,7 +257,7 @@ def scan(root, files):
                 claims.setdefault(hits[0], []).append(rel)
         icloud, ibad = {}, set()
         for c in cs:
-            rows, bad = read_icloud(os.path.join(d, c))
+            rows, bad = read_icloud(os.path.join(d, c), refused)
             ibad |= bad | {n for n, t in rows.items() if icloud.get(n, (t,))[0] != t}
             icloud.update({n: (t, c) for n, t in rows.items()})
         for p, rel in items:
@@ -237,7 +270,7 @@ def scan(root, files):
                 hits = [j for j in fallback_names(name, names) if j in js and len(claims.get(j, [])) <= 1]
             meta = None
             for j in hits:
-                meta = read_google(os.path.join(d, js[j]))
+                meta = read_google(os.path.join(d, js[j]), refused)
                 if meta:
                     meta.update(via="google-takeout", sidecar=os.path.relpath(os.path.join(d, js[j]), root))
                     counts["google"] += 1
@@ -252,6 +285,8 @@ def scan(root, files):
             if meta:
                 counts["places"] += "lat" in meta
                 out[rel] = meta
+    for key in refused.values():
+        counts[key] += 1
     return out, counts
 
 
