@@ -389,7 +389,8 @@ class ScanMediaKinds(Base):
 # ================================================================ GStreamer fallback: no name in the pipeline
 # A stand-in tool: records its arguments (one JSON line per run). ffprobe and ffmpeg fail (so the GStreamer
 # fallback runs); gst-inspect-1.0 says yes only to vah265dec; gst-launch-1.0 also records where each
-# location= path resolves to while it runs, and writes two frames where its multifilesink points.
+# location= path resolves to and its folder's mode while it runs, and writes two frames where its
+# multifilesink points.
 FAKE_GST = r'''#!/usr/bin/env python3
 import json, os, sys
 name = os.path.basename(sys.argv[0])
@@ -398,6 +399,8 @@ with open(os.environ["FAKE_TOOL_LOG"], "a") as f:
     if name == "gst-launch-1.0":
         f.write(json.dumps(["gst-where"] + [os.path.realpath(a[9:]) for a in sys.argv[1:]
                                             if a.startswith("location=")]) + "\n")
+        f.write(json.dumps(["gst-mode"] + [oct(os.stat(os.path.dirname(a[9:])).st_mode & 0o777)
+                                           for a in sys.argv[1:] if a.startswith("location=")]) + "\n")
 if name == "gst-inspect-1.0":
     sys.exit(0 if len(sys.argv) == 1 or sys.argv[1] == "vah265dec" else 1)
 if name == "gst-launch-1.0":
@@ -441,8 +444,11 @@ class ScanGstPipeline(Base):
 
     def test_hostile_name_never_reaches_the_pipeline(self):
         fd = tempfile.mkdtemp(dir=self.d)
+        orig = sha(self.clip)
         self.assertEqual(scan_sensitive.video_frames(self.clip, fd), ["001.jpg", "002.jpg"])
         self.assertEqual(sorted(os.listdir(fd)), ["001.jpg", "002.jpg"])  # the work folder is gone
+        self.assertEqual(sha(self.clip), orig)  # removing the work folder (and its link) left the original
+        self.assertEqual(self.runs("gst-mode"), [["0o700", "0o700"]])  # private while GStreamer ran
         (a,), ((src, sink),) = self.runs("gst-launch-1.0"), self.runs("gst-where")
         self.assertEqual(a[0], "-q")
         locs = [x[9:] for x in a if x.startswith("location=")]
