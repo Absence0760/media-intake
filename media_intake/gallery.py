@@ -1716,10 +1716,11 @@ output{font-variant-numeric:tabular-nums;color:var(--fg);font-weight:600}
 .overlay #sidebar{box-shadow:var(--shadow)}
 
 /* ---------------------------------------------------------------- main */
-#app{margin-left:var(--ml);min-height:100vh;min-width:0}
+#app{margin-left:var(--ml);min-height:100vh;min-width:0;display:flex;flex-direction:column}
 #top{position:sticky;top:0;z-index:10;height:var(--hh);display:flex;align-items:center;gap:12px;padding:0 24px;background:color-mix(in srgb,var(--bg) 88%,transparent);backdrop-filter:blur(8px);border-bottom:1px solid var(--line)}
-#vtitle{font-size:17px;font-weight:650;margin:0;white-space:nowrap}
-#count{color:var(--mut);font-size:14px;white-space:nowrap;font-variant-numeric:tabular-nums}
+#vtitle{font-size:17px;font-weight:650;margin:0;white-space:nowrap;min-width:0;overflow:hidden;text-overflow:ellipsis}
+#count{color:var(--mut);font-size:14px;white-space:nowrap;font-variant-numeric:tabular-nums;flex:none}
+#top>.btn,#top>.size{flex:none}
 .grow{flex:1}
 .size{display:flex;align-items:center;gap:8px;color:var(--mut)}
 #tsize{width:120px;accent-color:var(--acc)}
@@ -1728,9 +1729,9 @@ output{font-variant-numeric:tabular-nums;color:var(--fg);font-weight:600}
 .chip>span{overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
 .chip .x{border:0;background:none;color:inherit;width:22px;height:22px;border-radius:50%;font-size:15px;line-height:1}
 .chip .x:hover{background:var(--acc-soft)}
-#note{padding:0 24px;margin:10px 0 0}
-main{padding:4px 24px 48px}
-.barup main{padding-bottom:110px}
+#note,#helpb{padding:0 24px}
+#note{margin:10px 0 0}
+main{padding:4px 24px 48px;flex:1 0 auto}
 h2.month{position:sticky;top:var(--hh);z-index:2;margin:0;padding:16px 0 8px;font-size:14px;font-weight:650;background:var(--bg)}
 .grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(var(--tile),1fr));gap:6px}
 [data-view=sug] .grid{grid-template-columns:repeat(auto-fill,minmax(max(var(--tile),220px),1fr));gap:10px}
@@ -1751,10 +1752,14 @@ h2.month{position:sticky;top:var(--hh);z-index:2;margin:0;padding:16px 0 8px;fon
 .tile.stack.cur{box-shadow:inset 0 0 0 3px var(--fg),4px 4px 0 -1px var(--bg),4px 4px 0 0 var(--mut),8px 8px 0 -1px var(--bg),8px 8px 0 0 var(--mut)}
 .tile .badge{position:absolute;right:6px;top:6px;z-index:2;background:var(--acc);color:#fff;font-size:11px;font-weight:700;border-radius:999px;padding:1px 8px;white-space:nowrap}
 .tile .x{position:absolute;right:6px;top:28px;z-index:2;font-size:11px;padding:2px 8px;border-radius:6px;border:1px solid var(--line);background:var(--panel);color:var(--fg);cursor:pointer;white-space:nowrap}
+/* on a small tile they shorten (ellipsis) rather than run over the checkbox or out of the tile */
+.tile .badge,.tile .x{max-width:calc(100% - 40px);overflow:hidden;text-overflow:ellipsis}
 .flag{position:absolute;left:6px;bottom:6px;width:max-content;max-width:calc(100% - 12px);background:rgba(0,0,0,.62);color:#fff;font-size:11px;border-radius:4px;padding:1px 6px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
 #sentinel{height:40px}
 /* bottom action bar: only while something is selected (or the Trash suggestions view's Apply) */
-#actionbar{position:fixed;left:calc(var(--ml) + 16px);right:16px;bottom:16px;z-index:12;display:flex;flex-wrap:wrap;gap:8px 16px;align-items:center;justify-content:center;padding:10px 14px;background:var(--panel);border:1px solid var(--line);border-radius:14px;box-shadow:var(--shadow)}
+/* sticky, last in #app: it floats over the grid while scrolling, but takes its own room at the end, so no tile
+   stays under it however many rows its buttons wrap to */
+#actionbar{position:sticky;margin:0 16px;bottom:16px;z-index:12;display:flex;flex-wrap:wrap;gap:8px 16px;align-items:center;justify-content:center;padding:10px 14px;background:var(--panel);border:1px solid var(--line);border-radius:14px;box-shadow:var(--shadow)}
 .grp{display:flex;flex-wrap:wrap;gap:6px;align-items:center}
 #seln,#sugn{font-weight:650;font-size:14px;margin-right:4px;white-space:nowrap}
 .sep{width:1px;height:22px;background:var(--line)}
@@ -1807,18 +1812,24 @@ dl.dt dd{margin:0;word-break:break-word}
 .mbtns{display:flex;gap:8px;justify-content:flex-end;margin-top:14px}
 #mstatus{margin:12px 0 0;padding:10px 12px;border-radius:8px;background:var(--acc-soft)}
 
+/* ---------------------------------------------------------------- narrow: the header's controls fit beside the title */
+@media (max-width:900px){
+ #tsize{width:72px}
+ #close .lbl2{display:none}#close{padding:0 8px}
+}
 /* ---------------------------------------------------------------- phone */
 @media (max-width:760px){
  #top{padding:0 12px;gap:8px}
- #vtitle{font-size:16px;overflow:hidden;text-overflow:ellipsis}
- #tsize{width:72px}
- #close .lbl2{display:none}#close{padding:0 8px}
- #chips,#evbar{padding:10px 12px 0}#note{padding:0 12px}
+ #vtitle{font-size:16px}
+ #count,.size .ic{display:none}
+ #ball{padding:0 9px}
+ #chips,#evbar{padding:10px 12px 0}#note,#helpb{padding:0 12px}
  main{padding:4px 12px 40px}
  .grid{gap:4px}
- #actionbar{left:calc(var(--ml) + 8px);right:8px;bottom:8px;padding:8px;gap:6px}
+ #actionbar{margin:0 8px;bottom:8px;padding:8px;gap:6px}
  #actionbar .btn{padding:0 9px}
  #actionbar kbd,#actionbar .sep{display:none}
+ #seln{white-space:normal;min-width:0}
 }
 </style></head><body data-view="lib">
 <svg width="0" height="0" style="position:absolute" aria-hidden="true" focusable="false">
