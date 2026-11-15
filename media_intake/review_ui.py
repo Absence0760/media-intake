@@ -955,7 +955,7 @@ main{padding:16px;max-width:1100px;margin:0 auto}
 .btns .k[aria-pressed=true]{background:var(--keep);border-color:var(--keep);color:var(--on)}
 .btns .e[aria-pressed=true]{background:var(--erase);border-color:var(--erase);color:var(--on)}
 .btns .t[aria-pressed=true]{background:var(--trash);border-color:var(--trash);color:var(--on)}
-#confirm,#run{display:none}
+#run{display:none}
 .panel{background:var(--card);border-radius:10px;padding:16px;margin:16px 0}
 .panel input{font:inherit;padding:10px;width:12em;max-width:100%;border:2px solid var(--line);border-radius:8px;background:var(--bg);color:var(--fg)}
 .panel button{font:inherit;font-weight:700;padding:10px 18px;border-radius:8px;margin:8px 8px 0 0;cursor:pointer}
@@ -970,23 +970,42 @@ main{padding:16px;max-width:1100px;margin:0 auto}
 .burst button,.one{font:inherit;font-size:15px;padding:6px 12px;border-radius:8px;border:2px solid var(--line);background:var(--bg);color:var(--fg);cursor:pointer}
 .one{width:100%;margin-top:10px;font-weight:700}
 pre{white-space:pre-wrap;word-break:break-all;font-size:15px;background:var(--bg);border:1px solid var(--line);border-radius:8px;padding:10px;max-height:70vh;overflow:auto}
+/* Keyboard focus: one outline in --focus (6:1 or more on the page and the cards, light and dark). */
+:focus-visible{outline:3px solid var(--focus);outline-offset:2px}
+.card:focus-visible{outline-offset:3px}
+.card:focus:not(:focus-visible){outline:none}
+#tabs{display:flex;flex-wrap:wrap;gap:10px}
+#done{color:var(--mut)}
+#keysb{font:inherit;padding:10px 14px;border-radius:8px;border:2px solid var(--line);background:var(--card);color:var(--fg);cursor:pointer}
+.modal{position:fixed;inset:0;z-index:20;background:rgba(0,0,0,.6);display:none;align-items:center;justify-content:center;padding:16px}
+.modal.on{display:flex}
+.modal .box{background:var(--bg);color:var(--fg);border:1px solid var(--line);border-radius:10px;padding:16px 20px;width:100%;max-width:640px;max-height:90vh;overflow:auto;margin:0}
+.modal h2{margin-top:0}
+.keys{border-collapse:collapse;width:100%;font-size:16px}
+.keys th,.keys td{text-align:left;vertical-align:top;padding:6px 8px;border-bottom:1px solid var(--line)}
+kbd{font:inherit;font-weight:700;border:1px solid var(--line);border-radius:4px;padding:0 6px;background:var(--card);white-space:nowrap}
+#keysx{font:inherit;font-weight:700;padding:10px 18px;border-radius:8px;margin-top:12px;border:2px solid var(--line);background:var(--card);color:var(--fg);cursor:pointer}
+.banner{display:flex;gap:12px;align-items:center;background:var(--card);color:var(--fg);border:2px solid var(--erase);border-left-width:8px;border-radius:8px;padding:10px 12px;margin:0 0 12px}
+.banner[hidden]{display:none}
+.banner span{flex:1;overflow-wrap:anywhere}
+.banner button{font:inherit;font-weight:700;padding:6px 12px;border-radius:8px;border:2px solid var(--line);background:var(--bg);color:var(--fg);cursor:pointer;margin:0}
 </style></head><body>
 <header>
- <button class="tab" id="tq" aria-selected="true">Quarantine</button>
- <button class="tab" id="tr" aria-selected="false">Review</button>
- <button class="tab" id="tm" aria-selected="false" hidden>Maybe trash</button>
+ <div id="tabs" role="tablist" aria-label="Lists">
+  <button type="button" class="tab" role="tab" id="tq" aria-selected="true" aria-controls="lists">Quarantine</button>
+  <button type="button" class="tab" role="tab" id="tr" aria-selected="false" aria-controls="lists" tabindex="-1">Review</button>
+  <button type="button" class="tab" role="tab" id="tm" aria-selected="false" aria-controls="lists" tabindex="-1" hidden>Maybe trash</button>
+ </div>
  <span id="count"></span>
- <button id="submit" disabled>Submit</button>
+ <span id="done" role="status"></span>
+ <button type="button" id="keysb" aria-haspopup="dialog">Keys (?)</button>
+ <button type="button" id="submit" disabled>Submit</button>
 </header>
 <main>
- <section id="confirm" class="panel">
-  <h2>Confirm</h2><p id="summary"></p>
-  <p>Type <b>ERASE</b> to run it. This cannot be undone.</p>
-  <input id="typed" autocomplete="off" spellcheck="false" aria-label="Type ERASE">
-  <div><button id="go" disabled>Run</button><button id="back">Back</button></div>
- </section>
- <section id="run" class="panel"><h2 id="runh">Running…</h2><p id="runs" class="help"></p><pre id="out"></pre></section>
- <div id="lists">
+ <div id="err" class="banner" role="alert" hidden><span id="errmsg"></span><button type="button" id="errx">Dismiss</button></div>
+ <section id="run" class="panel"><div aria-live="polite" aria-atomic="true"><h2 id="runh" tabindex="-1">Running…</h2><p id="runs" class="help"></p></div>
+  <pre id="out" role="log" aria-live="polite" aria-label="Run output" tabindex="0"></pre></section>
+ <div id="lists" role="tabpanel" aria-labelledby="tq">
   <p class="note" id="last" hidden></p>
   <p class="help" id="helpq">K = keep (back to the library), E = erase everywhere. No Trash here: these are flagged sensitive, and only Erase removes their copies too. ← → or ↑ ↓ move between items.</p>
   <p class="help" id="helpb" hidden>A stack is a burst (shots from one camera a moment apart): X opens or closes it, and "Keep this one" on a shot decides the whole stack: the rest are erased everywhere in Quarantine, trashed elsewhere. Nothing is deleted until you submit and type ERASE.</p>
@@ -995,6 +1014,33 @@ pre{white-space:pre-wrap;word-break:break-all;font-size:15px;background:var(--bg
   <div id="list"></div>
  </div>
 </main>
+<div id="confirm" class="modal" role="dialog" aria-modal="true" aria-labelledby="confirmh" aria-describedby="summary">
+ <section class="panel box">
+  <h2 id="confirmh">Confirm</h2><p id="summary"></p>
+  <p>Type <b>ERASE</b> to run it. This cannot be undone.</p>
+  <input id="typed" autocomplete="off" spellcheck="false" aria-label="Type ERASE">
+  <div><button type="button" id="go" disabled>Run</button><button type="button" id="back">Back</button></div>
+ </section>
+</div>
+<div id="keys" class="modal" role="dialog" aria-modal="true" aria-labelledby="keysh">
+ <section class="box">
+  <h2 id="keysh">Keys</h2>
+  <table class="keys"><thead><tr><th scope="col">Key</th><th scope="col">What it does</th><th scope="col">Where</th></tr></thead><tbody>
+   <tr data-key="k"><td><kbd>K</kbd></td><td>Keep the outlined item</td><td>Every tab</td></tr>
+   <tr data-key="e"><td><kbd>E</kbd> or <kbd>D</kbd></td><td>Erase everywhere (Quarantine); delete (Review)</td><td>Quarantine and Review; nothing in Maybe trash</td></tr>
+   <tr data-key="t"><td><kbd>T</kbd></td><td>Trash (delete, never taken in again)</td><td>Review and Maybe trash; nothing in Quarantine (flagged items are erased or kept)</td></tr>
+   <tr data-key="x"><td><kbd>X</kbd></td><td>Open or close the burst stack</td><td>Every tab, on a stack</td></tr>
+   <tr data-key="next"><td><kbd>→</kbd> <kbd>↓</kbd> or <kbd>J</kbd></td><td>Next item</td><td>Every tab</td></tr>
+   <tr data-key="prev"><td><kbd>←</kbd> <kbd>↑</kbd></td><td>Previous item</td><td>Every tab</td></tr>
+   <tr data-key="tabs"><td><kbd>←</kbd> <kbd>→</kbd> <kbd>Home</kbd> <kbd>End</kbd></td><td>Switch list</td><td>On a tab (Quarantine, Review, Maybe trash)</td></tr>
+   <tr data-key="tab"><td><kbd>Tab</kbd> <kbd>Shift</kbd>+<kbd>Tab</kbd></td><td>Move between the buttons; stays inside an open dialog</td><td>Everywhere</td></tr>
+   <tr data-key="?"><td><kbd>?</kbd></td><td>This list</td><td>Everywhere except while typing</td></tr>
+   <tr data-key="escape"><td><kbd>Esc</kbd></td><td>Close this list, or go back from the ERASE confirm</td><td>In a dialog</td></tr>
+  </tbody></table>
+  <p class="help">Letter keys do nothing while you type in a box.</p>
+  <button type="button" id="keysx">Close (Esc)</button>
+ </section>
+</div>
 <script>
 "use strict";
 const CSRF=document.querySelector('meta[name=csrf]').content;
@@ -1008,8 +1054,12 @@ const BM={};
 function members(it){return it.burst==null?[it]:BM[it.burst]}
 function isCover(it){return it.burst==null||BM[it.burst][0]===it}
 function visibleOf(t){const v=[];itemsOf(t).forEach(i=>{if(i.burst==null)v.push(i);else if(isCover(i))v.push(...(open[i.burst]?BM[i.burst]:[i]))});return v}
-function toggleStack(it){if(it.burst==null)return;open[it.burst]=!open[it.burst];const v=visibleOf(tab);
- cur[tab]=Math.max(0,v.indexOf(v.includes(it)?it:members(it)[0]));render();paint(true)}
+function toggleStack(it){if(it.burst==null)return;const f=inList();open[it.burst]=!open[it.burst];const v=visibleOf(tab);
+ cur[tab]=Math.max(0,v.indexOf(v.includes(it)?it:members(it)[0]));render();paint(true);if(f)focusCur()}
+/* Keyboard focus follows the outlined card when it was on the list (or nowhere), so a decision, a move or a
+   stack opening or closing (which rebuilds the cards) never drops it on the page body. */
+function inList(){const a=document.activeElement;return !a||a===document.body||$("#list").contains(a)}
+function focusCur(){const it=visibleOf(tab)[cur[tab]],c=it&&$("#c"+it.id);if(c&&c!==document.activeElement)c.focus({preventScroll:true})}
 /* The rest of a quarantine stack is flagged too, so it takes the erase-everywhere path, never plain trash. */
 function restOf(it){return it.tab==="quarantine"?"erase":"trash"}
 function oneLabel(it){return it.tab==="quarantine"?"Keep this one, erase the rest":"Keep this one, trash the rest"}
@@ -1030,12 +1080,12 @@ function canTrash(it){return it.tab!=="quarantine"}
 const TABS=["quarantine","review","maybe"],TID={quarantine:"#tq",review:"#tr",maybe:"#tm"},TNAME={quarantine:"Quarantine",review:"Review",maybe:"Maybe trash"};
 function render(){
  const L=$("#list");L.replaceChildren();
- TABS.forEach(t=>$(TID[t]).setAttribute("aria-selected",tab===t));
+ TABS.forEach(t=>{const b=$(TID[t]);b.setAttribute("aria-selected",tab===t);b.tabIndex=tab===t?0:-1});$("#lists").setAttribute("aria-labelledby",TID[tab].slice(1));
  $("#helpq").hidden=tab!=="quarantine";$("#helpr").hidden=tab!=="review";$("#helpm").hidden=tab!=="maybe";
  const its=visibleOf(tab);$("#helpb").hidden=!its.some(i=>i.burst!=null);
  if(!its.length)L.append(el("p","help","Nothing here."));
  its.forEach((it,n)=>{
-  const c=el("div","card");c.id="c"+it.id;c.dataset.n=n;c.dataset.item=it.rel;
+  const c=el("div","card");c.id="c"+it.id;c.dataset.n=n;c.dataset.item=it.rel;c.tabIndex=-1;c.setAttribute("role","group");
   if(it.burst!=null){const ms=members(it),bx=el("div","burst"),bd=el("span","badge");c.dataset.burst=it.burst;bd.dataset.count=ms.length;
    if(isCover(it)){const x=el("button","x",open[it.burst]?"Close stack (X)":`Show all ${ms.length} (X)`);x.onclick=()=>{toggleStack(it)};
     if(!open[it.burst])c.classList.add("stack");bx.append(bd,x)}else bx.append(bd);
@@ -1047,7 +1097,7 @@ function render(){
   else{if(o&&o.erased)c.append(el("div","note","Near-copy of a photo you erased"+(o.date?" on "+o.date:"")));
    else if(o&&o.missing)c.append(el("div","note","Original not shown: "+o.missing));
    c.append(m);if(it.meta)c.append(metaEl(it.meta))}
-  c.append(el("div","name",(it.batch!==data.batch?it.batch+" / ":"")+it.rel));
+  c.append(el("div","name",nameOf(it)));
   if(it.reasons.length){const lb=el("div","labels");it.reasons.forEach(r=>lb.append(el("span",null,r)));c.append(lb)}
   if(it.why)c.append(el("div","why",it.why));
   if(it.tab==="quarantine"&&!it.releasable)c.append(el("div","why","No library place: Keep leaves it in quarantine and skips this batch's erase."));
@@ -1059,13 +1109,17 @@ function render(){
   c.append(b);
   if(it.burst!=null&&open[it.burst]){const o1=el("button","one",oneLabel(it));o1.onclick=()=>{keepOne(it)};c.append(o1)}
   c.onclick=ev=>{if(ev.target.tagName!=="BUTTON"&&ev.target.tagName!=="VIDEO"){cur[tab]=n;paint(false)}};
+  c.addEventListener("focusin",()=>{if(cur[tab]!==n){cur[tab]=n;paint(false)}});  /* Tab onto a card or its buttons outlines it: K acts there */
   L.append(c);
  });
  paint(false);
 }
+function nameOf(it){return (it.batch!==data.batch?it.batch+" / ":"")+it.rel}
 function paint(scroll){
- visibleOf(tab).forEach((it,n)=>{const c=$("#c"+it.id);if(!c)return;
+ const vis=visibleOf(tab);
+ vis.forEach((it,n)=>{const c=$("#c"+it.id);if(!c)return;
   const d=dec[it.id],e=c.querySelector(".e");
+  c.tabIndex=n===cur[tab]?0:-1;c.setAttribute("aria-label",`${nameOf(it)}, item ${n+1} of ${vis.length}: `+(d?"decided "+d:"undecided"));
   c.classList.toggle("focus",n===cur[tab]);c.setAttribute("aria-current",n===cur[tab]);c.classList.toggle("keep",d==="keep");c.classList.toggle("erase",d==="erase"||d==="delete");c.classList.toggle("trash",d==="trash");
   c.querySelector(".k").setAttribute("aria-pressed",d==="keep");if(e)e.setAttribute("aria-pressed",d==="erase"||d==="delete");const t=c.querySelector(".t");if(t)t.setAttribute("aria-pressed",d==="trash");
   const bd=c.querySelector(".badge");if(bd){const ms=members(it),u=ms.filter(m=>!dec[m.id]).length;
@@ -1074,14 +1128,41 @@ function paint(scroll){
  const left=data.items.filter(i=>!dec[i.id]).length,und=t=>itemsOf(t).filter(i=>!dec[i.id]).length;
  $("#count").textContent=left?`${left} undecided (`+TABS.filter(t=>itemsOf(t).length).map(t=>TNAME[t].toLowerCase()+" "+und(t)).join(", ")+")":"All decided";
  TABS.forEach(t=>{$(TID[t]).textContent=`${TNAME[t]} (${itemsOf(t).length})`});$("#tm").hidden=!itemsOf("maybe").length;
+ setText($("#done"),`${data.items.length-left} of ${data.items.length} decided`);
  $("#submit").disabled=left>0;
 }
-function decide(it,d,n,adv){dec[it.id]=d;cur[tab]=n;if(adv)cur[tab]=Math.min(n+1,visibleOf(tab).length-1);paint(adv)}
-function move(d){const its=visibleOf(tab);if(!its.length)return;cur[tab]=Math.max(0,Math.min(its.length-1,cur[tab]+d));paint(true)}
+function setText(e,s){if(e.textContent!==s)e.textContent=s}
+function decide(it,d,n,adv){const f=inList();dec[it.id]=d;cur[tab]=n;if(adv)cur[tab]=Math.min(n+1,visibleOf(tab).length-1);paint(adv);if(adv&&f)focusCur()}
+function move(d){const its=visibleOf(tab);if(!its.length)return;const f=inList();cur[tab]=Math.max(0,Math.min(its.length-1,cur[tab]+d));paint(true);if(f)focusCur()}
 function setTab(t){tab=t;render();window.scrollTo(0,0)}
 TABS.forEach(t=>{$(TID[t]).onclick=()=>setTab(t)});
+/* The tab bar is a tablist: on a tab, Left / Right (wrapping), Home and End switch lists and keep the focus on
+   the tab; anywhere else the arrows move between items as before. */
+function tabKey(b,key){const vis=TABS.filter(t=>!$(TID[t]).hidden),i=vis.findIndex(t=>TID[t]==="#"+b.id);
+ const j=key==="Home"?0:key==="End"?vis.length-1:(i+(key==="ArrowRight"?1:-1)+vis.length)%vis.length;setTab(vis[j]);$(TID[vis[j]]).focus()}
+/* Dialogs (the ERASE confirm, the keys list): modal, the page behind is inert, Tab stays inside, Esc closes,
+   and the focus goes back to where it was. */
+let lastFocus=null;
+function modal(d,on){d.classList.toggle("on",on);const any=!!document.querySelector(".modal.on");$("header").inert=any;$("main").inert=any;placeErr()}
+function trap(d,ev){const f=[...d.querySelectorAll("button,input,[tabindex]")].filter(x=>!x.disabled&&x.tabIndex>=0&&x.getClientRects().length);
+ if(!f.length){ev.preventDefault();return}const a=document.activeElement,i=f.indexOf(a);
+ if(ev.shiftKey&&(i<=0)){f[f.length-1].focus();ev.preventDefault()}else if(!ev.shiftKey&&(i<0||i===f.length-1)){f[0].focus();ev.preventDefault()}}
+function openKeys(){lastFocus=document.activeElement;modal($("#keys"),true);$("#keysx").focus()}
+function closeKeys(){modal($("#keys"),false);const f=lastFocus;lastFocus=null;
+ if(f&&f.isConnected&&f!==document.body&&!f.disabled)f.focus({preventScroll:true});else focusCur()}
+$("#keysb").onclick=openKeys;$("#keysx").onclick=closeKeys;
+$("#keys").onclick=ev=>{if(ev.target.id==="keys")closeKeys()};
+/* Errors show in a banner (role=alert), never a native dialog: in the confirm while it is open, else above the list. */
+function placeErr(){const b=$("#err");($("#confirm").classList.contains("on")?$("#confirm .box"):$("main")).prepend(b)}
+function showErr(msg){$("#err").hidden=false;$("#errmsg").replaceChildren(document.createTextNode(msg))}
+function hideErr(){$("#err").hidden=true;$("#errmsg").replaceChildren()}
+$("#errx").onclick=()=>{hideErr();const t=$("#confirm").classList.contains("on")?$("#typed"):$("#submit");if(!t.disabled)t.focus();else focusCur()};
 document.addEventListener("keydown",ev=>{
+ const dlg=document.querySelector(".modal.on");
+ if(dlg){if(ev.key==="Escape"){ev.preventDefault();if(dlg.id==="keys")closeKeys();else back()}else if(ev.key==="Tab")trap(dlg,ev);return}
  if(!data||$("#lists").hidden||ev.target.tagName==="INPUT"||ev.ctrlKey||ev.metaKey||ev.altKey)return;
+ if(ev.key==="?"){openKeys();ev.preventDefault();return}
+ if(ev.target.getAttribute&&ev.target.getAttribute("role")==="tab"&&["ArrowLeft","ArrowRight","Home","End"].includes(ev.key)){tabKey(ev.target,ev.key);ev.preventDefault();return}
  const its=visibleOf(tab),it=its[cur[tab]];const k=ev.key.toLowerCase();
  if(k==="k"&&it){decide(it,"keep",cur[tab],true);ev.preventDefault()}
  else if((k==="e"||k==="d")&&it&&second(it)){decide(it,second(it),cur[tab],true);ev.preventDefault()}
@@ -1098,33 +1179,35 @@ $("#submit").onclick=()=>{
  if(itemsOf("review").length)parts.push(`Review: ${n("review","keep")} keep / ${n("review","delete")} delete / ${n("review","trash")} trash`);
  if(itemsOf("maybe").length)parts.push(`Maybe trash: ${n("maybe","keep")} keep / ${n("maybe","trash")} trash`);
  $("#summary").textContent=parts.join(". ")+(data.devices.phone?". Trashed items are also deleted from the phone (not xcheck copies).":".");
- $("#lists").hidden=true;$("#confirm").style.display="block";$("#submit").disabled=true;$("#typed").value="";$("#go").disabled=true;$("#typed").focus();
+ $("#submit").disabled=true;$("#typed").value="";$("#go").disabled=true;modal($("#confirm"),true);$("#typed").focus();
 };
-$("#back").onclick=()=>{$("#confirm").style.display="none";$("#lists").hidden=false;paint(false)};
+function back(){modal($("#confirm"),false);paint(false);$("#submit").focus()}
+$("#back").onclick=back;
 $("#typed").oninput=()=>{$("#go").disabled=$("#typed").value!=="ERASE"};
 $("#go").onclick=async()=>{
- $("#go").disabled=true;const d={};data.items.forEach(i=>d[i.id]=dec[i.id]);
- const r=await fetch("/api/submit",{method:"POST",credentials:"same-origin",headers:{"Content-Type":"application/json","X-CSRF":CSRF},body:JSON.stringify({decisions:d,confirm:$("#typed").value})});
- if(r.status!==202){const j=await r.json().catch(()=>({}));if(j.watching){attach();return}alert("Refused: "+(j.error||r.status));$("#go").disabled=false;return}
+ $("#go").disabled=true;const d={};data.items.forEach(i=>d[i.id]=dec[i.id]);let r;
+ try{r=await fetch("/api/submit",{method:"POST",credentials:"same-origin",headers:{"Content-Type":"application/json","X-CSRF":CSRF},body:JSON.stringify({decisions:d,confirm:$("#typed").value})})}
+ catch(e){showErr("No answer from the page server: run the same review command again to see whether the run started.");$("#go").disabled=false;$("#go").focus();return}
+ if(r.status!==202){const j=await r.json().catch(()=>({}));if(j.watching){attach();return}showErr("Refused: "+(j.error||r.status));$("#go").disabled=false;$("#go").focus();return}
  attach();
 };
 /* The run is a detached job (jobs.py): closing this tab or stopping the server never stops it, and any
    page of this batch (a reload, a second tab, a restarted server) shows it from the status file. */
 let attached=false;
-function attach(){if(attached)return;attached=true;$("#confirm").style.display="none";$("#lists").hidden=true;$("#run").style.display="block";
- document.querySelectorAll("header button").forEach(b=>b.disabled=true);$("#list").replaceChildren();$("#out").textContent="";poll(0)}
+function attach(){if(attached)return;attached=true;hideErr();modal($("#confirm"),false);modal($("#keys"),false);$("#lists").hidden=true;$("#run").style.display="block";
+ document.querySelectorAll("header button").forEach(b=>b.disabled=true);$("#list").replaceChildren();$("#out").textContent="";$("#runh").focus({preventScroll:true});poll(0)}
 function stepText(jb){return jb&&jb.step?`Step ${jb.step}${jb.total?" of "+jb.total:""}: ${jb.label}`:""}
 async function poll(since){
  let j;try{j=await (await fetch("/api/progress?since="+since,{credentials:"same-origin"})).json()}
- catch(e){$("#runh").textContent="Page server stopped";$("#runs").textContent="If the run had not finished it keeps going on its own; run the same review command again to watch it.";return}
- if(j.lines.length)$("#out").textContent+=j.lines.join("\n")+"\n";$("#out").scrollTop=1e9;
- const jb=j.job||{};$("#run").dataset.job=!j.done?"running":j.replaced?"replaced":jb.state==="crashed"?"crashed":j.ok?"done":"failed";$("#runs").textContent=stepText(jb)+(jb.started?` (started ${jb.started})`:"");
+ catch(e){setText($("#runh"),"Page server stopped");setText($("#runs"),"If the run had not finished it keeps going on its own; run the same review command again to watch it.");return}
+ if(j.lines.length)$("#out").append(j.lines.join("\n")+"\n");$("#out").scrollTop=1e9;
+ const jb=j.job||{};$("#run").dataset.job=!j.done?"running":j.replaced?"replaced":jb.state==="crashed"?"crashed":j.ok?"done":"failed";setText($("#runs"),stepText(jb)+(jb.started?` (started ${jb.started})`:""));
  if(j.done){
-  if(j.replaced)$("#runh").textContent="Another page started a newer run of this batch; open the review again to see it.";
-  else if(jb.state==="crashed"){$("#runh").textContent="The run stopped unexpectedly (crashed)";
-   $("#runs").textContent=`It died at ${stepText(jb)||"start-up"}. Nothing more will run by itself`+(jb.step_running?"; the step it had started is still running, so a new submit is refused until it ends.":". Open the review again: it shows what is left.")}
-  else $("#runh").textContent=j.ok?"Done. You can close this tab.":"Finished with problems (see below). You can close this tab.";return}
- $("#runh").textContent="Running… (closing this tab does not stop it)";
+  if(j.replaced)setText($("#runh"),"Another page started a newer run of this batch; open the review again to see it.");
+  else if(jb.state==="crashed"){setText($("#runh"),"The run stopped unexpectedly (crashed)");
+   setText($("#runs"),`It died at ${stepText(jb)||"start-up"}. Nothing more will run by itself`+(jb.step_running?"; the step it had started is still running, so a new submit is refused until it ends.":". Open the review again: it shows what is left."))}
+  else setText($("#runh"),j.ok?"Done. You can close this tab.":"Finished with problems (see below). You can close this tab.");return}
+ setText($("#runh"),"Running… (closing this tab does not stop it)");
  setTimeout(()=>poll(j.next),700);
 }
 function lastRun(jb){if(!jb||!jb.done)return;const L=$("#last");L.hidden=false;

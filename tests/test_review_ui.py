@@ -658,6 +658,16 @@ class ReviewUITest(unittest.TestCase):
             self.assertIn(text, page)
         self.assertNotIn(b'n("quarantine","trash")', page, "the confirm summary counts no quarantine trash")
 
+    def test_page_opens_no_native_dialog(self):
+        """Errors go to the page's role=alert banner and the confirm is an in-page dialog: no alert(), confirm()
+        or prompt() anywhere in the script (the browser tests fail on any native dialog too)."""
+        self.quarantine()
+        s = self.start()
+        _, page = s.req("GET", "/")
+        self.assertEqual(re.findall(rb"(?<![\w$.])(?:window\.)?(?:alert|confirm|prompt)\s*\(", page), [])
+        for text in (b'role="alert"', b'role="dialog" aria-modal="true"', b'role="tablist"', b'role="log"'):
+            self.assertIn(text, page)
+
     def test_maybe_trash_tab(self):
         lib = os.path.join(self.home, "photo_library/2026/2026-11")
         pasta, floor = os.path.join(lib, "pasta.jpg"), os.path.join(lib, "floor.jpg")

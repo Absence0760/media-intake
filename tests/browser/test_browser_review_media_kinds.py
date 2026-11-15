@@ -162,7 +162,7 @@ class ReviewMediaKindsBrowserTest(B.BrowserCase):
         page.keyboard.press("k")
         self.pressed(page, "DCIM/Camera/VID_0001.mp4", "Keep")
         # Review: the same, with Trash for the rest, and the video deleted with D.
-        page.get_by_role("button", name=re.compile(r"^Review \(")).click()
+        page.get_by_role("tab", name=re.compile(r"^Review \(")).click()
         self.assertEqual(self.cards(page), ["DCIM/Camera/IMG_1001.jpg", "DCIM/Camera/VID_1001.mp4"])
         self.card(page, "DCIM/Camera/IMG_1001.jpg").get_by_role("button", name="Show all 2 (X)").click()
         self.assertEqual(self.cards(page), ["DCIM/Camera/IMG_1001.jpg", "DCIM/Camera/IMG_1002.jpg",
@@ -222,7 +222,7 @@ class ReviewMediaKindsBrowserTest(B.BrowserCase):
         page = self.new_page()
         self.open(page, s)
         cover, ncard = self.card(page, shots[0]), self.card(page, "Downloads/n.jpg")
-        B.expect(page.get_by_role("button", name="Quarantine (4)")).to_be_visible()  # every shot counts
+        B.expect(page.get_by_role("tab", name="Quarantine (4)")).to_be_visible()  # every shot counts
         # Closed: the cover alone, with the stack look, the count badge and the X that opens it.
         self.assertEqual(sorted(self.cards(page)), ["DCIM/Camera/IMG_0001.jpg", "Downloads/n.jpg"])
         B.expect(cover).to_have_class(re.compile(r"\bstack\b"))
