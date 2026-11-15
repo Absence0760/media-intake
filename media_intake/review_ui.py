@@ -209,6 +209,15 @@ def original_allowed(batch, p):
     return any(inside(r, p) for r in roots)
 
 
+MESSAGING_APP = re.compile(r"(?:^|/)Messaging/([A-Za-z0-9][A-Za-z0-9 ._-]{0,63})/")
+
+
+def messaging_app(it):
+    """'Telegram' for an xcheck copy whose rel is under Messaging/Telegram/ in the library, else 'Messaging'."""
+    m = MESSAGING_APP.search(it["rel"].replace(os.sep, "/")) if isinstance(it.get("rel"), str) else None
+    return m.group(1) if m else "Messaging"
+
+
 def attach_originals(batch, items):
     """Give every near-duplicate an `orig` (display only). Returns the served originals list."""
     plan = {p["rel"]: p for p in load(os.path.join(STATE, "batches", batch, "plan.json"), []) or []}
@@ -235,7 +244,7 @@ def attach_originals(batch, items):
         if it.get("of"):  # xcheck-<batch>: a messaging copy of a library photo or video
             it["meta"] = meta(it["path"], it["kind"])
             of = it["of"]
-            label = "WhatsApp/Messages copy of this " + ("video" if it["kind"] == "video" else "photo")
+            label = messaging_app(it) + " copy of this " + ("video" if it["kind"] == "video" else "photo")
             if not (isinstance(of, str) and os.path.isabs(of) and original_allowed(batch, of)):
                 it["orig"] = dict(missing="the original was not found in the library", label=label)
                 continue

@@ -429,8 +429,8 @@ class NearAndMessagingCopies(RealRun):
         items = self.by_name(self.items(s))
         p, v = items["x-keep.jpg"], items["x-erase.mp4"]
         self.assertEqual((p["orig"]["kind"], v["orig"]["kind"]), ("image", "video"))
-        self.assertEqual(p["orig"]["label"], "WhatsApp/Messages copy of this photo")
-        self.assertEqual(v["orig"]["label"], "WhatsApp/Messages copy of this video")
+        self.assertEqual(p["orig"]["label"], "Messaging copy of this photo")
+        self.assertEqual(v["orig"]["label"], "Messaging copy of this video")
         r, b = s.req("GET", f"/o/{v['orig']['id']}", headers={"Range": "bytes=0-15"})
         self.assertEqual((r.status, r.getheader("Content-Type"), len(b)), (206, "video/mp4", 16))
         before = sha(xp)
@@ -440,6 +440,20 @@ class NearAndMessagingCopies(RealRun):
         self.assert_erased(xve["sha"], [xv])
         for k, o in origs.items():
             self.assertEqual(sha(o), obefore[k], "the library original a messaging copy points at stays")
+
+
+class MessagingCopyLabel(unittest.TestCase):
+    """An xcheck copy's label names the app its library place is filed under (Messaging/<App>/)."""
+
+    def test_app_from_the_messaging_folder(self):
+        app = review_ui.messaging_app
+        for rel, want in (("Pictures/library/Messaging/Telegram/2026/photo_1@14-11-2026_10-20-30.jpg", "Telegram"),
+                          ("library/Messaging/Signal/2026/signal-2026-11-14-10-20-30-123.mp4", "Signal"),
+                          ("Messaging/WhatsApp/2025/w1.jpg", "WhatsApp"),
+                          ("DCIM/Camera/x.jpg", "Messaging"), ("Telegram Images/x.jpg", "Messaging"),
+                          ("Messaging/../x.jpg", "Messaging"), ("Messaging/x.jpg", "Messaging")):
+            self.assertEqual(app({"rel": rel}), want, rel)
+        self.assertEqual(app({"rel": None}), "Messaging")
 
 
 class BurstsWithVideos(RealRun):

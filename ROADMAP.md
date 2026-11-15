@@ -140,8 +140,15 @@ The goal: someone else can install it on Fedora, import a phone, and trust it.
       against the library.
 - [ ] External drive queue: tested on real exFAT/NTFS/HFS+ drives; checksum-verified,
       resumable copies; faster parallel copy.
-- [ ] Messaging media beyond WhatsApp (Signal, Telegram exports) behind explicit allowlist
-      entries, never a whole `Android/` tree.
+- [x] Messaging media beyond WhatsApp (Signal, Telegram exports) behind explicit allowlist
+      entries, never a whole `Android/` tree. Telegram's Android folders and Signal's
+      `Movies/Signal` by config entry, Telegram Desktop exports (media folders only) and
+      Signal's saved `signal-...` files from a drive or laptop folder; Signal's own chats
+      and backups are encrypted and out of reach (docs/intake.md, "Messaging apps").
+- [ ] Telegram export `result.json` dates for files an export keeps under their own name
+      (its `photo_<n>@<date>` names are dated already), and `messaging:Telegram` for those
+      files when the staged folder is the export itself (the category sees only the path
+      under the source root today).
 
 ## Milestone 0.5: backups and erase everywhere
 

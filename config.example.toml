@@ -8,8 +8,13 @@
 [phone]
 # Extra exact folders on a phone that may be read (with their subfolders), each
 # mapped to the messaging app it belongs to. Nothing else under Android/ is ever listed.
+# Telegram and Signal folders: docs/intake.md, "Messaging apps".
 # extra_folders = { "Android/media/com.whatsapp/WhatsApp/Media/WhatsApp Images" = "WhatsApp",
-#                   "Android/media/com.whatsapp/WhatsApp/Media/WhatsApp Video" = "WhatsApp" }
+#                   "Android/media/com.whatsapp/WhatsApp/Media/WhatsApp Video" = "WhatsApp",
+#                   "Android/media/org.telegram.messenger/Telegram/Telegram Images" = "Telegram",
+#                   "Android/media/org.telegram.messenger/Telegram/Telegram Video" = "Telegram",
+#                   "Movies/Telegram" = "Telegram", "Movies/Signal" = "Signal" }
+# (Android 10 and older: "Telegram/Telegram Images" and "Telegram/Telegram Video" at the root.)
 
 [drive]
 # Folder names at a drive's mount root that mean "this is my backup drive, never a source".

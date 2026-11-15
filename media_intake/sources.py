@@ -239,6 +239,21 @@ SOURCE_OK_MARKER = ".media-intake-source-ok"  # user-made, at the mount root: "n
 LAPTOP_MOUNTS = re.compile(r"^(/|/home|/var|/tmp|/boot.*|/usr|/opt|/srv|/root)$")
 SCREENSHOT_NAME = re.compile(r"^(Screenshot[_ ]|Screen Shot )", re.I)
 WHATSAPP_NAME = re.compile(r"^(IMG|VID)-\d{8}-WA\d+", re.I)
+# Signal's "Save" (Android and Desktop) names a file signal-YYYY-MM-DD-HH-mm-ss-SSS[_NNN].ext when the
+# attachment had no name of its own (Signal-Android SaveAttachmentUtil.kt, Signal-Desktop
+# ts/util/Attachment.std.ts getSuggestedFilename). Its backups (.backup) are encrypted and never media.
+SIGNAL_NAME = re.compile(r"^signal-\d{4}-\d\d-\d\d-\d\d-\d\d-\d\d", re.I)
+# Telegram Desktop's "Export chat history" / "Export Telegram data" (tdesktop export/): a folder
+# ChatExport_<YYYY-MM-DD>[ (n)] or DataExport_<YYYY-MM-DD>[ (n)] holding result.json or messages.html,
+# with per-chat media folders. Only TELEGRAM_EXPORT_MEDIA are ever taken from it: stickers/,
+# animations/, round_video_messages/, voice_messages/, profile_pictures/, stories/, contacts/ and
+# the HTML export's css/, js/ and images/ (its own icons) are not, nor its *_thumb.jpg previews.
+TELEGRAM_EXPORT_DIR = re.compile(r"^(ChatExport|DataExport)_\d{4}-\d\d-\d\d(?: \(\d+\))?$")
+TELEGRAM_EXPORT_MARKERS = ("result.json", "messages.html")
+TELEGRAM_EXPORT_MEDIA = ("photos", "video_files", "files")
+# photo_<n>@DD-MM-YYYY_HH-MM-SS.jpg, video_<n>@....mp4, file_<n>@....ext: an export's own names for
+# media without a name of its own (dates.py reads the date from it).
+TELEGRAM_EXPORT_NAME = re.compile(r"^(photo|video|file)_\d+@\d\d-\d\d-\d{4}_\d\d-\d\d-\d\d\.", re.I)
 _IMG_EXT = {".jpg", ".jpeg", ".png", ".heic", ".heif", ".webp", ".gif", ".dng", ".gpr"}
 
 
@@ -302,6 +317,32 @@ def check_drive(root, path):
         raise Denied(f"denied name: {rel}")
     if os.path.splitext(parts[-1])[1].lower() not in MEDIA_EXT:
         raise Denied(f"not media: {rel}")
+    if telegram_export(root, parts):
+        if len(parts) < 2 or parts[-2] not in TELEGRAM_EXPORT_MEDIA:
+            raise Denied(f"Telegram export, not a photo or video folder: {rel}")
+        if parts[-1].lower().endswith("_thumb.jpg"):
+            raise Denied(f"Telegram export preview: {rel}")
+
+
+def _export_marked(folder):
+    """True when folder looks like a renamed Telegram Desktop export: result.json or messages.html (regular
+    files) beside a photos/ or video_files/ folder. A web page saved with its files/ folder is not one."""
+    j = os.path.join
+    return (any(os.path.isfile(j(folder, m)) and not os.path.islink(j(folder, m)) for m in TELEGRAM_EXPORT_MARKERS)
+            and any(os.path.isdir(j(folder, d)) for d in ("photos", "video_files")))
+
+
+def telegram_export(root, parts):
+    """True when the file at root/<parts> is inside a Telegram Desktop export: the source root or a folder
+    on the way is named ChatExport_<date> / DataExport_<date>, or holds result.json or messages.html."""
+    if any(TELEGRAM_EXPORT_DIR.match(p) for p in [os.path.basename(root), *parts[:-1]]):
+        return True
+    folder = root
+    for p in [None, *parts[:-1]]:
+        folder = folder if p is None else os.path.join(folder, p)
+        if _export_marked(folder):
+            return True
+    return False
 
 
 def walk_drive(root):
@@ -336,12 +377,21 @@ def _walk_tree(root, skip_repos=False):
 
 
 def drive_category(rel):
-    """photo / video / screenshot / messaging:WhatsApp for a file from an external drive or laptop folder
-    (WhatsApp's IMG-YYYYMMDD-WA0001 names are recognised without any config)."""
+    """photo / video / screenshot / messaging:<app> for a file from an external drive or laptop folder.
+    Recognised without any config: WhatsApp's IMG-YYYYMMDD-WA0001 names, Signal's saved
+    signal-YYYY-MM-DD-... names, and a Telegram Desktop export's media (a file in photos/, video_files/
+    or files/ under a ChatExport_<date> / DataExport_<date> folder, or named photo_<n>@<date>...)."""
     name = os.path.basename(rel)
     ext = os.path.splitext(name)[1].lower()
+    parts = rel.replace(os.sep, "/").split("/")
     if WHATSAPP_NAME.match(name):
         return "messaging:WhatsApp"
+    if SIGNAL_NAME.match(name):
+        return "messaging:Signal"
+    if TELEGRAM_EXPORT_NAME.match(name) or (
+            len(parts) > 2 and parts[-2] in TELEGRAM_EXPORT_MEDIA
+            and any(TELEGRAM_EXPORT_DIR.match(p) for p in parts[:-2])):
+        return "messaging:Telegram"
     if SCREENSHOT_NAME.match(name) and ext in _IMG_EXT:
         return "screenshot"
     return "photo" if ext in _IMG_EXT else "video"

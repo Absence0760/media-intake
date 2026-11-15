@@ -108,8 +108,12 @@ the pinned model is not available, or the venv is missing; the candidates wait
 for a later `media-intake vlm-trash` run ([search.md](search.md)).
 
 Drive and folder files are categorised by name: `Screenshot_*`, `Screen Shot *` ->
-Screenshots; `IMG-YYYYMMDD-WA*` / `VID-YYYYMMDD-WA*` -> Messaging/WhatsApp
-(no config needed); else photo or video by extension. They file by date,
+Screenshots; `IMG-YYYYMMDD-WA*` / `VID-YYYYMMDD-WA*` -> Messaging/WhatsApp,
+`signal-YYYY-MM-DD-...` -> Messaging/Signal, a Telegram Desktop export's
+`photos/`, `video_files/` and `files/` -> Messaging/Telegram (the rest of an
+export is never staged; queue the folder that holds the export, not the
+export itself; [intake.md](intake.md), "Messaging apps") (no config
+needed); else photo or video by extension. They file by date,
 except on an `--event` day: as with `plan --event`
 ([intake.md](intake.md)), the event tags those files, and with a project
 (a `PROJECT/` prefix, or a slug matching a project's `events` patterns) that

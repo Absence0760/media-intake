@@ -540,7 +540,7 @@ class ReviewUITest(unittest.TestCase):
         self.assertEqual(len(items), 2)
         w1, w2 = (items[f"photo_library/Messaging/WhatsApp/2025/{n}"] for n in ("w1.jpg", "w2.jpg"))
         self.assertEqual((w1["tab"], w1["batch"]), ("quarantine", f"xcheck-{BATCH}"))
-        self.assertEqual(w1["orig"]["label"], "WhatsApp/Messages copy of this photo")
+        self.assertEqual(w1["orig"]["label"], "WhatsApp copy of this photo")
         self.assertEqual((w1["orig"]["meta"]["res"], w1["meta"]["res"]), ("160x120", "80x60"))
         self.assertEqual(w1["orig"]["meta"]["folder"], "~/photo_library/2025/2025-06")
         self.assertNotIn("of", w1)
