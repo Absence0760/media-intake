@@ -566,7 +566,7 @@ def cmd_apply(a):
         save(os.path.join(b, "plan.json"), plan)
         print(f"{moved} files went to a free name (<name>_<n>): their planned place was taken since `plan`")
     left = [os.path.join(r, f) for r, _, fs in os.walk(raw) for f in fs]
-    if not left:
+    if not left and os.path.isdir(raw):  # a second apply finds raw/ already removed: nothing to do
         shutil.rmtree(raw)
     print(dict(c), f"left in raw: {len(left)}")
     if c["quarantined"]:
