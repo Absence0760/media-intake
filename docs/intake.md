@@ -336,9 +336,39 @@ cameras of one model share a folder, as above.
   anything is deleted. Two camera photos (phone or GoPro) are never merged
   (burst shots and time-lapse frames look alike). A screenshot or messaging copy is also checked against the library
   index and goes to review when it is near a library image.
+- **Near videos** (`videohash.py`): a re-encoded, resized or trimmed copy of
+  a clip goes to review exactly as a near-copy photo does, never deleted. ffmpeg
+  samples a frame every 0.5 s (at most 120, spread over a longer clip), scaled
+  to 9x8 grey and piped as raw pixels, so no frame is written to disk; each
+  gets the same dHash as a photo, and blank frames (black, fades) are dropped.
+  Two clips match when at least 80% of the shorter one's frames are each
+  within 10 bits of some frame of the other, compared as a set, ignoring
+  order and time, so a trimmed copy matches its original. Camera videos (phone, GoPro, a
+  drive's or folder's videos) are camera originals like camera photos: two are
+  never merged, and only a messaging copy or screen recording is checked
+  against the library. A clip ffmpeg can't decode (HEVC on Fedora's
+  `ffmpeg-free`) is sampled through `scan_sensitive.video_frames`, GStreamer
+  included, into a private folder removed at once. A clip that still can't be
+  read, or has fewer than 3 frames with any contrast, gets `vhash_note`
+  (`unreadable`, `too short or blank to compare`) in `plan.json` and is
+  counted in plan's output: "not checked", never "unique". `plan` decodes
+  every video once for this; expect roughly the clip's length or less per
+  clip on CPU.
+  - Research (2026-11-14): Meta's [vPDQ](https://github.com/facebook/ThreatExchange/tree/main/vpdq)
+    hashes a frame a second with PDQ and matches frame sets by the share of
+    each video's frames that match, ignoring timestamps, which is what makes
+    it trim-tolerant; its C++ build needs CMake and the libav* libraries, so
+    its method is used here with the dHash the photos already use, and no
+    new dependency. [videohash](https://github.com/akamhy/videohash) (MIT,
+    last PyPI release 3.0.1 on 2022-05-29, pulls yt-dlp) makes one 64-bit
+    hash of a frame collage and says it can't tell whether one video is part
+    of another: rejected. Thresholds were set on lavfi patterns (a
+    re-encode, a resize and a 1.3 s trim were within 5 bits a frame; unlike
+    clips 15 or more), not on real phone video: see Unverified.
 - Images under 200 px and empty files go to review as junk.
 - `index.json` in the state folder keeps sha256 and dHash of everything in
-  the library, so later batches are checked against it.
+  the library (and each filed video's frame hashes, `vhash`), so later
+  batches are checked against it.
 - **A move never replaces a file** (`intake.free_path`). `release` puts a
   file back at its old place only while that place and its sidecar are free.
   If another file was filed there since (erase moved `2026-08/IMG_1.jpg` to
@@ -757,6 +787,7 @@ Project / Source / Event / Place / Label / Review / Used.
 | Barcodes (PDF417 on the back of US driving licences, AAMVA header; 2FA `otpauth://` QR codes) | zxing-cpp (`python3-zxing-cpp`) | Reads PDF417 and QR; zbar doesn't do PDF417. |
 | Dates, GPS | exiftool (`perl-Image-ExifTool`) | Standard; falls back to Pillow/ffprobe when missing. |
 | Duplicates | sha256 (exact) + 64-bit dHash on Pillow (near) | Built in; see czkawka below. |
+| Video near-duplicates | dHash of frames sampled by ffmpeg, matched as sets (vPDQ's method) | Built in; see Duplicates. |
 
 Rejected:
 
@@ -790,6 +821,10 @@ Rejected:
   QuickTime `CreateDate`; this code assumes UTC as the spec says, and
   `--clock-offset` corrects a camera that doesn't) or a real iPhone export's
   `DCIM/YYYYMM__` tree.
+- Video near-duplicate thresholds (`videohash.py`: 10 bits a frame, 80% of
+  the shorter clip) on real phone video: tested on synthetic clips only. A
+  static scene filmed twice, or a clip that is mostly one title card, may
+  match: it only goes to review.
 - NudeNet false-positive rate on real photo libraries (no published numbers).
 - Tesseract on embossed card numbers and cheque MICR lines.
 - `scan` time: about 1-2 s an image on CPU (OCR dominates), estimated.
@@ -822,7 +857,9 @@ erase and trash on fake MTP, gphoto2 and drive trees with case-only collisions, 
 stage, plan, apply, erase, offload and verify-gone with photos, videos and a mix from a phone, a GoPro card,
 a drive, a laptop folder and the drive queue, and erase's and offload's prompts (a wrong answer or closed
 stdin deletes nothing, with no traceback; the typed word does); `test_library_lock`: the
-CLI, a gallery write and a job contending for the library lock; `test_library_ops_media_kinds`: every
+CLI, a gallery write and a job contending for the library lock; `test_videohash`: the video hash on
+ffmpeg patterns (re-encoded, resized and trimmed copies match, a different, blank or unreadable clip
+doesn't) and `plan` routing a near-copy video to review; `test_library_ops_media_kinds`: every
 library-side command on a photo, an mp4 and a .mov, alone and mixed; `test_detectors_media_kinds`: scan,
 vlm_trash, semantic, label and the plugin hook on photos, videos and mixed batches, broken videos that
 must be flagged "not checked", never clean, and the GStreamer fallback with a hostile file name and its one-line skip note for an unsafe work folder (fake tools); `test_offline_guard`). Run long jobs under your
