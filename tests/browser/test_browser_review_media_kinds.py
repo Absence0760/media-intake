@@ -6,7 +6,8 @@
 Covers what test_browser_review.py and the HTTP tests leave out: burst stacks in a real browser (a
 closed stack's K decides only its cover, X opens it, "Keep this one, ..." decides every shot: Erase
 the rest in Quarantine, Trash the rest in Review), with a video of the same moment beside each stack
-that is never stacked and is decided on its own; what a card says when the browser can't decode a
+that is never stacked and is decided on its own; the stack's cover, its X (the button and the key, on
+any shot) opening and closing it, the count badge on every shot, and a near-copy never stacked; what a card says when the browser can't decode a
 file (a broken video, a video whose picture it can't decode, a broken picture, HEIC); and a
 messaging copy of a video shown as a video beside its library original.
 
@@ -16,7 +17,8 @@ tests/test_review_media_kinds.py.
 
 Hooks the tests rely on: body[data-ready]; each card's [data-item] (its relative path),
 [data-burst] on a stack's shots and aria-current on the focused card; the decision buttons'
-aria-pressed; a stack's badge (.badge) text; .media[data-cant] once a card has given up on
+aria-pressed; a stack's badge (.badge) text and data-count, the cover's class stack while closed
+and its X (button.x); .media[data-cant] once a card has given up on
 showing its file; the run panel's [data-job]; the textbox named "Type ERASE".
 """
 import json, os, re, shutil, subprocess, sys, tempfile, unittest
@@ -193,6 +195,87 @@ class ReviewMediaKindsBrowserTest(B.BrowserCase):
                                                     "DCIM/Camera/VID_0001.mp4": "keep"})
         self.assertEqual(rec["review"], {"DCIM/Camera/IMG_1001.jpg": "trash", "DCIM/Camera/IMG_1002.jpg": "keep",
                                          "DCIM/Camera/VID_1001.mp4": "delete"})
+
+    def test_stack_cover_close_and_count_badge(self):
+        """A closed stack is its cover alone (class stack, a "Show all N (X)" button, the count badge); opened,
+        every shot carries the badge and only the cover has the X, now "Close stack (X)"; closing it (the
+        button, or x on any shot) hides the rest, moves the focus to the cover and keeps their decisions. A
+        near-copy of an erased photo taken the same second is never stacked: no badge, no X, x does nothing."""
+        lib = os.path.join(self.home, "photo_library/2026/2026-11")
+        q, plan = {}, []
+        for n in range(1, 4):
+            rel = f"DCIM/Camera/IMG_000{n}.jpg"
+            R.img(os.path.join(self.quar, rel), (60 * n, 30, 30))
+            q[rel] = {"reasons": ["nudity:exposed"], "sha": f"{n}" * 64, "size": 1, "dst": f"{lib}/IMG_000{n}.jpg"}
+            plan.append({"rel": rel, "action": "file", "why": "", "date": f"2026-11-08T07:15:0{n - 1}.400000",
+                         "device": "cam-a", "dhash": 0})
+        R.write_json(os.path.join(self.quar, "quarantine.json"), q)
+        R.write_json(os.path.join(self.bd, "plan.json"), plan)
+        near = os.path.join(self.state, "quarantine", f"near-{BATCH}")
+        R.img(os.path.join(near, "Downloads/n.jpg"), (90, 90, 200))
+        R.write_json(os.path.join(near, "quarantine.json"), {
+            "Downloads/n.jpg": {"reasons": ["near-duplicate"], "sha": "7" * 64, "size": 1,
+                                "dst": os.path.join(self.home, "Downloads/n.jpg"),
+                                "near_of_sha": "1" * 64, "erased_on": "2026-11-12"}})
+        shots = [f"DCIM/Camera/IMG_000{n}.jpg" for n in range(1, 4)]
+        s = self.start()
+        page = self.new_page()
+        self.open(page, s)
+        cover, ncard = self.card(page, shots[0]), self.card(page, "Downloads/n.jpg")
+        B.expect(page.get_by_role("button", name="Quarantine (4)")).to_be_visible()  # every shot counts
+        # Closed: the cover alone, with the stack look, the count badge and the X that opens it.
+        self.assertEqual(sorted(self.cards(page)), ["DCIM/Camera/IMG_0001.jpg", "Downloads/n.jpg"])
+        B.expect(cover).to_have_class(re.compile(r"\bstack\b"))
+        B.expect(self.badge(page, shots[0])).to_have_text("Burst: 3 shots, 3 undecided")
+        B.expect(self.badge(page, shots[0])).to_have_attribute("data-count", "3")
+        B.expect(cover.locator("button.x")).to_have_text("Show all 3 (X)")
+        B.expect(cover.get_by_role("button", name=re.compile("Keep this one"))).to_have_count(0)
+        self.assertIsNone(ncard.get_attribute("data-burst"))
+        B.expect(ncard.locator(".badge")).to_have_count(0)
+        B.expect(ncard.locator("button.x")).to_have_count(0)
+        # x on the near-copy does nothing.
+        self.focus(page, "Downloads/n.jpg")
+        page.keyboard.press("x")
+        self.assertEqual(sorted(self.cards(page)), ["DCIM/Camera/IMG_0001.jpg", "Downloads/n.jpg"])
+        # Open with the cover's X button: every shot follows the cover, each with the badge; one X only.
+        cover.get_by_role("button", name="Show all 3 (X)").click()
+        order = self.cards(page)
+        i = order.index(shots[0])
+        self.assertEqual(order[i:i + 3], shots)
+        B.expect(cover).not_to_have_class(re.compile(r"\bstack\b"))
+        B.expect(cover.locator("button.x")).to_have_text("Close stack (X)")
+        for rel in shots:
+            B.expect(self.badge(page, rel)).to_have_text("Burst: 3 shots, 3 undecided")
+            B.expect(self.badge(page, rel)).to_have_attribute("data-count", "3")
+            self.assertEqual(self.card(page, rel).get_attribute("data-burst"), cover.get_attribute("data-burst"))
+        for rel in shots[1:]:
+            B.expect(self.card(page, rel).locator("button.x")).to_have_count(0)
+            B.expect(self.card(page, rel)).not_to_have_class(re.compile(r"\bstack\b"))
+        B.expect(page.locator("button.x")).to_have_count(1)
+        # A decision on one shot counts on every badge of the stack.
+        self.focus(page, shots[2])
+        page.keyboard.press("e")
+        self.pressed(page, shots[2], "Erase")
+        for rel in shots:
+            B.expect(self.badge(page, rel)).to_have_text("Burst: 3 shots, 2 undecided")
+        # x on a shot that is not the cover closes the stack: the focus goes to the cover.
+        self.focus(page, shots[2])
+        page.keyboard.press("x")
+        self.assertEqual(sorted(self.cards(page)), ["DCIM/Camera/IMG_0001.jpg", "Downloads/n.jpg"])
+        B.expect(page.locator('[data-item][aria-current="true"]')).to_have_attribute("data-item", shots[0])
+        B.expect(cover).to_have_class(re.compile(r"\bstack\b"))
+        B.expect(cover.locator("button.x")).to_have_text("Show all 3 (X)")
+        B.expect(self.badge(page, shots[0])).to_have_text("Burst: 3 shots, 2 undecided")
+        # Open with x on the cover, close with its "Close stack (X)" button; the decision is still there.
+        page.keyboard.press("x")
+        self.pressed(page, shots[2], "Erase")
+        B.expect(self.card(page, shots[1])).to_be_visible()
+        cover.get_by_role("button", name="Close stack (X)").click()
+        B.expect(self.card(page, shots[1])).to_have_count(0)
+        B.expect(self.card(page, shots[2])).to_have_count(0)
+        B.expect(cover).to_have_class(re.compile(r"\bstack\b"))
+        B.expect(page.get_by_role("button", name="Submit")).to_be_disabled()
+        self.assertEqual(self.calls(), [])
 
     # ------------------------------------------------------------ files the browser can't show
     def test_a_file_the_browser_cannot_decode_says_so(self):

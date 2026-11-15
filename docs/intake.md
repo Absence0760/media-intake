@@ -99,8 +99,10 @@ run and a CLI `apply` never interleave (`media_intake/library_lock.py`):
   purge-review, trash, not-trash, suggest-trash, tag, tag-files, mark-used,
   migrate-tags).
   The read-only ones in `intake.READ_ONLY` (quarantine, verify-gone, wipe-free,
-  share-copy, find, gallery) never do; a new subcommand counts as locked until
+  share-copy, find) never do; a new subcommand counts as locked until
   it is listed there, and `tests/test_library_lock.py` fails on one in neither.
+  `media-intake gallery` is cli.py's, not intake.py's (gallery.py imports
+  intake.py, never the reverse); it takes the lock itself, per write.
   `vlm-trash` takes it around each batch of verdicts it writes.
 - **Jobs** (the review page's run, the gallery's Trash, Erase and Share-safe copy) take it with
   their job lock at submit and hold it until their last step is over; each
@@ -314,7 +316,8 @@ cameras of one model share a folder, as above.
 
 `trash [BATCH] FILE... [--phone ROOT]` is a plain delete for junk that isn't
 private: the file (library, quarantine or review copy), its `.xmp` sidecar,
-its thumbnails (freedesktop and the gallery's), its `index.json` entry, and
+its thumbnails (freedesktop and the gallery's) and the gallery's H.264 proxy
+of a video, its `index.json` entry, and
 with `--phone` its phone original (the manifest's `src`, checked by
 `sources.check`). No home sweep, near-duplicate search, erase log or
 verify-gone. Its sha256 and size (no name) go to `trashed.json`, and `plan`
@@ -355,9 +358,15 @@ quarantine. A file named twice is forgotten once.
   or `__pycache__` folder (`SWEEP_SKIP` in `intake.py`). Exact copies inside a
   git working tree (any folder holding `.git`) are listed, not deleted: the
   repo would go dirty and git history keeps the content anyway.
+- **The gallery's caches.** Its thumbnails
+  (`~/.cache/media-intake/thumbs/<sha256>.jpg`) and H.264 video proxies
+  (`~/.cache/media-intake/proxies/<sha256>.mp4`) are not exact copies, so the
+  sweep can't find them: `erase`, `forget` and `trash` delete them by the
+  erased item's sha256, and `verify-gone` reports any left.
 - **verify-gone.** The erase log keeps checksum and size, no names, so
   `verify-gone [BATCH]` repeats the sweep read-only and exits 1 if anything is
-  left (including orphaned sidecars and gallery thumbnails). `erase` runs it
+  left (including orphaned sidecars, gallery thumbnails and gallery video
+  proxies). `erase` runs it
   last.
 - **Progress while it searches.** The HOME sweep, the drive sweep, the
   near-duplicate search and verify-gone can take minutes on a big HOME, so
@@ -431,7 +440,12 @@ quarantine. A file named twice is forgotten once.
   previews of each chapter it deletes (one it skips, say because its size
   changed, keeps them) by name, from the same folder, through the same gate (`sources.check_preview`: allowlisted folders, `.LRV`/`.THM` only,
   never a symlink), and prints `camera previews removed: N`. Other chapters'
-  previews stay; `offload` leaves previews on the card.
+  previews stay; `offload` leaves previews on the card. Previews go before
+  their chapter, so an erase stopped by a refused delete leaves the chapter
+  on the card and running erase again finishes the job; once it has, a
+  second run finds the quarantine empty and touches nothing. Without `--yes`
+  erase asks (type ERASE); any other answer, or none (no terminal), erases
+  nothing.
 
 ## Device deletes and case-insensitive storage
 
@@ -461,9 +475,19 @@ listing over MTP or gphoto2 can show both names; on the device they are one
 file, so deleting the "duplicate" deletes the real one. So the gate refuses
 the whole command, before anything is deleted, when any target's path
 differs only by case (Unicode NFC, then case-folded) from another path in the
-batch manifests (every batch's, for `trash` without a batch), or from another
-target, whether or not the other name is being deleted too. The refusal lists
-each group of colliding paths. Look on the device itself, rename or delete by
+batch manifests (every batch's, for `trash` without a batch), from another
+target, or from anything the device lists right now, whether or not the other
+name is being deleted too. The manifests only know what was there at staging,
+so the gate also takes the device's live listing at delete time
+(`sources.live_case_matches`): for each target it lists the folders on the way
+down from the `--phone` root and follows every name that matches
+case-insensitively, so a file copied onto the device after staging, one the
+manifest never recorded (outside the allowlist, in a hidden folder), or a
+case twin of a folder above the target, blocks the delete just the same. If
+that listing can't be taken (the device was unplugged or locked, a folder
+can't be read) or doesn't show a target at all, the whole command is refused
+before anything is deleted; it never falls back on the manifests alone. The
+refusal lists each group of colliding paths. Look on the device itself, rename or delete by
 hand, then stage the batch again. A collision inside the thumbnail folders
 refuses `erase` too; `--keep-phone-thumbnails` skips them.
 - **What erase can't reach**, and doesn't list: cloud photo services, chat
@@ -749,9 +773,11 @@ Rejected:
 `python3 -I -m unittest discover -s tests` (synthetic media, a throwaway HOME,
 a hermetic config), or one module: `python3 -I -m unittest discover -s tests -p test_intake.py`
 (also `test_dates`, `test_devices`, `test_sources`, `test_tagging`, `test_config`, and `test_device_case`: offload,
-erase and trash on fake MTP, gphoto2 and drive trees with case-only collisions; `test_device_ops_media_kinds`:
+erase and trash on fake MTP, gphoto2 and drive trees with case-only collisions, in the manifests or only in the live listing, and a listing that fails; `test_device_ops_media_kinds`:
 stage, plan, apply, erase, offload and verify-gone with photos, videos and a mix from a phone, a GoPro card,
 a drive, a laptop folder and the drive queue; `test_library_lock`: the
 CLI, a gallery write and a job contending for the library lock; `test_library_ops_media_kinds`: every
-library-side command on a photo, an mp4 and a .mov, alone and mixed; `test_offline_guard`). Run long jobs under your
+library-side command on a photo, an mp4 and a .mov, alone and mixed; `test_detectors_media_kinds`: scan,
+vlm_trash, semantic, label and the plugin hook on photos, videos and mixed batches, and broken videos that
+must be flagged "not checked", never clean; `test_offline_guard`). Run long jobs under your
 own memory cap if you like.

@@ -113,7 +113,14 @@ close the PR.
   the gallery and the review page: keys, selection and the bottom selection
   bar, the confirm dialogs (ERASE typed), lightbox video autoplay and Space
   play / pause, Range seeking, and the detached job's
-  progress, including re-attaching after a reload. They skip with a reason
+  progress, including re-attaching after a reload. The `*_media_kinds` files
+  run the same on photos, an .mp4 and a .MOV together: bulk Keep, tags, Set
+  event, Rotate and Trash on a mixed selection, shift-click after the grid
+  reloads, the large view playing and rotating a video; on the review page,
+  burst stacks (the cover, its X to open and close, the count badge, keep one,
+  decide the rest, a near-copy never stacked) with a video beside each, the card
+  shown for a file the browser can't decode, and a messaging copy of a video
+  beside its original. They skip with a reason
   when Playwright or its Chromium is missing, so the commands above are
   unaffected; the `browser` job in `ci.yml` runs them (and fails, not skips,
   through `MEDIA_INTAKE_BROWSER_REQUIRED=1`). Locally, once:

@@ -205,6 +205,119 @@ class DeviceCase(unittest.TestCase):
         self.assert_refused(out, self.mtp, self.m_upper, self.m_lower)
         self.assert_on_device(self.m_upper, self.m_lower, self.m_plain)
 
+    # ------------------------------------------------------------------ the live listing
+    def test_offload_refused_when_the_twin_appeared_after_staging(self):
+        """The manifest is clean; the twin was copied on afterwards and only the live listing shows it."""
+        os.remove(self.m_lower)
+        self.filed(self.mtp, "2026-11-13-mtp")
+        shutil.copyfile(self.m_upper, self.m_lower)
+        out = self.intake("offload", "2026-11-13-mtp", "--phone", self.mtp, "--yes", code=1)
+        self.assert_refused(out, self.mtp, self.m_upper, self.m_lower)
+        self.assert_on_device(self.m_upper, self.m_lower, self.m_plain)
+
+    def test_erase_refused_when_a_folder_twin_appeared_after_staging(self):
+        """DCIM/100apple beside DCIM/100APPLE: on the device the file in it may be the target."""
+        os.remove(self.g_lower)
+        self.filed(self.gphoto, "2026-11-13-cam", {os.path.relpath(self.g_plain, self.gphoto): ["passport-mrz"]})
+        twin = os.path.join(self.gphoto, "DCIM/100apple", os.path.basename(self.g_plain))
+        os.makedirs(os.path.dirname(twin))
+        shutil.copyfile(self.g_plain, twin)
+        out = self.intake("erase", "2026-11-13-cam", "--phone", self.gphoto, "--yes", code=1)
+        self.assert_refused(out, self.gphoto, self.g_plain, twin)
+        self.assert_on_device(self.g_upper, self.g_plain, twin)
+        self.assertFalse(os.path.exists(os.path.join(self.state, "erase-log.txt")))
+
+    def test_trash_with_phone_refused_when_the_twin_is_in_no_manifest(self):
+        os.remove(self.g_lower)
+        self.filed(self.gphoto, "2026-11-13-cam")
+        shutil.copyfile(self.g_upper, os.path.join(os.path.dirname(self.g_upper), "Img_0001.Jpg"))
+        kept = [os.path.join(r, f) for r, _, fs in os.walk(self.lib) for f in fs if f.lower() == "img_0001.jpg"]
+        out = self.intake("trash", "2026-11-13-cam", kept[0], "--phone", self.gphoto, code=1)
+        self.assert_refused(out, self.gphoto, self.g_upper, os.path.join(os.path.dirname(self.g_upper), "Img_0001.Jpg"))
+        self.assertTrue(os.path.isfile(kept[0]), "nothing trashed when a phone delete is refused")
+
+    @unittest.skipIf(hasattr(os, "geteuid") and os.geteuid() == 0, "root lists a folder whatever its mode")
+    def test_erase_refused_when_the_live_listing_fails(self):
+        """A real erase run: the camera folder can't be listed, so nothing is erased anywhere."""
+        os.remove(self.m_lower)
+        rel = os.path.relpath(self.m_plain, self.mtp)
+        self.filed(self.mtp, "2026-11-13-mtp", {rel: ["nudity"]})
+        quar = os.path.join(self.state, "quarantine", "2026-11-13-mtp", rel)
+        self.assertTrue(os.path.isfile(quar))
+        cam = os.path.dirname(self.m_plain)
+        # Search but no read: the files are still there (lexists, getsize) but the folder can't be listed,
+        # the way an MTP folder fails mid-session. Mode 000 would hide the files, and erase skip them as gone.
+        os.chmod(cam, 0o300)
+        try:  # restored before tearDown, which couldn't remove a folder it can't list
+            out = self.intake("erase", "2026-11-13-mtp", "--phone", self.mtp, "--yes", code=1)
+        finally:
+            os.chmod(cam, 0o700)
+        self.assertIn("refused: nothing deleted from the device", out)
+        self.assertIn("could not list", out)
+        self.assertIn("can't be ruled out", out)
+        self.assert_on_device(self.m_upper, self.m_plain)
+        self.assertTrue(os.path.isfile(quar), "the quarantined copy stays until a real erase")
+        self.assertFalse(os.path.exists(os.path.join(self.state, "erase-log.txt")))
+
+
+class LiveListing(unittest.TestCase):
+    """device_targets with a fake device lister (sources.list_dir): fail closed, never the manifests alone."""
+
+    def setUp(self):
+        import intake, sources
+        self.intake, self.sources = intake, sources
+        self.tmp = tempfile.mkdtemp(prefix="intake-live-listing-")
+        self.root = os.path.join(self.tmp, "Internal shared storage")
+        self.target = os.path.join(self.root, "DCIM/Camera/IMG_1.jpg")
+        os.makedirs(os.path.dirname(self.target))
+        with open(self.target, "wb") as f:
+            f.write(b"x" * 10)
+        self.real = sources.list_dir
+
+    def tearDown(self):
+        self.sources.list_dir = self.real
+        shutil.rmtree(self.tmp, ignore_errors=True)
+
+    def targets(self):
+        return self.intake.device_targets(self.root, [(self.target, 10)], [self.target])
+
+    def refused(self):
+        with self.assertRaises(SystemExit) as cm:
+            self.targets()
+        self.assertIn("refused: nothing deleted from the device", str(cm.exception.code))
+        return str(cm.exception.code)
+
+    def test_listing_matches_disk_passes(self):
+        self.assertEqual(self.targets(), [self.target])
+
+    def test_listing_fails_refuses(self):
+        def broken(d):
+            if d.endswith("Camera"):
+                raise OSError(5, "Input/output error")
+            return self.real(d)
+        self.sources.list_dir = broken
+        msg = self.refused()
+        self.assertIn("could not list", msg)
+        self.assertIn("Input/output error", msg)
+        self.assertIn("can't be ruled out", msg)
+
+    def test_root_unlisted_refuses(self):
+        def gone(d):
+            raise FileNotFoundError(2, "No such file or directory")
+        self.sources.list_dir = gone
+        self.assertIn("could not list", self.refused())
+
+    def test_listing_without_the_target_refuses(self):
+        self.sources.list_dir = lambda d: [] if d.endswith("Camera") else self.real(d)
+        self.assertIn("does not show DCIM/Camera/IMG_1.jpg", self.refused())
+
+    def test_twin_only_in_the_listing_refuses(self):
+        """No such file on this disk or in any manifest: only the device's listing shows the twin."""
+        self.sources.list_dir = lambda d: self.real(d) + (["img_1.JPG"] if d.endswith("Camera") else [])
+        msg = self.refused()
+        self.assertIn("differ only by letter case", msg)
+        self.assertIn("img_1.JPG", msg)
+
 
 class OneDeviceGate(unittest.TestCase):
     """Every device write is the one `gio remove` in device_remove; nothing renames or moves on a device."""

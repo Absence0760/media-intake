@@ -7,7 +7,7 @@ stage, plan, apply and offload are the real intake.py; scan, tag, the semantic
 index and the VLM are simulated (scan.json, a sidecar, exit codes), so no model
 runs. MEDIA_INTAKE_TEST_MOUNT/UUID stand in for findmnt. Never touches a real drive.
 """
-import importlib.util, io, json, os, shutil, subprocess, sys, tempfile, unittest
+import hashlib, importlib.util, io, json, os, shutil, subprocess, sys, tempfile, unittest
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import support  # noqa: E402,F401  (hermetic config)
@@ -70,7 +70,7 @@ class Queue(unittest.TestCase):
         self.q = importlib.util.module_from_spec(spec)
         spec.loader.exec_module(self.q)
         self.q.free_bytes = lambda: 10**15
-        self.calls, self.fails, self.kill = [], {}, None
+        self.calls, self.fails, self.kill, self.kill_after = [], {}, None, None
         self.q.run_cmd = self.fake_run
         self.flag_first = False
 
@@ -115,7 +115,10 @@ class Queue(unittest.TestCase):
         if step == "apply":
             cmd = cmd + ["--allow-missing-detectors"]
         with open(log, "a") as f:
-            return subprocess.run(cmd, stdout=f, stderr=subprocess.STDOUT).returncode
+            rc = subprocess.run(cmd, stdout=f, stderr=subprocess.STDOUT).returncode
+        if self.kill_after == (step, len([c for c in self.calls if c[0] == step])):
+            raise KeyboardInterrupt  # killed once the step's work is done, before the queue marks it
+        return rc
 
     def qrun(self, *args):
         out = io.StringIO()
@@ -361,6 +364,74 @@ class Queue(unittest.TestCase):
         self.assertEqual(r.returncode, 0, r.stderr)
         self.assertIn("phone 0", r.stdout)
         self.assertEqual(sorted(os.listdir(os.path.join(f, "2018"))), before, "originals untouched")
+
+    def folder_library(self):
+        """{file name: sha256} of every photo filed from the folder (library and project folders)."""
+        out = {}
+        for top in (self.lib, os.path.join(self.home, "Videos")):
+            for r, _, fs in os.walk(top):
+                for x in fs:
+                    if x.endswith(".jpg"):
+                        self.assertNotIn(x, out, f"{x} filed twice")
+                        with open(os.path.join(r, x), "rb") as fh:
+                            out[x] = hashlib.sha256(fh.read()).hexdigest()
+        return out
+
+    def test_folder_rerun_after_completion_does_nothing(self):
+        """A finished folder source run again (with another --chunk): no step runs, nothing is filed twice, the
+        recorded chunks and the finished time stay as they were, and the folder's originals are untouched."""
+        os.environ.pop("MEDIA_INTAKE_TEST_MOUNT")
+        f = self.make_folder()
+        before = sorted(os.listdir(os.path.join(f, "2018")))
+        self.qrun("add", f, "--label", "old-folder", "--kind", "folder")
+        self.qrun("run", "--chunk", "2")
+        q1, lib1 = self.state_q(), self.folder_library()
+        self.assertEqual(sorted(lib1), ["P_0000.jpg", "P_0001.jpg", "P_0002.jpg"])
+        self.assertTrue(q1["sources"]["old-folder"].get("finished"))
+        batches1 = sorted(os.listdir(os.path.join(self.state, "batches")))
+        self.calls = []
+        out = self.qrun("run", "--chunk", "1")
+        self.assertEqual(self.calls, [], "no step of a finished source runs again")
+        self.assertNotIn("chunk 1/", out)
+        self.assertIn("queue run finished", out)
+        self.assertEqual(self.state_q(), q1, "chunk size, steps, summaries and finished time unchanged")
+        self.assertEqual(self.folder_library(), lib1)
+        self.assertEqual(sorted(os.listdir(os.path.join(self.state, "batches"))), batches1)
+        self.assertIn("chunks done 2/2", self.qrun("status"))
+        self.assertEqual(sorted(os.listdir(os.path.join(f, "2018"))), before)
+
+    def test_folder_kill_mid_chunk_then_resume(self):
+        """Killed in chunk 2 after its stage copied the files but before the queue marked it: the next run
+        redoes only that stage (it copies nothing twice) and finishes the chunk; chunk 1 is never touched
+        again, and every folder photo is filed exactly once."""
+        os.environ.pop("MEDIA_INTAKE_TEST_MOUNT")
+        f = self.make_folder()
+        self.qrun("add", f, "--label", "old-folder", "--kind", "folder")
+        self.kill_after = ("stage", 2)
+        with self.assertRaises(KeyboardInterrupt):
+            self.qrun("run", "--chunk", "2")
+        src = self.state_q()["sources"]["old-folder"]
+        self.assertTrue(src["chunks"]["1"].get("done"))
+        self.assertFalse(src["chunks"].get("2", {}).get("steps"), "the killed stage was never marked")
+        self.assertNotIn("finished", src)
+        self.assertIn("chunks done 1/2", self.qrun("status"))
+        b2 = self.q.batch_name(src, 2)
+        raw2 = os.path.join(self.state, "batches", b2, "raw")
+        staged = [x for _, _, fs in os.walk(raw2) for x in fs]
+        self.assertEqual(len(staged), 1, "chunk 2 (one file) was copied before the kill")
+        ch1 = src["chunks"]["1"]
+        self.kill_after, self.calls = None, []
+        self.qrun("run")
+        steps = [(s, b) for s, b in self.calls if b is not None]  # stage records its root, not the batch
+        self.assertEqual([s for s, _ in steps], ["stage", "plan", "scan", "apply", "tag"], "chunk 1 is never redone")
+        self.assertEqual({b for s, b in steps if s != "stage"}, {b2})
+        src = self.state_q()["sources"]["old-folder"]
+        self.assertTrue(src.get("finished"))
+        self.assertEqual(src["chunks"]["1"], ch1)
+        self.assertEqual(sum(c["summary"]["files"] for c in src["chunks"].values()), 3)
+        self.assertEqual(sorted(self.folder_library()), ["P_0000.jpg", "P_0001.jpg", "P_0002.jpg"])
+        self.assertEqual(sorted(os.listdir(os.path.join(f, "2018"))), ["P_0000.jpg", "P_0001.jpg", "P_0002.jpg",
+                                                                        "link.jpg"], "originals untouched")
 
     def test_folder_refused_roots(self):
         f = self.make_folder()

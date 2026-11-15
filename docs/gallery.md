@@ -40,8 +40,10 @@ copies there go too.
 - **Large view**: the photo or video fills everything left of the info pane.
   A video starts playing on open (muted, with an Unmute button, if the
   browser refuses sound), Space plays / pauses, Prev / Next play the next one,
-  Esc stops it and releases the file. When the browser can't decode it (often
-  HEVC), the thumbnail shows large with **Open in the system player**, which
+  Esc stops it and releases the file. An HEVC video plays from an H.264 proxy
+  made on first open ("Video proxies" below). When the browser still can't
+  decode it (no proxy could be made, or another codec), the thumbnail shows
+  large with **Open in the system player**, which
   runs `xdg-open` on that one file (below; `xdg-open` comes from Fedora's
   `xdg-utils`, which `media-intake doctor` lists as optional).
 
@@ -200,9 +202,14 @@ included, until the next job.
 items and the folder, then runs `media-intake share-copy FILE... --out DIR`
 as a job (`POST /api/share`, `{"ids": [...]}`): every metadata field and the
 GPS stripped (exiftool `-all=` for images, keeping orientation and ICC; an
-ffmpeg stream copy without data streams for videos; [intake.md](intake.md)).
-The stripping is share-copy's own; the gallery only picks the files and the
-folder:
+ffmpeg stream copy without data streams for videos, which also drops a video's
+cover art, an attached JPEG with its own EXIF, and its subtitles;
+[intake.md](intake.md)). The stripping is share-copy's own; the gallery only
+picks the files and the folder. share-copy also checks everything before it
+copies anything: it refuses, writing nothing, an `--out` where a copy would
+land on its source or inside a library root or the state folder, two files
+with the same name, and a missing file. The dialog then says "Finished with
+problems". The gallery's side:
 
 - `DIR` is a new folder per export, `<share-out>/<YYYY-MM-DD-HHMMSS>` (0700;
   `-2`, `-3` if that exists), under `--share-out`, default
@@ -242,6 +249,45 @@ Previews of formats a browser can't show are made in memory, never on disk.
 Rotate drops the item's thumbnail and the next request makes it again, turned
 (a video's frame too: the page turns the player itself).
 Safe to delete the whole folder at any time; it rebuilds.
+
+## Video proxies (HEVC in the browser)
+
+Chromium on Linux, and often Firefox, can't play HEVC (H.265), which most
+phones and GoPros record. When the large view asks for a video whose first
+video stream ffprobe reports as `hevc`, the gallery makes an H.264 MP4 proxy
+and serves that instead; every other video is served as it is.
+
+- **Made on demand**, on the first open, one at a time (a second open waits).
+  The request waits for the transcode, so a long clip shows its poster for a
+  while the first time. Longer side at most 1920 px (never scaled up), sound
+  re-encoded to AAC, no metadata copied.
+- **How**: ffmpeg first (`libx264`, else `libopenh264`), which needs an HEVC
+  decoder; Fedora's `ffmpeg-free` has none, so then GStreamer's GPU decoder
+  (`vah265dec` or Vulkan, as for thumbnails) into `x264enc`, `openh264enc` or
+  `vah264enc`, with the sound when it is AAC, then without. `media-intake
+  doctor` lists an H.264 encoder as optional (`gstreamer1-plugin-openh264`).
+  Nothing is fetched; the original is only read.
+- **File names never reach a pipeline.** ffmpeg gets the original as a
+  `file:` path. `gst-launch-1.0` re-parses its arguments as one pipeline, so a
+  name holding `!`, quotes or spaces could add elements: it reads the
+  original through a link `in` in a private work folder
+  (`proxies/.work-*`, 0700) and writes `out.mp4` beside it, both paths made
+  by the tool; if that folder's path holds anything but letters, digits and
+  `._/+-` (an unusual HOME), GStreamer is not tried.
+- **Cached** in `~/.cache/media-intake/proxies/<sha256>.mp4` (folder 0700,
+  files 0600), written in the work folder first (removed afterwards) and kept
+  only when ffprobe reads it back as H.264. They are copies of video content, so
+  `trash`, `forget` and `erase` delete them by sha256 with the thumbnail,
+  `verify-gone` reports one that is still there as STILL PRESENT, and one
+  finished after its video was trashed or erased mid-transcode is deleted.
+- **When it fails** (no H.264 encoder, no decoder, a timeout after an hour),
+  the original is served as before and the page says the browser can't play
+  it, with **Open in the system player**; that video isn't tried again until
+  the gallery restarts.
+- Safe to delete the whole folder at any time; proxies are made again.
+- The review page ([review-ui.md](review-ui.md)) serves a batch's quarantine
+  and review files as they are, with no proxy: quarantined files can hold
+  nudity and IDs, which must not gain a cached copy.
 
 ## Security
 
@@ -297,6 +343,23 @@ a shift-click after the grid reloads, + tag / − tag, Set event, Rotate (the
 thumbnails made again turned) and Trash on a mixed selection, and the large
 view playing an .mp4 and a .MOV and rotating a video.
 
+`tests/test_gallery_proxy.py` (skips, naming why, when ffmpeg has no `libx265`
+or no H.264 encoder): a synthetic HEVC .MOV with AAC sound served as an H.264 +
+AAC proxy, 0600 in a 0700 folder, with Range, made once (a second request and a
+restarted server reuse it), an H.264 .mp4 served as it is with no proxy, and
+the originals unchanged; a failing ffmpeg (a fake first on PATH) serves the
+original, tries once, leaves no partial file, and Keep still works; the
+GStreamer fallback's two `gst-launch-1.0` runs (with and without sound) for a
+file named with `!`, spaces and double quotes: two `location=` arguments, the
+work folder's link (resolving to the original) and output, and no part of the
+name in any argument; `proxy_commands` in-process with a hostile name, and
+skipping GStreamer for an unsafe work path; the race where a video is trashed
+while its proxy is made (a gated ffmpeg that has written the proxy waits on a
+FIFO): with the trash job still running the fresh proxy is deleted and the
+original served, and after the trash ends it is deleted and nothing served,
+leaving the cache empty either way; Trash from the gallery deleting the
+proxy; and `trash`, `forget` and `verify-gone` on planted proxies.
+
 In headless Chromium (`tests/browser/test_browser_gallery.py`, see
 CONTRIBUTING.md, Tests): keys, click and shift-click selection, the bottom
 selection bar appearing only while something is selected, a sidebar quick
@@ -318,5 +381,11 @@ selection and a Share-safe copy ending in "Done: share-safe copies in ...".
   falls back", not with the real model.
 - Start-up time on a large real library read from disk.
 - Share-safe copy of HEIC and DNG from the gallery (the gallery tests copy
-  JPEGs, an .mp4 and a .MOV), any operation on an HEVC video (no HEVC test
-  fixture), and Rename / Merge on a real digiKam-written library.
+  JPEGs, an .mp4 and a .MOV), the other operations on an HEVC video (only the
+  proxy tests make an HEVC clip), and Rename / Merge on a real digiKam-written
+  library.
+- Video proxies from a real iPhone or GoPro file, in a real browser (the
+  tests check the bytes served, not playback), and the GStreamer proxy path
+  for real (CI has no GStreamer; the test checks the commands it runs with
+  fakes): `vah265dec` / Vulkan into `x264enc`, `openh264enc` or `vah264enc`,
+  non-AAC sound falling back to no sound, and transcode time on a long 4K clip.

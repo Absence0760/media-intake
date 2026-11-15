@@ -31,7 +31,10 @@ class FakeProbe:
         self.tools = set(cli.SYSTEM_TOOLS) | {"ollama", cli.XDG_OPEN}
         self.modules = set(cli.SYSTEM_MODULES)
         self.langs = "List of available languages (2):\neng\nosd\n"
-        self.plugins = "va:  vah265dec: VA-API H.265 Decoder\n"
+        self.plugins = "va:  vah265dec: VA-API H.265 Decoder\nopenh264:  openh264enc: OpenH264 video encoder\n"
+        # Fedora's ffmpeg-free: an H.264 encoder but no HEVC decoder, so the gallery's proxies need GStreamer
+        self.ffmpeg = {"-encoders": " V....D libopenh264          OpenH264 H.264\n",
+                       "-decoders": " V....D h264                 H.264\n"}
         self.files = {VISION: FILES["onnx/vision_model_quantized.onnx"], TEXT: FILES["onnx/text_model.onnx"],
                       TOKENIZER: FILES["tokenizer.json"], cli.venv_python(): None, cli.MTP_BACKEND: None,
                       os.path.join(os.environ["MEDIA_INTAKE_STATE"], "geo", "cities1000.zip"): None}
@@ -43,6 +46,8 @@ class FakeProbe:
         return f"/usr/bin/{tool}" if tool in self.tools else None
 
     def output(self, cmd):
+        if cmd[0] == "ffmpeg":
+            return self.ffmpeg[cmd[-1]]
         return {"tesseract": self.langs, "gst-inspect-1.0": self.plugins, "ollama": "ollama version is 0.0.0"}[cmd[0]]
 
     def importable(self, module):
@@ -109,7 +114,8 @@ class Doctor(unittest.TestCase):
         del self.p.files[cli.MTP_BACKEND]
         code, lines = self.run_doctor()
         self.assertEqual(code, 0, lines)
-        self.assertIn("Optional:  sudo dnf install gstreamer1-plugins-bad-free gvfs-mtp", lines)
+        self.assertIn("Optional:  sudo dnf install gstreamer1-plugins-bad-free gstreamer1-plugin-openh264 gvfs-mtp",
+                      lines)
         self.assertFalse([ln for ln in lines if ln.startswith("Install what's missing")], lines)
 
     def test_no_xdg_open_is_optional(self):
@@ -121,11 +127,32 @@ class Doctor(unittest.TestCase):
                          "optional xdg-open (the gallery's Open in the system player button) (xdg-utils)")
         self.assertIn("Optional:  sudo dnf install xdg-utils", lines)
 
+    def test_h264_encoder_for_gallery_proxies(self):
+        """An H.264 encoder for the gallery's HEVC proxies is optional: GStreamer's, or ffmpeg's only when that
+        ffmpeg can also decode HEVC (Fedora's ffmpeg-free can't)."""
+        what = "H.264 encoder for the gallery's HEVC proxies"
+        self.assertEqual(self.line(self.run_doctor()[1], what), f"ok       {what} (openh264enc)")
+        self.p.plugins = "va:  vah265dec: VA-API H.265 Decoder\n"  # no GStreamer encoder
+        code, lines = self.run_doctor()
+        self.assertEqual(code, 0, lines)
+        self.assertTrue(self.line(lines, what).startswith("optional "), lines)
+        self.assertIn("Optional:  sudo dnf install gstreamer1-plugin-openh264", lines)
+        self.p.ffmpeg["-decoders"] += " VFS..D hevc                 HEVC\n"  # ffmpeg alone can do it now
+        self.assertEqual(self.line(self.run_doctor()[1], what), f"ok       {what} (ffmpeg libopenh264)")
+        self.p.tools -= {"gst-inspect-1.0", "ffmpeg"}
+        code, lines = self.run_doctor()
+        self.assertEqual(code, 1, lines)  # ffmpeg itself is required
+        self.assertTrue(self.line(lines, what).startswith("optional "), lines)
+        for x264 in ("x264:  x264enc: x264 H.264 Encoder\n", "va:  vah264enc: VA-API H.264 Encoder\n"):
+            self.p.tools |= {"gst-inspect-1.0"}
+            self.p.plugins = x264
+            self.assertTrue(self.line(self.run_doctor()[1], what).startswith("ok "))
+
     def test_no_gst_inspect_is_optional(self):
         self.p.tools.discard("gst-inspect-1.0")
         code, lines = self.run_doctor()
         self.assertEqual(code, 0, lines)
-        self.assertIn("Optional:  sudo dnf install gstreamer1", lines)
+        self.assertIn("Optional:  sudo dnf install gstreamer1 gstreamer1-plugin-openh264", lines)
 
     def test_vision_model_checksum_mismatch_fails(self):
         self.p.files[VISION] = OTHER
@@ -257,23 +284,37 @@ class KillByPid(unittest.TestCase):
 
 
 class GalleryArgs(unittest.TestCase):
-    """`media-intake gallery` passes its flags on to gallery.main."""
+    """`media-intake gallery` is cli.py's: its flags go to gallery.main as given, and intake.py never
+    imports gallery.py (gallery imports intake; the other way round is an import cycle)."""
 
     def argv_for(self, *args):
-        import intake
-        a = intake.build_parser().parse_args(["gallery", *args])
         fake = type(sys)("gallery")
         fake.main = mock.Mock(return_value=0)
-        with mock.patch.dict(sys.modules, {"gallery": fake}), self.assertRaises(SystemExit):
-            intake.cmd_gallery(a)
+        with mock.patch.dict(sys.modules, {"gallery": fake}):
+            self.assertEqual(cli.main(["gallery", *args]), 0)
         return fake.main.call_args[0][0]
 
     def test_share_out_passed_on(self):
         self.assertEqual(self.argv_for("--share-out", "/tmp/x", "--port", "5"),
-                         ["--port", "5", "--share-out", "/tmp/x"])
+                         ["--share-out", "/tmp/x", "--port", "5"])
 
     def test_default_omits_share_out(self):
-        self.assertNotIn("--share-out", self.argv_for())
+        self.assertEqual(self.argv_for(), [])
+
+    def test_gallery_flags_parse(self):
+        import gallery
+        with self.assertRaises(SystemExit) as e, mock.patch("sys.stdout", io.StringIO()) as out:
+            gallery.main(["--help"])
+        self.assertEqual(e.exception.code, 0)
+        for flag in ("--drive", "--port", "--share-out"):
+            self.assertIn(flag, out.getvalue())
+
+    def test_intake_never_imports_gallery(self):
+        import intake
+        with open(intake.__file__) as f:
+            src = f.read()
+        self.assertIsNone(re.search(r"^\s*(import gallery|from gallery )", src, re.M))
+        self.assertNotIn("gallery", intake.LOCKED | intake.READ_ONLY)
 
 
 class Version(unittest.TestCase):

@@ -37,6 +37,10 @@ The goal: someone else can install it on Fedora, import a phone, and trust it.
       case-only rename leaves what looks like a duplicate and deleting it deletes the real
       file. Refuse any device delete whose path differs from another manifest path only
       by case; never rename by case on a device.
+- [x] **Case guard against the live listing:** the same check also runs against what the
+      device lists at delete time (`sources.live_case_matches`), so a file copied on after
+      staging, or one no manifest recorded, still blocks a case-colliding delete; a device
+      that can't be listed refuses the delete instead of trusting the manifests.
 - [x] **Long actions survive the page:** release/erase/trash started from the review page
       or gallery must run as a detached, resumable job with a status file. Today stopping
       the page does not stop an erase already started, and a second page can show stale
@@ -74,15 +78,20 @@ The goal: someone else can install it on Fedora, import a phone, and trust it.
       keys, selection, dialogs, video autoplay, Range seeking, job progress and re-attach
       (`tests/browser/`, the `browser` CI job).
 - [x] End-to-end on a fake MTP and gphoto2 tree with case-only collisions.
+- [x] Every operation (keep, trash, erase, release, tag, rotate, share, events, bulk select,
+      and the device-side stage, plan, apply, erase, offload and verify-gone) on photos,
+      videos (mp4 and .mov) and mixed selections, for phone, GoPro, drive and folder
+      sources (the `*_media_kinds` test files and their browser tests).
 
 ---
 
 ## Milestone 0.2: the gallery as the everyday UI
 
 - [ ] Layout polish after real use (left panel, sticky actions, lightbox).
-- [ ] **HEVC in the browser:** Firefox/Chromium often can't play HEVC. Make an on-demand
+- [x] **HEVC in the browser:** Firefox/Chromium often can't play HEVC. Make an on-demand
       H.264 proxy (GStreamer GPU decode → x264), cached by sha256 in the private cache
-      and cleaned by erase/trash/forget/verify-gone like thumbnails.
+      and cleaned by erase/trash/forget/verify-gone like thumbnails (gallery only; the
+      review page keeps serving batch files as they are: docs/gallery.md, "Video proxies").
 - [x] Burst groups: show bursts as one stack, pick the best, trash the rest (review page;
       the gallery's stacks wait for a later round).
 - [x] Albums/events as first-class views (from `Event|` tags), with rename and merge.
@@ -153,3 +162,13 @@ The goal: someone else can install it on Fedora, import a phone, and trust it.
   you, never a guarantee.
 - Fedora's `ffmpeg-free` has no HEVC decoder; video scanning and labels need GStreamer's
   VA-API or Vulkan decoders.
+- Tested on synthetic media and fake device trees only: not yet on real HEVC files, real
+  GoPro `.gpr` files and GPS tracks, or real phones over MTP and gphoto2. The real detector
+  models run only in the `models.yml` job.
+- A GoPro's QuickTime creation time is read as UTC, as the spec says; forum reports say
+  some write local time. Unconfirmed on a real file; `--clock-offset` corrects a camera
+  that is off.
+- Gallery thumbnails are cached by content, so rotating one copy also rotates the
+  thumbnail of its identical twin (the twin's sidecar is unchanged).
+- Plain Trash on a quarantined item on the review page trashes that file only; it
+  doesn't sweep copies elsewhere the way Erase does.

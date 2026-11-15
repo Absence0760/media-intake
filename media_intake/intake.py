@@ -25,7 +25,6 @@ Run as `media-intake <command>` (cli.py); `python3 -I media_intake/intake.py` wo
   media-intake tag     BATCH [--no-labels]       (after apply: XMP sidecar tags for filed files)
   media-intake tag-files FILE... [--event SLUG] [--no-labels]   (re-tag library files)
   media-intake mark-used FILE... --post SLUG     (adds Used|<post slug>)
-  media-intake gallery [--drive MOUNT]           (local web gallery: browse, keep, trash, erase)
   media-intake find    [--tag T] [--event E] [--place P] [--project P] [--unused-since 30d]
 
 Tags live in <file>.<ext>.xmp sidecars next to each file (digiKam's default
@@ -67,8 +66,10 @@ VENV_PY = f"{STATE}/venv/bin/python"
 SETUP = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "setup.sh")
 DEPS = ("sudo dnf install perl-Image-ExifTool tesseract tesseract-langpack-eng python3-zxing-cpp "
         "ffmpeg-free (README, Install)")
-# gallery.py's thumbnails (copies of photo content): erase, forget and trash delete them by sha256.
+# gallery.py's thumbnails and H.264 video proxies (copies of photo and video content): erase, forget and
+# trash delete them by sha256 (gallery_thumb_forget), and verify-gone reports any left.
 THUMBS = os.path.join(HOME, ".cache", "media-intake", "thumbs")
+PROXIES = os.path.join(HOME, ".cache", "media-intake", "proxies")
 HERE = os.path.dirname(os.path.abspath(__file__))
 IMG = {".jpg", ".jpeg", ".png", ".heic", ".heif", ".webp", ".gif", ".dng", ".gpr"}
 VID = {".mp4", ".mov", ".3gp", ".mkv", ".webm"}
@@ -149,15 +150,22 @@ def thumb_forget(path):
     return n
 
 
+def gallery_cache_paths(sha):
+    """gallery.py's cached copies of this content (keyed by sha256): its thumbnail and its H.264 video proxy."""
+    return [os.path.join(THUMBS, sha + ".jpg"), os.path.join(PROXIES, sha + ".mp4")]
+
+
 def gallery_thumb_forget(sha):
-    """Delete gallery.py's cached thumbnail of this content (keyed by sha256). Returns 1 if one went."""
+    """Delete gallery.py's cached thumbnail and video proxy of this content (keyed by sha256).
+    Returns how many went (0 to 2)."""
     if not re.fullmatch(r"[0-9a-f]{64}", sha or ""):
         return 0
-    p = os.path.join(THUMBS, sha + ".jpg")
-    if os.path.lexists(p):
-        os.remove(p)
-        return 1
-    return 0
+    n = 0
+    for p in gallery_cache_paths(sha):
+        if os.path.lexists(p):
+            os.remove(p)
+            n += 1
+    return n
 
 
 def sidecar(path):
@@ -939,7 +947,9 @@ def device_targets(root, items, known, check=sources.check, skip_denied=True, hi
     (check; with skip_denied False that refuses the whole command instead, hint appended).
     Skipped quietly: a file already gone or no longer the staged size. Refused, nothing
     deleted: a file still there with no recorded size, and any target whose path differs
-    only by letter case from another known path or target (sources.check_case). Returns
+    only by letter case from another known path, another target, or any path the device
+    lists right now (sources.live_case_matches, then sources.check_case); a device whose
+    live listing can't be taken refuses too, never falling back on the manifests. Returns
     the paths for device_remove.
     """
     out, unsized = [], []
@@ -967,8 +977,14 @@ def device_targets(root, items, known, check=sources.check, skip_denied=True, hi
                  "these, so they can't be checked against the staged copy:\n"
                  + "\n".join("  " + os.path.relpath(p, root) for p in unsized)
                  + f"\n(under {root}). Stage the batch again.")
+    try:  # the device as it is now, not only as staged: fail closed if it can't be listed
+        live = sources.live_case_matches(root, out)
+    except sources.ListingFailed as e:
+        sys.exit(f"refused: nothing deleted from the device. {e}, so a name that differs only by letter "
+                 "case can't be ruled out. Check the device is still connected and unlocked, then run "
+                 "the command again.")
     try:
-        sources.check_case(out, known)
+        sources.check_case(out, [*known, *live])
     except sources.CaseCollision as e:
         sys.exit("refused: nothing deleted from the device. These paths on it differ only by letter "
                  "case; its storage ignores case, so each group may be one file, and deleting the "
@@ -1114,6 +1130,9 @@ def verify_gone(sig, drive=None):
     gthumbs = sum(os.path.lexists(os.path.join(THUMBS, s + ".jpg")) for s in sig)
     if gthumbs:
         found["gallery thumbnails (~/.cache/media-intake/thumbs)"] += gthumbs
+    gproxies = sum(os.path.lexists(os.path.join(PROXIES, s + ".mp4")) for s in sig)
+    if gproxies:
+        found["gallery video proxies (~/.cache/media-intake/proxies)"] += gproxies
     if in_git:
         print(f"{len(in_git)} exact copies inside git repos (erase leaves them): " + ", ".join(in_git))
     if found:
@@ -1145,8 +1164,11 @@ def cmd_erase(a):
     if not q:
         sys.exit("quarantine is empty")
     if not a.yes:
-        ans = input(f"Erase {len(q)} quarantined files for good{' and from the phone' if a.phone else ''}"
-                    f"{' and the drive' if a.drive else ''}? Type ERASE: ")
+        try:
+            ans = input(f"Erase {len(q)} quarantined files for good{' and from the phone' if a.phone else ''}"
+                        f"{' and the drive' if a.drive else ''}? Type ERASE: ")
+        except EOFError:  # no terminal (a cron job, the queue): no answer is no
+            ans = ""
         if ans.strip() != "ERASE":
             sys.exit("nothing erased")
     # A checksum that is also in the library belongs to a released (or library)
@@ -1204,8 +1226,10 @@ def cmd_erase(a):
         for src, _ in phone_items + prev_items:
             thumbs += thumb_forget(src)
             gone.add(src)
-    phone = len(device_remove(phone_todo))
+    # Previews before their chapters: a run stopped by a refused delete keeps the chapter, so the next
+    # run finds the previews beside it again. Chapter first would strand them: no chapter, no lookup.
     previews = len(device_remove(prev_todo))
+    phone = len(device_remove(phone_todo))
     pthumbs, prefused = phone_thumbnails(pthumb_todo)
     # Identical copies already in the library (filed by an earlier batch) are the
     # same picture: erase them too.
@@ -2064,14 +2088,6 @@ def cmd_share_copy(a):
 cmd_social_copy = cmd_share_copy  # older name
 
 
-def cmd_gallery(a):
-    import gallery
-    argv = (["--drive", a.drive] if a.drive else []) + ["--port", str(a.port)]
-    if a.share_out:
-        argv += ["--share-out", a.share_out]
-    sys.exit(gallery.main(argv))
-
-
 def clock_offset_arg(v):
     try:
         dates.parse_clock_offset(v)
@@ -2129,9 +2145,6 @@ def build_parser(prog=None):
     s.add_argument("--event"); s.add_argument("--place", help="substring of city, state or country"); s.add_argument("--project")
     s.add_argument("--unused-since", metavar="Nd", help="not used in a post in the last N days")
     s.add_argument("--never-used", action="store_true"); s.add_argument("--root", action="append", help="search here instead of the library folders")
-    s = sp.add_parser("gallery", help="local web gallery of the library (gallery.py)")
-    s.add_argument("--drive", help="backup drive mount, passed to forget by Erase"); s.add_argument("--port", type=int, default=0)
-    s.add_argument("--share-out", help="folder for share-safe copies (default ~/Pictures/share-safe)")
     return ap
 
 
@@ -2139,7 +2152,7 @@ def build_parser(prog=None):
 # of these (tests/test_library_lock.py checks), and main() is the only place that takes it for the CLI.
 LOCKED = {"stage", "plan", "scan", "apply", "release", "erase", "forget", "offload", "purge-review", "trash",
           "not-trash", "suggest-trash", "tag", "tag-files", "mark-used", "migrate-tags"}
-READ_ONLY = {"quarantine", "verify-gone", "wipe-free", "share-copy", "social-copy", "find", "gallery"}
+READ_ONLY = {"quarantine", "verify-gone", "wipe-free", "share-copy", "social-copy", "find"}
 
 
 def main(argv=None, prog=None):
@@ -2147,7 +2160,7 @@ def main(argv=None, prog=None):
     if hasattr(sys.stdout, "reconfigure"):  # a job's log or a pipe gets each line as it is printed
         sys.stdout.reconfigure(line_buffering=True)
     run = globals()["cmd_" + a.cmd.replace("-", "_")]
-    if a.cmd in READ_ONLY:  # gallery takes the lock itself, per write
+    if a.cmd in READ_ONLY:
         run(a)
         return
     import library_lock

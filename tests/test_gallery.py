@@ -10,7 +10,8 @@ checks the gallery_views() seam (plugins.py). The job tests swap in a fake intak
 (MEDIA_REVIEW_INTAKE) whose trash waits on a FIFO the test opens, so a job is held
 mid-step without a sleep while servers are killed and restarted. The system-player action
 runs a fake xdg-open put first on PATH, which only records its arguments. Events (rename, merge, set
-on a selection) and the share-safe export are tested through the HTTP API; ViewsEndpointsTest covers their
+on a selection, an event held only in XMP-iptcExt:Event) and the share-safe export (to the
+default folder and to --share-out DIR) are tested through the HTTP API; ViewsEndpointsTest covers their
 guards and the 409 while the library is locked with hand-written sidecars, so it needs no exiftool.
 """
 import errno, hashlib, http.client, json, os, re, shutil, signal, stat, subprocess, sys, tempfile, time
@@ -124,7 +125,7 @@ def gallery_views():
 
 class Server:
     def __init__(self, env, *extra):
-        self.p = subprocess.Popen([PY, "-I", INTAKE, "gallery", *extra], env=env, stdout=subprocess.PIPE,
+        self.p = subprocess.Popen([PY, "-I", GALLERY, *extra], env=env, stdout=subprocess.PIPE,
                                   stderr=subprocess.STDOUT, text=True)
         line = self.p.stdout.readline()
         m = re.fullmatch(r"xdg-open 'http://127\.0\.0\.1:(\d+)/\?t=([A-Za-z0-9_-]+)'\n", line)
@@ -781,6 +782,35 @@ class GalleryTest(unittest.TestCase):
         for p, h0 in self.originals.items():
             self.assertEqual(sha(p), h0, p)
 
+    def test_rename_an_event_held_only_in_iptc(self):
+        """An event a file carries only as XMP-iptcExt:Event (no Event| tag: another tool wrote it) is listed,
+        and renaming it rewrites that field and adds Event|<new> to keep the two in step; other tags stay."""
+        write_tags(self.b, [], extra=["-XMP-iptcExt:Event=dunes"])
+        write_tags(self.lo, ["Project|Personal", "Owner|keep"], extra=["-XMP-iptcExt:Event=dunes"])
+        self.originals[self.lo] = sha(self.lo)
+        s = self.start()
+        ev = dict(map(tuple, s.get("/api/facets")["facets"]["event"]))
+        self.assertEqual(ev.get("dunes"), 2)
+        self.assertEqual(sorted(self.names(s, event="dunes")[0]), ["b.jpg", "lo.jpg"])
+        code, j = s.post("/api/event/rename", {"from": "dunes", "to": "sands"})
+        self.assertEqual(code, 200, j)
+        self.assertIn("2 sidecars", j["result"])
+        for p in (self.b, self.lo):
+            r = subprocess.run(["exiftool", "-s3", "-XMP-iptcExt:Event", p + ".xmp"], capture_output=True, text=True)
+            self.assertEqual(r.stdout.strip(), "sands", p)
+            h, dc, _ = tags_of(p)
+            self.assertIn("Event|sands", h, p)
+            self.assertIn("sands", dc, p)
+            self.assertFalse([t for t in h if t.startswith("Event|") and t != "Event|sands"], p)
+        self.assertEqual(sorted(tags_of(self.lo)[0]), ["Event|sands", "Owner|keep", "Project|Personal"])
+        ev = dict(map(tuple, s.get("/api/facets")["facets"]["event"]))
+        self.assertNotIn("dunes", ev)
+        self.assertEqual(ev.get("sands"), 2)
+        self.assertEqual(sorted(self.names(s, event="sands")[0]), ["b.jpg", "lo.jpg"])
+        self.assertEqual(self.names(s, event="dunes")[0], [])
+        for p, h0 in self.originals.items():
+            self.assertEqual(sha(p), h0, p)
+
     # ------------------------------------------------------------ bulk edits on a selection
     def test_bulk_edits(self):
         """Tags, event and rotate on several items at once, through the same endpoints as one item."""
@@ -914,8 +944,8 @@ class ViewsEndpointsTest(unittest.TestCase):
         self.servers = []
         self.addCleanup(lambda: [s.stop() for s in self.servers])
 
-    def start(self):
-        s = Server(self.env)
+    def start(self, *extra):
+        s = Server(self.env, *extra)
         self.servers.append(s)
         return s
 
@@ -950,6 +980,23 @@ class ViewsEndpointsTest(unittest.TestCase):
         r, page = s.req("GET", "/")
         for needle in (b'id="evlist"', b'id="evbar"', b'id="bevent"', b'id="bshare"', b'id="mfield"'):
             self.assertIn(needle, page)
+
+    def test_share_out_flag_reaches_the_app(self):
+        """gallery --share-out DIR: the page names DIR and an export lands in a new folder under it, never under
+        the default ~/Pictures/share-safe."""
+        out_root = os.path.join(self.home, "Exports/safe")
+        s = self.start("--share-out", out_root)
+        self.assertEqual(s.get("/api/facets")["share_out"], "~/Exports/safe")
+        ida = self.ids(s)[("a.jpg", "2026-11")]
+        code, j = s.post("/api/share", {"ids": [ida]})
+        self.assertEqual(code, 200, j)
+        self.assertRegex(j["dest"], r"^~/Exports/safe/\d{4}-\d\d-\d\d-\d{6}$")
+        self.assertTrue(self.wait_job(s)["ok"])
+        self.assertEqual(os.listdir(os.path.join(self.home, j["dest"][2:])), ["a.jpg"])
+        self.assertFalse(os.path.exists(self.share_root), "the default folder is never used")
+        # Outside HOME the page shows the absolute path.
+        elsewhere = os.path.join(self.tmp, "elsewhere")
+        self.assertEqual(self.start("--share-out", elsewhere).get("/api/facets")["share_out"], elsewhere)
 
     def test_new_posts_refuse_a_bad_token_origin_host_or_type(self):
         s = self.start()
@@ -1088,6 +1135,15 @@ class EventBlockTest(unittest.TestCase):
         self.assertFalse([x for x in b if "+=" in x])
         self.assertIsNone(self.app.event_block(self.item(["Event|c"], xevent="c"), "c", None))  # already there
         self.assertIsNone(self.app.event_block(self.item(["Owner|keep"]), "", None))  # in no event
+
+    def test_rename_an_iptc_only_event(self):
+        """No Event| tag, only XMP-iptcExt:Event: the rename writes the new name there and adds Event|<new>."""
+        it = self.item(["Owner|keep"], xevent="dunes")
+        self.assertEqual(self.app.events_of(it), ["dunes"])
+        b = self.app.event_block(it, "sands", {"dunes"})
+        self.assertIn("-XMP-iptcExt:Event=sands", b)
+        self.assertIn("-XMP-lr:HierarchicalSubject+=Event|sands", b)
+        self.assertFalse([x for x in b if "-=" in x and not x.endswith("=Event|sands") and not x.endswith("=sands")])
 
     def test_events_of_and_filter(self):
         two = self.item(["Event|a", "Event|b"])
