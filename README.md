@@ -86,7 +86,14 @@ required packages and a separate one for the optional ones. It exits 1 only
 when something required is missing or a pinned file is wrong. Colour is used
 only on a terminal and never when `NO_COLOR` is set.
 
-`setup.sh` is safe to re-run (it only re-verifies checksums). Options:
+`setup.sh` prints a `==> [n/N]` heading per step and ends with a summary of
+what it installed or found already present, and where, then `next:
+media-intake doctor`. If a step fails it names the step and the likely fix:
+the exact `sudo dnf install -y ...` line for a missing package, no network, or
+a download that didn't match its sha256 pin (that file is deleted and nothing
+is installed from it; re-run, and never skip the check). Colour only on a
+terminal, and never with `NO_COLOR` set.
+It is safe to re-run (it only re-verifies checksums). Options:
 `--build-labels` (text model for semantic search, and to rebuild
 `labels.npz` after editing `labels.yaml` or moving the SigLIP pin), `--refresh-geo` (accept a new
 GeoNames snapshot), `--no-launcher`. For HEVC video (most phones) Fedora's
