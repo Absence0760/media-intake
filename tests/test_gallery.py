@@ -1007,7 +1007,8 @@ class ViewsEndpointsTest(unittest.TestCase):
         return {"/api/event/set": {"ids": [ida, idb], "event": "picnic"},
                 "/api/event/rename": {"from": "beach", "to": "coast"},
                 "/api/event/merge": {"from": ["hike"], "into": "beach"},
-                "/api/share": {"ids": [ida]}}
+                "/api/share": {"ids": [ida]},
+                "/api/undo": {"undo": "not-a-token"}}
 
     def test_events_listed_and_filtered(self):
         s = self.start()

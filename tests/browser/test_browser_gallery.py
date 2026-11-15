@@ -5,7 +5,7 @@
 
 Covers what the HTTP tests in tests/test_gallery.py can't: keys, tile selection (click and
 shift-click), the bottom selection bar (shown only while something is selected), the sidebar's
-views, the confirm dialogs (Trash; Erase with ERASE typed; the Close button's native confirm),
+views, the confirm dialogs (Trash; Erase with ERASE typed; the Close button's in-page confirm),
 the lightbox video playing by itself, Space pausing and resuming it, HTTP Range while the video
 loads and seeks, the detached-job dialog, including re-attaching to a running job after a reload,
 and the Events list (filter, Rename), Set event on a selection and a Share-safe copy (the real
@@ -252,16 +252,18 @@ class GalleryBrowserTest(B.BrowserCase):
         B.expect(dlg.locator("pre")).to_contain_text("done: 1 of 1 gone from the library")
         self.assertFalse(os.path.exists(self.b))
         B.expect(page.locator('[data-item="b.jpg"]')).to_have_count(0)
-        # the Close button's native confirm: Cancel keeps the server, OK stops it
+        # the Close button's in-page confirm: Cancel keeps the server, Stop the server stops it
         dlg.get_by_role("button", name="Cancel").click()
-        page.once("dialog", lambda d: d.dismiss())
-        page.get_by_role("button", name="Close").click()
-        page.evaluate("1")  # a round trip: the click handler has run past its confirm()
+        close = page.get_by_role("button", name="Close", exact=True)
+        close.click()
+        B.expect(dlg.get_by_role("heading")).to_have_text("Stop the gallery server?")
+        dlg.get_by_role("button", name="Cancel").click()
+        B.expect(dlg).to_be_hidden()
+        B.expect(close).to_be_focused()  # focus back on the button that opened it
         s.get("/api/facets")  # still serving (raises unless 200)
         self.assertIsNone(s.p.poll())
-        B.expect(page.get_by_role("button", name="Close")).to_be_visible()
-        page.once("dialog", lambda d: d.accept())
-        page.get_by_role("button", name="Close").click()
+        close.click()
+        dlg.get_by_role("button", name="Stop the server").click()
         B.expect(page.get_by_text("Gallery stopped. You can close this tab.")).to_be_visible()
         self.assertEqual(s.p.wait(timeout=10), 0)
 
