@@ -67,7 +67,8 @@ SETUP = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 DEPS = ("sudo dnf install perl-Image-ExifTool tesseract tesseract-langpack-eng python3-zxing-cpp "
         "ffmpeg-free (README, Install)")
 # gallery.py's thumbnails and H.264 video proxies (copies of photo and video content): erase, forget and
-# trash delete them by sha256 (gallery_thumb_forget), and verify-gone reports any left.
+# trash delete them by sha256 (gallery_thumb_forget), and verify-gone reports any left. A thumbnail is keyed by
+# content and the rotation baked into it (gallery_thumb_path), so a sha has up to THUMB_TURNS variants.
 THUMBS = os.path.join(HOME, ".cache", "media-intake", "thumbs")
 PROXIES = os.path.join(HOME, ".cache", "media-intake", "proxies")
 HERE = os.path.dirname(os.path.abspath(__file__))
@@ -150,14 +151,26 @@ def thumb_forget(path):
     return n
 
 
+THUMB_TURNS = (0, 90, 180, 270)  # the clockwise turns a gallery thumbnail can have baked in
+
+
+def gallery_thumb_path(sha, turn):
+    """gallery.py's thumbnail of this content with `turn` degrees (clockwise) of rotation baked in on top of
+    the file's own EXIF orientation: <sha256>-r<turn>.jpg. Byte-identical copies rotated alike share it; a copy
+    rotated differently (its sidecar's XMP-tiff:Orientation) gets its own."""
+    return os.path.join(THUMBS, f"{sha}-r{turn % 360}.jpg")
+
+
 def gallery_cache_paths(sha):
-    """gallery.py's cached copies of this content (keyed by sha256): its thumbnail and its H.264 video proxy."""
-    return [os.path.join(THUMBS, sha + ".jpg"), os.path.join(PROXIES, sha + ".mp4")]
+    """gallery.py's cached copies of this content (keyed by sha256): every thumbnail variant (each rotation,
+    and <sha256>.jpg, the content-only key before rotation was part of it) and its H.264 video proxy."""
+    return ([os.path.join(THUMBS, sha + ".jpg")] + [gallery_thumb_path(sha, t) for t in THUMB_TURNS]
+            + [os.path.join(PROXIES, sha + ".mp4")])
 
 
 def gallery_thumb_forget(sha):
-    """Delete gallery.py's cached thumbnail and video proxy of this content (keyed by sha256).
-    Returns how many went (0 to 2)."""
+    """Delete gallery.py's cached thumbnails (every rotation, and the older content-only key) and video proxy
+    of this content (keyed by sha256). Returns how many went."""
     if not re.fullmatch(r"[0-9a-f]{64}", sha or ""):
         return 0
     n = 0
@@ -1128,10 +1141,11 @@ def erase_log_sigs(batch=None):
 
 def verify_gone(sig, drive=None):
     found, _, orphans, in_git = sweep(sig, delete=False, drive=drive, label="verify-gone")
-    gthumbs = sum(os.path.lexists(os.path.join(THUMBS, s + ".jpg")) for s in sig)
+    cached = [p for s in sig for p in gallery_cache_paths(s) if os.path.lexists(p)]
+    gthumbs = sum(p.endswith(".jpg") for p in cached)
     if gthumbs:
         found["gallery thumbnails (~/.cache/media-intake/thumbs)"] += gthumbs
-    gproxies = sum(os.path.lexists(os.path.join(PROXIES, s + ".mp4")) for s in sig)
+    gproxies = len(cached) - gthumbs
     if gproxies:
         found["gallery video proxies (~/.cache/media-intake/proxies)"] += gproxies
     if in_git:

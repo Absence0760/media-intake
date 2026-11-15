@@ -127,9 +127,10 @@ class Base(unittest.TestCase):
         return json.loads(r.stdout)[0].get(tag.split(":")[-1])
 
     def gthumb(self, media):
-        """A gallery thumbnail of media's content (keyed by sha256), as gallery.py caches it."""
+        """A gallery thumbnail of media's content as gallery.py caches it: keyed by sha256 and the turn baked in
+        (a turned one here, so cleanup by sha reaches every rotation, not only the upright file)."""
         os.makedirs(self.gthumbs, exist_ok=True)
-        t = os.path.join(self.gthumbs, sha(media) + ".jpg")
+        t = os.path.join(self.gthumbs, sha(media) + "-r90.jpg")
         open(t, "wb").close()
         return t
 

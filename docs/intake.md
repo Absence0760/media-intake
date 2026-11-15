@@ -401,10 +401,11 @@ quarantine. A file named twice is forgotten once.
   git working tree (any folder holding `.git`) are listed, not deleted: the
   repo would go dirty and git history keeps the content anyway.
 - **The gallery's caches.** Its thumbnails
-  (`~/.cache/media-intake/thumbs/<sha256>.jpg`) and H.264 video proxies
+  (`~/.cache/media-intake/thumbs/<sha256>-r<turn>.jpg`, one per rotation, and
+  `<sha256>.jpg` from older versions) and H.264 video proxies
   (`~/.cache/media-intake/proxies/<sha256>.mp4`) are not exact copies, so the
   sweep can't find them: `erase`, `forget` and `trash` delete them by the
-  erased item's sha256, and `verify-gone` reports any left.
+  erased item's sha256 (every rotation), and `verify-gone` reports any left.
 - **verify-gone.** The erase log keeps checksum and size, no names, so
   `verify-gone [BATCH]` repeats the sweep read-only and exits 1 if anything is
   left (including orphaned sidecars, gallery thumbnails and gallery video

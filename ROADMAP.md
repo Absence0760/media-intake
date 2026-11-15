@@ -111,6 +111,11 @@ The goal: someone else can install it on Fedora, import a phone, and trust it.
 - [ ] Map view without leaking locations: offline vector tiles (or none); never fetch
       tiles for private photos from a third-party server.
 - [x] Bulk edits on a selection: add/remove tags, set event, rotate.
+- [x] Select all in the gallery (header button, Ctrl+A / Cmd+A): every tile shown, a closed
+      stack's cover only, the pages loaded so far (docs/gallery.md, "Actions").
+- [x] Thumbnail cache keyed by content and rotation: rotating one copy no longer turns its
+      byte-identical twin's thumbnail; copies turned alike share one; trash, forget, erase and
+      verify-gone cover every variant (docs/gallery.md, "Thumbnails").
 - [x] A "share-safe export" button in the gallery (the CLI has `media-intake share-copy`:
       copy with all metadata and GPS stripped).
 
@@ -178,5 +183,3 @@ The goal: someone else can install it on Fedora, import a phone, and trust it.
 - A GoPro's QuickTime creation time is read as UTC, as the spec says; forum reports say
   some write local time. Unconfirmed on a real file; `--clock-offset` corrects a camera
   that is off.
-- Gallery thumbnails are cached by content, so rotating one copy also rotates the
-  thumbnail of its identical twin (the twin's sidecar is unchanged).
