@@ -54,6 +54,11 @@ Fedora Linux first. Python, no service, no account.
   `~/.cache/media-intake/proxies` (`0700`, files `0600`); `erase`, `forget`
   and `trash` delete them, `verify-gone` reports any left, and quarantine and
   review files never get one.
+- Every erase ends with a coverage report (counts and place names, never a
+  file name) of what it reached, including GNOME's per-file metadata and the
+  desktop search index, and what nothing on the machine can reach (cloud
+  services, chat apps and recipients, a device's app-private storage,
+  backups). It is kept in the erase log; `verify-gone BATCH` shows it.
 
 ## Install (Fedora)
 
