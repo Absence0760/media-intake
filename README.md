@@ -9,6 +9,9 @@ can reach: the library, the phone, the backup drive, thumbnails and caches.
 
 Fedora Linux first. Python, no service, no account.
 
+New here? [docs/getting-started.md](docs/getting-started.md) walks through a
+first run on a folder of test photos, from install to the gallery.
+
 ## Privacy guarantees
 
 - **Everything runs locally.** No cloud API, no telemetry, no remote model.
@@ -147,7 +150,7 @@ media-intake offload phone-1 --phone <device root> --yes   # after a backup: fre
 `media-intake <command> --help` for options; `media-intake` alone (or
 `--help`) lists the commands, and a mistyped command exits 2 with the nearest
 real one. Details:
-[intake](docs/intake.md), [review page](docs/review-ui.md),
+[getting started](docs/getting-started.md), [intake](docs/intake.md), [review page](docs/review-ui.md),
 [gallery](docs/gallery.md), [search and VLM](docs/search.md),
 [drive and folder queue](docs/queue.md), [backup](docs/backup.md), [configuration](docs/configuration.md),
 [plugins](docs/plugins.md), [releases](docs/release.md).
