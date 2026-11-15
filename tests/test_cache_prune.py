@@ -8,13 +8,26 @@ library (turned alike, turned differently by a sidecar), content gone from it, a
 Sidecars are hand-written XMP (no exiftool). The command runs as a subprocess with HOME set, so the real
 ~/.cache and library are never looked at.
 """
-import fcntl, hashlib, os, shutil, subprocess, sys, tempfile, unittest
+import fcntl, hashlib, json, os, shutil, subprocess, sys, tempfile, unittest
+import unittest.mock
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import support  # noqa: E402  (hermetic config)
 
 CLI = os.path.join(support.PKG, "cli.py")
 PY = sys.executable
+# Runs cli.main with intake.sha256 failing (PermissionError) for one path: an unreadable file even as root.
+DENY = """import sys
+sys.path.insert(0, sys.argv[1])
+import cli, intake
+real, denied = intake.sha256, sys.argv[2]
+def sha256(p):
+    if p == denied:
+        raise PermissionError(13, "Permission denied", p)
+    return real(p)
+intake.sha256 = sha256
+sys.exit(cli.main(sys.argv[3:]))
+"""
 
 from PIL import Image  # noqa: E402
 
@@ -187,6 +200,107 @@ class PruneCacheTest(unittest.TestCase):
             self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
         finally:
             os.close(fd)
+
+
+    def only_legacy_went(self, r):
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+        self.assertIn("1 library files could not be read", r.stdout)
+        self.assertIn("only legacy thumbnails were pruned", r.stdout)
+        self.assertEqual(self.present(self.legacy), [])
+        self.assertEqual(self.present(self.keep + self.turns + self.gone), self.keep + self.turns + self.gone)
+        self.assert_untouched_outside()
+
+    def unindexed(self):
+        """A library file intake never indexed, so prune-cache must hash it."""
+        p = os.path.join(self.lib, "2026/2026-11", "u.jpg")
+        Image.new("RGB", (40, 30), (9, 99, 199)).save(p)
+        with open(p, "rb") as f:
+            self.media[p] = f.read()
+        return p
+
+    def test_unreadable_file_prunes_only_legacy(self):
+        """A file whose content can't be read may be a copy of anything: only the legacy names go."""
+        u = self.unindexed()
+        script = os.path.join(self.tmp, "deny.py")
+        with open(script, "w") as f:
+            f.write(DENY)
+        r = subprocess.run([PY, "-I", script, support.PKG, u, "prune-cache"], env=self.env, capture_output=True,
+                           text=True, timeout=120)
+        self.only_legacy_went(r)
+
+    @unittest.skipIf(os.geteuid() == 0, "root reads a mode-0 file; the fault-injecting test covers this")
+    def test_mode_0_file_prunes_only_legacy(self):
+        u = self.unindexed()
+        os.chmod(u, 0)
+        try:
+            r = self.run_cli()
+        finally:
+            os.chmod(u, 0o600)
+        self.only_legacy_went(r)
+
+    def test_index_sha_only_when_the_size_matches(self):
+        """index.json's sha is taken for a file whose size matches; a stale entry (other size) is hashed."""
+        a_jpg, r_jpg = (os.path.join(self.lib, "2026/2026-11", n) for n in ("a.jpg", "r.jpg"))
+        D, E = "d" * 64, "c" * 64
+        with open(os.path.join(self.state, "index.json"), "w") as f:
+            json.dump({a_jpg: {"sha": D, "size": os.path.getsize(a_jpg)},
+                       r_jpg: {"sha": E, "size": os.path.getsize(r_jpg) + 1}}, f)
+        T = lambda name: os.path.join(self.thumbs, name)  # noqa: E731
+        for n in (D + "-r0.jpg", E + "-r90.jpg"):
+            with open(T(n), "wb") as f:
+                f.write(b"x")
+        r = self.run_cli()
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+        # a.jpg: index.json's sha, not hashed, so turn 0 is D's; A keeps only its twin's turn 180.
+        self.assertTrue(os.path.exists(T(D + "-r0.jpg")))
+        self.assertFalse(os.path.exists(T(self.A + "-r0.jpg")))
+        self.assertTrue(os.path.exists(T(self.A + "-r180.jpg")))
+        # r.jpg: the stale entry is ignored and the file hashed.
+        self.assertFalse(os.path.exists(T(E + "-r90.jpg")))
+        self.assertTrue(os.path.exists(T(self.R + "-r90.jpg")))
+        self.assert_untouched_outside()
+
+
+class InUseTest(unittest.TestCase):
+    """in_use without a library: a failing read counts as unread, never as a sha."""
+
+    def test_unreadable_counts(self):
+        items = [dict(path="/nowhere/a.jpg", media="photo", sha="a" * 64),
+                 dict(path="/nowhere/b.jpg", media="photo", sha=None)]
+        with unittest.mock.patch.object(cache_prune.intake, "sha256", side_effect=PermissionError(13, "denied")):
+            used, unread = cache_prune.in_use(items)
+        self.assertEqual((used, unread), ({"a" * 64: {0}}, 1))
+
+
+class OpenCacheDirTest(unittest.TestCase):
+    """open_cache_dir never enters a cache folder through a symlink, at either level."""
+
+    def setUp(self):
+        self.tmp = tempfile.mkdtemp(prefix="cache-prune-dir-")
+        self.real = os.path.join(self.tmp, "real-media-intake")
+        os.makedirs(os.path.join(self.real, "proxies"), mode=0o700)
+
+    def tearDown(self):
+        shutil.rmtree(self.tmp)
+
+    def test_real_folder_opens(self):
+        fd = cache_prune.open_cache_dir(os.path.join(self.real, "proxies"))
+        self.assertIsNotNone(fd)
+        os.close(fd)
+
+    def test_media_intake_folder_symlink_refused(self):
+        link = os.path.join(self.tmp, "media-intake")
+        os.symlink(self.real, link)
+        self.assertIsNone(cache_prune.open_cache_dir(os.path.join(link, "proxies")))
+
+    def test_proxies_symlink_refused(self):
+        cache = os.path.join(self.tmp, "cache")
+        os.makedirs(cache, mode=0o700)
+        os.symlink(os.path.join(self.real, "proxies"), os.path.join(cache, "proxies"))
+        self.assertIsNone(cache_prune.open_cache_dir(os.path.join(cache, "proxies")))
+
+    def test_absent_folder(self):
+        self.assertIsNone(cache_prune.open_cache_dir(os.path.join(self.tmp, "none", "proxies")))
 
 
 class ReasonTest(unittest.TestCase):
