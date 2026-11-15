@@ -141,6 +141,61 @@ class Queue(unittest.TestCase):
         with self.assertRaises(SystemExit):
             self.qrun("add", os.path.join(self.root, "2019"), "--label", "inner")  # overlaps
 
+    # ------------------------------------------------------------ Telegram Desktop exports
+    TG_TAKEN = ("photos/photo_1@05-03-2019_14-22-01.jpg", "files/IMG_0007.jpg")
+    TG_DENIED = ("photos/photo_1@05-03-2019_14-22-01_thumb.jpg", "stickers/sticker.webp", "animations/a.mp4",
+                 "round_video_messages/r.mp4", "voice_messages/audio_1@05-03-2019_14-23-00.ogg",
+                 "profile_pictures/p.jpg", "stories/s.mp4", "css/style.css", "js/script.js", "images/back.png",
+                 "files/report.pdf", "x.jpg")
+
+    def telegram_export(self, base):
+        """A synthetic export under base: two media files queue_add may take, the rest it never may."""
+        for i, rel in enumerate(self.TG_TAKEN + self.TG_DENIED):
+            p = os.path.join(base, rel)
+            if rel.endswith(".jpg"):
+                picture(p, 30 + i, "2019:03:05 14:22:01")
+            else:
+                os.makedirs(os.path.dirname(p), exist_ok=True)
+                open(p, "w").close()
+        for n in ("result.json", "messages.html"):
+            open(os.path.join(base, n), "w").close()
+
+    def test_telegram_export_queues_only_its_media_folders(self):
+        """queue add lists through sources.walk (check_drive), and a chunk's stage re-walks: an export's
+        stickers, round videos, voice, profile pictures, HTML assets and previews are never queued or staged,
+        even when files.json is edited to name them."""
+        os.environ.pop("MEDIA_INTAKE_TEST_MOUNT")
+        f = os.path.join(self.home, "Chats")
+        chat = "ChatExport_2019-03-06"
+        self.telegram_export(os.path.join(f, chat))
+        out = self.qrun("add", f, "--label", "chats", "--kind", "folder")
+        self.assertIn("2 files", out)
+        self.assertIn("messaging 2", out)
+        files_json = os.path.join(self.state, "queue", "chats", "files.json")
+        want = sorted(f"{chat}/{r}" for r in self.TG_TAKEN)
+        self.assertEqual(sorted(r for r, _ in jload(files_json)), want)
+        # An edited (or stale) files.json naming denied files: stage still takes only what walk allows.
+        jsave(files_json, jload(files_json) + [[f"{chat}/{r}", 0] for r in self.TG_DENIED])
+        self.qrun("run", "--chunk", "100")
+        src = self.state_q()["sources"]["chats"]
+        man = jload(os.path.join(self.state, "batches", src["chunks"]["1"]["batch"], "manifest.json"))
+        self.assertEqual(sorted(man["files"]), want)
+        filed = sorted(os.path.relpath(os.path.join(r, x), self.lib) for r, _, fs in os.walk(self.lib)
+                       for x in fs if not x.endswith(".xmp"))
+        self.assertEqual(filed, [os.path.join("Messaging", "Telegram", "2019", os.path.basename(r)) for r in
+                                 sorted(self.TG_TAKEN, key=os.path.basename)])
+
+    def test_telegram_export_as_a_drive_root(self):
+        """A drive source that is the export itself (renamed: known by result.json beside photos/)."""
+        root = os.path.join(self.mount, "chat backup")
+        self.telegram_export(root)
+        os.makedirs(os.path.join(root, "video_files"))
+        open(os.path.join(root, "video_files", "video_1@05-03-2019_14-30-00.mp4"), "w").close()
+        out = self.qrun("add", root, "--label", "chat-drive")
+        self.assertIn("3 files", out)
+        rels = sorted(r for r, _ in jload(os.path.join(self.state, "queue", "chat-drive", "files.json")))
+        self.assertEqual(rels, sorted([*self.TG_TAKEN, "video_files/video_1@05-03-2019_14-30-00.mp4"]))
+
     def test_backup_layout_drive_refused(self):
         for folder in ("demo-footage", "personal", "photos"):
             os.makedirs(os.path.join(self.mount, folder))
