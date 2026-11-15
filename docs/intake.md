@@ -71,7 +71,7 @@ media-intake quarantine BATCH           # counts + the folder to open
 media-intake release BATCH FILE...      # false positive -> library
 media-intake erase BATCH [--phone ROOT [--keep-phone-thumbnails]] [--drive MOUNT [--no-wipe-free]] [--yes]
 media-intake forget LIBRARY_FILE... [--drive MOUNT] [--yes]   # asks (type ERASE) before anything moves
-media-intake verify-gone [BATCH] [--drive MOUNT]
+media-intake verify-gone [BATCH] [--drive MOUNT]   # with BATCH, also its last erase coverage report
 media-intake wipe-free MOUNT
 media-intake offload BATCH --phone ROOT [--yes]   # asks (type DELETE); refused for a --kind folder batch
 media-intake purge-review BATCH        # a batch name, never a path
@@ -412,7 +412,40 @@ quarantine. A file named twice is forgotten once.
   `verify-gone [BATCH]` repeats the sweep read-only and exits 1 if anything is
   left (including orphaned sidecars, gallery thumbnails and gallery video
   proxies). `erase` runs it
-  last.
+  last. Given a batch, it then prints that batch's last coverage report in
+  full (below), or says the batch was erased before reports were kept.
+- **Coverage report.** Every `erase` (and so every `forget`) ends with a
+  report of what it reached and what it can't, and appends it to
+  `erase-log.txt` as one line, `<date> <time> <batch> coverage <json>`, beside
+  the batch's `sha256:` lines (which `verify-gone` and `label.py` read; the
+  coverage line never matches them). Counts and fixed place names only, never
+  a file name. The JSON has four keys:
+  - `reached`: a count for every place it looked, zeros included: quarantined
+    files, library copies, other copies in HOME (the sweep), sidecars, Trash
+    entries, freedesktop thumbnails, the gallery's thumbnails and proxies,
+    recent files, Showtime's positions and log lines, localsearch's error
+    reports, near-duplicates moved to quarantine (not deleted), gvfs-metadata
+    entries cleared, localsearch resets and files checked forgotten, and with
+    `--phone` the device originals, camera previews and phone thumbnails, with
+    `--drive` the drive's copies and the MB the free-space wipe wrote.
+  - `left`: what it found but did not remove (exact copies inside git repos,
+    near-duplicates left in place, thumbnails the phone refused, files
+    localsearch still has indexed after the reset or could not check,
+    gvfs-metadata entries gio could not clear, anything verify-gone found).
+    A check that got no answer lands here, never under `reached`. Empty when
+    nothing was left.
+  - `not_checked`: what it was not asked or able to look at (no `--phone`,
+    no `--drive`, `--keep-phone-thumbnails`, `--no-wipe-free`, `gio` or
+    `localsearch` not installed).
+  - `cant_reach`: the fixed list nothing on this machine can reach: cloud
+    services and sync, chat apps, email and the people it was sent to,
+    app-private storage on a phone or camera (a gallery app's own trash),
+    other computers and backup drives not named with `--drive`, filesystem
+    snapshots and the blocks an SSD keeps aside, and re-encoded or trimmed
+    video copies.
+
+  `erase` prints a short form (places with a count, what was left, what was
+  not checked, what it can't reach); `verify-gone BATCH` prints the full one.
 - **Progress while it searches.** The HOME sweep, the drive sweep, the
   near-duplicate search and verify-gone can take minutes on a big HOME, so
   each prints a start line (what it searches, how many erased items), then a
@@ -452,14 +485,38 @@ quarantine. A file named twice is forgotten once.
     recursively, and only the top of `$HOME` and Downloads, so the state folder
     is never indexed. It stores metadata (names, EXIF, location), not pixels,
     and drops deleted files itself; `erase` also runs `localsearch reset
-    --file` on each erased path inside an indexed folder and deletes its
-    failure reports (`~/.cache/tracker3/files/errors/<md5(uri)>`). The whole
-    index is never reset.
+    --file` on each erased path inside an indexed folder, then `localsearch
+    info` on it to check the index forgot it (a stored file has a `nie:url`),
+    and deletes its failure reports
+    (`~/.cache/tracker3/files/errors/<md5(uri)>`). A file still indexed is
+    counted under `left` in the coverage report. The whole index is never
+    reset. verify-gone can't repeat the check: the erase log keeps no paths.
   - Thumbnails: `erase` clears `~/.cache/thumbnails` entirely (rebuildable),
     since thumbnails are keyed by URI and a phone browsed in Files gets
     `mtp://` keys.
-  - Not covered: `~/.local/share/gvfs-metadata` (per-file Files attributes,
-    names only, no image data) keeps entries for files deleted outside `gio`.
+  - GNOME's per-file metadata (`~/.local/share/gvfs-metadata`: emblems, icon
+    positions, custom icons that Files and other apps set through gio; names
+    only, no image data) is keyed by path in a binary database that only
+    `gvfsd-metadata` writes, and is never edited by hand. GLib drops a file's
+    entry itself when the file is deleted through gio (`g_file_delete` calls
+    the VFS's `local_file_removed`, which asks the daemon to `Remove` it), so
+    device deletes (`gio remove`) need nothing more. Files on this machine and
+    the `--drive` are deleted with a plain unlink, so before each one (and
+    before `forget` or the near-duplicate search moves a library file) `erase`
+    lists its keys with `gio info -n -a metadata FILE` and unsets each with
+    `gio set -n -t unset FILE metadata::KEY`, which works only while the file
+    exists. A gio call that fails, or leaves a key, counts the file under
+    `left`; each call gets 20 s, and after one times out (a hung
+    `gvfsd-metadata`) the rest of that erase skips gio. Not covered: entries
+    for files deleted earlier outside gio (no
+    documented route clears an entry once its file is gone), and entries
+    under a folder rather than a file. Without `gio`, the coverage report
+    lists gvfs-metadata as not checked. Checked 2026-11-14 against GLib's
+    [glocalfile.c](https://gitlab.gnome.org/GNOME/glib/-/blob/main/gio/glocalfile.c),
+    [gio-tool-info.c](https://gitlab.gnome.org/GNOME/glib/-/blob/main/gio/gio-tool-info.c)
+    and the [gio manual](https://gitlab.gnome.org/GNOME/glib/-/blob/main/docs/reference/gio/gio.rst),
+    and gvfs's [gdaemonvfs.c](https://gitlab.gnome.org/GNOME/gvfs/-/blob/master/client/gdaemonvfs.c).
+    `MEDIA_INTAKE_NO_GVFS_METADATA=1` switches it off (the tests' default).
 - **The state folder.** Quarantine and staging live in
   `~/.local/share/media-intake/` (0700), not under `~/Pictures`, so desktop
   search and thumbnailers don't pick them up.

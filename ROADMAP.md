@@ -150,11 +150,13 @@ The goal: someone else can install it on Fedora, import a phone, and trust it.
       data readable until overwritten.
 - [ ] Optional S3/offsite module: uploads only reviewed batches, no sidecars versioned
       forever, never Object Lock; erase deletes every object version and delete marker.
-- [ ] Erase coverage report: what each erase reached (laptop, device, drive, caches,
+- [x] Erase coverage report: what each erase reached (laptop, device, drive, caches,
       thumbnails, search index) and what it can't (cloud services, chat apps, recipients,
-      device app-private storage such as gallery trash).
-- [ ] Clean `~/.local/share/gvfs-metadata` entries for erased files; verify the desktop
-      search index forgets them.
+      device app-private storage such as gallery trash). Kept in `erase-log.txt`;
+      `verify-gone BATCH` shows the last one (docs/intake.md, "Coverage report").
+- [x] Clean `~/.local/share/gvfs-metadata` entries for erased files; verify the desktop
+      search index forgets them. Cleared through gio before each delete; entries of files
+      deleted earlier outside gio stay (no documented route once the file is gone).
 
 ## Later
 

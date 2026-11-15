@@ -615,6 +615,59 @@ def file_uris(path):
     return uris
 
 
+# GNOME's per-file metadata (~/.local/share/gvfs-metadata: emblems, icon positions, custom icons, set through
+# gio by Files and other apps) is keyed by path, in a binary database only gvfsd-metadata writes. GLib clears an
+# entry itself when a file is deleted *through gio* (g_file_delete -> GVfs local_file_removed -> the daemon's
+# Remove), which is why device_remove's `gio remove` needs nothing more; a plain os.remove leaves the entry. So
+# before erase deletes (or moves out of place) a file on this machine or a drive, it lists the file's
+# metadata:: keys with `gio info` and unsets each with `gio set -t unset`, which only works while the file
+# still exists. The database is never edited by hand. Checked 2026-11-14 against
+# https://gitlab.gnome.org/GNOME/glib/-/raw/main/gio/glocalfile.c, .../gio/gio-tool-info.c,
+# .../docs/reference/gio/gio.rst and https://gitlab.gnome.org/GNOME/gvfs/-/raw/master/client/gdaemonvfs.c.
+GIO_TIMEOUT = 20  # seconds per gio call; after one times out (a hung gvfsd-metadata) the rest are skipped
+_gio_hung = False
+
+
+def gio_metadata_on():
+    """gio's path when GNOME's metadata can be cleared: gio installed, not switched off (the tests' default)."""
+    return None if os.environ.get("MEDIA_INTAKE_NO_GVFS_METADATA") == "1" else shutil.which("gio")
+
+
+def gvfs_meta_forget(path, stats=None):
+    """Unset every metadata:: attribute GNOME keeps for path (an existing file about to be deleted or moved).
+    Returns 1 when it had an entry and every key went. stats (a Counter) gets "gvfs-metadata cleared" for
+    that, and "gvfs-metadata not cleared" when gio failed, timed out or left a key: the coverage report then
+    says so instead of reading as clean. Never fatal: the erase goes on either way."""
+    global _gio_hung
+    gio = gio_metadata_on()
+    if not gio or not os.path.lexists(path) or os.path.islink(path):
+        return 0
+    stats = collections.Counter() if stats is None else stats
+    if _gio_hung:
+        stats["gvfs-metadata not cleared"] += 1
+        return 0
+    path, env = os.path.abspath(path), dict(os.environ, LC_ALL="C")
+    try:
+        r = subprocess.run([gio, "info", "-n", "-a", "metadata", path], capture_output=True, text=True,
+                           env=env, timeout=GIO_TIMEOUT)
+        if r.returncode != 0:
+            stats["gvfs-metadata not cleared"] += 1
+            return 0
+        keys = re.findall(r"^  (metadata::.+?): ", r.stdout, re.M)
+        done = sum(subprocess.run([gio, "set", "-n", "-t", "unset", path, k], capture_output=True, env=env,
+                                  timeout=GIO_TIMEOUT).returncode == 0 for k in keys)
+    except (OSError, subprocess.SubprocessError) as e:
+        _gio_hung = _gio_hung or isinstance(e, subprocess.TimeoutExpired)
+        stats["gvfs-metadata not cleared"] += 1
+        return 0
+    if keys and done == len(keys):
+        stats["gvfs-metadata cleared"] += 1
+        return 1
+    if keys:
+        stats["gvfs-metadata not cleared"] += 1
+    return 0
+
+
 def walk_files(root, skip_rel=(), git=False):
     """Regular files under root, no symlinks followed, skip lists applied.
 
@@ -688,7 +741,7 @@ def where(path, base):
     return rel[0] if len(rel) > 1 else "(home)"
 
 
-def sweep(sig, delete=True, drive=None, label="home sweep"):
+def sweep(sig, delete=True, drive=None, label="home sweep", stats=None):
     """Find files anywhere in HOME (and on drive) with an erased item's size+sha256.
 
     sig is {sha: size}. Only same-size files are hashed. With delete, matches go
@@ -697,8 +750,10 @@ def sweep(sig, delete=True, drive=None, label="home sweep"):
     and labels). Matches inside a git working tree are never deleted (that leaves the
     repo dirty and git history keeps the content): they're returned in in_git.
     Prints a start line and counts-only progress (Progress) under label while it walks.
+    stats (a Counter, with delete): adds the sidecars, Trash entries and gvfs-metadata entries that went.
     Returns (Counter by location, paths, Counter of orphan sidecars by location, in_git paths).
     """
+    stats = collections.Counter() if stats is None else stats
     sizes = set(sig.values())
     found, paths, orphans, in_git = collections.Counter(), [], collections.Counter(), []
     roots = [(HOME, SWEEP_SKIP)] + ([(os.path.abspath(drive), (WIPE_NAME,))] if drive else [])
@@ -727,18 +782,22 @@ def sweep(sig, delete=True, drive=None, label="home sweep"):
             found[loc] += 1
             paths.append(p)
             if delete:
+                gvfs_meta_forget(p, stats)  # before the delete: gio can only clear an existing file's entry
                 os.remove(p)
-                drop_sidecar(p)
+                stats["sidecars"] += drop_sidecar(p)
                 trash = os.path.join(HOME, ".local/share/Trash/files")
                 if os.path.dirname(p) == trash:
                     info = os.path.join(HOME, ".local/share/Trash/info", os.path.basename(p) + ".trashinfo")
                     if os.path.exists(info):
                         os.remove(info)
+                        stats["trash entries"] += 1
     return found, paths, orphans, in_git
 
 
-def drive_purge(mount, shas):
-    """Delete files anywhere on a backup drive whose sha256 is in shas (size prefilter)."""
+def drive_purge(mount, shas, stats=None):
+    """Delete files anywhere on a backup drive whose sha256 is in shas (size prefilter).
+    stats (a Counter): adds the sidecars and gvfs-metadata entries that went."""
+    stats = collections.Counter() if stats is None else stats
     sizes = {s for s, _ in shas.values()}
     n = 0
     prog = Progress("drive sweep", f"searching every file on the drive for copies of {len(shas)} erased items "
@@ -747,8 +806,9 @@ def drive_purge(mount, shas):
         prog.tick(n)
         try:
             if os.path.getsize(p) in sizes and sha256(p) in shas:
+                gvfs_meta_forget(p, stats)
                 os.remove(p)
-                drop_sidecar(p)
+                stats["sidecars"] += drop_sidecar(p)
                 n += 1
         except OSError:
             pass  # vanished or unreadable since listing: not counted, left alone
@@ -778,7 +838,7 @@ def dhash_orient(p):
     return bits, landscape
 
 
-def near_dups(refs, kept, index, batch, spare=()):
+def near_dups(refs, kept, index, batch, spare=(), stats=None):
     """Move images within NEAR_MAX of an erased image into quarantine/near-<batch>/ (never deleted).
 
     refs: [(dhash, landscape, sha256, root)] of the erased images; root is the surviving original the
@@ -789,7 +849,7 @@ def near_dups(refs, kept, index, batch, spare=()):
     review/), never inside a git working tree. spare: paths never moved (the originals an xcheck batch's
     messaging copies, or a near batch's entries, point at). An existing near-<batch> is added to, never
     replaced. Past NEAR_DEPTH, or where a quarantined file already holds the place, a match stays where it is
-    and is only counted.
+    and is only counted. Each file's gvfs-metadata entry is cleared before it moves (counted in stats).
     Returns (moved, near batch name or None, matches left in place).
     """
     if not refs:
@@ -836,6 +896,7 @@ def near_dups(refs, kept, index, batch, spare=()):
             continue
         private_dir(quar)
         os.makedirs(os.path.dirname(dst), mode=0o700, exist_ok=True)
+        gvfs_meta_forget(p, stats)  # its entry is keyed by this path, which the move leaves behind
         shutil.move(p, dst)
         os.chmod(dst, stat.S_IRUSR | stat.S_IWUSR)
         if os.path.isfile(sidecar(p)) and not os.path.islink(sidecar(p)):
@@ -910,8 +971,9 @@ def prune_app_traces(uris, prefixes):
             os.remove(e)
             n["localsearch error reports"] += 1
     # The miner drops deleted files itself (it watches the indexed folders);
-    # `reset --file` forces it for each erased path inside an indexed folder.
-    if shutil.which("localsearch") and os.environ.get("MEDIA_INTAKE_NO_LOCALSEARCH") != "1":  # tests: off
+    # `reset --file` forces it for each erased path inside an indexed folder, and `localsearch info` then
+    # checks the index holds nothing for it (a stored file has a nie:url; none prints "No metadata").
+    if localsearch_on():
         r = subprocess.run(["localsearch", "index"], capture_output=True, text=True)
         rows = re.findall(r"^(/.*?)\s+([*-])\s*$", re.sub(r"\x1b\[[0-9;]*m", "", r.stdout), re.M)
         for u in uris:
@@ -921,7 +983,19 @@ def prune_app_traces(uris, prefixes):
             if any(os.path.dirname(path) == d or (rec == "*" and path.startswith(d + os.sep)) for d, rec in rows):
                 if subprocess.run(["localsearch", "reset", "--file", path], capture_output=True).returncode == 0:
                     n["localsearch resets"] += 1
+                info = subprocess.run(["localsearch", "info", path], capture_output=True, text=True,
+                                      env=dict(os.environ, LC_ALL="C"))
+                if info.returncode != 0:  # a miner not running, a D-Bus error: no answer, not "forgotten"
+                    n["localsearch could not check"] += 1
+                    continue
+                n["localsearch checked"] += 1
+                n["localsearch still indexed"] += "nie:url" in info.stdout
     return n
+
+
+def localsearch_on():
+    """The desktop search index can be reached: localsearch installed, not switched off (tests)."""
+    return bool(shutil.which("localsearch")) and os.environ.get("MEDIA_INTAKE_NO_LOCALSEARCH") != "1"
 
 
 # ---------------------------------------------------------------- device deletes
@@ -1139,7 +1213,8 @@ def erase_log_sigs(batch=None):
     return sig, nosize
 
 
-def verify_gone(sig, drive=None):
+def verify_gone(sig, drive=None, left=None):
+    """Sweep read-only for anything of sig left; print it. left (a Counter) gets what was found."""
     found, _, orphans, in_git = sweep(sig, delete=False, drive=drive, label="verify-gone")
     cached = [p for s in sig for p in gallery_cache_paths(s) if os.path.lexists(p)]
     gthumbs = sum(p.endswith(".jpg") for p in cached)
@@ -1157,6 +1232,9 @@ def verify_gone(sig, drive=None):
     if orphans:
         print(f"ORPHAN SIDECARS: {sum(orphans.values())} .xmp files whose photo/video is gone (erase removes them): "
               + ", ".join(f"{k} {v}" for k, v in sorted(orphans.items())))
+    if left is not None:
+        left["copies still present at verify-gone"] += sum(found.values())
+        left["orphan sidecars at verify-gone"] += sum(orphans.values())
     return not found and not orphans
 
 
@@ -1166,7 +1244,76 @@ def cmd_verify_gone(a):
         print(f"{nosize} older erase-log entries have no size and can't be swept")
     if not sig:
         sys.exit(f"no erase-log entries with sizes{' for ' + a.batch if a.batch else ''}")
-    sys.exit(0 if verify_gone(sig, a.drive) else 1)
+    ok = verify_gone(sig, a.drive)
+    if a.batch:
+        cov = erase_log_coverage(a.batch)
+        if cov:
+            print(f"last erase coverage report for {a.batch} ({cov[0]}):")
+            print_coverage(cov[1], full=True)
+        else:
+            print(f"no erase coverage report for {a.batch} (erased before reports were kept)")
+    sys.exit(0 if ok else 1)
+
+
+# What no erase can reach: nothing on this machine can see or delete these, so every coverage report lists them.
+CANT_REACH = (
+    "cloud services and sync (anything uploaded, synced or backed up online)",
+    "chat apps, email and the people it was sent to",
+    "app-private storage on a phone or camera (a gallery app's own trash or cache, other apps' data)",
+    "other computers and devices, and backup drives not named with --drive",
+    "filesystem snapshots (btrfs snapshots of /home) and blocks an SSD or flash drive keeps aside",
+    "re-encoded or trimmed copies of a video (only exact copies are found)",
+)
+COVERAGE_RX = re.compile(r"^(\S+ \S+) (\S+) coverage (\{.*\})$")
+
+
+def erase_coverage(reached, left, not_checked):
+    """The coverage record of one erase: counts per place reached (zeros included, so a reader sees it
+    looked), what it found but left, what it was not asked or able to check, and CANT_REACH. No file names."""
+    return {"reached": dict(reached), "left": {k: v for k, v in left.items() if v},
+            "not_checked": list(not_checked), "cant_reach": list(CANT_REACH)}
+
+
+def write_coverage(batch, cov):
+    """Append the record to erase-log.txt as one `<date> <time> <batch> coverage <json>` line. erase_log_sigs
+    (and label.py) read only `sha256:` lines, so this never counts as an erased item."""
+    with open(os.path.join(STATE, "erase-log.txt"), "a") as f:
+        f.write(f"{datetime.datetime.now():%Y-%m-%d %H:%M} {batch} coverage "
+                f"{json.dumps(cov, sort_keys=True, ensure_ascii=True)}\n")
+
+
+def erase_log_coverage(batch):
+    """(when, record) of batch's last coverage line in the erase log, or None."""
+    last = None
+    try:
+        with open(os.path.join(STATE, "erase-log.txt")) as f:
+            for line in f:
+                m = COVERAGE_RX.match(line.rstrip("\n"))
+                if m and m.group(2) == batch:
+                    try:
+                        last = (m.group(1), json.loads(m.group(3)))
+                    except ValueError:
+                        continue  # a damaged line: an older report still shows
+    except FileNotFoundError:
+        pass  # no erase log yet
+    return last
+
+
+def print_coverage(cov, full=False):
+    """A coverage record: erase prints the short form (places with a count), verify-gone the full one."""
+    reached, left = cov.get("reached", {}), cov.get("left", {})
+    if full:
+        print("  reached:" + "".join(f"\n    {k:62} {v}" for k, v in reached.items()))
+        print("  left:" + ("".join(f"\n    {k:62} {v}" for k, v in left.items()) or " nothing"))
+        if cov.get("not_checked"):
+            print("  not checked:" + "".join(f"\n    {x}" for x in cov["not_checked"]))
+        print("  can't reach (nothing on this machine can):" + "".join(f"\n    {x}" for x in cov.get("cant_reach", [])))
+        return
+    print("  reached: " + (", ".join(f"{k} {v}" for k, v in reached.items() if v) or "nothing"))
+    print("  left: " + (", ".join(f"{k} {v}" for k, v in left.items()) or "nothing"))
+    if cov.get("not_checked"):
+        print("  not checked: " + "; ".join(cov["not_checked"]))
+    print("  can't reach: " + "; ".join(cov.get("cant_reach", [])))
 
 
 def ask(prompt):
@@ -1234,16 +1381,21 @@ def cmd_erase(a):
                                  hint=" (look at the folder on the phone, or pass --keep-phone-thumbnails)") \
         if do_pthumbs else []
     thumbs = phone = 0
+    # What forget already reached before handing over (sidecars, caches, gvfs-metadata of the library paths).
+    stats = collections.Counter(getattr(a, "forget_stats", None) or {})
+    gthumbs = stats.pop("gallery", 0)
+    thumbs += stats.pop("thumbnails", 0)
     for rel in list(q):
         p = os.path.join(quar, rel)
         if os.path.exists(p):
+            gvfs_meta_forget(p, stats)
             os.remove(p)
         gone |= {p, os.path.join(bdir(a.batch), "raw", rel)}
         if q[rel].get("dst"):
             gone.add(q[rel]["dst"])  # a near-duplicate's original place
         thumbs += thumb_forget(p) + thumb_forget(os.path.join(bdir(a.batch), "raw", rel))
         if q[rel]["sha"] in shas:
-            thumbs += gallery_thumb_forget(q[rel]["sha"])
+            gthumbs += gallery_thumb_forget(q[rel]["sha"])
     if root:
         for src, _ in phone_items + prev_items:
             thumbs += thumb_forget(src)
@@ -1259,22 +1411,23 @@ def cmd_erase(a):
     for path, v in list(index.items()):
         if v["sha"] in shas:
             if os.path.exists(path):
+                gvfs_meta_forget(path, stats)
                 os.remove(path)
                 lib += 1
-            drop_sidecar(path)
+            stats["sidecars"] += drop_sidecar(path)
             thumbs += thumb_forget(path)
             gone.add(path)
             del index[path]
     # Every other copy in HOME (imports made outside this tool, Downloads, Trash, caches).
-    found, paths, orphans, in_git = sweep(sig)
+    found, paths, orphans, in_git = sweep(sig, stats=stats)
     for p in paths:
         thumbs += thumb_forget(p)
         gone.add(p)
         index.pop(p, None)
-    drive = drive_purge(a.drive, shas) if a.drive else 0
+    drive = drive_purge(a.drive, shas, stats) if a.drive else 0
     # The originals this quarantine's entries are copies of stay: an xcheck `of`, a near chain's `root_of`.
     spare = [v[k] for v in q.values() for k in ("of", "root_of") if isinstance(v.get(k), str)]
-    near, near_batch, near_left = near_dups(refs, kept, index, a.batch, spare)
+    near, near_batch, near_left = near_dups(refs, kept, index, a.batch, spare, stats)
     save(os.path.join(STATE, "index.json"), index)
     if near_batch and near:
         gone |= {v["dst"] for v in load(os.path.join(STATE, "quarantine", near_batch, "quarantine.json"), {}).values()}
@@ -1293,7 +1446,8 @@ def cmd_erase(a):
         thumbs += sum(len(fs) for _, _, fs in os.walk(tdir))
         shutil.rmtree(tdir)
     subprocess.run(["sync"])
-    print(f"erased {len(q)} files; library copies {lib}; phone {phone}; drive {drive}; thumbnail cache cleared ({thumbs} files)")
+    print(f"erased {len(q)} files; library copies {lib}; phone {phone}; drive {drive}; "
+          f"thumbnail cache cleared ({thumbs + gthumbs} files)")
     print(f"home sweep: {sum(found.values())} more copies deleted"
           + "".join(f"\n  {k:28} {v}" for k, v in sorted(found.items())))
     print("  (not swept: toolchains, package/build caches, container storage, .git, node_modules)")
@@ -1319,13 +1473,68 @@ def cmd_erase(a):
                else "a file already quarantined holds the same place")
         print(f"{near_left} near-duplicates of erased photos left where they are, not moved ({why})")
     print("videos: only exact copies are found; re-encoded or trimmed copies are not matched")
+    wiped = None
     if a.drive and not a.no_wipe_free:
         try:
             mb, secs, note = wipe_free(a.drive)
+            wiped = mb
             print(f"drive free space wiped: {mb} MB of zeros in {secs:.0f} s" + (f"\n  {note}" if note else ""))
         except SystemExit as e:
             print(f"drive free space NOT wiped: {e}")
-    if not verify_gone(sig, a.drive):
+    left = collections.Counter({"exact copies inside git repos (listed, not deleted)": len(in_git),
+                                "near-duplicates left where they are": near_left,
+                                "phone thumbnails the phone refused to delete": prefused,
+                                "files localsearch still has indexed": traces["localsearch still indexed"],
+                                "files localsearch could not check": traces["localsearch could not check"],
+                                "gvfs-metadata entries gio could not clear": stats["gvfs-metadata not cleared"]})
+    ok = verify_gone(sig, a.drive, left)
+    # The coverage report: every place this erase reached (counts), what it left, what it could not check.
+    reached = {"quarantined files (state folder, quarantine/)": len(q),
+               "library copies (library, videos, project folders)": lib,
+               "other copies in HOME (home sweep)": sum(found.values()),
+               "sidecars (.xmp)": stats["sidecars"] + sum(orphans.values()),
+               "Trash entries (~/.local/share/Trash/info)": stats["trash entries"],
+               "freedesktop thumbnails (~/.cache/thumbnails)": thumbs,
+               "gallery thumbnails and video proxies (~/.cache/media-intake)": gthumbs,
+               "recent files entries (~/.local/share/recently-used.xbel)": recent,
+               "Showtime playback positions and log lines (~/.local/state/showtime)":
+                   traces["showtime positions"] + traces["showtime log lines"],
+               "localsearch error reports (~/.cache/tracker3/files/errors)": traces["localsearch error reports"],
+               "near-duplicates moved to quarantine (not deleted)": near}
+    not_checked = []
+    if gio_metadata_on():
+        reached["gvfs-metadata entries cleared (~/.local/share/gvfs-metadata)"] = stats["gvfs-metadata cleared"]
+    else:
+        not_checked.append("gvfs-metadata (~/.local/share/gvfs-metadata): gio not installed or switched off")
+    if localsearch_on():
+        reached["localsearch index entries reset"] = traces["localsearch resets"]
+        reached["localsearch index checked: file forgotten"] = (traces["localsearch checked"]
+                                                               - traces["localsearch still indexed"])
+    else:
+        not_checked.append("desktop search index (localsearch): not installed or switched off")
+    if root:
+        reached["phone or camera originals (gio remove)"] = phone
+        reached["camera previews (.LRV/.THM)"] = previews
+        if do_pthumbs:
+            reached["phone thumbnail folders (files)"] = pthumbs
+        else:
+            not_checked.append("phone thumbnail folders: --keep-phone-thumbnails")
+    else:
+        not_checked.append("phone or camera: no --phone")
+    if a.drive:
+        reached["backup drive copies"] = drive
+        if wiped is not None:
+            reached["backup drive unused space overwritten (wipe-free, MB)"] = wiped
+        else:
+            not_checked.append("backup drive unused space: not overwritten"
+                               + (" (--no-wipe-free)" if a.no_wipe_free else " (see above)"))
+    else:
+        not_checked.append("backup drive: no --drive")
+    cov = erase_coverage(reached, left, not_checked)
+    write_coverage(a.batch, cov)
+    print(f"coverage report (saved in the erase log; media-intake verify-gone {a.batch} shows it):")
+    print_coverage(cov)
+    if not ok:
         sys.exit(1)
 
 
@@ -1347,6 +1556,7 @@ def cmd_forget(a):
     quar = private_dir(os.path.join(private_dir(os.path.join(STATE, "quarantine")), batch))
     index = load(os.path.join(STATE, "index.json"), {})
     q = load(os.path.join(quar, "quarantine.json"), {}) or {}  # a forget in the same second adds to it
+    stats = collections.Counter()
     for f in files:
         stem, ext = os.path.splitext(os.path.basename(f))
         rel, i = stem + ext, 1
@@ -1354,15 +1564,16 @@ def cmd_forget(a):
             rel, i = f"{stem}_{i}{ext}", i + 1
         s = sha256(f)
         q[rel] = dict(reasons=["owner"], sha=s, size=os.path.getsize(f), dst=None)
+        gvfs_meta_forget(f, stats)  # keyed by the library path, which the move leaves behind
         shutil.move(f, os.path.join(quar, rel))
         os.chmod(os.path.join(quar, rel), stat.S_IRUSR | stat.S_IWUSR)
-        drop_sidecar(f)  # its tags, place and labels go too
-        thumb_forget(f)
-        gallery_thumb_forget(s)
+        stats["sidecars"] += drop_sidecar(f)  # its tags, place and labels go too
+        stats["thumbnails"] += thumb_forget(f)
+        stats["gallery"] += gallery_thumb_forget(s)
         index.pop(f, None)
     save(os.path.join(quar, "quarantine.json"), q)
     save(os.path.join(STATE, "index.json"), index)
-    a.batch, a.phone = batch, None
+    a.batch, a.phone, a.forget_stats = batch, None, stats  # erase's coverage report counts these too
     cmd_erase(a)
 
 
