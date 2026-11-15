@@ -7,7 +7,7 @@
 Shows everything under the library, videos and project folders (config.toml)
 (never the media-intake state folder: quarantine, staging, review; never a file
 scan flagged, quarantined or erased: label.flagged()). Timeline grid by month,
-thumbnails made on demand (max 320 px JPEG, ~/.cache/media-intake/thumbs/<sha256>.jpg,
+thumbnails made on demand (max 320 px JPEG, ~/.cache/media-intake/thumbs/<sha256>-r<turn>.jpg,
 dir 0700, files 0600; intake.py erase/forget/trash delete them by sha and
 verify-gone checks them), an H.264 proxy made on demand for a video the browser
 can't play (HEVC: ~/.cache/media-intake/proxies/<sha256>.mp4, cleaned the same way),
@@ -603,7 +603,10 @@ class App:
         sha = self.sha_of(it)
         if not re.fullmatch(r"[0-9a-f]{64}", sha):
             return None
-        dst = os.path.join(THUMBS, sha + ".jpg")
+        # Keyed by content and the turn baked in (a copy rotated in its sidecar shows its own rotation; copies
+        # turned alike share one file). A photo's EXIF orientation is part of its content, so it needs no key.
+        delta = DEG[effective_orientation(it)] if it["media"] == "video" else css_delta(it)
+        dst = intake.gallery_thumb_path(sha, delta)
         if os.path.isfile(dst):
             return dst
         if it.get("nothumb"):
@@ -611,7 +614,6 @@ class App:
         with self.thumb_sem:
             if os.path.isfile(dst):
                 return dst
-            delta = DEG[effective_orientation(it)] if it["media"] == "video" else css_delta(it)
             data = video_jpeg(it["path"], THUMB_PX, delta) if it["media"] == "video" else \
                 image_jpeg(it["path"], THUMB_PX, delta)
             if not data:
@@ -670,8 +672,8 @@ class App:
         return dst, "video/mp4"
 
     def drop_thumb(self, it):
-        if it.get("sha"):
-            intake.gallery_thumb_forget(it["sha"])
+        """After a rotate: the item's new turn has its own cache key, so its next /t/ request shows it at once.
+        The other variants stay (a same-content copy may still show them; trash, forget and erase remove all)."""
         it.pop("nothumb", None)
 
     def summary(self, i, it):

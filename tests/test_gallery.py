@@ -14,7 +14,7 @@ on a selection, an event held only in XMP-iptcExt:Event) and the share-safe expo
 default folder and to --share-out DIR) are tested through the HTTP API; ViewsEndpointsTest covers their
 guards and the 409 while the library is locked with hand-written sidecars, so it needs no exiftool.
 """
-import errno, hashlib, http.client, json, os, re, shutil, signal, stat, subprocess, sys, tempfile, time
+import errno, hashlib, http.client, io, json, os, re, shutil, signal, stat, subprocess, sys, tempfile, time
 import unittest, urllib.parse
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
@@ -378,7 +378,7 @@ class GalleryTest(unittest.TestCase):
         self.assertIn("Label|food", h)
         self.assertIn("food", dc)  # leaf still used by Label|food
         # rotate: sidecar only
-        t = os.path.join(self.thumbs, self.originals[self.a] + ".jpg")
+        t = os.path.join(self.thumbs, self.originals[self.a] + "-r0.jpg")
         r, _ = s.req("GET", f"/t/{ida}")
         self.assertEqual(r.status, 200)
         with Image.open(t) as im:
@@ -388,9 +388,10 @@ class GalleryTest(unittest.TestCase):
         code, j = s.post("/api/rotate", {"ids": [ida], "dir": "cw"})
         self.assertEqual(code, 200, j)
         self.assertEqual(tags_of(self.a)[2], 6)
-        self.assertFalse(os.path.exists(t))  # remade on the next request, rotated
+        t90 = os.path.join(self.thumbs, self.originals[self.a] + "-r90.jpg")
+        self.assertFalse(os.path.exists(t90))  # made on the next request, rotated (its own cache key)
         s.req("GET", f"/t/{ida}")
-        with Image.open(t) as im:
+        with Image.open(t90) as im:
             self.assertEqual(im.size, (240, 320))
         self.assertEqual(s.get(f"/api/item/{ida}")["rot"], 90)
         s.post("/api/rotate", {"ids": [ida], "dir": "cw"})
@@ -411,8 +412,8 @@ class GalleryTest(unittest.TestCase):
         ida, idb = self.id_of(s, "a.jpg"), self.id_of(s, "b.jpg")
         for i in (ida, idb):
             self.assertEqual(s.req("GET", f"/t/{i}")[0].status, 200)
-        ta = os.path.join(self.thumbs, self.originals[self.a] + ".jpg")
-        tb = os.path.join(self.thumbs, self.originals[self.b] + ".jpg")
+        ta = os.path.join(self.thumbs, self.originals[self.a] + "-r0.jpg")
+        tb = os.path.join(self.thumbs, self.originals[self.b] + "-r0.jpg")
         self.assertTrue(os.path.exists(ta) and os.path.exists(tb))
         code, _ = s.post("/api/trash", {"ids": [ida]})
         self.assertEqual(code, 400)  # no confirm
@@ -460,28 +461,67 @@ class GalleryTest(unittest.TestCase):
         os.remove(self.secret)  # the fixture's own erase-log entry (planted, not erased)
         r = subprocess.run([PY, "-I", INTAKE, "verify-gone"], env=self.env, capture_output=True, text=True)
         self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
-        # verify-gone checks the gallery cache too
-        with open(tb, "wb") as f:
-            f.write(b"\xff\xd8 planted")
-        r = subprocess.run([PY, "-I", INTAKE, "verify-gone"], env=self.env, capture_output=True, text=True)
-        self.assertEqual(r.returncode, 1, r.stdout)
-        self.assertIn("gallery thumbnails", r.stdout)
+        # verify-gone checks the gallery cache too: every rotation's thumbnail, and the older content-only key
+        for name in ("-r270.jpg", ".jpg"):
+            left = os.path.join(self.thumbs, self.originals[self.b] + name)
+            with open(left, "wb") as f:
+                f.write(b"\xff\xd8 planted")
+            r = subprocess.run([PY, "-I", INTAKE, "verify-gone"], env=self.env, capture_output=True, text=True)
+            self.assertEqual(r.returncode, 1, r.stdout)
+            self.assertIn("STILL PRESENT: 1 copies: gallery thumbnails (~/.cache/media-intake/thumbs) 1", r.stdout)
+            os.remove(left)
+
+    def test_twins_keep_their_own_rotation(self):
+        """Byte-identical copies share a thumbnail only while turned alike: rotating one copy (its sidecar) shows
+        the new turn at once and leaves its twin upright; a copy turned the same way reuses that thumbnail; Trash
+        of one copy removes every variant of the content."""
+        twin, third = (os.path.join(self.lib, "2026/2026-08", n) for n in ("twin.jpg", "third.jpg"))
+        for p in (twin, third):
+            os.makedirs(os.path.dirname(p), exist_ok=True)
+            shutil.copyfile(self.a, p)
+        s = self.start()
+        ida, idt, idu = (self.id_of(s, n) for n in ("a.jpg", "twin.jpg", "third.jpg"))
+
+        def size(i):
+            r, b = s.req("GET", f"/t/{i}")
+            self.assertEqual(r.status, 200, i)
+            with Image.open(io.BytesIO(b)) as im:
+                return im.size
+
+        self.assertEqual([size(i) for i in (ida, idt, idu)], [(320, 240)] * 3)
+        code, j = s.post("/api/rotate", {"ids": [ida], "dir": "cw"})
+        self.assertEqual(code, 200, j)
+        self.assertEqual(size(ida), (240, 320))  # the new turn at once
+        self.assertEqual(size(idt), (320, 240))  # its twin keeps its own (none)
+        code, j = s.post("/api/rotate", {"ids": [idu], "dir": "cw"})
+        self.assertEqual(code, 200, j)
+        self.assertEqual(size(idu), (240, 320))
+        h = self.originals[self.a]
+        self.assertEqual(sorted(f for f in os.listdir(self.thumbs) if f.startswith(h)),
+                         [h + "-r0.jpg", h + "-r90.jpg"])  # one file per turn, shared by the copies turned alike
+        code, j = s.post("/api/trash", {"ids": [ida], "confirm": True})
+        self.assertEqual(code, 200, j)
+        self.assertTrue(self.wait_job(s)["ok"])
+        self.assertEqual([f for f in os.listdir(self.thumbs) if f.startswith(h)], [])  # every variant
+        self.assertEqual(sha(twin), h)  # originals never written
 
     def test_intake_cli_drops_gallery_thumbs(self):
-        """trash and forget (and so erase) delete ~/.cache/media-intake/thumbs/<sha>.jpg without the gallery."""
+        """trash and forget (and so erase) delete every ~/.cache/media-intake/thumbs/<sha>-r<turn>.jpg (each
+        rotation) and the older content-only <sha>.jpg without the gallery."""
         os.makedirs(self.thumbs)
-        ta = os.path.join(self.thumbs, self.originals[self.a] + ".jpg")
-        tk = os.path.join(self.thumbs, self.originals[self.k] + ".jpg")
-        other = os.path.join(self.thumbs, "f" * 64 + ".jpg")
-        for p in (ta, tk, other):
+        names = (".jpg", "-r0.jpg", "-r90.jpg", "-r180.jpg", "-r270.jpg")
+        ta = [os.path.join(self.thumbs, self.originals[self.a] + n) for n in names]
+        tk = [os.path.join(self.thumbs, self.originals[self.k] + n) for n in names]
+        other = [os.path.join(self.thumbs, "f" * 64 + n) for n in names]
+        for p in ta + tk + other:
             open(p, "wb").close()
         r = subprocess.run([PY, "-I", INTAKE, "trash", self.a], env=self.env, capture_output=True, text=True)
         self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
-        self.assertFalse(os.path.exists(ta))
+        self.assertEqual([p for p in ta if os.path.exists(p)], [])
         r = subprocess.run([PY, "-I", INTAKE, "forget", self.k, "--yes"], env=self.env, capture_output=True, text=True)
         self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
-        self.assertFalse(os.path.exists(tk))
-        self.assertTrue(os.path.exists(other))  # only those shas
+        self.assertEqual([p for p in tk if os.path.exists(p)], [])
+        self.assertTrue(all(os.path.exists(p) for p in other))  # only those shas
 
     def test_job_survives_restart_and_refuses_a_second_action(self):
         fake, gate = os.path.join(self.tmp, "gated_intake.py"), os.path.join(self.tmp, "gate")

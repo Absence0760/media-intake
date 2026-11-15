@@ -104,10 +104,11 @@ class MediaKindsTest(unittest.TestCase):
         j = s.get("/api/list?" + urllib.parse.urlencode(dict(f, limit=500)))
         return sorted(i["n"] for i in j["items"])
 
-    def thumb(self, s, i, path):
+    def thumb(self, s, i, path, turn=0):
+        """The cached thumbnail /t/ made, keyed by content and the turn baked in: <sha256>-r<turn>.jpg."""
         r, b = s.req("GET", f"/t/{i}")
         self.assertEqual((r.status, r.getheader("Content-Type"), b[:2]), (200, "image/jpeg", b"\xff\xd8"), path)
-        t = os.path.join(self.thumbs, self.orig[path] + ".jpg")
+        t = os.path.join(self.thumbs, f"{self.orig[path]}-r{turn}.jpg")
         self.assertTrue(os.path.isfile(t), path)
         self.assertEqual(oct(os.stat(t).st_mode & 0o777), "0o600")
         return t
@@ -247,10 +248,10 @@ class MediaKindsTest(unittest.TestCase):
         code, j = s.post("/api/rotate", {"ids": [ids[self.v1]], "dir": "cw"})
         self.assertEqual(code, 200, j)
         self.assertEqual(orientation_of(self.v1), 6)
-        self.assertFalse(os.path.exists(tv))  # dropped, made again turned
         self.assertTrue(os.path.exists(tp))  # another item's thumbnail stays
-        self.thumb(s, ids[self.v1], self.v1)
-        with Image.open(tv) as im:
+        tv90 = self.thumb(s, ids[self.v1], self.v1, 90)  # its own cache key, made turned on the next request
+        self.assertTrue(os.path.exists(tv))  # the upright one stays for a copy that isn't turned
+        with Image.open(tv90) as im:
             self.assertEqual(im.size, (240, 320))
         self.assertEqual(s.get(f"/api/item/{ids[self.v1]}")["rot"], 90)  # the player is turned by the page
         # one photo
@@ -350,6 +351,10 @@ class MediaKindsTest(unittest.TestCase):
         s = self.start()
         ids = self.ids(s)
         th = {p: self.thumb(s, ids[p], p) for p in (self.p1, self.v1, self.v2)}
+        # every variant of the content goes: another turn and the older content-only key
+        variants = [os.path.join(self.thumbs, self.orig[self.p1] + n) for n in ("-r180.jpg", ".jpg")]
+        for v in variants:
+            open(v, "wb").close()
         sel = [self.p1, self.v1, self.v2]
         code, _ = s.post("/api/erase", {"ids": [ids[p] for p in sel], "confirm": True})
         self.assertEqual(code, 400)  # ERASE typed, nothing less
@@ -363,6 +368,8 @@ class MediaKindsTest(unittest.TestCase):
         for p in sel:
             for gone in (p, p + ".xmp", th[p]):
                 self.assertFalse(os.path.lexists(gone), gone)
+        for v in variants:
+            self.assertFalse(os.path.lexists(v), v)
         with open(os.path.join(self.state, "erase-log.txt")) as f:
             log = f.read()
         for p in sel:

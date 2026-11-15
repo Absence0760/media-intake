@@ -234,7 +234,7 @@ class GalleryMediaKindsBrowserTest(B.BrowserCase):
         s = self.start()
         page = self.page_for(s)
         page.wait_for_function(THUMBS_LOADED)
-        th = {n: os.path.join(self.thumbs, self.orig[n] + ".jpg") for n in self.path}
+        th = {n: os.path.join(self.thumbs, self.orig[n] + "-r0.jpg") for n in self.path}
         for n, t in th.items():
             self.assertTrue(os.path.isfile(t), n)
         for n in ("a.jpg", "w.MOV"):

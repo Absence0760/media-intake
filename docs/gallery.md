@@ -282,13 +282,19 @@ re-read the sidecars.
 Made on demand, max 320 px JPEG: Pillow for images (orientation from EXIF and
 the sidecar baked in), ffmpeg for a video frame at 1 s (falling back to
 `scan_sensitive.video_frames`, GPU HEVC decoding through GStreamer). Cached in
-`~/.cache/media-intake/thumbs/<sha256>.jpg` (folder 0700, files 0600). They
-are copies of photo content, so `trash`, `forget` and `erase` delete them by
-sha256, and `verify-gone` reports one that is still there as STILL PRESENT.
-Previews of formats a browser can't show are made in memory, never on disk.
-Rotate drops the item's thumbnail and the next request makes it again, turned
-(a video's frame too: the page turns the player itself).
-Safe to delete the whole folder at any time; it rebuilds.
+`~/.cache/media-intake/thumbs/<sha256>-r<turn>.jpg` (folder 0700, files 0600):
+keyed by the content and the clockwise turn baked in (0, 90, 180 or 270: the
+sidecar's `XMP-tiff:Orientation` on top of the file's own EXIF orientation,
+which is part of the content). So a byte-identical copy rotated in its own
+sidecar shows its own rotation, and copies turned alike share one file.
+Rotate shows the new turn at once (the next request makes, or reuses, that
+turn's thumbnail; a video's frame too: the page turns the player itself),
+leaving the other turns for any copy that still shows them.
+They are copies of photo content, so `trash`, `forget` and `erase` delete
+every turn of that sha256 (and `<sha256>.jpg`, the content-only key older
+versions wrote), and `verify-gone` reports any one still there as STILL
+PRESENT. Previews of formats a browser can't show are made in memory, never on
+disk. Safe to delete the whole folder at any time; it rebuilds.
 
 ## Video proxies (HEVC in the browser)
 
@@ -366,7 +372,10 @@ filters, the added-in-N-days filter, a trashed file's copy showing as
 "trashed copy" at once, and Open in the system player through a fake
 `xdg-open` on PATH (its refusals included). Events: the sidebar counts, the
 filter, rename and merge (and their refusals) with `Owner|` and other tags
-kept; bulk tags, Set event (and clearing it) and Rotate on a selection; a
+kept; bulk tags, Set event (and clearing it) and Rotate on a selection;
+byte-identical copies rotated differently getting their own thumbnails (and
+copies turned alike sharing one), with Trash, `trash`, `forget` and
+`verify-gone` reaching every turn and the older `<sha256>.jpg`; a
 share-safe copy through exiftool with no GPS or Model left. `ViewsEndpointsTest`
 writes its sidecars as plain XMP, so it runs without exiftool: every new POST
 (`/api/event/set`, `/api/event/rename`, `/api/event/merge`, `/api/share`)
