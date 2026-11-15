@@ -101,8 +101,8 @@ The goal: someone else can install it on Fedora, import a phone, and trust it.
       H.264 proxy (GStreamer GPU decode → x264), cached by sha256 in the private cache
       and cleaned by erase/trash/forget/verify-gone like thumbnails (gallery only; the
       review page keeps serving batch files as they are: docs/gallery.md, "Video proxies").
-- [x] Burst groups: show bursts as one stack, pick the best, trash the rest (review page;
-      the gallery's stacks wait for a later round).
+- [x] Burst groups: show bursts as one stack, pick the best, trash the rest (review page
+      and gallery; docs/gallery.md, "Burst stacks").
 - [x] Albums/events as first-class views (from `Event|` tags), with rename and merge.
 - [x] Burst stacks in the gallery (the review page has them; `media_intake/bursts.py` is shared;
       docs/gallery.md, "Burst stacks").
