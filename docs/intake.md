@@ -394,7 +394,8 @@ camera's clock).
   each reason it hit: `skipped N symlinked cloud export metadata files (never
   followed)`, `... over the size cap`, `skipped N cloud export CSV files that
   are not UTF-8`, `... that are not regular files or could not be read`
-  (`exports.REFUSED`; each file counted once).
+  (`exports.REFUSED`; each file counted once). Staging the same folder
+  again gives the same files, dates and report.
 - **Offload** of a drive deletes only the media originals: the JSON and CSV
   files stay on the drive; delete the export folder yourself once it is filed.
 - **Erase** doesn't reach them either: an erased file's Takeout JSON or iCloud
@@ -631,14 +632,18 @@ quarantine. A file named twice is forgotten once.
     `--drive` the drive's copies and the MB the free-space wipe wrote, and the
     entries dropped from the backup records (`<state>/backup/*.json`, which
     keep library names: an entry goes when its path was erased or moved, or
-    its sha256 is an erased item's, with its `.xmp` entry; `erase --drive`
+    its sha256 is an erased item's, with its `.xmp` entry, whatever its path;
+    only bookkeeping, so a file still in the library is hashed again by the
+    next `backup`; `erase --drive`
     removes the copies on the drive by checksum, so the next `backup` has
     nothing to bring back).
   - `left`: what it found but did not remove (exact copies inside git repos,
     near-duplicates left in place, thumbnails the phone refused, files
     localsearch still has indexed after the reset or could not check,
     gvfs-metadata entries gio could not clear, backup records it could not
-    rewrite, anything verify-gone found).
+    rewrite, backup records it could not read (not JSON, another version: left
+    as they are, they may keep names until the next `backup` to that drive
+    starts them afresh), anything verify-gone found).
     A check that got no answer lands here, never under `reached`. Empty when
     nothing was left.
   - `not_checked`: what it was not asked or able to look at (no `--phone`,
@@ -1126,8 +1131,8 @@ laptop's own disk, the library or state folder, a symlink or a marker refused, o
 private record); `test_cache_prune`: `prune-cache` keeping the library's thumbnails and proxies and
 dropping the rest (dry run, unreadable files, symlinked cache folders, the library lock);
 `test_erase_coverage`: erase's coverage report, gvfs-metadata and localsearch against fake `gio` and
-`localsearch` (failed, hung and symlinked cases), and the backup records after `backup`, `erase --drive`,
-`forget` and `verify-gone`; `test_library_ops_media_kinds`: every
+`localsearch` (failed, hung, vanished and symlinked cases), and the backup records after `backup`, `erase --drive`,
+`forget` and `verify-gone` (an erase outside the backed-up folders, a shared sha256, a record it can't rewrite or read); `test_library_ops_media_kinds`: every
 library-side command on a photo, an mp4 and a .mov, alone and mixed; `test_detectors_media_kinds`: scan,
 vlm_trash, semantic, label and the plugin hook on photos, videos and mixed batches, broken videos that
 must be flagged "not checked", never clean, and the GStreamer fallback with a hostile file name and its one-line skip note for an unsafe work folder (fake tools); `test_offline_guard`). Run long jobs under your
