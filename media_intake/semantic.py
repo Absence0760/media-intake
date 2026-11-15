@@ -20,6 +20,11 @@ search: the query through SigLIP's text model. It lives only in the build cache
 (~/.cache/media-intake-build, from setup.sh --build-labels) and is used from
 there read-only, sha256-checked; without it only `similar` works.
 similar: nearest neighbours of FILE by cosine (FILE is embedded on the fly if new).
+Output (--format): on a terminal a numbered list (rank, score to 2 decimals, the date
+the path carries, path); piped or captured, `score  path` lines (3 decimals) and
+"N results" on stderr, the form gallery.py parses. index prints counts-only progress
+and a summary on stderr (meter.py) and its counts as one JSON line on stdout.
+No index or no model: one line naming the fix (media-intake index, bash setup.sh).
 Filters read the XMP sidecars: --project P (Project|P), --unused-since Nd (no
 Used|<YYYY-MM-DD-slug> in the last N days, like intake.py find), --clean (no
 Review|child-in-shot, no Owner|trash, and no Review|maybe-trash or AI|vlm/*/trash/*
@@ -31,6 +36,7 @@ HERE = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, HERE)
 import label  # noqa: E402  (read-only: encoder path/sha, preprocessing, refusals)
 import owner  # noqa: E402  (owner decisions outrank AI trash flags)
+import meter  # noqa: E402  (counts-only progress, stdlib)
 
 HOME = os.path.expanduser("~")
 STATE = label.STATE
@@ -117,7 +123,7 @@ def embed_text(q, np, ort):
     why = text_available()
     if why:
         sys.exit(f"semantic: SigLIP text model unavailable ({why}: {BUILD}); only `similar` works. "
-                 "To enable search: bash setup.sh --build-labels")
+                 "To enable search: bash setup.sh --build-labels, then media-intake search again")
     sys.path.insert(0, os.path.join(BUILD, "site"))
     from tokenizers import Tokenizer
     q = re.sub(r"\s+", " ", q.lower().translate(str.maketrans("", "", string.punctuation))).strip()
@@ -157,38 +163,49 @@ def cmd_index(a, np, ort):
     paths = [p for p in paths if p not in bad]
     flagged = label.flagged(STATE)
     cur = {}
-    for p in paths:
-        st = os.stat(p)
-        old = files.get(p)
-        sha = old[2] if old and old[:2] == [st.st_size, st.st_mtime_ns] else label._sha(p)
-        if flagged.get(sha) == st.st_size:
-            continue
-        cur[p] = [st.st_size, st.st_mtime_ns, sha]
+    hm = meter.Meter("index (checking)", len(paths), every=1000)  # a first run hashes every file
+    try:
+        for i, p in enumerate(paths, 1):
+            st = os.stat(p)
+            old = files.get(p)
+            sha = old[2] if old and old[:2] == [st.st_size, st.st_mtime_ns] else label._sha(p)
+            hm.update(i)
+            if flagged.get(sha) == st.st_size:
+                continue
+            cur[p] = [st.st_size, st.st_mtime_ns, sha]
+    finally:
+        hm.close()
     keep_shas = {v[2] for v in cur.values()}
     rows = {s: emb[i] for i, s in enumerate(shas) if s in keep_shas}
     dropped = len(shas) - len(rows)
     new = [p for p in sorted(cur) if cur[p][2] not in rows]
     seen, sess, n_img, n_vid, t_img, t_vid, failed = set(), None, 0, 0, 0.0, 0.0, 0
-    for i, p in enumerate(new, 1):
-        s = cur[p][2]
-        if s in seen:
-            continue
-        seen.add(s)
-        sess = sess or vision(ort)
-        t = time.monotonic()
-        v = embed_file(sess, p, np)
-        dt = time.monotonic() - t
-        if v is None:
-            failed += 1
-            continue
-        rows[s] = v
-        if os.path.splitext(p)[1].lower() in VID:
-            n_vid, t_vid = n_vid + 1, t_vid + dt
-        else:
-            n_img, t_img = n_img + 1, t_img + dt
-        if i % 200 == 0:
-            print(f"[index] {i}/{len(new)}", file=sys.stderr, flush=True)
-            save_store(np, list(rows), np.stack(list(rows.values())), {p: cur[p] for p in cur if cur[p][2] in rows})
+    unchanged = len(cur) - len(new)
+    m = meter.Meter("index", len(new))
+    m.say(f"index: {len(new):,} files to embed, {unchanged:,} already indexed")
+    try:
+        for i, p in enumerate(new, 1):
+            s = cur[p][2]
+            if s not in seen:  # a copy of a file embedded this run shares its vector
+                seen.add(s)
+                sess = sess or vision(ort)
+                t = time.monotonic()
+                v = embed_file(sess, p, np)
+                dt = time.monotonic() - t
+                if v is None:
+                    failed += 1
+                else:
+                    rows[s] = v
+                    if os.path.splitext(p)[1].lower() in VID:
+                        n_vid, t_vid = n_vid + 1, t_vid + dt
+                    else:
+                        n_img, t_img = n_img + 1, t_img + dt
+            m.update(i)
+            if i % 200 == 0 and rows:
+                save_store(np, list(rows), np.stack(list(rows.values())),
+                           {p: cur[p] for p in cur if cur[p][2] in rows})
+    finally:
+        m.close()
     cur = {p: v for p, v in cur.items() if v[2] in rows}
     order = sorted(rows)
     save_store(np, order, np.stack([rows[s] for s in order]) if order else np.zeros((0, 768), np.float32), cur)
@@ -197,6 +214,11 @@ def cmd_index(a, np, ort):
                       "s_per_image": round(t_img / n_img, 3) if n_img else None,
                       "s_per_video": round(t_vid / n_vid, 3) if n_vid else None,
                       "seconds": round(time.monotonic() - t0, 1)}))
+    copies = sum(1 for p in new if p in cur) - (n_img + n_vid)  # same sha as a file embedded this run
+    m.say(f"index: indexed {n_img + n_vid:,} new ({n_img:,} photos, {n_vid:,} videos), "
+          f"{unchanged:,} unchanged, {failed:,} failed (undecodable)"
+          + (f", {copies:,} copies of new files" if copies else "")
+          + f"; {len(bad):,} refused, {dropped:,} dropped; took {meter.duration(time.monotonic() - t0)}")
 
 
 # ---------------------------------------------------------------- query
@@ -227,10 +249,20 @@ def passes(tags, a, cutoff):
     return True
 
 
-def rank(np, q, a, exclude=None):
+NO_INDEX = "semantic: no search index yet ({}); build it with: media-intake index"
+
+
+def need_index(np):
+    """The store, or exit with one line naming the command that builds it (the gallery shows the
+    last stderr line as is)."""
     shas, emb, files = load_store(np)
     if not shas:
-        sys.exit("semantic: no embeddings yet; run semantic.py index")
+        sys.exit(NO_INDEX.format(f"{STORE} is missing" if not os.path.exists(STORE) else "it holds no files"))
+    return shas, emb, files
+
+
+def rank(np, q, a, exclude=None, store=None):
+    shas, emb, files = store or need_index(np)
     m = re.fullmatch(r"(\d+)d", a.unused_since or "0d")
     if not m:
         sys.exit("--unused-since wants Nd, e.g. 30d")
@@ -254,13 +286,59 @@ def rank(np, q, a, exclude=None):
         out += [(s, p) for s, p in chunk if not need or passes(tags.get(p, []), a, cutoff)]
         if len(out) >= a.n:
             break
-    for s, p in out[:a.n]:
+    out = out[:a.n]
+    if human(a):
+        show(out, a)
+        return
+    for s, p in out:  # the machine form: the gallery parses `score  /path` (gallery.py, App.semantic)
         print(f"{s:.3f}  {p}")
-    print(f"{min(len(out), a.n)} results", file=sys.stderr)
+    print(f"{len(out)} results", file=sys.stderr)
+
+
+def human(a):
+    """--format human, or auto on a terminal. Piped or captured output (the gallery) stays machine."""
+    if a.format == "auto":
+        try:
+            return sys.stdout.isatty()
+        except (AttributeError, ValueError):
+            return False
+    return a.format == "human"
+
+
+DAY = re.compile(r"(?<!\d)((?:19|20)\d\d)(-?)(\d\d)\2(\d\d)(?!\d)")
+MONTH = re.compile(r"(?:^|/)((?:19|20)\d\d)/\1-(\d\d)(?:/|$)")
+
+
+def path_date(p):
+    """The date a path carries, without opening the file: a day in the file or folder name
+    (2026-11-08, 20261108), else intake's YYYY/YYYY-MM library folder; '' when neither."""
+    for part in reversed(p.split(os.sep)):
+        for y, _, mo, d in DAY.findall(part):
+            try:
+                return datetime.date(int(y), int(mo), int(d)).isoformat()
+            except ValueError:
+                continue
+    m = MONTH.search(os.path.dirname(p))
+    return f"{m.group(1)}-{m.group(2)}" if m and 1 <= int(m.group(2)) <= 12 else ""
+
+
+def show(out, a, file=None):
+    """Numbered list for a person: rank, score (2 decimals), date if the path has one, path."""
+    file = file or sys.stdout
+    if not out:
+        print("No results." + (" Try without --project/--unused-since/--clean/--photos/--videos."
+                               if a.project or a.unused_since or a.clean or a.photos or a.videos else ""), file=file)
+        return
+    w = len(str(len(out)))
+    for i, (s, p) in enumerate(out, 1):
+        print(f"{i:>{w}}. {s:.2f}  {path_date(p) or '':<10}  {p}", file=file)
+    print(f"{len(out)} result{'s' if len(out) != 1 else ''}, best first (score: cosine, compare within one query)",
+          file=file)
 
 
 def cmd_search(a, np, ort):
-    rank(np, embed_text(a.query, np, ort), a)
+    store = need_index(np)  # before the text model: say the cheaper fix first
+    rank(np, embed_text(a.query, np, ort), a, store=store)
 
 
 def cmd_similar(a, np, ort):
@@ -270,7 +348,8 @@ def cmd_similar(a, np, ort):
     if label.refused([f]):
         print("semantic: refusing a quarantined/flagged/staging file", file=sys.stderr)
         sys.exit(3)
-    shas, emb, files = load_store(np)
+    store = need_index(np)
+    shas, emb, files = store
     s = files.get(f, [None, None, None])[2] or label._sha(f)
     if s in shas:
         v = emb[shas.index(s)]
@@ -278,7 +357,7 @@ def cmd_similar(a, np, ort):
         v = embed_file(vision(ort), f, np)
         if v is None:
             sys.exit("semantic: could not decode FILE")
-    rank(np, v / np.linalg.norm(v), a, exclude=s)
+    rank(np, v / np.linalg.norm(v), a, exclude=s, store=store)
 
 
 def main(argv=None):
@@ -295,9 +374,16 @@ def main(argv=None):
         s.add_argument("--project")
         s.add_argument("--unused-since", metavar="Nd")
         s.add_argument("--clean", action="store_true", help="drop child-in-shot and trash-flagged files")
+        s.add_argument("--format", choices=("auto", "human", "machine"), default="auto",
+                       help="human: numbered list with dates; machine: `score  path` lines (what the gallery "
+                            "reads); auto (default): human on a terminal, machine otherwise")
     a = ap.parse_args(argv)
-    import numpy as np
-    import onnxruntime as ort
+    try:
+        import numpy as np
+        import onnxruntime as ort
+    except ImportError as e:
+        sys.exit(f"semantic: {e.name or 'a module'} is missing; run it through `media-intake {a.cmd}` "
+                 "(the venv bash setup.sh builds), or run bash setup.sh first")
     {"index": cmd_index, "search": cmd_search, "similar": cmd_similar}[a.cmd](a, np, ort)
 
 
