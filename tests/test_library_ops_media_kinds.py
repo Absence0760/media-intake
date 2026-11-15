@@ -220,7 +220,7 @@ class Trash(Base):
                          [("DCIM/Camera/20261021_090000.mp4", "delete", "trashed before"),
                           ("DCIM/Camera/20261022_100000.mov", "delete", "trashed before")])
 
-    def test_trash_quarantined_and_review_videos(self):
+    def test_trash_refuses_quarantined_and_takes_review_videos(self):
         quar = os.path.join(self.state, "quarantine", "b1")
         qv = clip(os.path.join(quar, "DCIM/Camera/q.mp4"), seed=7)
         qp = photo(os.path.join(quar, "DCIM/Camera/q.jpg"), 70)
@@ -228,9 +228,12 @@ class Trash(Base):
             json.dump({"DCIM/Camera/q.mp4": dict(reasons=["x"], sha=sha(qv), size=os.path.getsize(qv), dst=None),
                        "DCIM/Camera/q.jpg": dict(reasons=["x"], sha=sha(qp), size=os.path.getsize(qp), dst=None)}, f)
         rv = clip(os.path.join(self.state, "batches/b1/review/DCIM/Camera/r.mov"), seed=8)
-        self.out("trash", "b1", qv, rv)
-        self.assertFalse(os.path.exists(qv) or os.path.exists(rv))
-        self.assertEqual(list(jload(os.path.join(quar, "quarantine.json"))), ["DCIM/Camera/q.jpg"])
+        before = jload(os.path.join(quar, "quarantine.json"))
+        out = self.out("trash", "b1", qv, rv, code=1)
+        self.assertIn("refused 1 quarantined", out)
+        self.assertTrue(os.path.isfile(qv), "a quarantined video is erased or kept, never trashed")
+        self.assertFalse(os.path.exists(rv))
+        self.assertEqual(jload(os.path.join(quar, "quarantine.json")), before)
 
     def test_trash_refuses_a_video_outside_the_library_and_a_sidecar(self):
         dl = clip(os.path.join(self.home, "Downloads/x.mp4"), seed=1)

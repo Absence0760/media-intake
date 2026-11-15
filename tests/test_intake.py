@@ -696,7 +696,7 @@ class Trash(unittest.TestCase):
         plan = jload(os.path.join(self.state, "batches/2026-11-13-backup/plan.json"))
         self.assertEqual([(p["action"], p["why"]) for p in plan], [("delete", "trashed before")])
 
-    def test_trash_refuses_outside_and_updates_quarantine(self):
+    def test_trash_refuses_outside_and_quarantine(self):
         dl = os.path.join(self.home, "Downloads/x.jpg")
         save_jpg(pattern(13), dl)
         link = os.path.join(self.lib, "link.jpg")
@@ -711,9 +711,16 @@ class Trash(unittest.TestCase):
         with open(os.path.join(quar, "quarantine.json"), "w") as f:
             json.dump({"Pictures/library/Messaging/w.jpg": {"reasons": ["x"], "sha": "0" * 64, "size": 1, "dst": None},
                        "Pictures/library/Messaging/v.jpg": {"reasons": ["x"], "sha": "1" * 64, "size": 1, "dst": None}}, f)
-        self.intake("trash", "xcheck-b", q)
-        self.assertFalse(os.path.exists(q))
-        self.assertEqual(list(jload(os.path.join(quar, "quarantine.json"))), ["Pictures/library/Messaging/v.jpg"])
+        before = jload(os.path.join(quar, "quarantine.json"))
+        ok = os.path.join(self.lib, "2026/2026-11/junk.jpg")  # named with it: still trashed
+        save_jpg(pattern(16), ok)
+        out = self.intake("trash", "xcheck-b", q, ok, code=1)
+        self.assertIn("refused 1 quarantined", out)
+        self.assertIn("trashed 1 files", out)
+        self.assertTrue(os.path.isfile(q), "a quarantined file is erased or kept, never trashed")
+        self.assertFalse(os.path.exists(ok))
+        self.assertEqual(jload(os.path.join(quar, "quarantine.json")), before)
+        self.assertNotIn("0" * 64, jload(os.path.join(self.state, "trashed.json")) or {})
 
     def test_suggest_and_not_trash(self):
         f = {}

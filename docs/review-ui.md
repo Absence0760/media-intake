@@ -53,8 +53,8 @@ review files it prints `nothing to review for BATCH` and exits 0.
   too: a submit with `trash` for a quarantined item gets 400 "a quarantined
   item can't be trashed: erase or keep it", before `review-decisions.json` is
   written or any job starts. The run itself also stops if one ever reaches it.
-  (`media-intake trash` on a path under `quarantine/` still works from the
-  command line.)
+  `media-intake trash` refuses a path under `quarantine/` the same way, from
+  the command line.
 - **Trash** (T) on Review and Maybe trash items: `media-intake trash` (plain
   delete for junk that isn't private, remembered by checksum so `plan` drops
   it next time; with `--phone` when the page has it). It runs first in each

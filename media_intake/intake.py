@@ -1420,7 +1420,14 @@ def trash_allowed(p):
     if any(rp.startswith(os.path.realpath(r) + os.sep) for r in LIB_ROOTS):
         return True
     rel = os.path.relpath(rp, os.path.realpath(STATE)).split(os.sep)
-    return (len(rel) > 2 and rel[0] == "quarantine") or (len(rel) > 3 and rel[0] == "batches" and rel[2] == "review")
+    return len(rel) > 3 and rel[0] == "batches" and rel[2] == "review"
+
+
+def in_quarantine(p):
+    """p is a quarantined (flagged sensitive) file: erase or keep it, never plain trash (the desktop trash
+    would keep the sensitive content and the sweep of its copies would be skipped)."""
+    rel = os.path.relpath(os.path.realpath(p), os.path.realpath(STATE)).split(os.sep)
+    return len(rel) > 2 and rel[0] == "quarantine"
 
 
 def phone_rels(batch, path):
@@ -1474,10 +1481,13 @@ def trash_files(files, batch=None, phone=None):
         sys.exit(refusal + " (trash without --phone)")
     # Without a named batch, a folder batch's originals are never device targets.
     mans = {b: man for b, man in mans.items() if not folder_refusal(man)}
-    refused, todo = [], []
+    refused, quarantined, todo = [], [], []
     for f in files:  # every phone delete is checked before anything is trashed
         p = os.path.abspath(f)
         if any(p == x for x, _ in todo):
+            continue
+        if in_quarantine(p):
+            quarantined.append(f)
             continue
         if not trash_allowed(p):
             refused.append(f)
@@ -1499,12 +1509,6 @@ def trash_files(files, batch=None, phone=None):
         sc += drop_sidecar(p)
         th += thumb_forget(p) + gallery_thumb_forget(s)
         index.pop(p, None)
-        rel = os.path.relpath(os.path.realpath(p), os.path.realpath(STATE)).split(os.sep)
-        if rel[0] == "quarantine" and len(rel) > 2:  # keep quarantine.json in step
-            qj = os.path.join(STATE, "quarantine", rel[1], "quarantine.json")
-            q = load(qj, {})
-            if q.pop(os.path.join(*rel[2:]), None) is not None:
-                save(qj, q)
         for src, _ in srcs:
             th += thumb_forget(src)
             if src in phone_ok:
@@ -1515,10 +1519,12 @@ def trash_files(files, batch=None, phone=None):
     print(f"trashed {n} files; sidecars {sc}; thumbnails {th}; phone {ph}"
           + (f"; copies left on disk marked Owner|trash {marked}" if marked else "")
           + (f"; copies you kept left alone {spared}" if spared else "")
-          + (f"; refused {len(refused)} (not a library, review or quarantine file)" if refused else ""))
+          + (f"; refused {len(refused)} (not a library or review file)" if refused else "")
+          + (f"; refused {len(quarantined)} quarantined (sensitive: erase or keep them, never trash)"
+             if quarantined else ""))
     if err:
         print(err)
-    return not refused and not err
+    return not refused and not quarantined and not err
 
 
 def digikam_rejected(roots):

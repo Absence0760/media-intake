@@ -61,7 +61,7 @@ The goal: someone else can install it on Fedora, import a phone, and trust it.
 - [x] **Quarantine is Erase-only on the review page:** plain Trash on a quarantined item moved
       that one file and left its messaging copies and near-copies behind. The page offers no
       Trash (button or T) there and says why; the server refuses a trash decision on one (400,
-      nothing written). The `trash` command still accepts a quarantine path from the CLI.
+      nothing written). The `trash` command refuses a quarantine path too (exit 1, nothing deleted).
 
 ### Dates and devices
 - [x] Implausible camera dates (GoPro with an unset clock writes 2015-12-31/2016-01-01):

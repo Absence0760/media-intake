@@ -353,7 +353,7 @@ cameras of one model share a folder, as above.
 ## Trash vs erase
 
 `trash [BATCH] FILE... [--phone ROOT]` is a plain delete for junk that isn't
-private: the file (library, quarantine or review copy), its `.xmp` sidecar,
+private: the file (library or review copy), its `.xmp` sidecar,
 its thumbnails (freedesktop and the gallery's) and the gallery's H.264 proxy
 of a video, its `index.json` entry, and
 with `--phone` its phone original (the manifest's `src`, checked by
@@ -363,7 +363,10 @@ marks any later copy "delete" with why "trashed before", so it never comes
 back from another device or a backup. Anything private goes through `erase`
 (or `forget` for files already in the library). The review page offers Trash
 (T) on Review and Maybe trash items, never on a quarantined one (Erase or
-Keep only: [review-ui.md](review-ui.md)).
+Keep only: [review-ui.md](review-ui.md)), and `trash` itself refuses a file
+under `quarantine/`: it leaves that file, its sidecar and `quarantine.json`
+untouched, reports "refused N quarantined" and exits 1 (other files named with
+it are trashed as usual).
 
 `forget FILE...` checks every file first: one missing (or a symlink, or not a
 regular file) refuses the whole command, and without `--yes` it asks (type
