@@ -113,7 +113,10 @@ close the PR.
   the gallery and the review page: keys, selection and the bottom selection
   bar, the confirm dialogs (ERASE typed), lightbox video autoplay and Space
   play / pause, Range seeking, and the detached job's
-  progress, including re-attaching after a reload. The `*_media_kinds` files
+  progress, including re-attaching after a reload; on the review page also
+  its keyboard and screen-reader hooks (`ReviewA11yBrowserTest`: the tablist,
+  focus outlines in light and dark, the modal confirm, the `?` keys list, the
+  refused-submit banner, the decided counter, and no native dialog). The `*_media_kinds` files
   run the same on photos, an .mp4 and a .MOV together: bulk Keep, tags, Set
   event, Rotate and Trash on a mixed selection, shift-click after the grid
   reloads, the large view playing and rotating a video; on the review page,
