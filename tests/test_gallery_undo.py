@@ -5,11 +5,13 @@
 
 Keep, my tags, Rotate and Set event reply with an undo token; /api/undo puts back exactly what that action
 changed in each sidecar (tags, dc:Subject leaves, XMP-tiff:Orientation, XMP-iptcExt:Event), under the library
-lock, and refuses (409, nothing written) once an item's sidecar changed again. Trash, Erase, Share-safe copy and
-Trash suggestions' Apply never carry a token. Sidecars are written and read with exiftool (the server's own
+lock, and refuses (409, nothing written) once an item's sidecar changed again or the item left the library
+(removed or renamed); a token older than the last UNDO_KEEP actions is refused too (400). Trash, Erase,
+Share-safe copy and Trash suggestions' Apply never carry a token. Sidecars are written and read with exiftool (the server's own
 writer); UndoBlockTest runs in-process and needs none.
 """
 import os, shutil, subprocess, sys, tempfile, unittest
+from unittest import mock
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import support  # noqa: E402  (hermetic config; puts media_intake on sys.path)
@@ -30,6 +32,12 @@ def state(p):
     row = __import__("json").loads(r.stdout)[0]
     as_s = lambda v: frozenset() if v is None else frozenset(map(str, v if isinstance(v, list) else [v]))  # noqa: E731
     return as_s(row.get("HierarchicalSubject")), as_s(row.get("Subject")), row.get("Orientation"), row.get("Event")
+
+
+def side(p):
+    """A sidecar's bytes, to show nothing wrote it."""
+    with open(p + ".xmp", "rb") as f:
+        return f.read()
 
 
 @unittest.skipUnless(HAVE_EXIFTOOL, "exiftool is not installed")
@@ -88,7 +96,7 @@ class UndoTest(unittest.TestCase):
         flags = {i["id"]: i["f"] for i in s.get("/api/list?limit=500")["items"]}
         j = self.act(s, "/api/keep", {"ids": sel})
         h = state(self.a)[0]
-        self.assertTrue({"Owner|keep", "Owner|not-trash"} <= h)
+        self.assertLessEqual({"Owner|keep", "Owner|not-trash"}, h)
         self.assertFalse({"Review|maybe-trash", "Owner|trash", "Review|not-trash"} & h)
         self.assertIn("kept", [f for i in j["items"] for f in i["f"]])
         u = self.undo(s, j)
@@ -168,6 +176,59 @@ class UndoTest(unittest.TestCase):
         for bad in (None, "", "not-a-token", 7):
             code, e = s.post("/api/undo", {"undo": bad})
             self.assertEqual(code, 400, (bad, e))
+
+    def test_undo_refuses_when_an_item_left_the_library(self):
+        """An item removed or renamed since the action: 409, no sidecar written (the other items' bytes too),
+        and the token is spent."""
+        s = self.start()
+        ida, idc, idd = self.ids["a.jpg"], self.ids["c.jpg"], self.ids["d.jpg"]
+        # removed: a's original deleted (its sidecar left behind)
+        j = self.act(s, "/api/tag", {"ids": [ida, idd], "tag": "Trips|coast", "op": "add"})
+        os.remove(self.a)
+        before = {p: side(p) for p in (self.a, self.c, self.d)}
+        code, e = s.post("/api/undo", {"undo": j["undo"]})
+        self.assertEqual(code, 409, e)
+        self.assertEqual(e["error"], "can't undo: an item is no longer in the library; nothing was changed")
+        self.assertEqual({p: side(p) for p in before}, before)
+        code, e = s.post("/api/undo", {"undo": j["undo"]})
+        self.assertEqual(code, 400, e)  # spent
+        self.assertIn("nothing to undo", e["error"])
+        # renamed: c and its sidecar moved to a new name, as a file manager or digiKam would
+        j = self.act(s, "/api/tag", {"ids": [idc, idd], "tag": "Trips|hills", "op": "add"})
+        c2 = os.path.join(os.path.dirname(self.c), "c-renamed.jpg")
+        os.rename(self.c, c2)
+        os.rename(self.c + ".xmp", c2 + ".xmp")
+        before = {p: side(p) for p in (c2, self.d)}
+        code, e = s.post("/api/undo", {"undo": j["undo"]})
+        self.assertEqual(code, 409, e)
+        self.assertIn("no longer in the library", e["error"])
+        self.assertEqual({p: side(p) for p in before}, before)
+        self.assertFalse(os.path.exists(self.c + ".xmp"))  # nothing written at the old name
+        code, e = s.post("/api/undo", {"undo": j["undo"]})
+        self.assertEqual(code, 400, e)
+        self.assertEqual({p: G.sha(p) for p in (self.b, self.d)}, {p: self.originals[p] for p in (self.b, self.d)})
+
+    def test_undo_refuses_a_token_older_than_undo_keep(self):
+        """The server keeps the last UNDO_KEEP (50) undoable actions; an older token is refused (400, "too old")
+        and writes nothing. The server runs with UNDO_KEEP patched to 2 so three actions evict the first."""
+        self.assertEqual(gallery.UNDO_KEEP, 50)  # docs/gallery.md says the last 50
+        launcher = os.path.join(self.tmp, "gallery_keep2.py")
+        with open(launcher, "w") as f:
+            f.write(f"import sys\nsys.path.insert(0, {G.HERE!r})\nimport gallery\ngallery.UNDO_KEEP = 2\n"
+                    "sys.exit(gallery.main())\n")
+        with mock.patch.object(G, "GALLERY", launcher):
+            s = self.start()
+        first, second, third = (self.act(s, "/api/rotate", {"ids": [self.ids[n]], "dir": "cw"})
+                                for n in ("a.jpg", "b.jpg", "c.jpg"))
+        after = self.snap()
+        code, e = s.post("/api/undo", {"undo": first["undo"]})
+        self.assertEqual(code, 400, e)
+        self.assertIn("too old", e["error"])
+        self.assertEqual(self.snap(), after)  # nothing written
+        self.undo(s, third)  # the last two are still kept
+        self.undo(s, second)
+        self.assertEqual((state(self.b)[2], state(self.c)[2]), (None, None))
+        self.assertEqual(state(self.a), after[self.a])  # a stays rotated
 
     def test_undo_holds_the_library_lock(self):
         """While a job (a trash held at a FIFO) holds the library lock, an undo gets 409 and writes nothing; it

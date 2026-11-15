@@ -91,8 +91,8 @@ media-intake similar ~/Videos/personal/2026/2026-05/GX010123.MP4 -n 20
   - **machine** (the default when stdout is piped or captured): `score  path`
     lines, score to 3 decimals, and `N results` on stderr. The gallery's
     search box and Similar read this form (they run `semantic.py` with
-    captured output), so it stays byte for byte as it is; `--format machine`
-    forces it on a terminal.
+    `--format machine`, never relying on the default), so it stays byte for
+    byte as it is; `--format machine` forces it on a terminal too.
 - Nothing to search yet: `search` and `similar` stop with one line naming
   the fix instead of a traceback: no index (or an empty one) says `build it
   with: media-intake index`; no text model says `bash setup.sh

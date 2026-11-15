@@ -112,7 +112,7 @@ class Run(unittest.TestCase):
             os.makedirs(os.path.dirname(path), exist_ok=True)
             with open(path, "w") as f:
                 f.write(body)
-            os.chmod(path, 0o755)
+            os.chmod(path, 0o700)  # owner-only: only this test runs them
         os.makedirs(self.home)
 
     def env(self, **extra):

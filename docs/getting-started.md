@@ -24,7 +24,10 @@ The full list: [README, "Privacy guarantees"](../README.md#privacy-guarantees).
 Install the Fedora packages and run `setup.sh` as in the
 [README, "Install (Fedora)"](../README.md#install-fedora). `setup.sh` builds a
 venv, downloads the pinned SigLIP model and GeoNames data, and writes the
-`media-intake` launcher to `~/.local/bin`. It is safe to re-run.
+`media-intake` launcher to `~/.local/bin`. It is safe to re-run. It prints a
+`==> [n/N]` heading per step, ends with a summary of what it installed or found
+already present and `next: media-intake doctor`; if a step fails it prints
+`==> FAILED at step [n/N] ...` with the likely fix (section 5).
 
 Then check the install:
 
@@ -32,7 +35,9 @@ Then check the install:
 media-intake doctor
 ```
 
-Each line starts with a status:
+Its checks are grouped under headings, and its `== Summary ==` opens with a
+count line, `N problems, M optional items not available` (`no problems` when
+there are none). Each check line starts with a status:
 
 | Status | Meaning |
 | --- | --- |
@@ -101,6 +106,13 @@ junk, with Keep, Delete or Trash. Submit unlocks once every item is decided
 and asks you to type `ERASE`. Closing the tab without submitting changes
 nothing. Detail: [review-ui.md](review-ui.md).
 
+At a terminal each step ends with one `next: media-intake <command> <batch>`
+line naming what to run next: after `apply`, `review` if anything was set
+aside, else `tag`; after `tag`, `backup` then `offload` for a phone or camera,
+or `gallery` for a folder source. The long steps (`stage`, `plan`, `apply`,
+`tag`) print counts-only progress lines, never a file name
+([intake.md](intake.md), "Progress and the `next:` line").
+
 Things worth knowing from the test run:
 
 - `apply` refuses to run before `scan`, and refuses if a document detector
@@ -143,9 +155,12 @@ media-intake similar <library file> -n 20
 media-intake find --event <slug>
 ```
 
-`search` needs the text model (`bash setup.sh --build-labels`); without it
-only `similar` works. `find` searches the sidecar tags and needs neither.
-The gallery's search box uses the same index. [search.md](search.md).
+`index` prints counts-only progress and a summary. At a terminal `search`
+and `similar` print a numbered list with each match's score and date; before
+the first `index` they print one line naming `media-intake index`. `search`
+needs the text model (`bash setup.sh --build-labels`); without it only
+`similar` works. `find` searches the sidecar tags and needs neither. The
+gallery's search box uses the same index. [search.md](search.md).
 
 **The queue, for a drive or a big folder.** Imports in resumable chunks,
 overnight if you like, and stops before every decision that is yours:
@@ -157,10 +172,12 @@ media-intake queue run --inhibit
 media-intake queue status
 ```
 
-`status` lists, per finished chunk, what waits for you and the command to
-open it (a `media-intake review <batch>` line, the gallery, or
-`suggest-trash`). A drive that looks like your backup drive is refused.
-[queue.md](queue.md).
+`status` prints a table, one row per source (`SOURCE`, `STATE`, `FILES`,
+`QUAR`, `REVIEW`, `CHANGED`), then `Waiting for you:` with each chunk that
+has decisions left (and the commands to open them), each failed chunk with
+its log and retry command, and drives ready to offload, then one `next:`
+line. `--json` gives the same for scripts. A drive that looks like your
+backup drive is refused. [queue.md](queue.md), "Status".
 
 **Backup.** Copy the library, videos and sidecars to a mounted external drive;
 incremental, and it never deletes anything on the drive:
@@ -177,6 +194,8 @@ Use a LUKS-encrypted drive. [backup.md](backup.md).
 
 | Situation | What to run or read |
 | --- | --- |
+| `setup.sh` stops with `==> FAILED at step [n/N]` | Read the hint under it (a `sudo dnf install -y ...` line, no network, or a checksum mismatch), fix that, and re-run `bash setup.sh`. Never skip a checksum: a file that fails its sha256 is deleted, not used. |
+| A mistyped command | `media-intake` exits 2 naming the unknown command, with a `did you mean` suggestion when one is close. |
 | `doctor` shows `MISSING` | Run the `sudo dnf install ...` line it prints, or `bash setup.sh` where it says so; then `media-intake doctor` again. |
 | `doctor` shows `BAD` for a model file | `bash setup.sh` deletes the wrong file; run it again to fetch the pinned one. |
 | Every command stops with a config error | Fix or remove the key it names ([configuration.md](configuration.md)). |

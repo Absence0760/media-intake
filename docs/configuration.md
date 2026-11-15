@@ -36,6 +36,9 @@ before it exits 75 ([intake.md](intake.md), "One writer at a time").
 sweeps in erase, forget and verify-gone print a counts-only progress line;
 the same two set it for `media-intake index` and `vlm-trash` (defaults there
 100 files and 10 s, 1 s on a terminal: [search.md](search.md)).
+`MEDIA_INTAKE_NEXT_HINT` sets the `next:` line that ends each main-flow step:
+`1` always prints it, `0` never does, and unset it prints only at a terminal
+([intake.md](intake.md), "Progress and the `next:` line").
 `MEDIA_INTAKE_NO_GVFS_METADATA=1` stops erase clearing GNOME's per-file
 metadata through `gio`, and `MEDIA_INTAKE_NO_LOCALSEARCH=1` stops it resetting
 and checking the desktop search index; the tests set both, and the erase

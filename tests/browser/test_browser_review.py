@@ -575,10 +575,10 @@ class ReviewA11yBrowserTest(ReviewCase):
         page = self.new_page()
         self.open(page, s)
         self.decide_all(page)
+        hold = ("import sys; sys.path.insert(0, sys.argv[1]); import library_lock as L; "
+                "L.acquire('test holder'); print('held', flush=True); sys.stdin.read()")  # one -c program
         holder = subprocess.Popen(
-            [sys.executable, "-I", "-c", "import sys; sys.path.insert(0, sys.argv[1]); import library_lock as L; "
-             "L.acquire('test holder'); print('held', flush=True); sys.stdin.read()",
-             os.path.join(B.TESTS, os.pardir, "media_intake")],
+            [sys.executable, "-I", "-c", hold, os.path.join(B.TESTS, os.pardir, "media_intake")],
             env=self.env, stdin=subprocess.PIPE, stdout=subprocess.PIPE, text=True)
         self.addCleanup(holder.wait, 30)
         self.addCleanup(holder.stdin.close)
