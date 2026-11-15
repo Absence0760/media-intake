@@ -116,6 +116,9 @@ The goal: someone else can install it on Fedora, import a phone, and trust it.
 - [x] Thumbnail cache keyed by content and rotation: rotating one copy no longer turns its
       byte-identical twin's thumbnail; copies turned alike share one; trash, forget, erase and
       verify-gone cover every variant (docs/gallery.md, "Thumbnails").
+- [x] Prune the gallery cache: `media-intake prune-cache [--dry-run]` deletes legacy
+      `<sha256>.jpg` thumbnails, turns no copy shows any more, and thumbnails and proxies of
+      content no longer in the library (docs/gallery.md, "Pruning the cache").
 - [x] A "share-safe export" button in the gallery (the CLI has `media-intake share-copy`:
       copy with all metadata and GPS stripped).
 

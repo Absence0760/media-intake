@@ -382,6 +382,15 @@ def css_delta(it):
     return (DEG[effective_orientation(it)] - DEG[file_orientation(it)]) % 360
 
 
+def thumb_turn(it):
+    """The clockwise turn baked into this item's thumbnail (its cache key, intake.gallery_thumb_path): a video's
+    sidecar orientation (players ignore it), a photo's sidecar orientation on top of its own EXIF one (the
+    browser applies that). A photo with no sidecar orientation is 0 without opening the file."""
+    if it["media"] == "video":
+        return DEG[effective_orientation(it)]
+    return css_delta(it) if it.get("orient") in DEG else 0
+
+
 def _pil_jpeg(im, px, delta, quality=80):
     from PIL import Image, ImageOps
     im = ImageOps.exif_transpose(im).convert("RGB")
@@ -608,7 +617,7 @@ class App:
             return None
         # Keyed by content and the turn baked in (a copy rotated in its sidecar shows its own rotation; copies
         # turned alike share one file). A photo's EXIF orientation is part of its content, so it needs no key.
-        delta = DEG[effective_orientation(it)] if it["media"] == "video" else css_delta(it)
+        delta = thumb_turn(it)
         dst = intake.gallery_thumb_path(sha, delta)
         if os.path.isfile(dst):
             return dst
@@ -676,7 +685,8 @@ class App:
 
     def drop_thumb(self, it):
         """After a rotate: the item's new turn has its own cache key, so its next /t/ request shows it at once.
-        The other variants stay (a same-content copy may still show them; trash, forget and erase remove all)."""
+        The other variants stay (a same-content copy may still show them; trash, forget and erase remove all,
+        and `media-intake prune-cache` removes the turns no copy shows any more)."""
         it.pop("nothumb", None)
 
     def summary(self, i, it):

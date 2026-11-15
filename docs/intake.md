@@ -86,6 +86,7 @@ media-intake tag-files FILE... [--event SLUG] [--no-labels]
 media-intake mark-used FILE... --post SLUG
 media-intake find [--tag T] [--event E] [--place P] [--project P] [--unused-since 30d] [--never-used]
 media-intake gallery [--drive MOUNT] [--share-out DIR]
+media-intake prune-cache [--dry-run]          # gallery thumbnails and proxies nothing shows any more
 ```
 
 `media-intake <command> --help` shows every option. The review page is
@@ -130,6 +131,9 @@ run and a CLI `apply` never interleave (`media_intake/library_lock.py`):
   it is listed there, and `tests/test_library_lock.py` fails on one in neither.
   `media-intake gallery` is cli.py's, not intake.py's (gallery.py imports
   intake.py, never the reverse); it takes the lock itself, per write.
+  `media-intake prune-cache` is cli.py's too (it reads the library as the
+  gallery does) and holds the lock while it deletes, for a steady view of the
+  library; with `--dry-run` it writes nothing and doesn't take it.
   `vlm-trash` takes it around each batch of verdicts it writes.
 - **Jobs** (the review page's run, the gallery's Trash, Erase and Share-safe copy) take it with
   their job lock at submit and hold it until their last step is over; each
