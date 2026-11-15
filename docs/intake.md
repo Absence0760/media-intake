@@ -52,11 +52,11 @@ media-intake scan BATCH                 # local detectors; labels only
 media-intake apply BATCH                # moves files; prints a summary
 media-intake quarantine BATCH           # counts + the folder to open
 media-intake release BATCH FILE...      # false positive -> library
-media-intake erase BATCH [--phone ROOT [--keep-phone-thumbnails]] [--drive MOUNT [--no-wipe-free]]
+media-intake erase BATCH [--phone ROOT [--keep-phone-thumbnails]] [--drive MOUNT [--no-wipe-free]] [--yes]
 media-intake forget LIBRARY_FILE... [--drive MOUNT] [--yes]   # asks (type ERASE) before anything moves
 media-intake verify-gone [BATCH] [--drive MOUNT]
 media-intake wipe-free MOUNT
-media-intake offload BATCH --phone ROOT [--yes]   # refused for a --kind folder batch
+media-intake offload BATCH --phone ROOT [--yes]   # asks (type DELETE); refused for a --kind folder batch
 media-intake purge-review BATCH        # a batch name, never a path
 media-intake trash [BATCH] FILE... [--phone ROOT]
 media-intake trash --from-digikam [--yes]
@@ -82,6 +82,16 @@ model's digest against `media_intake/pins.json`, and the config.
 A typical phone batch: `stage` the phone's storage root, `plan` (add
 `--event` for a shoot), `scan`, `apply`, open the review page, `tag`, then,
 once the library is backed up, `offload` to free the phone.
+
+### Confirmation prompts
+
+Without `--yes`, `erase` and `forget` ask you to type `ERASE`, and `offload`
+to type `DELETE`, before anything is deleted. Any other answer, or none at
+all, deletes nothing: with no terminal (a cron job, the folder queue, stdin
+closed) or Ctrl-C at the prompt, the command prints `nothing erased` /
+`nothing deleted` and exits 1, with no traceback. Every such prompt goes
+through one helper, `intake.ask()`; `--yes` skips the prompt only, never the
+checks on what may be deleted.
 
 ### One writer at a time: the library lock
 
@@ -775,7 +785,8 @@ a hermetic config), or one module: `python3 -I -m unittest discover -s tests -p 
 (also `test_dates`, `test_devices`, `test_sources`, `test_tagging`, `test_config`, and `test_device_case`: offload,
 erase and trash on fake MTP, gphoto2 and drive trees with case-only collisions, in the manifests or only in the live listing, and a listing that fails; `test_device_ops_media_kinds`:
 stage, plan, apply, erase, offload and verify-gone with photos, videos and a mix from a phone, a GoPro card,
-a drive, a laptop folder and the drive queue; `test_library_lock`: the
+a drive, a laptop folder and the drive queue, and erase's and offload's prompts (a wrong answer or closed
+stdin deletes nothing, with no traceback; the typed word does); `test_library_lock`: the
 CLI, a gallery write and a job contending for the library lock; `test_library_ops_media_kinds`: every
 library-side command on a photo, an mp4 and a .mov, alone and mixed; `test_detectors_media_kinds`: scan,
 vlm_trash, semantic, label and the plugin hook on photos, videos and mixed batches, and broken videos that

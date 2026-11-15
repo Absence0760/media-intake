@@ -1154,6 +1154,17 @@ def cmd_verify_gone(a):
     sys.exit(0 if verify_gone(sig, a.drive) else 1)
 
 
+def ask(prompt):
+    """The answer typed at a confirmation prompt, stripped. No terminal (stdin closed or at its end: a cron
+    job, the folder queue) or Ctrl-C is no answer, "", so the caller's "type ERASE/DELETE" check says no
+    and exits cleanly instead of a traceback. Every yes/no prompt before a delete goes through here."""
+    try:
+        return input(prompt).strip()
+    except (EOFError, KeyboardInterrupt):
+        print()  # end the prompt's line
+        return ""
+
+
 def cmd_erase(a):
     quar = os.path.join(STATE, "quarantine", a.batch)
     q = load(os.path.join(quar, "quarantine.json"), {})
@@ -1164,12 +1175,8 @@ def cmd_erase(a):
     if not q:
         sys.exit("quarantine is empty")
     if not a.yes:
-        try:
-            ans = input(f"Erase {len(q)} quarantined files for good{' and from the phone' if a.phone else ''}"
-                        f"{' and the drive' if a.drive else ''}? Type ERASE: ")
-        except EOFError:  # no terminal (a cron job, the queue): no answer is no
-            ans = ""
-        if ans.strip() != "ERASE":
+        if ask(f"Erase {len(q)} quarantined files for good{' and from the phone' if a.phone else ''}"
+               f"{' and the drive' if a.drive else ''}? Type ERASE: ") != "ERASE":
             sys.exit("nothing erased")
     # A checksum that is also in the library belongs to a released (or library)
     # copy: erase the quarantined file here, but never that content elsewhere.
@@ -1317,12 +1324,8 @@ def cmd_forget(a):
     if bad:
         sys.exit(f"not forgetting anything: {len(bad)} of {len(files)} are missing or not regular files")
     if not a.yes:
-        try:
-            ans = input(f"Erase {len(files)} files everywhere for good{' and from the drive' if a.drive else ''}? "
-                        "Type ERASE: ")
-        except EOFError:
-            ans = ""
-        if ans.strip() != "ERASE":
+        if ask(f"Erase {len(files)} files everywhere for good{' and from the drive' if a.drive else ''}? "
+               "Type ERASE: ") != "ERASE":
             sys.exit("nothing erased")
         a.yes = True
     batch = datetime.datetime.now().strftime("forget-%Y%m%d-%H%M%S")
@@ -1381,7 +1384,7 @@ def cmd_offload(a):
     todo = device_targets(root, items, [m["src"] for m in man["files"].values()], check, skip_denied=False)
     print(f"{len(todo)} of {len(man['files'])} phone files have a verified copy here")
     if not a.yes:
-        if input("Delete them from the phone? Type DELETE: ").strip() != "DELETE":
+        if ask("Delete them from the phone? Type DELETE: ") != "DELETE":
             sys.exit("nothing deleted")
     done = device_remove(todo)
     print(f"deleted {len(done)} files from the phone; quarantined and review files stay until erase/purge")

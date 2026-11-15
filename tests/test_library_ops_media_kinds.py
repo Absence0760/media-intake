@@ -325,8 +325,10 @@ class Forget(Base):
         p, v, _ = self.trio()
         sides = [self.xmp(x, "Label|food") for x in (p, v)]
         self.index(p, v)
-        r = self.intake("forget", p, v, code=1, stdin="no\n")
-        self.assertIn("nothing erased", r.stderr)
+        for answer in ("no\n", "erase\n", "", None):  # None: stdin closed (cron, the queue)
+            r = self.intake("forget", p, v, code=1, stdin=answer)
+            self.assertIn("nothing erased", r.stderr, repr(answer))
+            self.assertNotIn("Traceback", r.stdout + r.stderr, repr(answer))
         for x in (p, v, *sides):
             self.assertTrue(os.path.isfile(x), x)
         self.assertEqual(sorted(jload(os.path.join(self.state, "index.json"))), sorted([p, v]))

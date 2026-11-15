@@ -353,6 +353,20 @@ class Phone(Base):
         self.assertEqual(left, [self.SENS_VID])
         self.assertTrue(os.path.isfile(self.P("DCIM/.thumbnails/1.jpg")), "offload never touches thumbnails")
 
+    def test_offload_without_yes_deletes_only_on_DELETE(self):
+        """Without --yes offload asks; any answer but DELETE, or none at all (stdin closed, as under cron or the
+        queue), deletes nothing and exits cleanly with no traceback. DELETE typed at the prompt deletes."""
+        b = "phone-offload-ask"
+        self.quarantined(b, [self.SENS_VID, self.SENS_VID_COPY])
+        for answer in ("no\n", "delete\n", "", None):
+            out = self.intake("offload", b, "--phone", self.phone, code=1, answer=answer)
+            self.assertIn("nothing deleted", out, repr(answer))
+            self.assertNotIn("Traceback", out, repr(answer))
+            self.assertEqual([r for r in self.all if not os.path.exists(self.P(r))], [], repr(answer))
+        out = self.intake("offload", b, "--phone", self.phone, answer="DELETE\n")
+        self.assertIn("deleted 10 files from the phone", out)
+        self.assertEqual([r for r in self.all if os.path.exists(self.P(r))], [self.SENS_VID])
+
     def test_offload_skips_a_video_whose_filed_copy_changed_size(self):
         b = "phone-offload-size"
         self.staged(b)
@@ -527,6 +541,17 @@ class GoPro(Base):
             self.assertNotIn("Traceback", out, repr(answer))
             self.assertEqual(files_under(self.card), before, repr(answer))
             self.assertTrue(os.path.isfile(os.path.join(quar, self.G + "GX010042.MP4")), repr(answer))
+
+    def test_erase_confirmed_at_the_prompt(self):
+        """ERASE typed at erase's prompt (no --yes) erases the chapter, its previews and the quarantined copy."""
+        b = "gopro-erase-typed"
+        self.staged(b)
+        self.apply(b, [self.G + "GX010042.MP4"])
+        out = self.intake("erase", b, "--phone", self.card, answer="ERASE\n")
+        self.assertIn("camera previews removed: 2", out)
+        for gone in ("GX010042.MP4", "GL010042.LRV", "GX010042.THM"):
+            self.assertFalse(os.path.exists(self.C(self.G + gone)), gone)
+        self.assertFalse(os.path.exists(os.path.join(self.state, "quarantine", b)))
 
     def test_erase_twice_is_safe(self):
         """A second erase of the same batch finds the quarantine gone and touches nothing on the card."""
