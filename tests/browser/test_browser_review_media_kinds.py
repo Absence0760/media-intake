@@ -330,7 +330,7 @@ class ReviewMediaKindsBrowserTest(B.BrowserCase):
         self.open(page, s)
         rel = "WhatsApp Video/VID-20261108-WA0001.mp4"
         c = self.card(page, rel)
-        B.expect(c.locator(".note")).to_have_text("WhatsApp/Messages copy of this video")
+        B.expect(c.locator(".note")).to_have_text("Messaging copy of this video")
         B.expect(c.locator(".side h3")).to_have_text(["Original (kept)", "This copy"])
         vs = c.locator("video")
         B.expect(vs).to_have_count(2)

@@ -88,6 +88,9 @@ DAY_RX = re.compile(r"(\d{4})[:-](\d\d)[:-](\d\d)$")
 FOLDER_RX = re.compile(r"(?:^|/)DCIM/(\d{4})(\d\d)__/")
 NAME_RX = (r"(20\d\d)(\d\d)(\d\d)[_-](\d\d)(\d\d)(\d\d)", r"(20\d\d)-(\d\d)-(\d\d)[ _-](\d\d)[.:-]?(\d\d)[.:-]?(\d\d)",
            r"(20\d\d)(\d\d)(\d\d)")
+# A Telegram Desktop export's own names: photo_<n>@DD-MM-YYYY_HH-MM-SS.jpg (day first, the message's
+# local time on the exporting computer; tdesktop export_data_types.cpp FormatDateTime).
+TELEGRAM_NAME_RX = re.compile(r"@(\d\d)-(\d\d)-(20\d\d)_(\d\d)-(\d\d)-(\d\d)")
 DEVICE_RX = re.compile(r"[A-Za-z0-9][A-Za-z0-9 ._-]{0,63}")
 OFFSET_RX = re.compile(r"([+-])(\d{1,6}(?:\.\d{1,2})?)h")
 
@@ -396,7 +399,14 @@ def _export(meta, tz, local_tz):
 def _weak(path, meta, local_tz):
     out = []
     n = os.path.basename(path)
-    for rx in NAME_RX:
+    m = TELEGRAM_NAME_RX.search(n)
+    if m:
+        d, mo, y, hh, mm, ss = (int(x) for x in m.groups())
+        try:
+            out.append(_Cand("filename", datetime.datetime(y, mo, d, hh, mm, ss)))
+        except ValueError:
+            m = None  # digits that aren't a real date: try the usual patterns
+    for rx in () if m else NAME_RX:
         m = re.search(rx, n)
         if m:
             g = [int(x) for x in m.groups()] + [0, 0, 0]

@@ -35,7 +35,8 @@ default; all of them come from `~/.config/media-intake/config.toml`
   (`Messaging/WhatsApp/`). Only those folders and their subfolders are read
   under a denied tree; nothing else of that app (statuses, databases,
   backups). Default: none. Offloading such files also removes them from the
-  app's chats, so think before you `offload` a batch that has them.
+  app's chats, so think before you `offload` a batch that has them. Telegram
+  and Signal: see "Messaging apps" below.
 - **No assistant views photos for sensitivity.** Anything an AI assistant
   views goes to its provider and its transcript on disk, which is exactly where
   a passport scan or a nude must not end up. All detection is local and
@@ -59,6 +60,83 @@ default; all of them come from `~/.config/media-intake/config.toml`
   ffmpeg and ffprobe get every path as `file:` plus the absolute path, so a
   name or relative source like `concat:...` or `http:...` is never followed as
   a protocol.
+
+## Messaging apps
+
+Media from a messaging app is a **messaging copy**: filed under
+`~/Pictures/library/Messaging/<App>/<YYYY>/`, tagged with the app's name in
+lower case, ranked below a camera original or a screenshot when two copies are
+exact duplicates, and checked against the library for near-copies (see
+"Duplicates"). On a phone it comes only from folders the config names
+(`[phone] extra_folders`, never a whole `Android/` tree) or from `Pictures/<App>/`,
+which is read anyway. From a drive or laptop folder it is recognised by name
+or layout, with no config. Layouts checked against each app's source code on
+2026-11-14 (links below); real phones and exports were not.
+
+| App | Where | How it is read |
+| --- | --- | --- |
+| WhatsApp | `Android/media/com.whatsapp/WhatsApp/Media/WhatsApp Images`, `.../WhatsApp Video` | config entries; on a drive or folder, `IMG-YYYYMMDD-WA*` / `VID-YYYYMMDD-WA*` names |
+| Telegram (Android 11+) | `Android/media/org.telegram.messenger/Telegram/Telegram Images`, `.../Telegram Video` | config entries |
+| Telegram (Android 10 and older) | `Telegram/Telegram Images`, `Telegram/Telegram Video` at the storage root | config entries |
+| Telegram "Save to gallery" | `Pictures/Telegram`, `Movies/Telegram` | `Pictures/` always; `Movies/Telegram` by config entry |
+| Signal "Save" (Android) | `Pictures/Signal`, `Movies/Signal`, named `signal-YYYY-MM-DD-HH-mm-ss-SSS` | `Pictures/` always; `Movies/Signal` by config entry |
+| Signal "Save" (Desktop) | wherever you saved it (usually Downloads), same `signal-...` names when the attachment had no name | a laptop folder or drive source: `signal-...` names (the phone's `Download/` denial doesn't apply to a folder you stage) |
+| Telegram Desktop export | `ChatExport_<date>/` or `DataExport_<date>/` (or a renamed one holding `result.json` or `messages.html` beside `photos/` or `video_files/`) | a laptop folder or drive source: only `photos/`, `video_files/` and `files/` |
+
+Example config entries (copy the ones for apps you use; a folder that isn't
+there is skipped):
+
+```toml
+[phone.extra_folders]
+"Android/media/org.telegram.messenger/Telegram/Telegram Images" = "Telegram"
+"Android/media/org.telegram.messenger/Telegram/Telegram Video" = "Telegram"
+"Movies/Telegram" = "Telegram"
+"Movies/Signal" = "Signal"
+# Android 10 and older keep Telegram's folders at the storage root:
+# "Telegram/Telegram Images" = "Telegram"
+# "Telegram/Telegram Video" = "Telegram"
+```
+
+Never taken, by design:
+
+- **Telegram's other folders**: `Telegram Documents`, `Telegram Files`,
+  `Telegram Audio`, `Telegram Stories` (each also has a `.nomedia`), the
+  cache under `Android/data/org.telegram.messenger/`. Name them in the config
+  only if you really want them read.
+- **In a Telegram Desktop export**: `stickers/`, `animations/` (GIFs),
+  `round_video_messages/`, `voice_messages/`, `profile_pictures/`,
+  `stories/`, `contacts/`, the HTML export's own `css/`, `js/` and
+  `images/` (its icons), and every `*_thumb.jpg` preview. A file in `files/`
+  is taken only when it is a photo or video by extension.
+- **Signal's chats**: Signal keeps attachments inside its encrypted database,
+  not in a folder; Android backups (`signal-*.backup`) and Desktop's backups are
+  encrypted. Only files you saved out of Signal can be read. Restore a backup
+  into Signal and save what you want, or stage the folder you saved them to.
+
+Dates: an export's own names (`photo_<n>@DD-MM-YYYY_HH-MM-SS.jpg`,
+`video_<n>@...`, `file_<n>@...`, the message's time on the exporting
+computer) and Signal's `signal-YYYY-MM-DD-HH-mm-ss` names are `filename`
+dates ("Dates" below). A file an export keeps under its own name (a video
+or file sent with a name) is dated by its metadata, else its mtime: reading
+`result.json`'s per-message dates for those is a ROADMAP follow-up.
+
+**Stage the folder that holds the export, not the export itself.** A file is
+labelled `messaging:Telegram` by a `ChatExport_<date>` / `DataExport_<date>`
+folder in its path under the staged folder, or by its own `photo_<n>@...`,
+`video_<n>@...`, `file_<n>@...` name. When the staged folder *is* the export
+(or a renamed one), the same files are taken (the export rules still apply),
+but its files kept under their own names are filed as ordinary photos and
+videos; making the category see the source root is a ROADMAP follow-up.
+
+Sources (checked 2026-11-14):
+[Telegram Android `ImageLoader.java`](https://github.com/DrKLO/Telegram/blob/master/TMessagesProj/src/main/java/org/telegram/messenger/ImageLoader.java)
+(media folders), [`MediaController.java`](https://github.com/DrKLO/Telegram/blob/master/TMessagesProj/src/main/java/org/telegram/messenger/MediaController.java)
+(save to gallery), [tdesktop `export_data_types.cpp`](https://github.com/telegramdesktop/tdesktop/blob/dev/Telegram/SourceFiles/export/data/export_data_types.cpp)
+(export folders, names, `_thumb.jpg`), [`export_output_abstract.cpp`](https://github.com/telegramdesktop/tdesktop/blob/dev/Telegram/SourceFiles/export/output/export_output_abstract.cpp)
+(`ChatExport_`/`DataExport_` folder), [`export_output_html.cpp`](https://github.com/telegramdesktop/tdesktop/blob/dev/Telegram/SourceFiles/export/output/export_output_html.cpp)
+(`css/`, `images/`), [Signal-Android `SaveAttachmentUtil.kt`](https://github.com/signalapp/Signal-Android/blob/main/app/src/main/java/org/thoughtcrime/securesms/util/SaveAttachmentUtil.kt)
+(save folders and names), [Signal-Desktop `ts/util/Attachment.std.ts`](https://github.com/signalapp/Signal-Desktop/blob/main/ts/util/Attachment.std.ts)
+(`getSuggestedFilename`).
 
 ## Commands
 
@@ -179,7 +257,7 @@ order (`date_src` in `plan.json`; `plan` prints a count per source):
 | `video` | Apple's `Keys:CreationDate` (local time with its own offset), else QuickTime `CreateDate` / ffprobe `creation_time`, which is UTC: converted to local time with `OffsetTimeOriginal` when the file has one, else this machine's time zone for that date |
 | `gps` | `GPSDateTime` (EXIF, or a GoPro's GPMF track read with `exiftool -ee`; the start of the locked run, below), else `GPSDateStamp` alone (noon UTC of that day). UTC, converted like `video` |
 | `export` | a cloud export's own record of the date, from the file's Google Takeout JSON (`photoTakenTime`) or iCloud `Photo Details.csv` row (`originalCreationDate`): UTC, converted like `video` ("Cloud exports", below) |
-| `filename` | a date in the name (`20261108_071502`, `2026-11-08 07.15.02`, `20261108`) |
+| `filename` | a date in the name (`20261108_071502`, `2026-11-08 07.15.02`, `20261108`; a Telegram export's day-first `@08-11-2026_07-15-02`) |
 | `folder` | an iPhone export's `DCIM/YYYYMM__/` folder: the 1st of that month (day unknown, so `--event` days don't match it) |
 | `mtime` | the file's modification time, last resort |
 | `offset` | any of the above except `gps` and `export`, shifted by `--clock-offset`; `date_from` keeps which |
@@ -903,9 +981,10 @@ Rejected:
   static scene filmed twice, or a clip that is mostly one title card, may
   match: it only goes to review.
 - Cloud exports: the Google Takeout and iCloud rules ("Cloud exports") were
-  tested on synthetic folders built from the open-source importers' test
-  cases, not on a real Takeout or iCloud export. Google localises the
+  tested on synthetic folders written from the naming rules above, not on a real Takeout or iCloud export. Google localises the
   `-edited` suffix (`-modifié`, ...); only the English one is recognised.
+- Messaging-app layouts (Telegram, Signal; "Messaging apps" above): read from
+  each app's source code, not checked on a real phone or a real export.
 - NudeNet false-positive rate on real photo libraries (no published numbers).
 - Tesseract on embossed card numbers and cheque MICR lines.
 - `scan` time: about 1-2 s an image on CPU (OCR dominates), estimated.

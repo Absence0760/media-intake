@@ -41,8 +41,9 @@ review files it prints `nothing to review for BATCH` and exits 0.
   replaced.
 - **Messaging copies**: a `quarantine/xcheck-BATCH` folder (quarantine-only,
   no plan or manifest) is shown with `BATCH` too: messaging-app copies of
-  library photos and videos, each beside its `of` original ("WhatsApp/Messages
-  copy of this photo", or "... video"). Keep releases to `dst`; its
+  library photos and videos, each beside its `of` original ("Telegram copy of
+  this photo", or "... video", the app taken from the copy's
+  `Messaging/<App>/` folder; "Messaging copy" when its path names none). Keep releases to `dst`; its
   erase runs without `--phone` (the device originals are already offloaded)
   and never moves an `of` original to near-quarantine.
 - **Quarantine is Erase-only.** A quarantined item (any level, `xcheck-`
