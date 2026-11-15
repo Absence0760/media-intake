@@ -936,3 +936,37 @@ class BurstInputs(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main(verbosity=2)
+
+class RunnerRefusesQuarantineTrash(unittest.TestCase):
+    """The runner's own guard, behind submit's 400: a quarantine item decided `trash` that reaches the
+    worker anyway (submit bypassed) stops the run before any intake.py step, trash or erase."""
+
+    class Job:  # stands in for jobs.py's job: records each intake.py command instead of running it
+        def __init__(self):
+            self.calls, self.lines = [], []
+
+        def run(self, args, label):
+            self.calls.append(args)
+            return 0
+
+        def log(self, s, safe=True):
+            self.lines.append(s)
+
+    def test_trash_on_a_quarantined_item_runs_nothing(self):
+        sys.path.insert(0, HERE)
+        import review_ui
+        from unittest import mock
+        tmp = tempfile.mkdtemp(prefix="runner-quarantine-")
+        self.addCleanup(shutil.rmtree, tmp, True)
+        quar = os.path.join(tmp, "quarantine", BATCH)
+        items = [dict(tab="quarantine", qbatch=BATCH, rel=r, path=os.path.join(quar, r))
+                 for r in ("DCIM/a.jpg", "DCIM/b.jpg")]
+        write_json(os.path.join(quar, "quarantine.json"), {it["rel"]: {"reasons": ["nudity:exposed"]} for it in items})
+        job = self.Job()
+        spec = dict(batch=BATCH, items=items, decisions={"0": "trash", "1": "erase"})
+        with mock.patch.object(review_ui, "STATE", tmp):
+            ok = review_ui.Runner(job, spec).execute()
+        self.assertFalse(ok)
+        self.assertEqual(job.calls, [], "neither trash nor erase (nor anything else) ran")
+        self.assertTrue(any("other than keep or erase" in x for x in job.lines), job.lines)
+
