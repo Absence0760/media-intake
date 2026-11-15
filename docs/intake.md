@@ -54,6 +54,9 @@ default; all of them come from `~/.config/media-intake/config.toml`
   tried, so the clip is `unscanned-video`, never clean. The same sampling
   serves `label`, `semantic`, `vlm_trash` and gallery thumbnails; the gallery's
   HEVC proxy does the same (docs/gallery.md).
+  ffmpeg and ffprobe get every path as `file:` plus the absolute path, so a
+  name or relative source like `concat:...` or `http:...` is never followed as
+  a protocol.
 
 ## Commands
 

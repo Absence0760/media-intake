@@ -472,6 +472,48 @@ class ScanGstPipeline(Base):
         self.assertEqual((os.listdir(fd), self.runs("gst-launch-1.0")), ([], []))
 
 
+class FfmpegInputIsAFile(Base):
+    """A relative path like "concat:x/clip.mov" must reach ffmpeg and ffprobe as file:<absolute path>, never as
+    a protocol (concat:, http:, ...) they would follow. subprocess.run is a recorder: no tool runs."""
+    def setUp(self):
+        super().setUp()
+        cwd = os.getcwd()
+        os.chdir(self.d)
+        self.addCleanup(os.chdir, cwd)
+        p = mock.patch.dict(os.environ, {"HOME": self.d})  # label's GStreamer fallback works under ~/.cache
+        p.start()
+        self.addCleanup(p.stop)
+        os.makedirs("concat:x")
+        self.rel = os.path.join("concat:x", "clip.mov")
+        with open(self.rel, "wb") as f:
+            f.write(b"not a video")
+        self.cmds = []
+
+    def run_recorded(self, call):
+        def rec(cmd, *a, **k):
+            self.cmds.append(list(cmd))
+            return subprocess.CompletedProcess(cmd, 1, "" if k.get("text") else b"", b"")
+        with mock.patch.object(subprocess, "run", rec):
+            call()
+        tools = [c for c in self.cmds if c[0] in ("ffmpeg", "ffprobe")]
+        self.assertTrue({"ffmpeg", "ffprobe"} <= {c[0] for c in tools}, self.cmds)
+        want = "file:" + os.path.abspath(self.rel)
+        for c in tools:
+            self.assertIn(want, c)
+            for x in c:
+                self.assertFalse(x.startswith("concat:"), c)
+
+    def test_scan_frames(self):
+        fd = tempfile.mkdtemp(dir=".")
+        self.run_recorded(lambda: self.assertEqual(scan_sensitive.video_frames(self.rel, fd), []))
+        out = [c[-1] for c in self.cmds if c[0] == "ffmpeg"]
+        self.assertEqual(out, ["file:" + os.path.join(os.path.abspath(fd), "%03d.jpg")])
+
+    def test_label_frames(self):
+        import label
+        self.run_recorded(lambda: self.assertIsNone(label.frames_video(self.rel, None)))
+
+
 # ================================================================ scan -> apply -> tag (+ plugin) end to end
 PLUGIN = '''import json, os
 def after_tag(files):
