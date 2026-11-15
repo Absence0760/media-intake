@@ -32,8 +32,8 @@ copies there go too.
   full reason under "why"), then the filters as collapsible sections with
   counts (open / closed remembered per section) and "Clear filters (N)".
   Counts are for the whole library, not narrowed by the other filters.
-- **Main area**: a slim header (view, item count, thumbnail-size slider,
-  Close), the active filters as removable chips (in an event: the event's
+- **Main area**: a slim header (view, item count, **Select all**,
+  thumbnail-size slider, Close), the active filters as removable chips (in an event: the event's
   **Rename…** and **Merge into…** bar), the month grid. The
   selection actions sit in a bar at the bottom that appears only while
   something is selected (Trash suggestions keeps its Apply bar there).
@@ -91,10 +91,50 @@ The sidebar rail, open sections and tile size live in the browser's
 - **Plugin tabs**: any view a plugin adds through `gallery_views()`, with its
   routes under `/plugin/<id>/` ([plugins.md](plugins.md)).
 
+- **Burst stacks** (Library and the filtered timeline): below.
+
 Dates come from the sidecar's `XMP-exif:DateTimeOriginal`, else the file
 name, else the `YYYY-MM` folder (with the file's own time when it agrees),
 else the file time. Project and source fall back to where the file sits
 (`intake.infer`) when the sidecar has none.
+
+## Burst stacks
+
+Shots of one burst (one camera, a moment apart) show as one stack, the same
+look and keys as the review page ([review-ui.md](review-ui.md)): the cover
+(the burst's first shot) with a stacked edge, a count badge ("Burst: 4
+shots") and a **Show all 4 (X)** button. **X** or `x` on a focused shot, or
+the button, opens the stack (every shot follows the cover, each with the
+badge) or closes it, and focus goes back to the cover either way. A line
+above the grid says what a stack is and how actions behave.
+
+- **A closed stack acts on its cover only.** Selecting (Space, a click, a
+  shift-click range across it, Select all), K / T / E and every bar action reach only
+  the cover; the hidden shots are never selected, and closing a stack
+  unselects any of its shots that were (the page says how many). Open the
+  stack to act on the others. Nothing ever acts on a file you can't see,
+  so a Trash or Erase never takes a whole burst by surprise. The large view's
+  arrows step over a closed stack's hidden shots.
+- **Grouping** is `media_intake/bursts.py`, the review page's rules: same
+  device, images only, each shot at most 2 s after the one before, dHashes
+  at most 10 bits apart, and a camera's own marker (a Pixel / Huawei burst
+  file name, or `burst_id`: the BurstUUID or GCamera BurstID `plan`
+  records, [intake.md](intake.md), "Burst id") over the clock. A shot's date
+  (with seconds), device, dHash and burst id come from the `plan.json` entry
+  intake wrote for it (every batch under `<state>/batches/`, by `dst`, or
+  `lib_dst` for a file released from quarantine or review; a later batch
+  wins; the dHash also from `index.json`). No file is opened.
+- **Never stacked**: a file `plan` sent to review as a near-duplicate (a copy
+  of another picture, however close in time and look), videos, and a library
+  file with no plan entry unless it carries a camera marker (a burst file
+  name, or an `XMP-GCamera:BurstID` some tool wrote in its sidecar): its
+  device is unknown, so the clock alone never stacks it.
+- **Where**: the timeline (Library, events, quick views and every filter).
+  Only the listed shots stack: a filter that leaves one shot of a burst
+  shows it as a plain tile, and the badge counts the shots listed. Ranked
+  lists (search results, Similar, Trash suggestions) are never stacked,
+  since their order is not time. A burst's shots sit together at the place
+  of the newest one, in time order.
 
 ## Filters (all combinable)
 
@@ -121,7 +161,8 @@ folders. **Similar** on any item runs `semantic.py similar`. Both need
 Tick the box on a tile (shift-click a second box selects the range between,
 in the grid as it is now: after the grid reloads, for another view or filter,
 a shift-click starts a new selection; Ctrl-click on a tile ticks or unticks
-it; Space on a focused tile ticks it), then the bottom bar's buttons or keys:
+it; Space on a focused tile ticks it; **Select all** in the header, or Ctrl+A /
+Cmd+A, ticks every tile shown), then the bottom bar's buttons or keys:
 **K** Keep, **T** Trash, **E** Erase, **+ tag** / **− tag**, **Set event…**,
 **Rotate ⟳**, **Share-safe copy**; Esc or **Clear selection** clears it. Each
 applies to every selected item through the same endpoint as one item, photos
@@ -133,6 +174,20 @@ items' new grid summaries (`"items"`), so the tiles' flags ("kept", ...)
 change at once; the selection stays for the next action. In the large view the keys
 act on the item shown; **R** / **Shift+R** rotate, and its buttons include Set
 event and Share-safe copy.
+
+**Select all** ticks every tile the grid shows now: the current view, filters
+and search, and only the pages loaded so far (the grid loads 240 at a time as
+you scroll). A closed burst stack adds its cover only. The bar says what it
+took: "Selected 240 (all shown)", or, while more match than are loaded,
+"Selected 240 (all shown; 1,200 more match below: scroll to load them, then
+Select all again)"; with a closed stack, "closed stacks: cover only". It never
+reaches a file the page hasn't shown, so a Trash or Erase after it can't take
+more than you scrolled past, and they ask exactly as for any selection (the
+count and names, then Confirm, or ERASE typed). Ctrl+A in the search box or
+any other text field selects that field's text, as usual; Select all is not
+offered in Trash suggestions (K / T and Apply there) or a plugin tab. Ticking
+or unticking a tile afterwards, opening or closing a stack, or a new page
+loading turns the line back into a plain count. Esc clears.
 
 | Action | What it writes |
 |---|---|
@@ -242,13 +297,19 @@ re-read the sidecars.
 Made on demand, max 320 px JPEG: Pillow for images (orientation from EXIF and
 the sidecar baked in), ffmpeg for a video frame at 1 s (falling back to
 `scan_sensitive.video_frames`, GPU HEVC decoding through GStreamer). Cached in
-`~/.cache/media-intake/thumbs/<sha256>.jpg` (folder 0700, files 0600). They
-are copies of photo content, so `trash`, `forget` and `erase` delete them by
-sha256, and `verify-gone` reports one that is still there as STILL PRESENT.
-Previews of formats a browser can't show are made in memory, never on disk.
-Rotate drops the item's thumbnail and the next request makes it again, turned
-(a video's frame too: the page turns the player itself).
-Safe to delete the whole folder at any time; it rebuilds.
+`~/.cache/media-intake/thumbs/<sha256>-r<turn>.jpg` (folder 0700, files 0600):
+keyed by the content and the clockwise turn baked in (0, 90, 180 or 270: the
+sidecar's `XMP-tiff:Orientation` on top of the file's own EXIF orientation,
+which is part of the content). So a byte-identical copy rotated in its own
+sidecar shows its own rotation, and copies turned alike share one file.
+Rotate shows the new turn at once (the next request makes, or reuses, that
+turn's thumbnail; a video's frame too: the page turns the player itself),
+leaving the other turns for any copy that still shows them.
+They are copies of photo content, so `trash`, `forget` and `erase` delete
+every turn of that sha256 (and `<sha256>.jpg`, the content-only key older
+versions wrote), and `verify-gone` reports any one still there as STILL
+PRESENT. Previews of formats a browser can't show are made in memory, never on
+disk. Safe to delete the whole folder at any time; it rebuilds.
 
 ## Video proxies (HEVC in the browser)
 
@@ -257,10 +318,16 @@ phones and GoPros record. When the large view asks for a video whose first
 video stream ffprobe reports as `hevc`, the gallery makes an H.264 MP4 proxy
 and serves that instead; every other video is served as it is.
 
-- **Made on demand**, on the first open, one at a time (a second open waits).
-  The request waits for the transcode, so a long clip shows its poster for a
-  while the first time. Longer side at most 1920 px (never scaled up), sound
-  re-encoded to AAC, no metadata copied.
+- **Made on demand**, on the first open, one transcode at a time (for the
+  CPU). The request waits for the transcode, so a long clip shows its poster
+  for a while the first time; the player's Range requests, another page, or
+  a duplicate file with the same content wait for that same transcode and
+  then get its proxy (it is made once). Opening a *different* HEVC video
+  while one is being converted doesn't wait behind it (that could be an
+  hour): the original is served at once, so the page says the browser can't
+  play it, and opening it again once the first conversion is done makes its
+  proxy. Longer side at most 1920 px (never scaled up), sound re-encoded to
+  AAC, no metadata copied.
 - **How**: ffmpeg first (`libx264`, else `libopenh264`), which needs an HEVC
   decoder; Fedora's `ffmpeg-free` has none, so then GStreamer's GPU decoder
   (`vah265dec` or Vulkan, as for thumbnails) into `x264enc`, `openh264enc` or
@@ -320,7 +387,10 @@ filters, the added-in-N-days filter, a trashed file's copy showing as
 "trashed copy" at once, and Open in the system player through a fake
 `xdg-open` on PATH (its refusals included). Events: the sidebar counts, the
 filter, rename and merge (and their refusals) with `Owner|` and other tags
-kept; bulk tags, Set event (and clearing it) and Rotate on a selection; a
+kept; bulk tags, Set event (and clearing it) and Rotate on a selection;
+byte-identical copies rotated differently getting their own thumbnails (and
+copies turned alike sharing one), with Trash, `trash`, `forget` and
+`verify-gone` reaching every turn and the older `<sha256>.jpg`; a
 share-safe copy through exiftool with no GPS or Model left. `ViewsEndpointsTest`
 writes its sidecars as plain XMP, so it runs without exiftool: every new POST
 (`/api/event/set`, `/api/event/rename`, `/api/event/merge`, `/api/share`)
@@ -328,6 +398,24 @@ refused without the token, with a wrong CSRF value, another Origin or Host
 (403) or a non-JSON type (415), 409 while a job holds the library lock, and a
 share-safe copy (Pillow's re-encode when exiftool is missing) into its own
 0700 folder, with its refusals.
+
+`tests/test_gallery_bursts.py`: which files stack (planned shots in time
+order, a camera burst id over the clock, a near-copy of the same second, a
+copy from another device, an unplanned file without a marker and a video
+never; a released file found by `lib_dst`; a later batch winning; unplanned
+files by a burst name or a sidecar's GCamera BurstID), and `/api/list`
+putting a burst's shots after their cover across pages, no stack of one
+under a filter, and none in Trash suggestions.
+`tests/browser/test_browser_gallery_select_all.py`: Select all by the button,
+Ctrl+A and Cmd+A, a closed stack adding its cover only (and an open one every
+shot), an event filter respected, Ctrl+A in the search box left to the field,
+Esc clearing, Trash and Erase asking as before (the count, ERASE typed), and a
+grid with only its first 240 loaded saying how many more match.
+`tests/browser/test_browser_gallery_bursts.py` does it on the page: the
+cover, badge and X, `x` and `X` with focus back on the cover, a near-copy
+never stacked, a closed stack's range selection and Keep reaching only the
+cover, closing a stack unselecting its hidden shots, and the large view's
+arrows over a closed and an open stack.
 
 `tests/test_gallery_media_kinds.py` runs every operation on a photo, a video and
 a mixed selection (JPEG, PNG, H.264 in .mp4 and an upper-case .MOV): the
@@ -357,8 +445,15 @@ skipping GStreamer for an unsafe work path; the race where a video is trashed
 while its proxy is made (a gated ffmpeg that has written the proxy waits on a
 FIFO): with the trash job still running the fresh proxy is deleted and the
 original served, and after the trash ends it is deleted and nothing served,
-leaving the cache empty either way; Trash from the gallery deleting the
+leaving the cache empty either way; while one video's transcode is held,
+another HEVC video is served as its original at once, and gets its own
+proxy on the next open after; Trash from the gallery deleting the
 proxy; and `trash`, `forget` and `verify-gone` on planted proxies.
+`App.playable` in-process with `make_proxy` held on an event: a second
+request (and a same-content duplicate) for the video being converted waits
+and gets the one proxy (one transcode), another video gets its original at
+once and isn't marked as failed, and a failed transcode answers its waiters
+with the original and frees the slot.
 
 In headless Chromium (`tests/browser/test_browser_gallery.py`, see
 CONTRIBUTING.md, Tests): keys, click and shift-click selection, the bottom
@@ -377,6 +472,9 @@ selection and a Share-safe copy ending in "Done: share-safe copies in ...".
   dark), infinite scroll and HEVC posters through GStreamer in a real
   browser, the "can't decode" fallback in a browser that really can't play a
   file, a real `xdg-open`, and any browser but Chromium.
+- Burst stacks from a real iPhone or Pixel burst: the tests write the plan
+  entries and a GCamera BurstID by hand; Apple's MakerNotes BurstUUID is
+  read through exiftool's `BurstUUID` tag on no real file here.
 - Semantic search and Similar through the venv: tested only as "unavailable,
   falls back", not with the real model.
 - Start-up time on a large real library read from disk.

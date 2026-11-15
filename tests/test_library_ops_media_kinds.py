@@ -15,7 +15,9 @@ intake.py in a throwaway HOME. A video's sidecar is <clip>.mp4.xmp, and its byte
 No test opens a quarantined or flagged file's content; quarantine checks are
 paths, counts and checksums.
 """
-import hashlib, json, os, shutil, stat, subprocess, sys, tempfile, unittest, urllib.parse
+import argparse, builtins, hashlib, io, json, os, shutil, stat, subprocess, sys, tempfile, unittest, urllib.parse
+import unittest.mock as mock
+from contextlib import redirect_stdout
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import support  # noqa: E402,F401  (hermetic config)
@@ -127,9 +129,10 @@ class Base(unittest.TestCase):
         return json.loads(r.stdout)[0].get(tag.split(":")[-1])
 
     def gthumb(self, media):
-        """A gallery thumbnail of media's content (keyed by sha256), as gallery.py caches it."""
+        """A gallery thumbnail of media's content as gallery.py caches it: keyed by sha256 and the turn baked in
+        (a turned one here, so cleanup by sha reaches every rotation, not only the upright file)."""
         os.makedirs(self.gthumbs, exist_ok=True)
-        t = os.path.join(self.gthumbs, sha(media) + ".jpg")
+        t = os.path.join(self.gthumbs, sha(media) + "-r90.jpg")
         open(t, "wb").close()
         return t
 
@@ -220,7 +223,7 @@ class Trash(Base):
                          [("DCIM/Camera/20261021_090000.mp4", "delete", "trashed before"),
                           ("DCIM/Camera/20261022_100000.mov", "delete", "trashed before")])
 
-    def test_trash_quarantined_and_review_videos(self):
+    def test_trash_refuses_quarantined_and_takes_review_videos(self):
         quar = os.path.join(self.state, "quarantine", "b1")
         qv = clip(os.path.join(quar, "DCIM/Camera/q.mp4"), seed=7)
         qp = photo(os.path.join(quar, "DCIM/Camera/q.jpg"), 70)
@@ -228,9 +231,12 @@ class Trash(Base):
             json.dump({"DCIM/Camera/q.mp4": dict(reasons=["x"], sha=sha(qv), size=os.path.getsize(qv), dst=None),
                        "DCIM/Camera/q.jpg": dict(reasons=["x"], sha=sha(qp), size=os.path.getsize(qp), dst=None)}, f)
         rv = clip(os.path.join(self.state, "batches/b1/review/DCIM/Camera/r.mov"), seed=8)
-        self.out("trash", "b1", qv, rv)
-        self.assertFalse(os.path.exists(qv) or os.path.exists(rv))
-        self.assertEqual(list(jload(os.path.join(quar, "quarantine.json"))), ["DCIM/Camera/q.jpg"])
+        before = jload(os.path.join(quar, "quarantine.json"))
+        out = self.out("trash", "b1", qv, rv, code=1)
+        self.assertIn("refused 1 quarantined", out)
+        self.assertTrue(os.path.isfile(qv), "a quarantined video is erased or kept, never trashed")
+        self.assertFalse(os.path.exists(rv))
+        self.assertEqual(jload(os.path.join(quar, "quarantine.json")), before)
 
     def test_trash_refuses_a_video_outside_the_library_and_a_sidecar(self):
         dl = clip(os.path.join(self.home, "Downloads/x.mp4"), seed=1)
@@ -325,8 +331,10 @@ class Forget(Base):
         p, v, _ = self.trio()
         sides = [self.xmp(x, "Label|food") for x in (p, v)]
         self.index(p, v)
-        r = self.intake("forget", p, v, code=1, stdin="no\n")
-        self.assertIn("nothing erased", r.stderr)
+        for answer in ("no\n", "erase\n", "", None):  # None: stdin closed (cron, the queue)
+            r = self.intake("forget", p, v, code=1, stdin=answer)
+            self.assertIn("nothing erased", r.stderr, repr(answer))
+            self.assertNotIn("Traceback", r.stdout + r.stderr, repr(answer))
         for x in (p, v, *sides):
             self.assertTrue(os.path.isfile(x), x)
         self.assertEqual(sorted(jload(os.path.join(self.state, "index.json"))), sorted([p, v]))
@@ -345,6 +353,46 @@ class Forget(Base):
         out = self.out("forget", v, os.path.join(self.vids, "2026/2026-11/../2026-11/v.mp4"), "--yes")
         self.assertIn("erased 1 files", out)
         self.assertFalse(os.path.exists(v))
+
+
+class CtrlCAtThePrompt(unittest.TestCase):
+    """intake.ask() in-process: Ctrl-C at a delete prompt is no answer, so nothing is deleted and no
+    KeyboardInterrupt traceback escapes. input() is patched to raise it; STATE points at a temp folder."""
+
+    def setUp(self):
+        import intake
+        self.intake = intake
+        self.tmp = tempfile.mkdtemp(prefix="ask-ctrl-c-")
+        self.addCleanup(shutil.rmtree, self.tmp, True)
+        for target, name, value in ((intake, "STATE", os.path.join(self.tmp, "state")),
+                                    (builtins, "input", mock.Mock(side_effect=KeyboardInterrupt))):
+            p = mock.patch.object(target, name, value)
+            p.start()
+            self.addCleanup(p.stop)
+
+    def test_ask_returns_no_answer_on_ctrl_c(self):
+        answer = None
+        with redirect_stdout(io.StringIO()):
+            try:
+                answer = self.intake.ask("Type ERASE: ")
+            except KeyboardInterrupt:  # caught here, or it would stop the whole test run
+                self.fail("Ctrl-C at the prompt escaped ask()")
+        self.assertEqual(answer, "")
+
+    def test_forget_interrupted_at_the_prompt_erases_nothing(self):
+        f = os.path.join(self.tmp, "lib", "v.mp4")
+        os.makedirs(os.path.dirname(f))
+        with open(f, "wb") as fh:
+            fh.write(b"synthetic video bytes")
+        a = argparse.Namespace(files=[f], drive=None, yes=False)
+        with redirect_stdout(io.StringIO()), self.assertRaises(SystemExit) as e:
+            try:
+                self.intake.cmd_forget(a)
+            except KeyboardInterrupt:  # caught here, or it would stop the whole test run
+                self.fail("Ctrl-C at forget's prompt escaped as a traceback")
+        self.assertEqual(e.exception.code, "nothing erased")
+        self.assertTrue(os.path.isfile(f))
+        self.assertFalse(os.path.exists(os.path.join(self.tmp, "state")), "nothing moved into quarantine")
 
 
 class KeepAndSuggest(Base):

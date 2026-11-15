@@ -397,6 +397,33 @@ class Readers(unittest.TestCase):
             self.assertEqual((r[apple].src, r[apple].dt), ("offset", D(2026, 11, 8, 8, 0)), f"exiftool={use}")
 
 
+class BurstId(unittest.TestCase):
+    """A camera's own burst id (Apple BurstUUID, Google Camera XMP-GCamera:BurstID) rides on the Dated."""
+
+    def test_read_from_the_metadata_row(self):
+        base = {"DateTimeOriginal": "2026:11:08 07:15:00"}
+        self.assertEqual(res(dict(base, BurstUUID=" 9E1C-UUID ")).burst_id, "9E1C-UUID")
+        self.assertEqual(res(dict(base, BurstID="pixel-77")).burst_id, "pixel-77")
+        self.assertEqual(res(dict(base, BurstUUID="apple", BurstID="pixel")).burst_id, "apple")  # Apple's first
+        self.assertEqual(res(dict(base, BurstID=1234567)).burst_id, "1234567")  # exiftool -j prints digits as a number
+        for bad in ("", "two words", "x" * 129, "a\nb", True, ["a"]):
+            self.assertIsNone(res(dict(base, BurstUUID=bad)).burst_id, repr(bad))
+        self.assertIsNone(res(base).burst_id)
+
+    def test_tags_are_asked_of_exiftool(self):
+        self.assertIn("BurstUUID", dates.TAGS)
+        self.assertIn("BurstID", dates.TAGS)
+
+    @unittest.skipUnless(HAVE_EXIFTOOL, "exiftool missing (only it reads a burst id)")
+    def test_gcamera_burst_id_read_by_exiftool(self):
+        t = tempfile.mkdtemp(prefix="dates-burst-")
+        self.addCleanup(shutil.rmtree, t, True)
+        p = jpg(os.path.join(t, "a.jpg"), "2026:11:08 07:15:00")
+        subprocess.run(["exiftool", "-q", "-overwrite_original", "-XMP-GCamera:BurstID=pixel-77", p], check=True)
+        self.assertEqual(dates.resolve_all([p], now=NOW, local_tz=NY, use_exiftool=True)[p].burst_id, "pixel-77")
+        self.assertIsNone(dates.resolve_all([p], now=NOW, local_tz=NY, use_exiftool=False)[p].burst_id)
+
+
 class SameExtensions(unittest.TestCase):
     def test_video_ext_matches_intake(self):
         import intake
@@ -482,6 +509,21 @@ class PlanAndTag(unittest.TestCase):
         self.assertIn("given twice", r.stderr)
         self.assertFalse(os.path.exists(os.path.join(self.state, "batches", "b2", "plan.json")),
                          "a refused offset must not leave a plan behind")
+
+    @unittest.skipUnless(HAVE_EXIFTOOL, "exiftool missing (only it reads a burst id)")
+    def test_plan_records_the_camera_burst_id(self):
+        """plan.json's burst_id (what bursts.py, the review page and the gallery group by); None without one."""
+        for n in ("PXL_0001.jpg", "PXL_0002.jpg", "PXL_0003.jpg"):
+            jpg(os.path.join(self.card, "DCIM/Camera", n), "2026:11:08 07:15:0" + n[-5], make="Google", model="Pixel 9")
+        for n in ("PXL_0001.jpg", "PXL_0002.jpg"):
+            subprocess.run(["exiftool", "-q", "-overwrite_original", "-XMP-GCamera:BurstID=burst-a",
+                            os.path.join(self.card, "DCIM/Camera", n)], check=True)
+        self.run_intake("stage", self.card, "--kind", "phone", "--batch", "b5")
+        self.run_intake("plan", "b5")
+        p = self.plan("b5")
+        self.assertEqual({k: v["burst_id"] for k, v in p.items()},
+                         {"DCIM/Camera/PXL_0001.jpg": "burst-a", "DCIM/Camera/PXL_0002.jpg": "burst-a",
+                          "DCIM/Camera/PXL_0003.jpg": None})
 
     @unittest.skipUnless(HAVE_EXIFTOOL, "exiftool missing (tags are written with it)")
     def test_corrected_date_goes_to_the_sidecar_only(self):

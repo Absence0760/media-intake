@@ -12,7 +12,8 @@ decision is checked by what is left on disk afterwards:
   back (a burst's kept shot is a near-copy of the erased ones);
 - Erase (`erase --yes`, `verify-gone`): gone from quarantine, from the library and index.json, from
   a copy elsewhere in HOME, from the freedesktop and gallery thumbnail caches, and in erase-log.txt;
-- Trash (`trash`): gone with its sidecar and thumbnails, its sha256 in trashed.json;
+- Trash (`trash`, Review and Maybe trash only): gone with its sidecar and thumbnails, its sha256 in
+  trashed.json. A trash decision on a quarantined item is refused (400) and leaves it untouched;
 - Review Keep stays in review/ untouched; Delete is gone with its sidecar and thumbnail;
 - Maybe trash Keep (`not-trash`): Owner|keep in the sidecar (needs exiftool; skipped without it).
 
@@ -250,13 +251,14 @@ class RealRun(unittest.TestCase):
 
 
 class QuarantineAndReviewByKind(RealRun):
-    """Keep / Erase / Trash in Quarantine and Keep / Delete / Trash in Review, per media kind."""
+    """Keep / Erase in Quarantine (Trash refused) and Keep / Delete / Trash in Review, per media kind."""
 
     def run_kinds(self, kinds):
         q, r = {}, {}
         for k in kinds:
             keep, ke = self.quarantined(k, f"keep-{k}", sidecar=True)
             erase, ee = self.quarantined(k, f"erase-{k}")
+            # Decided trash first: refused, untouched; then erased.
             trash, te = self.quarantined(k, f"trash-{k}", sidecar=True)
             q[k] = dict(keep=(keep, ke, sha(keep)), erase=(erase, ee, self.copies_of(erase, k, f"erase-{k}")),
                         trash=(trash, te, plant(os.path.join(self.home, ".cache/media-intake/thumbs",
@@ -286,6 +288,16 @@ class QuarantineAndReviewByKind(RealRun):
                 dec[str(items[f"{d}-{k}{self.ext(k)}"]["id"])] = d
             for d in ("keep", "delete", "trash"):
                 dec[str(items[f"r{d}-{k}{self.ext(k)}"]["id"])] = d
+        # Quarantine is Erase-only: the trash decisions are refused before anything runs or is written.
+        resp, b = s.req("POST", "/api/submit", headers={"X-CSRF": s.csrf()}, body={"decisions": dec, "confirm": "ERASE"})
+        self.assertEqual(resp.status, 400, b)
+        self.assertFalse(os.path.exists(os.path.join(self.bd, "review-decisions.json")))
+        self.assertFalse(os.path.exists(os.path.join(self.state, "trashed.json")))
+        for k in kinds:
+            trash, te, gthumb = q[k]["trash"]
+            self.assertEqual(sha(trash), te["sha"])
+            self.assertTrue(os.path.exists(trash + ".xmp") and os.path.exists(gthumb))
+            dec[str(items[f"trash-{k}{self.ext(k)}"]["id"])] = "erase"
         j, out = self.submit(s, dec)
         self.assertTrue(j["ok"], out)
         self.assertIn("verify-gone: no copy of", out)
@@ -295,7 +307,8 @@ class QuarantineAndReviewByKind(RealRun):
             erase, ee, copies = q[k]["erase"]
             self.assert_erased(ee["sha"], [erase, *copies])
             trash, te, gthumb = q[k]["trash"]
-            self.assert_trashed(te["sha"], [trash, trash + ".xmp", gthumb])
+            self.assert_erased(te["sha"], [trash, trash + ".xmp", gthumb])
+            self.assertNotIn(te["sha"], jload(os.path.join(self.state, "trashed.json"), {}), "erased, not trashed")
             rk, before = r[k]["keep"]
             self.assertEqual(sha(rk), before, "a kept review file stays in review/, untouched")
             self.assertFalse(os.path.lexists(r[k]["delete"]))
@@ -306,7 +319,7 @@ class QuarantineAndReviewByKind(RealRun):
         self.assertFalse(os.path.exists(os.path.join(self.state, "quarantine", f"near-{BATCH}")),
                          "nothing kept was taken for a near-copy")
         rec = jload(os.path.join(self.bd, "review-decisions.json"))
-        self.assertEqual(sorted(rec["quarantine"][BATCH].values()), sorted(["keep", "erase", "trash"] * len(kinds)))
+        self.assertEqual(sorted(rec["quarantine"][BATCH].values()), sorted(["keep", "erase", "erase"] * len(kinds)))
         self.assertEqual(sorted(rec["review"].values()), sorted(["keep", "delete", "trash"] * len(kinds)))
         self.assertEqual(s.p.wait(timeout=60), 0)
 
@@ -337,16 +350,17 @@ class OneWayRuns(RealRun):
 
     def test_keep_and_trash_without_erase_leave_other_thumbnails(self):
         """No erase in the run (so the thumbnail cache is not cleared): trash and delete forget exactly their
-        own thumbnails, and a kept review file's thumbnail stays."""
+        own thumbnails, and a kept review file's thumbnail stays. (Trash is a Review decision: Quarantine is
+        Erase-only.)"""
         keep_p, ke = self.quarantined("photo", "keep-photo")
         keep_v, kv = self.quarantined("video", "keep-video", sidecar=True)
-        tr_p, tpe = self.quarantined("photo", "trash-photo")
-        tr_v, tve = self.quarantined("video", "trash-video")
+        tr_p = self.in_review("photo", "trash-photo")
+        tr_v = self.in_review("video", "trash-video")
         rk = self.in_review("video", "rkeep-video")
         rd = self.in_review("photo", "rdelete-photo")
         self.in_review("video", "rdelete-video")
         th = {p: plant(thumb_of(self.home, p)) for p in (keep_p, keep_v, tr_p, tr_v, rk, rd)}
-        befores = {p: sha(p) for p in (keep_p, keep_v, rk)}
+        befores = {p: sha(p) for p in (keep_p, keep_v, rk, tr_p, tr_v)}
         self.write_state()
         s = self.start()
         items = self.by_name(self.items(s))
@@ -359,8 +373,8 @@ class OneWayRuns(RealRun):
         self.assertNotIn("$ intake.py erase", out)
         self.assert_released(befores[keep_p], ke)
         self.assert_released(befores[keep_v], kv, b"<x:xmpmeta>keep-video</x:xmpmeta>")
-        self.assert_trashed(tpe["sha"], [tr_p, th[tr_p]])
-        self.assert_trashed(tve["sha"], [tr_v, th[tr_v]])
+        self.assert_trashed(befores[tr_p], [tr_p, th[tr_p]])
+        self.assert_trashed(befores[tr_v], [tr_v, th[tr_v]])
         for p in (keep_p, keep_v, rd):
             self.assertFalse(os.path.exists(th[p]), p)
         self.assertTrue(os.path.exists(th[rk]), "a kept review file's thumbnail is left alone")

@@ -53,6 +53,15 @@ The goal: someone else can install it on Fedora, import a phone, and trust it.
       `.sh`, workflow, `.claude/` file and the Markdown at the repo root and in `docs/`
       (code comments and Markdown lines that say "never" state the rule, so they pass).
 - [x] Don't move library files while a scan/tag/apply job runs: take a lock per library.
+- [x] **No file name in a GStreamer pipeline:** `gst-launch-1.0` re-parses its arguments as one
+      pipeline, so a "!" or a quote in a device file's name could add elements (a sink writing
+      anywhere). Video frame sampling (scans, labels, search, thumbnails) now reads the clip through
+      a link in a private work folder whose path is checked, with the argv built as a list; an unsafe
+      work path skips GStreamer and the clip stays "not checked" (`scan_sensitive.gst_frames_command`).
+- [x] **Quarantine is Erase-only on the review page:** plain Trash on a quarantined item moved
+      that one file and left its messaging copies and near-copies behind. The page offers no
+      Trash (button or T) there and says why; the server refuses a trash decision on one (400,
+      nothing written). The `trash` command refuses a quarantine path too (exit 1, nothing deleted).
 
 ### Dates and devices
 - [x] Implausible camera dates (GoPro with an unset clock writes 2015-12-31/2016-01-01):
@@ -92,15 +101,21 @@ The goal: someone else can install it on Fedora, import a phone, and trust it.
       H.264 proxy (GStreamer GPU decode → x264), cached by sha256 in the private cache
       and cleaned by erase/trash/forget/verify-gone like thumbnails (gallery only; the
       review page keeps serving batch files as they are: docs/gallery.md, "Video proxies").
-- [x] Burst groups: show bursts as one stack, pick the best, trash the rest (review page;
-      the gallery's stacks wait for a later round).
+- [x] Burst groups: show bursts as one stack, pick the best, trash the rest (review page
+      and gallery; docs/gallery.md, "Burst stacks").
 - [x] Albums/events as first-class views (from `Event|` tags), with rename and merge.
-- [ ] Burst stacks in the gallery (the review page has them; `media_intake/bursts.py` is shared).
-- [ ] Record a camera's `BurstUUID` as `burst_id` in plan entries (`bursts.py` reads it;
-      intake doesn't write it yet).
+- [x] Burst stacks in the gallery (the review page has them; `media_intake/bursts.py` is shared;
+      docs/gallery.md, "Burst stacks").
+- [x] Record a camera's `BurstUUID` as `burst_id` in plan entries (Apple `BurstUUID`, Google
+      `XMP-GCamera:BurstID`; docs/intake.md, "Burst id").
 - [ ] Map view without leaking locations: offline vector tiles (or none); never fetch
       tiles for private photos from a third-party server.
 - [x] Bulk edits on a selection: add/remove tags, set event, rotate.
+- [x] Select all in the gallery (header button, Ctrl+A / Cmd+A): every tile shown, a closed
+      stack's cover only, the pages loaded so far (docs/gallery.md, "Actions").
+- [x] Thumbnail cache keyed by content and rotation: rotating one copy no longer turns its
+      byte-identical twin's thumbnail; copies turned alike share one; trash, forget, erase and
+      verify-gone cover every variant (docs/gallery.md, "Thumbnails").
 - [x] A "share-safe export" button in the gallery (the CLI has `media-intake share-copy`:
       copy with all metadata and GPS stripped).
 
@@ -168,7 +183,3 @@ The goal: someone else can install it on Fedora, import a phone, and trust it.
 - A GoPro's QuickTime creation time is read as UTC, as the spec says; forum reports say
   some write local time. Unconfirmed on a real file; `--clock-offset` corrects a camera
   that is off.
-- Gallery thumbnails are cached by content, so rotating one copy also rotates the
-  thumbnail of its identical twin (the twin's sidecar is unchanged).
-- Plain Trash on a quarantined item on the review page trashes that file only; it
-  doesn't sweep copies elsewhere the way Erase does.

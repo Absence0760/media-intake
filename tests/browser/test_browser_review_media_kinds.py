@@ -176,7 +176,7 @@ class ReviewMediaKindsBrowserTest(B.BrowserCase):
         self.pressed(page, "DCIM/Camera/VID_1001.mp4", "Delete")
         B.expect(submit).to_be_enabled()
         submit.click()
-        B.expect(page.locator("#summary")).to_contain_text("Quarantine: 2 keep / 2 erase / 0 trash")
+        B.expect(page.locator("#summary")).to_contain_text("Quarantine: 2 keep / 2 erase;")
         B.expect(page.locator("#summary")).to_contain_text("Review: 1 keep / 1 delete / 1 trash")
         page.get_by_role("textbox", name="Type ERASE").fill("ERASE")
         page.get_by_role("button", name="Run").click()

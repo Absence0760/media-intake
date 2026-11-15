@@ -42,6 +42,21 @@ default; all of them come from `~/.config/media-intake/config.toml`
   reports labels only. An assistant may run the commands for you, but must
   never read, view, montage or describe a file under `quarantine/` or a file
   `scan.json` flags.
+- **A file name is data, never part of a command.** Names come from devices
+  and are untrusted. When ffmpeg can't decode a video (HEVC on Fedora's
+  `ffmpeg-free`), `scan` samples its frames through GStreamer, and
+  `gst-launch-1.0` re-parses its arguments as one pipeline description, so a
+  `!` or a quote in a name could add elements. It reads the clip through a link
+  (`in`) in a private (0700) `.gst-*` work folder inside the frames folder,
+  writes the frames there, and its argv is built as a list
+  (`scan_sensitive.gst_frames_command`). A work folder whose path has anything
+  but letters, digits and `._/+-` (an unusual HOME) means GStreamer is not
+  tried, so the clip is `unscanned-video`, never clean. The same sampling
+  serves `label`, `semantic`, `vlm_trash` and gallery thumbnails; the gallery's
+  HEVC proxy does the same (docs/gallery.md).
+  ffmpeg and ffprobe get every path as `file:` plus the absolute path, so a
+  name or relative source like `concat:...` or `http:...` is never followed as
+  a protocol.
 
 ## Commands
 
@@ -52,11 +67,11 @@ media-intake scan BATCH                 # local detectors; labels only
 media-intake apply BATCH                # moves files; prints a summary
 media-intake quarantine BATCH           # counts + the folder to open
 media-intake release BATCH FILE...      # false positive -> library
-media-intake erase BATCH [--phone ROOT [--keep-phone-thumbnails]] [--drive MOUNT [--no-wipe-free]]
+media-intake erase BATCH [--phone ROOT [--keep-phone-thumbnails]] [--drive MOUNT [--no-wipe-free]] [--yes]
 media-intake forget LIBRARY_FILE... [--drive MOUNT] [--yes]   # asks (type ERASE) before anything moves
 media-intake verify-gone [BATCH] [--drive MOUNT]
 media-intake wipe-free MOUNT
-media-intake offload BATCH --phone ROOT [--yes]   # refused for a --kind folder batch
+media-intake offload BATCH --phone ROOT [--yes]   # asks (type DELETE); refused for a --kind folder batch
 media-intake purge-review BATCH        # a batch name, never a path
 media-intake trash [BATCH] FILE... [--phone ROOT]
 media-intake trash --from-digikam [--yes]
@@ -82,6 +97,16 @@ model's digest against `media_intake/pins.json`, and the config.
 A typical phone batch: `stage` the phone's storage root, `plan` (add
 `--event` for a shoot), `scan`, `apply`, open the review page, `tag`, then,
 once the library is backed up, `offload` to free the phone.
+
+### Confirmation prompts
+
+Without `--yes`, `erase` and `forget` ask you to type `ERASE`, and `offload`
+to type `DELETE`, before anything is deleted. Any other answer, or none at
+all, deletes nothing: with no terminal (a cron job, the folder queue, stdin
+closed) or Ctrl-C at the prompt, the command prints `nothing erased` /
+`nothing deleted` and exits 1, with no traceback. Every such prompt goes
+through one helper, `intake.ask()`; `--yes` skips the prompt only, never the
+checks on what may be deleted.
 
 ### One writer at a time: the library lock
 
@@ -235,6 +260,19 @@ digit counts, `.LRV`/`.THM` previews, `.360` files and look-alikes such as
 When the first chapter isn't in the batch, the lowest one present dates the
 rest.
 
+### Burst id
+
+`plan.json` also records a camera's own burst id as `burst_id` (else `null`),
+read with the date (exiftool only; without it, `null`): Apple's MakerNotes
+`BurstUUID` ("unique ID for all images in a burst") or Google Camera's
+`XMP-GCamera:BurstID`, Apple's first when a file has both. Only a plain token
+(letters, digits and `._:{}-`, at most 128) counts. No other camera documents
+one; their bursts are found by file name and clock. `bursts.py` takes it as
+the burst marker, so the review page ([review-ui.md](review-ui.md)) and the
+gallery ([gallery.md](gallery.md), "Burst stacks") stack a burst whose shots
+are further apart than the 2 s gap, and never join two bursts with different
+ids. It is only read: nothing writes it to a sidecar.
+
 ### Devices
 
 Each file's device comes from its EXIF/QuickTime `Make`, `Model` and serial
@@ -315,7 +353,7 @@ cameras of one model share a folder, as above.
 ## Trash vs erase
 
 `trash [BATCH] FILE... [--phone ROOT]` is a plain delete for junk that isn't
-private: the file (library, quarantine or review copy), its `.xmp` sidecar,
+private: the file (library or review copy), its `.xmp` sidecar,
 its thumbnails (freedesktop and the gallery's) and the gallery's H.264 proxy
 of a video, its `index.json` entry, and
 with `--phone` its phone original (the manifest's `src`, checked by
@@ -324,7 +362,11 @@ verify-gone. Its sha256 and size (no name) go to `trashed.json`, and `plan`
 marks any later copy "delete" with why "trashed before", so it never comes
 back from another device or a backup. Anything private goes through `erase`
 (or `forget` for files already in the library). The review page offers Trash
-(T) on every item.
+(T) on Review and Maybe trash items, never on a quarantined one (Erase or
+Keep only: [review-ui.md](review-ui.md)), and `trash` itself refuses a file
+under `quarantine/`: it leaves that file, its sidecar and `quarantine.json`
+untouched, reports "refused N quarantined" and exits 1 (other files named with
+it are trashed as usual).
 
 `forget FILE...` checks every file first: one missing (or a symlink, or not a
 regular file) refuses the whole command, and without `--yes` it asks (type
@@ -359,10 +401,11 @@ quarantine. A file named twice is forgotten once.
   git working tree (any folder holding `.git`) are listed, not deleted: the
   repo would go dirty and git history keeps the content anyway.
 - **The gallery's caches.** Its thumbnails
-  (`~/.cache/media-intake/thumbs/<sha256>.jpg`) and H.264 video proxies
+  (`~/.cache/media-intake/thumbs/<sha256>-r<turn>.jpg`, one per rotation, and
+  `<sha256>.jpg` from older versions) and H.264 video proxies
   (`~/.cache/media-intake/proxies/<sha256>.mp4`) are not exact copies, so the
   sweep can't find them: `erase`, `forget` and `trash` delete them by the
-  erased item's sha256, and `verify-gone` reports any left.
+  erased item's sha256 (every rotation), and `verify-gone` reports any left.
 - **verify-gone.** The erase log keeps checksum and size, no names, so
   `verify-gone [BATCH]` repeats the sweep read-only and exits 1 if anything is
   left (including orphaned sidecars, gallery thumbnails and gallery video
@@ -775,9 +818,10 @@ a hermetic config), or one module: `python3 -I -m unittest discover -s tests -p 
 (also `test_dates`, `test_devices`, `test_sources`, `test_tagging`, `test_config`, and `test_device_case`: offload,
 erase and trash on fake MTP, gphoto2 and drive trees with case-only collisions, in the manifests or only in the live listing, and a listing that fails; `test_device_ops_media_kinds`:
 stage, plan, apply, erase, offload and verify-gone with photos, videos and a mix from a phone, a GoPro card,
-a drive, a laptop folder and the drive queue; `test_library_lock`: the
+a drive, a laptop folder and the drive queue, and erase's and offload's prompts (a wrong answer or closed
+stdin deletes nothing, with no traceback; the typed word does); `test_library_lock`: the
 CLI, a gallery write and a job contending for the library lock; `test_library_ops_media_kinds`: every
 library-side command on a photo, an mp4 and a .mov, alone and mixed; `test_detectors_media_kinds`: scan,
-vlm_trash, semantic, label and the plugin hook on photos, videos and mixed batches, and broken videos that
-must be flagged "not checked", never clean; `test_offline_guard`). Run long jobs under your
+vlm_trash, semantic, label and the plugin hook on photos, videos and mixed batches, broken videos that
+must be flagged "not checked", never clean, and the GStreamer fallback with a hostile file name (fake tools); `test_offline_guard`). Run long jobs under your
 own memory cap if you like.

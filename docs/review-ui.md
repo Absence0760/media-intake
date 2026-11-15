@@ -13,10 +13,11 @@ review files it prints `nothing to review for BATCH` and exits 0.
 
 - **Quarantine** tab: `quarantine/BATCH` and every level of its near-copy
   chain (`near-BATCH`, `near-near-BATCH`, ...; see below), with
-  the scanner's labels; Keep (release to the library) or Erase. **Review**
-  tab: `batches/BATCH/review` with plan.json's `why`; Keep or Delete. Keys: K
-  keep, E (or D) erase/delete, T trash, X opens or closes a burst stack,
-  arrows move. Submit unlocks when every
+  the scanner's labels; Keep (release to the library) or Erase, nothing else
+  (see "Quarantine is Erase-only" below). **Review** tab:
+  `batches/BATCH/review` with plan.json's `why`; Keep, Delete or Trash. Keys:
+  K keep, E (or D) erase/delete, T trash (not in Quarantine), X opens or
+  closes a burst stack, arrows move. Submit unlocks when every
   item is decided, shows a summary and needs ERASE typed.
 - **Near-duplicates** (in either tab) show their original beside them:
   "Original (kept)" left, "This copy" right, each with resolution, size, date
@@ -44,17 +45,28 @@ review files it prints `nothing to review for BATCH` and exits 0.
   copy of this photo", or "... video"). Keep releases to `dst`; its
   erase runs without `--phone` (the device originals are already offloaded)
   and never moves an `of` original to near-quarantine.
-- **Trash** (T) on every item: `media-intake trash` (plain delete for junk
-  that isn't private, remembered by checksum so `plan` drops it next time;
-  with `--phone` when the page has it, except xcheck items). It runs first in
-  each tab. `--maybe-trash` (or `media-intake suggest-trash`, which opens it)
+- **Quarantine is Erase-only.** A quarantined item (any level, `xcheck-`
+  included) was flagged sensitive, and plain trash would move only that one
+  file to the desktop trash, where it lingers, and leave its messaging copies
+  and near-copies behind. So its card has no Trash button, T does nothing on
+  it, and it says "Sensitive: erase or keep" instead. The server refuses it
+  too: a submit with `trash` for a quarantined item gets 400 "a quarantined
+  item can't be trashed: erase or keep it", before `review-decisions.json` is
+  written or any job starts. The run itself also stops if one ever reaches it.
+  `media-intake trash` refuses a path under `quarantine/` the same way, from
+  the command line.
+- **Trash** (T) on Review and Maybe trash items: `media-intake trash` (plain
+  delete for junk that isn't private, remembered by checksum so `plan` drops
+  it next time; with `--phone` when the page has it). It runs first in each
+  of those tabs. `--maybe-trash` (or `media-intake suggest-trash`, which opens it)
   adds a "Maybe trash" tab from `maybe-trash.json`, re-checked against the
   library roots: Keep runs `not-trash` (`Owner|keep` + `Owner|not-trash`, the
   gallery's Keep rule), Trash runs `trash` (the sha256 goes in `trashed.json`,
   the durable `Owner|trash`; copies left on disk get `Owner|trash` in their
   sidecar: [intake.md](intake.md), "Owner decisions"). With no BATCH,
   decisions go to `maybe-trash-decisions.json`. The confirm summary shows
-  keep / erase / trash per tab.
+  keep / erase in Quarantine and keep / delete / trash (or keep / trash)
+  elsewhere.
 - **Burst stacks** (in each tab): shots from one device a moment apart show as
   one stack with a count badge ("Burst: 4 shots, 2 undecided"); "Show all"
   (or X) opens it and every shot follows the first. On an open stack each shot
@@ -74,8 +86,8 @@ review files it prints `nothing to review for BATCH` and exits 0.
   burst marker wins over the clock: the same marker is one burst whatever the
   gap, two different markers never are. Markers come from the file name
   (`IMG_20261108_071500_BURST001.jpg`, Pixel's `..._BURST<start time>...jpg`)
-  or a `burst_id` in the plan entry (a camera's BurstUUID; intake does not
-  record one yet). The date, device and dHash come from `plan.json` (this
+  or a `burst_id` in the plan entry (a camera's BurstUUID or GCamera BurstID,
+  which `plan` records: [intake.md](intake.md), "Burst id"). The date, device and dHash come from `plan.json` (this
   batch's quarantine and review items; a maybe-trash library file by its
   `dst`, plus `index.json` for its dHash), so near- and xcheck- items, and
   library files with no plan entry, are never stacked. Stacks never cross a
@@ -179,12 +191,15 @@ Every decision on a photo, a video and a mix of both, run by the real
 `intake.py` (no fake) in a throwaway HOME and checked by what is left on disk:
 `python3 -I -m unittest discover -s tests -p test_review_media_kinds.py`. Keep
 releases the file with its sidecar and sha256 unchanged, Erase removes it and
-its copies, index entries and thumbnails, Trash records its sha256, and a
+its copies, index entries and thumbnails, Trash (Review) records its sha256,
+a Trash on a quarantined file is refused and leaves it untouched, and a
 burst's kept shot survives the erase's near-duplicate search; Maybe trash Keep
 needs exiftool and skips without it.
 
 In headless Chromium (`tests/browser/test_browser_review.py`, see
-CONTRIBUTING.md, Tests): the keys and arrows, Submit unlocking, the ERASE
+CONTRIBUTING.md, Tests): the keys and arrows, no Trash button or T on a
+quarantined card (and the 400 for a trash posted anyway) while Erase still
+runs, Submit unlocking, the ERASE
 panel, a card's video seeking by Range, and the run's progress and re-attach
 after a reload. `tests/browser/test_browser_review_media_kinds.py`: burst
 stacks (K on a closed stack, X, "Keep this one" in Quarantine and Review) with

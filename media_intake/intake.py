@@ -67,7 +67,8 @@ SETUP = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 DEPS = ("sudo dnf install perl-Image-ExifTool tesseract tesseract-langpack-eng python3-zxing-cpp "
         "ffmpeg-free (README, Install)")
 # gallery.py's thumbnails and H.264 video proxies (copies of photo and video content): erase, forget and
-# trash delete them by sha256 (gallery_thumb_forget), and verify-gone reports any left.
+# trash delete them by sha256 (gallery_thumb_forget), and verify-gone reports any left. A thumbnail is keyed by
+# content and the rotation baked into it (gallery_thumb_path), so a sha has up to THUMB_TURNS variants.
 THUMBS = os.path.join(HOME, ".cache", "media-intake", "thumbs")
 PROXIES = os.path.join(HOME, ".cache", "media-intake", "proxies")
 HERE = os.path.dirname(os.path.abspath(__file__))
@@ -150,14 +151,26 @@ def thumb_forget(path):
     return n
 
 
+THUMB_TURNS = (0, 90, 180, 270)  # the clockwise turns a gallery thumbnail can have baked in
+
+
+def gallery_thumb_path(sha, turn):
+    """gallery.py's thumbnail of this content with `turn` degrees (clockwise) of rotation baked in on top of
+    the file's own EXIF orientation: <sha256>-r<turn>.jpg. Byte-identical copies rotated alike share it; a copy
+    rotated differently (its sidecar's XMP-tiff:Orientation) gets its own."""
+    return os.path.join(THUMBS, f"{sha}-r{turn % 360}.jpg")
+
+
 def gallery_cache_paths(sha):
-    """gallery.py's cached copies of this content (keyed by sha256): its thumbnail and its H.264 video proxy."""
-    return [os.path.join(THUMBS, sha + ".jpg"), os.path.join(PROXIES, sha + ".mp4")]
+    """gallery.py's cached copies of this content (keyed by sha256): every thumbnail variant (each rotation,
+    and <sha256>.jpg, the content-only key before rotation was part of it) and its H.264 video proxy."""
+    return ([os.path.join(THUMBS, sha + ".jpg")] + [gallery_thumb_path(sha, t) for t in THUMB_TURNS]
+            + [os.path.join(PROXIES, sha + ".mp4")])
 
 
 def gallery_thumb_forget(sha):
-    """Delete gallery.py's cached thumbnail and video proxy of this content (keyed by sha256).
-    Returns how many went (0 to 2)."""
+    """Delete gallery.py's cached thumbnails (every rotation, and the older content-only key) and video proxy
+    of this content (keyed by sha256). Returns how many went."""
     if not re.fullmatch(r"[0-9a-f]{64}", sha or ""):
         return 0
     n = 0
@@ -340,6 +353,7 @@ def cmd_plan(a):
         rows.append(dict(rel=rel, sha=sha256(p), size=os.path.getsize(p), date=dd.dt.isoformat(), date_src=dd.src,
                          date_tz=dd.tz, date_from=dd.base, date_note=dd.note, date_suspect=dd.suspect,
                          chapter_of=dd.chapter_of, device=dd.device, device_model=dd.model,
+                         burst_id=dd.burst_id,  # the camera's BurstUUID / GCamera BurstID, for bursts.py
                          cat=category(rel, kind), dhash=dh, w=w, h=h, ext=ext))
 
     pref = {"photo": 5, "video": 5, "gopro": 5, "screenshot": 3, "screenrec": 3}
@@ -1127,10 +1141,11 @@ def erase_log_sigs(batch=None):
 
 def verify_gone(sig, drive=None):
     found, _, orphans, in_git = sweep(sig, delete=False, drive=drive, label="verify-gone")
-    gthumbs = sum(os.path.lexists(os.path.join(THUMBS, s + ".jpg")) for s in sig)
+    cached = [p for s in sig for p in gallery_cache_paths(s) if os.path.lexists(p)]
+    gthumbs = sum(p.endswith(".jpg") for p in cached)
     if gthumbs:
         found["gallery thumbnails (~/.cache/media-intake/thumbs)"] += gthumbs
-    gproxies = sum(os.path.lexists(os.path.join(PROXIES, s + ".mp4")) for s in sig)
+    gproxies = len(cached) - gthumbs
     if gproxies:
         found["gallery video proxies (~/.cache/media-intake/proxies)"] += gproxies
     if in_git:
@@ -1154,6 +1169,17 @@ def cmd_verify_gone(a):
     sys.exit(0 if verify_gone(sig, a.drive) else 1)
 
 
+def ask(prompt):
+    """The answer typed at a confirmation prompt, stripped. No terminal (stdin closed or at its end: a cron
+    job, the folder queue) or Ctrl-C is no answer, "", so the caller's "type ERASE/DELETE" check says no
+    and exits cleanly instead of a traceback. Every yes/no prompt before a delete goes through here."""
+    try:
+        return input(prompt).strip()
+    except (EOFError, KeyboardInterrupt):
+        print()  # end the prompt's line
+        return ""
+
+
 def cmd_erase(a):
     quar = os.path.join(STATE, "quarantine", a.batch)
     q = load(os.path.join(quar, "quarantine.json"), {})
@@ -1164,12 +1190,8 @@ def cmd_erase(a):
     if not q:
         sys.exit("quarantine is empty")
     if not a.yes:
-        try:
-            ans = input(f"Erase {len(q)} quarantined files for good{' and from the phone' if a.phone else ''}"
-                        f"{' and the drive' if a.drive else ''}? Type ERASE: ")
-        except EOFError:  # no terminal (a cron job, the queue): no answer is no
-            ans = ""
-        if ans.strip() != "ERASE":
+        if ask(f"Erase {len(q)} quarantined files for good{' and from the phone' if a.phone else ''}"
+               f"{' and the drive' if a.drive else ''}? Type ERASE: ") != "ERASE":
             sys.exit("nothing erased")
     # A checksum that is also in the library belongs to a released (or library)
     # copy: erase the quarantined file here, but never that content elsewhere.
@@ -1317,12 +1339,8 @@ def cmd_forget(a):
     if bad:
         sys.exit(f"not forgetting anything: {len(bad)} of {len(files)} are missing or not regular files")
     if not a.yes:
-        try:
-            ans = input(f"Erase {len(files)} files everywhere for good{' and from the drive' if a.drive else ''}? "
-                        "Type ERASE: ")
-        except EOFError:
-            ans = ""
-        if ans.strip() != "ERASE":
+        if ask(f"Erase {len(files)} files everywhere for good{' and from the drive' if a.drive else ''}? "
+               "Type ERASE: ") != "ERASE":
             sys.exit("nothing erased")
         a.yes = True
     batch = datetime.datetime.now().strftime("forget-%Y%m%d-%H%M%S")
@@ -1381,7 +1399,7 @@ def cmd_offload(a):
     todo = device_targets(root, items, [m["src"] for m in man["files"].values()], check, skip_denied=False)
     print(f"{len(todo)} of {len(man['files'])} phone files have a verified copy here")
     if not a.yes:
-        if input("Delete them from the phone? Type DELETE: ").strip() != "DELETE":
+        if ask("Delete them from the phone? Type DELETE: ") != "DELETE":
             sys.exit("nothing deleted")
     done = device_remove(todo)
     print(f"deleted {len(done)} files from the phone; quarantined and review files stay until erase/purge")
@@ -1416,7 +1434,14 @@ def trash_allowed(p):
     if any(rp.startswith(os.path.realpath(r) + os.sep) for r in LIB_ROOTS):
         return True
     rel = os.path.relpath(rp, os.path.realpath(STATE)).split(os.sep)
-    return (len(rel) > 2 and rel[0] == "quarantine") or (len(rel) > 3 and rel[0] == "batches" and rel[2] == "review")
+    return len(rel) > 3 and rel[0] == "batches" and rel[2] == "review"
+
+
+def in_quarantine(p):
+    """p is a quarantined (flagged sensitive) file: erase or keep it, never plain trash (the desktop trash
+    would keep the sensitive content and the sweep of its copies would be skipped)."""
+    rel = os.path.relpath(os.path.realpath(p), os.path.realpath(STATE)).split(os.sep)
+    return len(rel) > 2 and rel[0] == "quarantine"
 
 
 def phone_rels(batch, path):
@@ -1470,10 +1495,13 @@ def trash_files(files, batch=None, phone=None):
         sys.exit(refusal + " (trash without --phone)")
     # Without a named batch, a folder batch's originals are never device targets.
     mans = {b: man for b, man in mans.items() if not folder_refusal(man)}
-    refused, todo = [], []
+    refused, quarantined, todo = [], [], []
     for f in files:  # every phone delete is checked before anything is trashed
         p = os.path.abspath(f)
         if any(p == x for x, _ in todo):
+            continue
+        if in_quarantine(p):
+            quarantined.append(f)
             continue
         if not trash_allowed(p):
             refused.append(f)
@@ -1495,12 +1523,6 @@ def trash_files(files, batch=None, phone=None):
         sc += drop_sidecar(p)
         th += thumb_forget(p) + gallery_thumb_forget(s)
         index.pop(p, None)
-        rel = os.path.relpath(os.path.realpath(p), os.path.realpath(STATE)).split(os.sep)
-        if rel[0] == "quarantine" and len(rel) > 2:  # keep quarantine.json in step
-            qj = os.path.join(STATE, "quarantine", rel[1], "quarantine.json")
-            q = load(qj, {})
-            if q.pop(os.path.join(*rel[2:]), None) is not None:
-                save(qj, q)
         for src, _ in srcs:
             th += thumb_forget(src)
             if src in phone_ok:
@@ -1511,10 +1533,12 @@ def trash_files(files, batch=None, phone=None):
     print(f"trashed {n} files; sidecars {sc}; thumbnails {th}; phone {ph}"
           + (f"; copies left on disk marked Owner|trash {marked}" if marked else "")
           + (f"; copies you kept left alone {spared}" if spared else "")
-          + (f"; refused {len(refused)} (not a library, review or quarantine file)" if refused else ""))
+          + (f"; refused {len(refused)} (not a library or review file)" if refused else "")
+          + (f"; refused {len(quarantined)} quarantined (sensitive: erase or keep them, never trash)"
+             if quarantined else ""))
     if err:
         print(err)
-    return not refused and not err
+    return not refused and not quarantined and not err
 
 
 def digikam_rejected(roots):

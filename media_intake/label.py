@@ -137,20 +137,21 @@ def text_embeddings(prompts, np, path=LABELS_NPZ):
 
 def frames_video(path, np):
     """Up to MAX_FRAMES RGB frames at SIZE x SIZE, spread over the whole video, or None."""
-    r = subprocess.run(["ffprobe", "-v", "quiet", "-of", "json", "-show_entries", "format=duration", path],
+    src = "file:" + os.path.abspath(path)  # never read as a protocol (concat:, http:, ...)
+    r = subprocess.run(["ffprobe", "-v", "quiet", "-of", "json", "-show_entries", "format=duration", src],
                        capture_output=True, text=True)
     try:
         dur = float(json.loads(r.stdout or "{}")["format"]["duration"])
     except (KeyError, ValueError, TypeError):
         dur = 60.0
     fps = min(0.5, MAX_FRAMES / max(dur, 1.0))
-    r = subprocess.run(["ffmpeg", "-v", "error", "-nostdin", "-i", path, "-an", "-sn", "-dn",
+    r = subprocess.run(["ffmpeg", "-v", "error", "-nostdin", "-i", src, "-an", "-sn", "-dn",
                         "-vf", f"fps={fps:.5f},scale={SIZE}:{SIZE}:flags=bicubic", "-frames:v", str(MAX_FRAMES),
                         "-f", "rawvideo", "-pix_fmt", "rgb24", "-"], capture_output=True, timeout=1800)
     n = len(r.stdout) // (SIZE * SIZE * 3)
     if r.returncode or n == 0:
         # one frame at the start (very short clips round fps down to no frame)
-        r = subprocess.run(["ffmpeg", "-v", "error", "-nostdin", "-i", path, "-an", "-vf", f"scale={SIZE}:{SIZE}",
+        r = subprocess.run(["ffmpeg", "-v", "error", "-nostdin", "-i", src, "-an", "-vf", f"scale={SIZE}:{SIZE}",
                             "-frames:v", "1", "-f", "rawvideo", "-pix_fmt", "rgb24", "-"], capture_output=True, timeout=600)
         n = len(r.stdout) // (SIZE * SIZE * 3)
         if r.returncode or n == 0:

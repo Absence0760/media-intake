@@ -7,7 +7,7 @@
 Shows everything under the library, videos and project folders (config.toml)
 (never the media-intake state folder: quarantine, staging, review; never a file
 scan flagged, quarantined or erased: label.flagged()). Timeline grid by month,
-thumbnails made on demand (max 320 px JPEG, ~/.cache/media-intake/thumbs/<sha256>.jpg,
+thumbnails made on demand (max 320 px JPEG, ~/.cache/media-intake/thumbs/<sha256>-r<turn>.jpg,
 dir 0700, files 0600; intake.py erase/forget/trash delete them by sha and
 verify-gone checks them), an H.264 proxy made on demand for a video the browser
 can't play (HEVC: ~/.cache/media-intake/proxies/<sha256>.mp4, cleaned the same way),
@@ -20,8 +20,11 @@ job). A left sidebar holds the views with counts (/api/facets): Library, Trash
 suggestions, any tab a plugin adds (plugins.py gallery_views(), docs/plugins.md),
 the quick views Recently added, Possible child, Untagged, and the Events (Event|
 tags; rename and merge rewrite only those, in the sidecars that have them); then
-search and the filters.
-Selection actions sit in a bottom bar shown only while something is selected. Media
+search and the filters. Bursts (bursts.py over the plan entries intake wrote) show in
+the timeline as one stack per burst: a cover with a count badge, X opens or closes it,
+and on a closed stack every action acts on the cover only.
+Selection actions sit in a bottom bar shown only while something is selected; Select all
+(header, Ctrl+A / Cmd+A) ticks every tile shown (loaded pages; a closed stack's cover). Media
 the browser can't decode opens in the desktop's player (xdg-open, a POST naming one
 item id, argument list, library files only). Trash and Erase run as a detached
 job (jobs.py, key "gallery", one at a time): closing the page or stopping the
@@ -40,6 +43,7 @@ import xml.etree.ElementTree as ET
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, HERE)
+import bursts  # noqa: E402  (burst groups: pure functions over date, device, dHash, burst id)
 import intake  # noqa: E402  (constants, sidecar helpers, trash_allowed, exiftool_batch)
 import jobs  # noqa: E402  (trash / erase run as a detached job: <state>/jobs/gallery.*)
 import library_lock  # noqa: E402  (Keep, my tags, Rotate write sidecars under the library lock)
@@ -86,11 +90,13 @@ XMP_WANT = {
     ("http://iptc.org/std/Iptc4xmpExt/2008-02-29/", "Event"): "event",
     ("http://www.digikam.org/ns/1.0/", "PickLabel"): "pick",
     ("http://www.digikam.org/ns/1.0/", "TagsList"): "tagslist",
+    ("http://ns.google.com/photos/1.0/camera/", "BurstID"): "burst_id",  # XMP-GCamera:BurstID, if a tool wrote it
 }
 LISTS = {"tags", "tagslist"}
 DATE_RX = re.compile(r"(\d{4})[-:](\d\d)[-:](\d\d)(?:[T ](\d\d):(\d\d))?")
 PATH_DATE = re.compile(r"(?:^|/)((?:19|20)\d\d)-(\d\d)(?:-(\d\d))?")
 NAME_DATE = re.compile(r"((?:19|20)\d\d)(\d\d)(\d\d)[_-]?(\d\d)?(\d\d)?")
+FULL_DATE = re.compile(r"(\d{4})[-:](\d\d)[-:](\d\d)[T ](\d\d):(\d\d)(?::(\d\d))?")
 
 
 # ---------------------------------------------------------------- sidecars (read: stdlib XML, fast)
@@ -231,7 +237,89 @@ def scan_library():
     for it in items:
         load_sidecar(it)
     items.sort(key=lambda it: (it["date"], it["path"]), reverse=True)
+    attach_bursts(items, index)
     return items, skipped
+
+
+# ---------------------------------------------------------------- burst stacks
+def iso_seconds(s):
+    """'YYYY-MM-DDTHH:MM:SS' from an XMP / EXIF date string (seconds 00 when it has none), else None."""
+    m = FULL_DATE.search(s or "")
+    if not m:
+        return None
+    y, mo, d, h, mi, sec = m.groups()
+    return f"{y}-{mo}-{d}T{h}:{mi}:{sec or '00'}"
+
+
+def plan_entries(state=None):
+    """{library path: plan entry} from every batch's plan.json under the state folder: a filed file by its
+    dst, a released one (quarantine or review, kept) by its lib_dst. A later batch (by name) wins."""
+    out = {}
+    bdir = os.path.join(state or STATE, "batches")
+    try:
+        names = sorted(os.listdir(bdir))
+    except OSError:
+        return out
+    for b in names:
+        if not R.BATCH_RE.match(b):
+            continue
+        try:
+            plan = intake.load(os.path.join(bdir, b, "plan.json"), []) or []
+        except (OSError, ValueError):
+            continue  # a broken plan.json stacks nothing of its batch; it never stops the gallery
+        if not isinstance(plan, list):
+            continue
+        for p in plan:
+            if not isinstance(p, dict):
+                continue
+            for k in ("lib_dst", "dst"):  # dst last: a filed file's own place wins
+                v = p.get(k)
+                if isinstance(v, str) and v:
+                    out[v] = p
+    return out
+
+
+def attach_bursts(items, index=None, state=None):
+    """Give every item `burst` (a group number shared by the shots of one burst, bursts.py) and `burst_pos`
+    (its place in the burst, in time order), else None. No file is opened.
+
+    A shot's date (with seconds), device, dHash and camera burst id come from the plan entry intake wrote
+    for it (plan_entries; the dHash also from index.json), as on the review page. A library file with no
+    plan entry is stacked only by a camera's own marker (an XMP-GCamera:BurstID in its sidecar, or a burst
+    file name: bursts.MARKERS), never by the clock alone, since its device is unknown. A file intake planned
+    as a near-duplicate (a copy, not a shot) is never stacked, whatever its time. Videos never are."""
+    if index is None:
+        index = intake.load(os.path.join(state or STATE, "index.json"), {}) or {}
+    plans = plan_entries(state)
+    recs = []
+    for n, it in enumerate(items):
+        it["burst"] = it["burst_pos"] = None
+        if it.get("media") != "photo":
+            continue
+        p = plans.get(it["path"])
+        if p is not None:
+            if str(p.get("why") or "").startswith("near-duplicate"):
+                continue
+            dh = p.get("dhash")
+            if not isinstance(dh, int):
+                dh = (index.get(it["path"]) or {}).get("dhash") if isinstance(index, dict) else None
+            bid = p.get("burst_id") if isinstance(p.get("burst_id"), str) else None
+            recs.append(dict(path=it["path"], datetime=p.get("date"), device=p.get("device"),
+                             dhash=dh if isinstance(dh, int) else None, burst_id=bid or it.get("xburst") or None, n=n))
+            continue
+        r = dict(path=it["path"], burst_id=it.get("xburst") or None)
+        if bursts.marker(r) is None:
+            continue
+        # Their own device bucket, so they never join planned shots of an unknown device on the clock alone;
+        # with a marker each, same_burst groups them by marker only.
+        r.update(datetime=iso_seconds(it.get("xdate")) or iso_seconds(it.get("date")), device="-marker-",
+                 dhash=None, n=n)
+        recs.append(r)
+    gs = bursts.groups(recs)
+    for g, members in enumerate(gs):
+        for k, r in enumerate(members):
+            items[r["n"]]["burst"], items[r["n"]]["burst_pos"] = g, k
+    return len(gs)
 
 
 def load_sidecar(it):
@@ -241,6 +329,8 @@ def load_sidecar(it):
     it["tagslist"] = x.get("tagslist", [])
     it["pick"] = str(x.get("pick", "")).strip()
     it["xevent"] = x.get("event") or ""
+    it["xdate"] = x.get("date") or ""  # with its seconds, for burst grouping (it["date"] keeps minutes)
+    it["xburst"] = x.get("burst_id") or ""
     it["xplace"] = (x.get("city"), x.get("state"), x.get("country"))
     try:
         it["orient"] = int(x["orient"]) if x.get("orient") else None
@@ -462,7 +552,8 @@ class App:
         self.token, self.csrf = secrets.token_urlsafe(24), secrets.token_urlsafe(24)
         self.lock = threading.RLock()
         self.thumb_sem = threading.BoundedSemaphore(3)
-        self.proxy_lock = threading.Lock()  # one transcode at a time
+        self.proxy_lock = threading.Lock()  # guards proxy_making
+        self.proxy_making = {}  # sha -> Event set when its transcode ends; one transcode at a time (CPU)
         self.port = None
         self.reconciled = None  # id of the last finished job whose results are applied to items
         self.tail = None  # the shown job's log, through an open descriptor (jobs.Tail)
@@ -513,7 +604,10 @@ class App:
         sha = self.sha_of(it)
         if not re.fullmatch(r"[0-9a-f]{64}", sha):
             return None
-        dst = os.path.join(THUMBS, sha + ".jpg")
+        # Keyed by content and the turn baked in (a copy rotated in its sidecar shows its own rotation; copies
+        # turned alike share one file). A photo's EXIF orientation is part of its content, so it needs no key.
+        delta = DEG[effective_orientation(it)] if it["media"] == "video" else css_delta(it)
+        dst = intake.gallery_thumb_path(sha, delta)
         if os.path.isfile(dst):
             return dst
         if it.get("nothumb"):
@@ -521,7 +615,6 @@ class App:
         with self.thumb_sem:
             if os.path.isfile(dst):
                 return dst
-            delta = DEG[effective_orientation(it)] if it["media"] == "video" else css_delta(it)
             data = video_jpeg(it["path"], THUMB_PX, delta) if it["media"] == "video" else \
                 image_jpeg(it["path"], THUMB_PX, delta)
             if not data:
@@ -534,7 +627,12 @@ class App:
     def playable(self, it):
         """(path, mime) that /m/ serves: the original, or for a video whose codec browsers can't play (HEVC) an
         H.264 proxy, made on demand and cached by sha256 in PROXIES. When no proxy can be made the original is
-        served as before (the page then says the browser can't play it) and this item isn't tried again."""
+        served as before (the page then says the browser can't play it) and this item isn't tried again.
+
+        One transcode at a time, for the CPU. A request for the sha being converted (the player's Range
+        requests, a second open) waits for that one transcode and then serves its proxy; a request for another
+        video while one is being made is not held for up to PROXY_TIMEOUT: it gets the original now, and a later
+        open, once the conversion is done, makes that video's proxy."""
         orig = (it["path"], it["mime"])
         if it["media"] != "video" or it.get("noproxy"):
             return orig
@@ -547,24 +645,36 @@ class App:
             return orig
         dst = os.path.join(PROXIES, sha + ".mp4")
         if not os.path.isfile(dst):
-            with self.proxy_lock:  # a second request (the player's Range requests) waits, then finds it made
-                if not os.path.isfile(dst):
-                    try:
-                        private_cache()
-                        made = make_proxy(it["path"], dst)
-                    except OSError:
-                        made = False
-                    if not made:
-                        it["noproxy"] = True
-                        return orig
+            with self.proxy_lock:
+                done = self.proxy_making.get(sha)
+                mine = done is None and not self.proxy_making and not os.path.isfile(dst)
+                if mine:
+                    done = self.proxy_making[sha] = threading.Event()
+            if mine:
+                try:
+                    private_cache()
+                    made = make_proxy(it["path"], dst)
+                except OSError:
+                    made = False
+                finally:
+                    with self.proxy_lock:
+                        del self.proxy_making[sha]
+                    done.set()
+                if not made:
+                    it["noproxy"] = True
+                    return orig
+            elif done is not None:
+                done.wait()  # the same video's transcode: wait for it, then serve what it made
+            if not os.path.isfile(dst):
+                return orig  # another video's transcode is running, or this one's failed
             if it.get("busy") or it["gone"] or not os.path.lexists(it["path"]):
                 intake.gallery_thumb_forget(sha)  # trashed or erased while it was being made: no copy stays
                 return orig
         return dst, "video/mp4"
 
     def drop_thumb(self, it):
-        if it.get("sha"):
-            intake.gallery_thumb_forget(it["sha"])
+        """After a rotate: the item's new turn has its own cache key, so its next /t/ request shows it at once.
+        The other variants stay (a same-content copy may still show them; trash, forget and erase remove all)."""
         it.pop("nothumb", None)
 
     def summary(self, i, it):
@@ -758,8 +868,43 @@ class App:
                 lim = max(1, min(500, int(f.get("limit") or 200)))
             except ValueError:
                 off, lim = 0, 200
-            page = [self.summary(i, self.items[i]) for i in ids[off:off + lim]]
+            info = {}
+            if not ranked:
+                ids, info = self.stacked(ids)
+            page = []
+            for i in ids[off:off + lim]:
+                row = self.summary(i, self.items[i])
+                row.update(info.get(i, {}))
+                page.append(row)
         return dict(total=len(ids), items=page, note=note, ranked=ranked)
+
+    def stacked(self, ids):
+        """The timeline with each burst as one run: when two or more of a burst's shots are listed (after the
+        filters), they follow one another in time order at the place of the first one listed, the earliest
+        shot first (the cover). Returns (ids, {id: {b: group, bn: shots listed, bc: cover?, mo: the cover's
+        month}}). A burst with one shot listed is a plain tile. Ranked lists (search, Similar, Trash
+        suggestions) are never stacked: their order is not time."""
+        shots = {}
+        for i in ids:
+            g = self.items[i].get("burst")
+            if g is not None:
+                shots.setdefault(g, []).append(i)
+        out, info, placed = [], {}, set()
+        for i in ids:
+            g = self.items[i].get("burst")
+            ms = shots.get(g) if g is not None else None
+            if not ms or len(ms) < 2:
+                out.append(i)
+                continue
+            if g in placed:
+                continue
+            placed.add(g)
+            ms = sorted(ms, key=lambda j: self.items[j]["burst_pos"])
+            out.extend(ms)
+            mo = self.items[ms[0]]["date"][:7]
+            for k, j in enumerate(ms):
+                info[j] = dict(b=g, bn=len(ms), bc=k == 0, mo=mo)
+        return out, info
 
     # ---------------------------------------------- your actions (sidecars only)
     def targets(self, ids):
@@ -1601,6 +1746,11 @@ h2.month{position:sticky;top:var(--hh);z-index:2;margin:0;padding:16px 0 8px;fon
 .tile .ck{position:absolute;top:6px;left:6px;z-index:2;width:22px;height:22px;margin:0;accent-color:var(--acc);cursor:pointer}
 @media (hover:hover){.tile .ck{opacity:0;transition:opacity .1s}.tile:hover .ck,.tile:focus-within .ck,.selecting .tile .ck{opacity:1}}
 .play{position:absolute;right:6px;top:6px;width:24px;height:24px;border-radius:50%;background:rgba(0,0,0,.55);color:#fff;font-size:10px;display:flex;align-items:center;justify-content:center;padding-left:2px}
+/* Burst stacks: the review page's look (a stacked card, a count badge, an X button) on a tile */
+.tile.stack{box-shadow:4px 4px 0 -1px var(--bg),4px 4px 0 0 var(--mut),8px 8px 0 -1px var(--bg),8px 8px 0 0 var(--mut)}
+.tile.stack.cur{box-shadow:inset 0 0 0 3px var(--fg),4px 4px 0 -1px var(--bg),4px 4px 0 0 var(--mut),8px 8px 0 -1px var(--bg),8px 8px 0 0 var(--mut)}
+.tile .badge{position:absolute;right:6px;top:6px;z-index:2;background:var(--acc);color:#fff;font-size:11px;font-weight:700;border-radius:999px;padding:1px 8px;white-space:nowrap}
+.tile .x{position:absolute;right:6px;top:28px;z-index:2;font-size:11px;padding:2px 8px;border-radius:6px;border:1px solid var(--line);background:var(--panel);color:var(--fg);cursor:pointer;white-space:nowrap}
 .flag{position:absolute;left:6px;bottom:6px;width:max-content;max-width:calc(100% - 12px);background:rgba(0,0,0,.62);color:#fff;font-size:11px;border-radius:4px;padding:1px 6px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
 #sentinel{height:40px}
 /* bottom action bar: only while something is selected (or the Trash suggestions view's Apply) */
@@ -1717,12 +1867,14 @@ dl.dt dd{margin:0;word-break:break-word}
 <div id="app">
  <header id="top">
   <h1 id="vtitle">Library</h1><span id="count"></span><span class="grow"></span>
+  <button type="button" class="btn" id="ball" aria-keyshortcuts="Control+A Meta+A" title="Select every tile shown (Ctrl+A, or Cmd+A on a Mac); Esc clears" hidden>Select all</button>
   <label class="size" id="tsizew" title="Thumbnail size"><svg class="ic"><use href="#i-size"/></svg><span class="vh">Thumbnail size</span><input id="tsize" type="range" min="80" max="320" step="8"></label>
   <button type="button" class="btn" id="close" title="Stop the gallery server"><svg class="ic"><use href="#i-power"/></svg><span class="lbl2">Close</span></button>
  </header>
  <div id="chips" aria-label="Active filters" hidden></div>
  <div id="evbar" role="toolbar" aria-label="Event" hidden><span class="evt" id="evname"></span><button type="button" class="btn" id="evren">Rename…</button><button type="button" class="btn" id="evmerge">Merge into…</button></div>
  <p id="note" class="note" hidden></p>
+ <p id="helpb" class="note" hidden>A stack is a burst (shots from one camera a moment apart): X opens or closes it. On a closed stack, selecting and every action (Keep, Trash, Erase, tags, Rotate, Set event, Share-safe copy) act on the cover shot only; open the stack to act on the others.</p>
  <main id="main"><div id="list"></div><div id="sentinel"></div><div id="plugin" hidden></div></main>
  <div id="actionbar" hidden>
   <div class="grp" id="selgrp" role="toolbar" aria-label="Selection actions" hidden><span id="seln"></span>
@@ -1751,7 +1903,7 @@ function el(t,c,x){const e=document.createElement(t);if(c)e.className=c;if(x!=nu
 const fmt=n=>(+n||0).toLocaleString();
 // per-browser conveniences only (sidebar rail, open sections, tile size); the page works without them
 const LS={get(k,d){try{const v=localStorage.getItem("gallery."+k);return v===null?d:v}catch(e){return d}},set(k,v){try{localStorage.setItem("gallery."+k,v)}catch(e){}}};
-let view="lib",items=[],total=0,loading=false,done=false,sel=new Set(),last=null,cur=-1,ranked=false,simId=null,simName="",dec={},vi=-1,facets=null,gen=0,lastFocus=null;
+let view="lib",items=[],total=0,loading=false,done=false,sel=new Set(),last=null,cur=-1,ranked=false,simId=null,simName="",dec={},vi=-1,facets=null,gen=0,lastFocus=null,openB={},allSel=null;
 let F={aimin:"0.7"};
 const ACTIVE=["kind","ym","project","source","place","event","label","mine","review","ai","used","added"];
 const NAMES={kind:"Kind",ym:"When",project:"Project",source:"Source",place:"Place",event:"Event",label:"Label",mine:"My tag",review:"Review",ai:"AI",used:"Used",added:"Added"};
@@ -1868,7 +2020,7 @@ function syncUI(){$$("button[data-k]").forEach(b=>b.setAttribute("aria-pressed",
 $("#clear").onclick=clearAll;
 // ---------------------------------------------------------------- listing
 function setNote(n){n=n||"";if(/^Semantic search unavailable/.test(n))n="Semantic search is off: showing tag and file-name matches.";$("#note").textContent=n;$("#note").hidden=!n}
-function reset(){gen++;items=[];total=0;done=false;cur=-1;last=null;$("#list").replaceChildren();sel.clear();dec={};paintSel();more()}
+function reset(){gen++;items=[];total=0;done=false;cur=-1;last=null;openB={};$("#list").replaceChildren();sel.clear();dec={};paintSel();more()}
 async function more(){if(loading||done||plugView())return;loading=true;const g=gen;let stale=false;
  try{const j=await api("/api/list?"+qs(Object.assign(filt(),{offset:items.length,limit:240})));
   if(g!==gen)stale=true;else{total=j.total;ranked=j.ranked;setNote(j.note);const start=items.length;items=items.concat(j.items);done=items.length>=total;render(start);
@@ -1882,29 +2034,52 @@ function groupKey(it){return ranked?(view==="sug"?"Most likely junk first":"Best
 function render(start){const L=$("#list");let sec=L.lastElementChild,g=sec&&sec.querySelector(".grid"),gk=sec?sec.dataset.k:null;
  for(let n=start;n<items.length;n++){const it=items[n],k=groupKey(it);
   if(k!==gk){sec=el("section");sec.dataset.k=k;sec.append(el("h2","month",ranked?k:monthName(k)));g=el("div","grid");sec.append(g);L.append(sec);gk=k}
-  g.append(tile(it,n))}paintSel()}
+  g.append(tile(it,n))}$("#helpb").hidden=!items.some(i=>i.b!=null);allSel=null;paintSel()}
+/* Bursts (bursts.py, server side): the listed shots of one burst follow one another, the cover (it.bc) first.
+   A closed stack shows only its cover; a shot of a closed stack is never selected, shown or stepped to. */
+function hiddenAt(n){const it=items[n];return !!it&&it.b!=null&&!it.bc&&!openB[it.b]}
+function stepVis(n,d){n+=d;while(n>=0&&n<items.length&&hiddenAt(n))n+=d;return n}
+function stackLabel(it){return openB[it.b]?"Close stack (X)":`Show all ${it.bn} (X)`}
+function toggleStack(n){const it=items[n];if(!it||it.b==null)return;const b=it.b;allSel=null;openB[b]=!openB[b];let c=-1,dropped=0;
+ items.forEach((m,i)=>{if(m.b!==b)return;if(m.bc)c=i;const t=$("#t"+m.id);if(t)t.hidden=hiddenAt(i);if(hiddenAt(i)&&sel.has(m.id)){sel.delete(m.id);dropped++}});
+ if(last!==null&&hiddenAt(last))last=null;if(cur>=0&&hiddenAt(cur))cur=c;
+ const ct=c>=0?$("#t"+items[c].id):null;if(ct){ct.classList.toggle("stack",!openB[b]);const x=ct.querySelector(".x");if(x)x.textContent=stackLabel(items[c]);ct.focus({preventScroll:false})}
+ if(dropped)toast(`Stack closed: ${dropped} hidden shot${dropped>1?"s":""} unselected (actions act on the cover only).`);paintSel()}
 function tile(it,n){const t=el("div","tile");t.id="t"+it.id;t.dataset.n=n;t.dataset.item=it.n;t.tabIndex=0;t.title=it.n;
  const im=el("img");im.loading="lazy";im.decoding="async";im.alt=it.n;im.src="/t/"+it.id;im.onerror=()=>{im.replaceWith(el("div","ph",(it.m==="video"?"video: ":"")+it.n))};t.append(im);
  const cb=el("input","ck");cb.type="checkbox";cb.tabIndex=-1;cb.setAttribute("aria-label","select "+it.n);cb.onclick=ev=>{ev.stopPropagation();pick(n,ev.shiftKey)};t.append(cb);
  if(it.m==="video")t.append(el("span","play","▶"));
+ if(it.b!=null){t.dataset.burst=it.b;const bd=el("span","badge",`Burst: ${it.bn} shots`);bd.dataset.count=it.bn;t.append(bd);
+  if(it.bc){const x=el("button","x",stackLabel(it));x.type="button";x.tabIndex=-1;x.onclick=ev=>{ev.stopPropagation();toggleStack(n)};t.append(x);if(!openB[it.b])t.classList.add("stack")}
+  else t.hidden=hiddenAt(n)}
  const fl=flagsOf(it);if(fl)t.append(el("span","flag",fl));
  t.onclick=ev=>{if(ev.shiftKey||ev.ctrlKey||ev.metaKey){pick(n,ev.shiftKey);return}if(view==="sug"){cur=n;paintSel();return}openViewer(n)};
  // Enter opens, Space selects (on the focused tile, never while the large view is open: Space plays / pauses there)
- t.onkeydown=ev=>{if(vi>=0||ev.target!==t)return;if(ev.key==="Enter"&&view!=="sug"){ev.preventDefault();ev.stopPropagation();openViewer(n)}else if(ev.key===" "){ev.preventDefault();ev.stopPropagation();pick(n,ev.shiftKey)}};return t}
+ t.onkeydown=ev=>{if(vi>=0||ev.target!==t)return;if(ev.key==="Enter"&&view!=="sug"){ev.preventDefault();ev.stopPropagation();openViewer(n)}else if(ev.key===" "){ev.preventDefault();ev.stopPropagation();pick(n,ev.shiftKey)}
+  else if((ev.key==="x"||ev.key==="X")&&it.b!=null&&!ev.ctrlKey&&!ev.metaKey&&!ev.altKey){ev.preventDefault();ev.stopPropagation();toggleStack(n)}};return t}
 function flagsOf(it){const fl=[];if(it.c!=null)fl.push("AI "+it.c.toFixed(1));fl.push(...it.f);return fl.join(" · ")}
 // after an edit: the reply's summaries replace those items and their tiles' flags (kept, ...);
 // the tile, its focus and the selection stay
-function patchTiles(fresh){(fresh||[]).forEach(s=>{const n=items.findIndex(i=>i.id===s.id);if(n<0)return;items[n]=s;const t=$("#t"+s.id);if(!t)return;
+function patchTiles(fresh){(fresh||[]).forEach(s=>{const n=items.findIndex(i=>i.id===s.id);if(n<0)return;const o=items[n];items[n]=o.b!=null?Object.assign(s,{b:o.b,bn:o.bn,bc:o.bc,mo:o.mo}):s;const t=$("#t"+s.id);if(!t)return;
   const old=t.querySelector(".flag"),fl=flagsOf(s);if(old)old.remove();if(fl)t.append(el("span","flag",fl))})}
-function pick(n,range){if(range&&last!==null){const [a,b]=[Math.min(last,n),Math.max(last,n)];for(let i=a;i<=b;i++)sel.add(items[i].id)}
+function pick(n,range){allSel=null;if(range&&last!==null){const [a,b]=[Math.min(last,n),Math.max(last,n)];for(let i=a;i<=b;i++)if(!hiddenAt(i))sel.add(items[i].id)}
  else{const id=items[n].id;sel.has(id)?sel.delete(id):sel.add(id)}last=n;paintSel()}
 function paintSel(){$$(".tile").forEach(t=>{const id=+t.id.slice(1),n=+t.dataset.n;t.classList.toggle("sel",sel.has(id));t.querySelector("input").checked=sel.has(id);
   t.classList.toggle("cur",n===cur);t.classList.toggle("dk",dec[id]==="keep");t.classList.toggle("dt",dec[id]==="trash")});
  const selOn=sel.size>0&&!plugView(),sugOn=view==="sug";$("#selgrp").hidden=!selOn;$("#suggrp").hidden=!sugOn;$("#actionbar").hidden=!(selOn||sugOn);
- document.body.classList.toggle("barup",selOn||sugOn);document.body.classList.toggle("selecting",sel.size>0);$("#seln").textContent=fmt(sel.size)+" selected";
+ document.body.classList.toggle("barup",selOn||sugOn);document.body.classList.toggle("selecting",sel.size>0);
+ $("#seln").textContent=allSel&&allSel.n===sel.size?allSel.text:fmt(sel.size)+" selected";$("#ball").hidden=!canSelectAll();
  const nk=Object.values(dec).filter(d=>d==="keep").length,nt=Object.values(dec).filter(d=>d==="trash").length;
  $("#sugn").textContent=`${nk} keep / ${nt} trash marked`;$("#sugapply").disabled=!(nk+nt)}
 function selIds(){return [...sel]}
+/* Select all: every tile the grid shows now (the active view, filters and search; the pages loaded so far, since
+   the grid loads 240 at a time as you scroll), and on a closed burst stack its cover only (hidden shots are never
+   selected). Not in Trash suggestions (K / T and Apply there) or a plugin tab. Trash and Erase ask as always. */
+function canSelectAll(){return view!=="sug"&&!plugView()&&items.length>0}
+function selectAll(){if(!canSelectAll())return;let hid=0;items.forEach((it,i)=>{if(hiddenAt(i))hid++;else sel.add(it.id)});
+ const left=total-items.length,n=sel.size;
+ allSel={n,text:`Selected ${fmt(n)} (all shown`+(left>0?`; ${fmt(left)} more match below: scroll to load them, then Select all again`:"")
+  +(hid?`; closed stacks: cover only`:"")+")"};paintSel()}
 function nameOf(id){const it=items.find(i=>i.id===id);return it?it.n:"#"+id}
 // ---------------------------------------------------------------- actions
 let tt=null;function toast(s){const t=$("#toast");t.textContent=s;t.classList.add("on");clearTimeout(tt);tt=setTimeout(()=>t.classList.remove("on"),4500)}
@@ -1960,7 +2135,7 @@ function refreshAfter(ids,thumbs,fresh){patchTiles(fresh);if(thumbs)ids.forEach(
  if(vi>=0)openViewer(vi,{keep:true});else if(view==="sug")reset()}
 $("#bkeep").onclick=()=>doKeep(selIds());$("#btrash").onclick=()=>askTrash(selIds());$("#berase").onclick=()=>askErase(selIds());
 $("#btag").onclick=()=>tagAsk("add");$("#buntag").onclick=()=>tagAsk("remove");$("#brot").onclick=()=>rot(selIds(),"cw");
-$("#bevent").onclick=()=>askSetEvent(selIds());$("#bshare").onclick=()=>askShare(selIds());$("#bnone").onclick=()=>{sel.clear();paintSel()};
+$("#ball").onclick=selectAll;$("#bevent").onclick=()=>askSetEvent(selIds());$("#bshare").onclick=()=>askShare(selIds());$("#bnone").onclick=()=>{sel.clear();paintSel()};
 $("#sugapply").onclick=()=>{const keep=Object.keys(dec).filter(k=>dec[k]==="keep").map(Number),trash=Object.keys(dec).filter(k=>dec[k]==="trash").map(Number);
  confirmBox(`Apply: ${keep.length} keep, ${trash.length} trash?`,[keep.length?"Keep: Owner|keep + Owner|not-trash in the sidecar (never suggested again).":"",trash.length?"Trash ("+names(trash)+"): plain delete, never taken in again (Owner|trash: the sha256 in trashed.json; copies left on disk are marked).":""].filter(Boolean),false,
   async()=>{const j=await api("/api/decide",{keep,trash,confirm:true});if(trash.length){progressMode("trash");$("#mout").textContent=j.result+"\n";poll(0,trash)}else{$("#modal").classList.remove("on");toast(j.result);loadFacets();reset()}})};
@@ -2021,18 +2196,21 @@ async function openViewer(n,opt){opt=opt||{};if(n<0||n>=items.length)return;if(v
  if(n>=items.length-20)more()}
 function closeViewer(){if(vi<0)return;const id=items[vi]&&items[vi].id;stopVideo();vi=-1;$("#viewer").classList.remove("on");document.body.classList.remove("noscroll");$("#media").replaceChildren();
  delete $("#viewer").dataset.current;const u=$("#unmute");if(u)u.remove();paintSel();const t=$("#t"+id)||lastFocus;if(t&&t.focus)t.focus({preventScroll:true})}
-$("#vprev").onclick=()=>openViewer(vi-1);$("#vnext").onclick=()=>openViewer(vi+1);
+$("#vprev").onclick=()=>openViewer(stepVis(vi,-1));$("#vnext").onclick=()=>openViewer(stepVis(vi,1));
 // ---------------------------------------------------------------- keys
 document.addEventListener("keydown",ev=>{const tg=ev.target,modal=$("#modal").classList.contains("on");
  // a ticked checkbox (or a slider) keeps focus but takes no letters, so the keys still act on the selection
  const typing=(tg.tagName==="INPUT"&&!["checkbox","radio","range"].includes(tg.type))||tg.tagName==="SELECT"||tg.tagName==="TEXTAREA";
+ // Ctrl+A / Cmd+A selects every tile shown; in a text field it stays the field's own select-all
+ if((ev.key==="a"||ev.key==="A")&&(ev.ctrlKey||ev.metaKey)&&!ev.altKey&&!ev.shiftKey&&!typing&&!modal&&vi<0&&canSelectAll()){
+  ev.preventDefault();selectAll();return}
  if(typing||ev.ctrlKey||ev.metaKey||ev.altKey||modal){
   if(ev.key==="Escape"){if(modal){$("#modal").classList.remove("on");tg.blur()}  // blur: the next key goes to the page, not the hidden input
    else if(tg.id==="q"&&tg.value){tg.value="";syncUI();reset()}}
   return}
  const k=ev.key;
  if(vi>=0){const id=items[vi].id;
-  if(k==="Escape")closeViewer();else if(k==="ArrowRight")openViewer(vi+1);else if(k==="ArrowLeft")openViewer(vi-1);
+  if(k==="Escape")closeViewer();else if(k==="ArrowRight")openViewer(stepVis(vi,1));else if(k==="ArrowLeft")openViewer(stepVis(vi,-1));
   else if(k===" "){if(tg.tagName==="VIDEO"||tg.tagName==="BUTTON")return;const v=curVideo();if(!v)return;v.paused?v.play().catch(()=>{}):v.pause()}
   else if(k==="k"||k==="K")doKeep([id]);else if(k==="t"||k==="T")askTrash([id]);else if(k==="e"||k==="E")askErase([id]);
   else if(k==="r")rot([id],"cw");else if(k==="R")rot([id],"ccw");else return;ev.preventDefault();return}
@@ -2046,7 +2224,7 @@ document.addEventListener("keydown",ev=>{const tg=ev.target,modal=$("#modal").cl
 VIEWS.forEach(v=>{const b=el("button","nv");b.type="button";b.dataset.v="p-"+v.id;b.title=v.title;b.insertAdjacentHTML("beforeend",'<svg class="ic"><use href="#i-plug"/></svg>');b.append(el("span","lbl",v.title));$("#ptabs").append(b)});
 function setView(v){view=v;simId=null;document.body.dataset.view=v;const plug=plugView();
  $("#list").hidden=plug;$("#sentinel").hidden=plug;$("#plugin").hidden=!plug;$("#filters").hidden=plug;$(".sb-search").hidden=plug;$("#tsizew").hidden=plug;
- if(plug){sel.clear();dec={};paintSel();$("#count").textContent="";setNote("");syncUI();const id=v.slice(2),P=$("#plugin"),pv=window.mediaIntakeViews[id];P.replaceChildren();
+ if(plug){sel.clear();dec={};paintSel();$("#count").textContent="";setNote("");$("#helpb").hidden=true;syncUI();const id=v.slice(2),P=$("#plugin"),pv=window.mediaIntakeViews[id];P.replaceChildren();
   if(!pv||typeof pv.render!=="function"){P.append(el("p","warn","Plugin view "+id+" has no render()"));return}
   pv.render(P,{el,api:(p,b)=>api("/plugin/"+id+"/"+p,b),media:p=>"/plugin/"+id+"/media/"+p})}
  else{if(v==="sug")setNote("K = keep, T = trash on the outlined tile; nothing changes until Apply.");syncUI();reset()}}

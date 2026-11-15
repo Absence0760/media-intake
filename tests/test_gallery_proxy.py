@@ -7,7 +7,8 @@ Synthetic clips in a throwaway HOME (tests/support.py): an HEVC .MOV with AAC so
 ffmpeg's libx265 (the HEVC cases skip, naming the reason, when this ffmpeg has no libx265 or no
 H.264 encoder) and an H.264 .mp4. The real gallery server serves them; trash, forget and
 verify-gone run the real intake.py. Failure paths put fake ffmpeg / GStreamer tools first on the
-server's PATH (ffprobe stays the real one), which record their arguments and fail.
+server's PATH (ffprobe stays the real one), which record their arguments and fail. PlayableTest
+runs App.playable in-process with make_proxy held on an event (who waits for which transcode).
 """
 import json, os, shutil, stat, subprocess, sys, tempfile, threading, unittest
 import unittest.mock as mock
@@ -249,13 +250,14 @@ class ProxyTest(unittest.TestCase):
         self.assertEqual(G.sha(hv), orig)
 
     # ------------------------------------------------------------ trashed or erased while its proxy is made
-    def held_transcode(self, name):
+    def held_transcode(self, name, others=()):
         """A server whose transcode of <name> (an HEVC clip) is held by the gated ffmpeg once it has written it.
         Returns (server, id, the clip, its proxy path, release(), result()): release lets the transcode run on,
-        result() waits for the /m/ request and gives (status, body)."""
+        result() waits for the /m/ request and gives (status, body). others: more HEVC clips beside it."""
         self.need_hevc()
         hv = os.path.join(self.vids, "2026/2026-11", name)
-        mkclip(hv, "hevc")
+        for k, n in enumerate((name, *others)):  # each a second longer: another sha
+            mkclip(os.path.join(self.vids, "2026/2026-11", n), "hevc", seconds=1 + k)
         px = self.proxy_of(hv)
         gate, started = os.path.join(self.tmp, "ffmpeg-gate"), os.path.join(self.tmp, "ffmpeg-started")
         os.mkfifo(gate)
@@ -268,6 +270,7 @@ class ProxyTest(unittest.TestCase):
         t = threading.Thread(target=lambda: got.update(r=s.req("GET", f"/m/{i}")))
         t.start()
         self.addCleanup(t.join, 120)
+        self.addCleanup(self.open_gate, gate)  # runs first: a failed assertion must not leave ffmpeg blocked
         G.until(lambda: os.path.exists(started), "the transcode to be written")
         with open(started) as f:
             self.assertEqual(f.read(), "0")  # the real ffmpeg made it
@@ -282,6 +285,49 @@ class ProxyTest(unittest.TestCase):
             r, body = got["r"]
             return r.status, body
         return s, i, hv, px, release, result
+
+    @staticmethod
+    def open_gate(gate):
+        """Let a gated ffmpeg that is still blocked on the FIFO go; nothing when none is (no reader: ENXIO)."""
+        try:
+            fd = os.open(gate, os.O_WRONLY | os.O_NONBLOCK)
+        except OSError:
+            return
+        os.write(fd, b"go")
+        os.close(fd)
+
+    # ------------------------------------------------------------ one transcode at a time, per video
+    def test_another_video_is_served_at_once_while_a_proxy_is_made(self):
+        """While one video's proxy is being made, opening another HEVC video is not held behind it (up to an
+        hour): its original is served at once with no transcode started. Once the first proxy is done, the
+        next open of the other video makes its own."""
+        s, i, hv, px, release, result = self.held_transcode("IMG_0010.MOV", others=("IMG_0011.MOV",))
+        other = os.path.join(os.path.dirname(hv), "IMG_0011.MOV")
+        j = self.ids(s)["IMG_0011.MOV"]
+        r, body = s.req("GET", f"/m/{j}")  # the old one-lock-for-all made this wait for IMG_0010's transcode
+        with open(other, "rb") as f:
+            self.assertEqual((r.status, body), (200, f.read()))
+        self.assertNotEqual(G.sha(other), G.sha(hv))
+        self.assertFalse(os.path.lexists(self.proxy_of(other)))
+        release()
+        status, body = result()
+        with open(px, "rb") as f:
+            self.assertEqual((status, body), (200, f.read()))  # the first video gets its proxy
+        started = os.path.join(self.tmp, "ffmpeg-started")
+        os.remove(started)
+        got = {}
+        t = threading.Thread(target=lambda: got.update(r=s.req("GET", f"/m/{j}")))
+        t.start()
+        self.addCleanup(t.join, 120)
+        self.addCleanup(self.open_gate, os.path.join(self.tmp, "ffmpeg-gate"))
+        G.until(lambda: os.path.exists(started), "the other video's transcode to be written")
+        release()
+        t.join(120)
+        self.assertFalse(t.is_alive(), "the /m/ request never returned")
+        r, body = got["r"]
+        with open(self.proxy_of(other), "rb") as f:
+            self.assertEqual((r.status, r.getheader("Content-Type"), body), (200, "video/mp4", f.read()))
+        self.assertEqual(sorted(os.listdir(self.proxies)), sorted([G.sha(hv) + ".mp4", G.sha(other) + ".mp4"]))
 
     def test_proxy_finished_while_its_video_is_in_a_job_is_dropped(self):
         """The video's trash job is still running (a gated fake intake.py) when the transcode ends: the fresh
@@ -373,6 +419,116 @@ class ProxyTest(unittest.TestCase):
         r = subprocess.run([G.PY, "-I", G.INTAKE, "verify-gone"], env=self.env, capture_output=True, text=True)
         self.assertEqual(r.returncode, 1, r.stdout)
         self.assertIn("gallery video proxies", r.stdout)
+
+
+class PlayableTest(unittest.TestCase):
+    """gallery.App.playable in-process, with make_proxy replaced by a stand-in held on a threading.Event: who
+    waits for which transcode, and how many run. No tool runs."""
+
+    def setUp(self):
+        import gallery
+        self.g = gallery
+        self.tmp = tempfile.mkdtemp(prefix="gallery-playable-")
+        self.addCleanup(shutil.rmtree, self.tmp, True)
+        self.proxies = os.path.join(self.tmp, "proxies")
+        self.made, self.go, self.ok = [], threading.Event(), True
+        self.started = {}
+        self.addCleanup(self.go.set)  # a failed assertion must not leave a thread blocked
+
+        def fake_make(src, dst):
+            self.made.append(src)
+            self.started[src].set()
+            self.go.wait()
+            if self.ok:
+                with open(dst, "wb") as f:
+                    f.write(b"proxy of " + src.encode())
+            return self.ok
+        for name, value in (("PROXIES", self.proxies), ("make_proxy", fake_make),
+                            ("private_cache", lambda: os.makedirs(self.proxies, exist_ok=True))):
+            p = mock.patch.object(gallery, name, value)
+            p.start()
+            self.addCleanup(p.stop)
+
+    def item(self, name, sha):
+        path = os.path.join(self.tmp, name)
+        with open(path, "wb") as f:
+            f.write(b"original " + name.encode())
+        self.started.setdefault(path, threading.Event())
+        return dict(media="video", path=path, mime="video/quicktime", vcodec="hevc", sha=sha, gone=False)
+
+    def call(self, app, it):
+        """playable(it) on a thread; returns a function that joins it and gives its result."""
+        out = {}
+        t = threading.Thread(target=lambda: out.update(r=app.playable(it)))
+        t.start()
+        self.addCleanup(t.join, 60)
+
+        def result():
+            t.join(60)
+            self.assertFalse(t.is_alive(), "playable never returned")
+            return out["r"]
+        return result
+
+    def waiting_on(self, app, sha):
+        """Mark when a request starts waiting on sha's running transcode (wraps that Event's wait)."""
+        ev, flag = app.proxy_making[sha], threading.Event()
+        wait = ev.wait
+
+        def marked(timeout=None):
+            flag.set()
+            return wait(timeout)
+        ev.wait = marked
+        return flag
+
+    def test_the_same_video_waits_for_its_one_transcode(self):
+        """A second request for the sha being converted (the player's Range request, or a duplicate file with
+        the same content) waits for that transcode and gets its proxy: one transcode, not two."""
+        a, a2 = self.item("a.MOV", "a" * 64), self.item("a-copy.MOV", "a" * 64)
+        app = self.g.App([a, a2])
+        first = self.call(app, a)
+        self.assertTrue(self.started[a["path"]].wait(60))
+        waiting = self.waiting_on(app, "a" * 64)
+        second, third = self.call(app, a), self.call(app, a2)
+        G.until(lambda: waiting.is_set(), "a second request to wait on the transcode")
+        self.go.set()
+        px = (os.path.join(self.proxies, "a" * 64 + ".mp4"), "video/mp4")
+        self.assertEqual((first(), second(), third()), (px, px, px))
+        self.assertEqual(self.made, [a["path"]])
+        self.assertEqual(app.proxy_making, {})
+
+    def test_another_video_gets_its_original_while_one_is_converted(self):
+        """One transcode at a time, but a request for another video is answered at once with its original (not
+        marked as failed); once the first is done, the other's proxy is made on its next request."""
+        a, b = self.item("a.MOV", "a" * 64), self.item("b.MOV", "b" * 64)
+        app = self.g.App([a, b])
+        first = self.call(app, a)
+        self.assertTrue(self.started[a["path"]].wait(60))
+        other = self.call(app, b)  # the old single lock held this until a's transcode ended
+        self.assertEqual(other(), (b["path"], "video/quicktime"))
+        self.assertNotIn("noproxy", b)
+        self.go.set()
+        self.assertEqual(first(), (os.path.join(self.proxies, "a" * 64 + ".mp4"), "video/mp4"))
+        self.assertEqual(app.playable(b), (os.path.join(self.proxies, "b" * 64 + ".mp4"), "video/mp4"))
+        self.assertEqual(self.made, [a["path"], b["path"]])
+
+    def test_a_failed_transcode_answers_its_waiters_with_the_original(self):
+        """When the transcode fails, every request waiting on it gets the original and the next request for
+        another video may start one (the slot is freed)."""
+        self.ok = False
+        a, b = self.item("a.MOV", "a" * 64), self.item("b.MOV", "b" * 64)
+        app = self.g.App([a, b])
+        first = self.call(app, a)
+        self.assertTrue(self.started[a["path"]].wait(60))
+        waiting = self.waiting_on(app, "a" * 64)
+        second = self.call(app, dict(a))  # another page's request, before a is marked as failed
+        G.until(lambda: waiting.is_set(), "a second request to wait on the transcode")
+        self.go.set()
+        self.assertEqual((first(), second()), ((a["path"], "video/quicktime"),) * 2)
+        self.assertTrue(a.get("noproxy"))
+        self.assertEqual(app.proxy_making, {})
+        self.assertEqual(app.playable(b), (b["path"], "video/quicktime"))
+        self.assertEqual(self.made, [a["path"], b["path"]])
+        self.assertEqual(os.listdir(self.proxies), [])
 
 
 class ProxyCommandsTest(unittest.TestCase):
