@@ -49,7 +49,11 @@ media-intake backup /run/media/$USER/<label> --verify    # then re-read every co
   `--verify` does. Like `index.json`, that record names library files; each
   run drops the entries of files no longer in the library, and `erase` /
   `forget` drop an erased file's entries at once (by path, or by sha256 for
-  the same content under another name, with its `.xmp`).
+  the same content under another name, with its `.xmp`). That is bookkeeping
+  only: an entry dropped for a file still in the library is hashed again by
+  the next run. A record erase can't read (not JSON, another version) is left
+  as it is and counted in its coverage report; the next run to that drive
+  starts it afresh.
 - **Atomic per file.** Each copy is written to a hidden
   `.<name>.media-intake-partial` in its destination folder, fsync'd, given
   the source's modification time and renamed over the final name, so an

@@ -90,6 +90,15 @@ def read(p):
         return f.read()
 
 
+def read_bytes(p):
+    with open(p, "rb") as f:
+        return f.read()
+
+
+def sha256_file(p):
+    return hashlib.sha256(read_bytes(p)).hexdigest()
+
+
 class EraseCoverage(unittest.TestCase):
 
     def setUp(self):
@@ -405,7 +414,8 @@ class EraseCoverage(unittest.TestCase):
         write(lib + ".xmp", b"tags")  # its sidecar is backed up too, under the erased file's name
         other = os.urandom(2048)
         lib2 = write(self.H("Pictures/library/2026/2026-11/later.mp4"), other)
-        keep = write(self.H("Pictures/library/2026/2026-11/keep.mp4"), os.urandom(1024))
+        keep_data = os.urandom(1024)
+        keep = write(self.H("Pictures/library/2026/2026-11/keep.mp4"), keep_data)
         os.makedirs(self.state, exist_ok=True)
         with open(os.path.join(self.state, "index.json"), "w") as f:
             json.dump({lib: {"sha": self.sha, "size": len(self.data)}}, f)
@@ -437,7 +447,8 @@ class EraseCoverage(unittest.TestCase):
         self.backup()
         self.assertEqual(sorted(os.listdir(dest)), ["keep.mp4"], "the next backup brings nothing back")
         self.assertEqual(set(self.record()), {"library/2026/2026-11/keep.mp4"})
-        self.assertTrue(os.path.isfile(keep))
+        self.assertEqual(sha256_file(keep), hashlib.sha256(keep_data).hexdigest(), "the kept original is unchanged")
+        self.assertEqual(self.record()["library/2026/2026-11/keep.mp4"]["sha"], hashlib.sha256(keep_data).hexdigest())
 
     def test_a_record_it_cannot_rewrite_is_counted_as_left(self):
         """A backup record erase cannot rewrite (its temporary name taken by a folder) keeps the names: the
@@ -460,6 +471,91 @@ class EraseCoverage(unittest.TestCase):
         self.assertEqual(cov["reached"]["backup records: erased files dropped (state folder, backup/)"], 0)
         with open(rec) as f:
             self.assertEqual(set(json.load(f)["files"]), {"library/2026/2026-11/clip.mp4"})
+
+    def record_path(self):
+        rdir = os.path.join(self.state, "backup")
+        recs = os.listdir(rdir)
+        self.assertEqual(len(recs), 1)
+        return os.path.join(rdir, recs[0])
+
+    def test_an_erase_outside_the_backed_up_folders_leaves_the_record_byte_identical(self):
+        """An erased copy outside every backup root (a sibling folder whose name starts like the library's,
+        under the same relative path as a recorded file) and content the record doesn't hold: the record is not
+        rewritten at all. An erase that matches nothing anywhere leaves it as it was too."""
+        self.env.update(MEDIA_INTAKE_TEST_MOUNT=self.drive, MEDIA_INTAKE_TEST_UUID="TEST-UUID")
+        lib = write(self.H("Pictures/library/2026/2026-11/clip.mp4"), os.urandom(2048))  # other content
+        self.backup()
+        rec = self.record_path()
+        before, mtime = read_bytes(rec), os.stat(rec).st_mtime_ns
+        outside = write(self.H("Pictures/library-old/2026/2026-11/clip.mp4"), self.data)
+        self.quarantine("2026-11-14-outside")
+        self.intake("erase", "2026-11-14-outside", "--yes", "--no-wipe-free")
+        self.assertFalse(os.path.lexists(outside), "the copy outside the library is still erased")
+        self.assertEqual(read_bytes(rec), before)
+        self.assertEqual(os.stat(rec).st_mtime_ns, mtime, "not rewritten")
+        self.assertTrue(os.path.isfile(lib))
+        cov = self.coverage()
+        self.assertEqual(cov["reached"]["backup records: erased files dropped (state folder, backup/)"], 0)
+        self.assertFalse([k for k in cov["left"] if k.startswith("backup records")], cov["left"])
+        # The same erase again, with no copy anywhere but the quarantine: nothing matches, nothing changes.
+        self.quarantine("2026-11-14-nothing")
+        self.intake("erase", "2026-11-14-nothing", "--yes", "--no-wipe-free")
+        self.assertEqual(read_bytes(rec), before)
+        self.assertEqual(self.coverage()["reached"]["backup records: erased files dropped (state folder, backup/)"], 0)
+
+    def test_an_entry_with_an_erased_sha256_goes_even_for_a_kept_path(self):
+        """The record drops every entry whose sha256 is an erased item's, also one at a path the erase did not
+        touch (in a real erase that file is an exact copy and goes too; here prune runs alone, in process). It
+        is bookkeeping only: the file at that path is untouched, and the next backup hashes it and records it
+        again."""
+        self.env.update(MEDIA_INTAKE_TEST_MOUNT=self.drive, MEDIA_INTAKE_TEST_UUID="TEST-UUID")
+        lib = write(self.H("Pictures/library/2026/2026-11/clip.mp4"), self.data)
+        twin = write(self.H("Pictures/library/2026/2026-10/twin.mp4"), self.data)
+        other = write(self.H("Pictures/library/2026/2026-10/other.mp4"), os.urandom(1024))
+        self.backup()
+        self.assertEqual(set(self.record()), {"library/2026/2026-11/clip.mp4", "library/2026/2026-10/twin.mp4",
+                                              "library/2026/2026-10/other.mp4"})
+        os.remove(lib)  # erased
+        cfg = dict(intake.CFG, library=self.H("Pictures/library"), videos=self.H("Videos/personal"), projects={})
+        with mock.patch.object(intake, "STATE", self.state), mock.patch.object(intake, "CFG", cfg):
+            self.assertEqual(intake.prune_backup_records({lib}, {self.sha}), (2, 0, 0))
+        self.assertEqual(set(self.record()), {"library/2026/2026-10/other.mp4"})
+        self.assertEqual(read_bytes(twin), self.data, "the kept file is not touched")
+        self.assertTrue(os.path.isfile(os.path.join(self.drive, "media-intake-backup", "library/2026/2026-10/twin.mp4")),
+                        "nor its copy on the drive")
+        self.backup()
+        self.assertEqual(self.record()["library/2026/2026-10/twin.mp4"]["sha"], self.sha, "hashed and recorded again")
+        self.assertNotIn("library/2026/2026-11/clip.mp4", self.record())
+
+    def test_a_record_it_cannot_read_is_counted_as_left(self):
+        """A backup record that is not JSON, or is another version's, can't be pruned: erase leaves it byte for
+        byte, counts it under left (it may keep names), and still finishes."""
+        import backup
+        self.env.update(MEDIA_INTAKE_TEST_MOUNT=self.drive, MEDIA_INTAKE_TEST_UUID="TEST-UUID")
+        lib = write(self.H("Pictures/library/2026/2026-11/clip.mp4"), self.data)
+        os.makedirs(self.state, exist_ok=True)
+        with open(os.path.join(self.state, "index.json"), "w") as f:
+            json.dump({lib: {"sha": self.sha, "size": len(self.data)}}, f)
+        self.backup()
+        rec = self.record_path()
+        write(rec, b'{"version": 1, "files": {"library/2026/2026-11/clip.mp4": ')  # cut short
+        later = write(os.path.join(os.path.dirname(rec), "later.json"), json.dumps(
+            {"version": 99, "files": {"library/2026/2026-11/clip.mp4": {"sha": self.sha}}}).encode())
+        before = {p: read_bytes(p) for p in (rec, later)}
+        for p in before:
+            self.assertEqual(backup.load_manifest(p), {}, "backup itself starts such a record afresh")
+            self.assertIsNone(backup.load_manifest(p, strict=True))
+        missing = os.path.join(self.tmp, "none.json")
+        self.assertEqual((backup.load_manifest(missing), backup.load_manifest(missing, strict=True)), ({}, {}))
+        self.quarantine("2026-11-14-unread")
+        self.intake("erase", "2026-11-14-unread", "--yes", "--no-wipe-free")
+        self.assertFalse(os.path.lexists(lib))
+        self.assertEqual({p: read_bytes(p) for p in before}, before)
+        cov = self.coverage()
+        self.assertEqual(cov["left"]["backup records that could not be read (they may keep names until the next "
+                                     "backup to that drive)"], 2)
+        self.assertNotIn("backup records that could not be rewritten (they keep the names)", cov["left"])
+        self.assertEqual(cov["reached"]["backup records: erased files dropped (state folder, backup/)"], 0)
 
     def test_verify_gone_without_a_report(self):
         os.makedirs(self.state)
@@ -543,6 +639,32 @@ class HungTools(unittest.TestCase):
         self.assertEqual(len([ln for ln in self.lines(self.ls_log) if ln.startswith("reset ")]), 1,
                          "one hung reset, then no more localsearch calls")
         self.assertFalse([ln for ln in self.lines(self.ls_log) if ln.startswith("info ")])
+
+    def test_localsearch_that_vanishes_after_the_check_is_no_answer(self):
+        """localsearch found on PATH (localsearch_on), then gone when it is run (uninstalled mid-erase): the
+        OSError is no answer, counted as could not check, not as a hang, and the rest of the erase's traces are
+        still pruned. subprocess.run raises as it would, so no real localsearch later on PATH is ever run."""
+        uri = intake.file_uris(os.path.join(self.home, "Downloads", "a.mp4"))[0]
+        hist = write(os.path.join(self.home, ".local/state/showtime/playback_history.json"),
+                     json.dumps({hashlib.sha256(uri.encode()).hexdigest(): 12}).encode())
+        real_run, calls = subprocess.run, []
+
+        def gone(cmd, *a, **kw):
+            if cmd[0] == "localsearch":
+                calls.append(cmd[1])
+                raise FileNotFoundError(2, "No such file or directory", cmd[0])
+            return real_run(cmd, *a, **kw)
+
+        self.assertTrue(intake.localsearch_on())
+        with mock.patch.object(intake.subprocess, "run", gone):
+            n = intake.prune_app_traces({uri}, [])
+            self.assertIsNone(intake.localsearch("info", uri[7:]))
+        self.assertEqual(n["showtime positions"], 1)
+        self.assertEqual(json.loads(read(hist)), {})
+        self.assertEqual(n["localsearch could not check"], 1)
+        self.assertEqual((n["localsearch resets"], n["localsearch checked"]), (0, 0))
+        self.assertFalse(intake.HUNG["localsearch"], "a missing binary is not a hang")
+        self.assertEqual(calls, ["index", "info"], "each call tried once, none hung")
 
     def test_hung_localsearch_index_skips_every_reset_and_check(self):
         uris = {intake.file_uris(os.path.join(self.home, "Downloads", "a.mp4"))[0]}

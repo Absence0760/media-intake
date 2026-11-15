@@ -168,7 +168,15 @@ The goal: someone else can install it on Fedora, import a phone, and trust it.
       `verify-gone BATCH` shows the last one (docs/intake.md, "Coverage report").
 - [x] Clean `~/.local/share/gvfs-metadata` entries for erased files; verify the desktop
       search index forgets them. Cleared through gio before each delete; entries of files
-      deleted earlier outside gio stay (no documented route once the file is gone).
+      deleted earlier outside gio stay (no documented route once the file is gone). Each
+      gio and localsearch call gets 20 s (`GIO_TIMEOUT`); after one hangs, that erase skips
+      the tool and counts what it skipped as left.
+- [x] Backup records pruned on erase/forget: entries for erased paths and sha256s (and their
+      `.xmp`) leave `<state>/backup/*.json` at once; a record that can't be read or rewritten
+      is counted as left (docs/backup.md, "Incremental").
+- [x] Refused cloud-export metadata reported: `stage` counts the symlinked, oversized and
+      non-UTF-8 Takeout JSON / iCloud CSV it skipped, and stages their media without export
+      dates (docs/intake.md, "Cloud exports").
 
 ## Later
 
@@ -194,6 +202,9 @@ The goal: someone else can install it on Fedora, import a phone, and trust it.
 - Tested on synthetic media and fake device trees only: not yet on real HEVC files, real
   GoPro `.gpr` files and GPS tracks, or real phones over MTP and gphoto2. The real detector
   models run only in the `models.yml` job.
+- Erase's gio (`info`, `set -t unset`) and `localsearch index|reset|info` handling, and the
+  20 s `GIO_TIMEOUT`, are tested against fakes only, not a real `gvfsd-metadata` or miner
+  (docs/intake.md, "Unverified").
 - A GoPro's QuickTime creation time is read as UTC, as the spec says; forum reports say
   some write local time. Unconfirmed on a real file; `--clock-offset` corrects a camera
   that is off.
