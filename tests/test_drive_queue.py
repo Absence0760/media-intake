@@ -7,11 +7,10 @@ stage, plan, apply and offload are the real intake.py; scan, tag, the semantic
 index and the VLM are simulated (scan.json, a sidecar, exit codes), so no model
 runs. MEDIA_INTAKE_TEST_MOUNT/UUID stand in for findmnt. Never touches a real drive.
 """
-import datetime, hashlib, importlib.util, io, json, os, shutil, subprocess, sys, tempfile, time, unittest
+import contextlib, datetime, hashlib, importlib.util, io, json, os, shutil, subprocess, sys, tempfile, time, unittest
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import support  # noqa: E402,F401  (hermetic config)
-from contextlib import redirect_stdout
 
 HERE = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "media_intake")
 from PIL import Image, ImageDraw  # noqa: E402
@@ -122,7 +121,7 @@ class Queue(unittest.TestCase):
 
     def qrun(self, *args):
         out = io.StringIO()
-        with redirect_stdout(out):
+        with contextlib.redirect_stdout(out):
             self.q.main(list(args))
         return out.getvalue()
 
@@ -359,17 +358,19 @@ class Queue(unittest.TestCase):
         self.quarantine("near-b-review-1", 1)
         return long_root
 
+    @contextlib.contextmanager
     def held_run_lock(self):
+        """Hold <state>/queue/run.lock as a `queue run` does, for the with-block."""
         os.makedirs(os.path.join(self.state, "queue"), exist_ok=True)
         import fcntl
-        fd = os.open(os.path.join(self.state, "queue", "run.lock"), os.O_WRONLY | os.O_CREAT | os.O_APPEND, 0o600)
-        self.addCleanup(os.close, fd)  # closing the descriptor releases the lock
-        fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        with open(os.path.join(self.state, "queue", "run.lock"), "a") as f:
+            fcntl.flock(f, fcntl.LOCK_EX | fcntl.LOCK_NB)
+            yield
 
     def test_status_table_rows_for_every_state(self):
         long_root = self.every_state()
-        self.held_run_lock()  # a run is going: the first unfinished source is the one it works on
-        out = self.qrun("status")
+        with self.held_run_lock():  # a run is going: the first unfinished source is the one it works on
+            out = self.qrun("status")
         lines = out.splitlines()
         self.assertTrue(all(len(x) <= 80 for x in lines[:7]), "the table fits 80 columns")
         self.assertEqual(lines[0].split(), ["SOURCE", "STATE", "FILES", "QUAR", "REVIEW", "CHANGED"])
@@ -465,8 +466,8 @@ class Queue(unittest.TestCase):
         del q["sources"]["pics"]
         jsave(os.path.join(self.state, "queue.json"), q)
         self.assertTrue(self.qrun("status").endswith("next: media-intake queue run --inhibit\n"))
-        self.held_run_lock()
-        self.assertIn("next: nothing yet: the run is going", self.qrun("status"))
+        with self.held_run_lock():
+            self.assertIn("next: nothing yet: the run is going", self.qrun("status"))
 
     def test_status_nothing_waits(self):
         self.synth([("one", "/mnt/d/one", "drive", 2,
