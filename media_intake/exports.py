@@ -182,7 +182,8 @@ def read_icloud(path):
 
 
 def _listing(d):
-    """{NFC name: real name} of the regular .json files and Photo Details CSVs in folder d (no symlinks)."""
+    """({NFC name: real name} of the regular .json files, [Photo Details CSVs]) in folder d (no symlinks);
+    None when d can't be listed."""
     js, cs = {}, []
     try:
         with os.scandir(d) as it:
@@ -195,19 +196,24 @@ def _listing(d):
                 elif low.endswith(".csv") and DETAILS_RX.match(nfc(e.name)):
                     cs.append(e.name)
     except OSError:
-        pass
+        return None  # the folder can't be listed (permissions, unplugged): scan counts it as unreadable
     return js, sorted(cs)
 
 
 def scan(root, files):
     """({rel: {"time", "via", "sidecar", ["lat", "lon"]}}, counts) for the walked media files
-    [(abs path, rel)] whose export metadata was found. counts: google, icloud, places, ambiguous."""
+    [(abs path, rel)] whose export metadata was found. counts: google, icloud, places, ambiguous, and
+    unreadable (folders that couldn't be listed, so their files go without export metadata)."""
     by_dir = {}
     for path, rel in files:
         by_dir.setdefault(os.path.dirname(path), []).append((path, rel))
-    out, counts = {}, dict(google=0, icloud=0, places=0, ambiguous=0)
+    out, counts = {}, dict(google=0, icloud=0, places=0, ambiguous=0, unreadable=0)
     for d, items in sorted(by_dir.items()):
-        js, cs = _listing(d)
+        listing = _listing(d)
+        if listing is None:
+            counts["unreadable"] += 1
+            continue
+        js, cs = listing
         if not js and not cs:
             continue
         names = [os.path.basename(p) for p, _ in items]

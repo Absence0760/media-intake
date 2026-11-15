@@ -9,6 +9,7 @@ Synthetic exports only, in a throwaway HOME: fabricated Takeout folders with JSO
 and row is made up here from the naming rules in docs/intake.md ("Cloud exports").
 """
 import datetime, hashlib, json, os, shutil, subprocess, sys, tempfile, types, unittest
+from unittest import mock
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import support  # noqa: E402
@@ -40,6 +41,17 @@ def takeout_json(path, ts, geo=(0.0, 0.0), geo_exif=(0.0, 0.0), title=None):
          "geoDataExif": {"latitude": geo_exif[0], "longitude": geo_exif[1], "altitude": 0.0}}
     with open(path, "w") as f:
         json.dump(d, f)
+
+
+def sha_tree(root):
+    """{rel: sha256} of every file under root."""
+    out = {}
+    for r, _, fs in os.walk(root):
+        for n in fs:
+            p = os.path.join(r, n)
+            with open(p, "rb") as f:
+                out[os.path.relpath(p, root)] = hashlib.sha256(f.read()).hexdigest()
+    return out
 
 
 def jpg(path, seed):
@@ -154,7 +166,7 @@ class Scan(unittest.TestCase):
         self.assertEqual(out[rel("IMG_0042.MP4")]["time"], "2019-05-10 12:00:00Z", "Live Photo video: the still's")
         for n in (a, b, "IMG_0004.jpg", "IMG_0005.jpg"):
             self.assertNotIn(rel(n), out, n)
-        self.assertEqual(c, dict(google=8, icloud=0, places=2, ambiguous=2))
+        self.assertEqual(c, dict(google=8, icloud=0, places=2, ambiguous=2, unreadable=0))
 
     def test_icloud_csv(self):
         d = os.path.join(self.root, "iCloud Photos Part 1 of 1", "Photos")
@@ -174,7 +186,50 @@ class Scan(unittest.TestCase):
         r = os.path.join("iCloud Photos Part 1 of 1", "Photos")
         self.assertEqual(out, {os.path.join(r, "IMG_0501.HEIC"): dict(
             time="2015-03-03 19:45:00Z", via="icloud", sidecar=os.path.join(r, "Photo Details.csv"))})
-        self.assertEqual(c, dict(google=0, icloud=1, places=0, ambiguous=1))
+        self.assertEqual(c, dict(google=0, icloud=1, places=0, ambiguous=1, unreadable=0))
+
+
+    def test_limits_encoding_and_symlinks(self):
+        d = os.path.join(self.root, "export")
+        touch(os.path.join(d, "IMG_0101.jpg"))
+        takeout_json(os.path.join(d, "IMG_0101.jpg.supplemental-metadata.json"), T2019)
+        with open(os.path.join(d, "IMG_0101.jpg.supplemental-metadata.json"), "r+") as f:
+            doc = json.load(f)
+            doc["description"] = "x" * exports.JSON_MAX  # a valid sidecar, but over the size cap
+            f.seek(0)
+            json.dump(doc, f)
+        head = "imgName,fileChecksum,favorite,hidden,deleted,originalCreationDate,viewCount,importDate\n"
+        row = '{},s,no,no,no,"Tuesday March 3,2015 7:45 PM GMT",0,"x"\n'
+        big = os.path.join(self.root, "big")
+        touch(os.path.join(big, "IMG_0102.jpg"))
+        with open(os.path.join(big, "Photo Details.csv"), "w") as f:
+            f.write(head + row.format("IMG_0102.jpg") + "IMG_9999.jpg,pad\n" * 50)
+        latin = os.path.join(self.root, "latin")
+        touch(os.path.join(latin, "IMG_0103.jpg"))
+        with open(os.path.join(latin, "Photo Details.csv"), "wb") as f:
+            f.write((head + row.format("IMG_0103.jpg") + row.format("caf\xe9.jpg")).encode("latin-1"))
+        link = os.path.join(self.root, "link")
+        touch(os.path.join(link, "IMG_0104.jpg"))
+        real = os.path.join(self.root, "real-details.csv")
+        with open(real, "w") as f:
+            f.write(head + row.format("IMG_0104.jpg"))
+        os.symlink(real, os.path.join(link, "Photo Details.csv"))
+        with mock.patch.object(exports, "CSV_MAX", 512):
+            out, c = exports.scan(self.root, self.files())
+        self.assertEqual(out, {}, "an oversized JSON or CSV, a non-UTF-8 CSV and a symlinked CSV are all ignored")
+        self.assertEqual(c, dict(google=0, icloud=0, places=0, ambiguous=0, unreadable=0))
+        with mock.patch.object(exports, "CSV_MAX", 1 << 20):  # the same CSV under the cap is read
+            out, _ = exports.scan(self.root, self.files())
+        self.assertEqual(list(out), [os.path.join("big", "IMG_0102.jpg")])
+
+    def test_unreadable_folder_counted(self):
+        d = os.path.join(self.root, "export")
+        touch(os.path.join(d, "IMG_0201.jpg"))
+        takeout_json(os.path.join(d, "IMG_0201.jpg.supplemental-metadata.json"), T2019)
+        files = self.files()  # listed first: os.walk uses scandir too
+        with mock.patch.object(exports.os, "scandir", side_effect=PermissionError(13, "denied")):
+            out, c = exports.scan(self.root, files)
+        self.assertEqual((out, c["unreadable"], c["google"]), ({}, 1, 0))
 
 
 class Dates(unittest.TestCase):
@@ -244,9 +299,17 @@ class StagePlan(unittest.TestCase):
         with open(os.path.join(self.state, "index.json"), "w") as f:
             json.dump({os.path.join(self.lib, "2019/2019-05/IMG_0009.jpg"): {"sha": sha, "size": 1}}, f)
 
-        out = self.intake("stage", os.path.dirname(os.path.dirname(gp)), "--kind", "folder", "--batch", "takeout-1")
-        self.assertIn("staged 4 media files", out)
-        self.assertIn("Google Takeout 4, iCloud 0, with a place 1, ambiguous (ignored) 0", out)
+        ic = os.path.join(os.path.dirname(os.path.dirname(gp)), "iCloud Photos", "Photos")
+        jpg(os.path.join(ic, "IMG_0601.jpg"), 6)
+        with open(os.path.join(ic, "Photo Details.csv"), "w") as f:
+            f.write("imgName,fileChecksum,favorite,hidden,deleted,originalCreationDate,viewCount,importDate\n"
+                    'IMG_0601.jpg,s,no,no,no,"Tuesday March 3,2015 7:45 PM GMT",0,"x"\n')
+        src = os.path.dirname(os.path.dirname(gp))
+        before = sha_tree(src)
+        out = self.intake("stage", src, "--kind", "folder", "--batch", "takeout-1")
+        self.assertIn("staged 5 media files", out)
+        self.assertIn("Google Takeout 4, iCloud 1, with a place 1, ambiguous (ignored) 0", out)
+        self.assertNotIn("could not be read", out)
         b = os.path.join(self.state, "batches", "takeout-1")
         with open(os.path.join(b, "manifest.json")) as f:
             man = json.load(f)
@@ -269,6 +332,9 @@ class StagePlan(unittest.TestCase):
         self.assertIn("duplicate of", alb["why"])
         lib = plan[os.path.join("Takeout", "Google Photos", "Photos from 2019", "IMG_0009.jpg")]
         self.assertEqual((lib["action"], lib["why"].split(" ")[:3]), ("delete", ["duplicate", "of", "library"]))
+        ip = plan[os.path.join("iCloud Photos", "Photos", "IMG_0601.jpg")]
+        self.assertEqual((ip["date_src"], ip["date"]), ("export", "2015-03-03T19:45:00"))
+        self.assertEqual(sha_tree(src), before, "the export's JSON, CSV and media are never written")
 
 
 class TagPlace(unittest.TestCase):
@@ -297,6 +363,67 @@ class TagPlace(unittest.TestCase):
         got = {p: (t.get("lat"), t.get("lon")) for p, t in written}
         self.assertEqual(got, {own: (1.0, 2.0), plain: (48.8584, 2.2945)}, "the file's own GPS wins")
         self.assertEqual(sorted(asked), [[1.0, 2.0], [48.8584, 2.2945]], "both geocoded offline")
+
+
+
+def gps_jpg(path, lat, lon, seed):
+    """A JPEG with its own EXIF GPS (north/east only)."""
+    from PIL import Image
+    ex = Image.Exif()
+    ex[0x8769] = {36867: "2019:05:10 12:00:00"}
+
+    def dms(v):
+        d = int(v)
+        m = int((v - d) * 60)
+        return (float(d), float(m), round(((v - d) * 60 - m) * 60, 3))
+    ex[0x8825] = {1: "N", 2: dms(lat), 3: "E", 4: dms(lon)}  # set whole: Pillow 10.2 drops get_ifd() writes
+    os.makedirs(os.path.dirname(path), exist_ok=True)
+    Image.new("RGB", (640, 480), (40 * seed % 255, 60, 120)).save(path, exif=ex, quality=90)
+
+
+@unittest.skipUnless(shutil.which("exiftool"), "exiftool missing")
+class TagPlaceExiftool(unittest.TestCase):
+    """tag_files with real exiftool (read_gps, sidecars) and a faked geocoder (test_tagging's real-geocoder
+    cases need the venv, which CI doesn't have): the export place lands in the sidecar only without file GPS."""
+
+    def test_sidecars(self):
+        support.check_hermetic()
+        import intake
+        tmp = tempfile.mkdtemp(prefix="exports-tag-real-")
+        self.addCleanup(shutil.rmtree, tmp, True)
+        plain, own, legacy = (os.path.join(tmp, n) for n in ("plain.jpg", "own.jpg", "legacy.jpg"))
+        jpg(plain, 1)
+        gps_jpg(own, 10.5, 20.25, 2)
+        jpg(legacy, 3)
+        before = sha_tree(tmp)
+        fakes = dict(guard_label=lambda: types.SimpleNamespace(refused=lambda paths, state: []),
+                     venv_json=lambda script, pts, extra=(): [None] * len(pts))
+        saved = {k: getattr(intake, k) for k in fakes}
+        self.addCleanup(lambda: [setattr(intake, k, v) for k, v in saved.items()])
+        for k, v in fakes.items():
+            setattr(intake, k, v)
+        intake.tag_files([(plain, "Personal", "photo", None, None, [48.8584, 2.2945]),
+                          (own, "Personal", "photo", None, None, [1.0, 2.0]),
+                          (legacy, "Personal", "photo", None, None)], labels=False)
+
+        def side(p):
+            x = intake.sidecar(p)
+            self.assertEqual(x, p + ".xmp")
+            r = subprocess.run(["exiftool", "-j", "-n", "-XMP-exif:GPSLatitude", "-XMP-exif:GPSLongitude", x],
+                               capture_output=True, text=True, check=True)
+            row = json.loads(r.stdout)[0]
+            return row.get("GPSLatitude"), row.get("GPSLongitude")
+        lat, lon = side(plain)
+        self.assertAlmostEqual(lat, 48.8584, places=4)
+        self.assertAlmostEqual(lon, 2.2945, places=4)
+        lat, lon = side(own)
+        self.assertAlmostEqual(lat, 10.5, places=3, msg="the file's own GPS wins")
+        self.assertAlmostEqual(lon, 20.25, places=3)
+        self.assertEqual(side(legacy), (None, None), "a 5-tuple: no export place, no GPS")
+        after = sha_tree(tmp)
+        self.assertEqual({k: v for k, v in after.items() if not k.endswith(".xmp")}, before, "originals untouched")
+        self.assertEqual(sorted(k for k in after if k.endswith(".xmp")),
+                         ["legacy.jpg.xmp", "own.jpg.xmp", "plain.jpg.xmp"])
 
 
 if __name__ == "__main__":

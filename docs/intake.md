@@ -360,7 +360,10 @@ camera's clock).
   by these exact candidate names, compared in Unicode NFC, never by a loose
   prefix: when two media files would claim the same JSON (two long names
   with the same first 46 characters), neither gets it (counted as
-  ambiguous). A JSON without a valid `photoTakenTime` is not used.
+  ambiguous). A JSON without a valid `photoTakenTime` is not used. A folder
+  that can't be listed when `stage` reads the metadata is skipped and
+  reported (`skipped N folders whose cloud export metadata could not be
+  read`); its files are staged without export dates.
 - **iCloud Photos**: `Photo Details.csv` (or `Photos Details*.csv`,
   numbered variants too) in the same folder as the media, header
   `imgName,fileChecksum,favorite,hidden,deleted,originalCreationDate,viewCount,importDate`;
