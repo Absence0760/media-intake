@@ -58,6 +58,10 @@ The goal: someone else can install it on Fedora, import a phone, and trust it.
       anywhere). Video frame sampling (scans, labels, search, thumbnails) now reads the clip through
       a link in a private work folder whose path is checked, with the argv built as a list; an unsafe
       work path skips GStreamer and the clip stays "not checked" (`scan_sensitive.gst_frames_command`).
+- [x] **Quarantine is Erase-only on the review page:** plain Trash on a quarantined item moved
+      that one file and left its messaging copies and near-copies behind. The page offers no
+      Trash (button or T) there and says why; the server refuses a trash decision on one (400,
+      nothing written). The `trash` command still accepts a quarantine path from the CLI.
 
 ### Dates and devices
 - [x] Implausible camera dates (GoPro with an unset clock writes 2015-12-31/2016-01-01):
@@ -175,5 +179,3 @@ The goal: someone else can install it on Fedora, import a phone, and trust it.
   that is off.
 - Gallery thumbnails are cached by content, so rotating one copy also rotates the
   thumbnail of its identical twin (the twin's sidecar is unchanged).
-- Plain Trash on a quarantined item on the review page trashes that file only; it
-  doesn't sweep copies elsewhere the way Erase does.

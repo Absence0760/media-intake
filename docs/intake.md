@@ -336,7 +336,8 @@ verify-gone. Its sha256 and size (no name) go to `trashed.json`, and `plan`
 marks any later copy "delete" with why "trashed before", so it never comes
 back from another device or a backup. Anything private goes through `erase`
 (or `forget` for files already in the library). The review page offers Trash
-(T) on every item.
+(T) on Review and Maybe trash items, never on a quarantined one (Erase or
+Keep only: [review-ui.md](review-ui.md)).
 
 `forget FILE...` checks every file first: one missing (or a symlink, or not a
 regular file) refuses the whole command, and without `--yes` it asks (type

@@ -24,8 +24,10 @@ was a copy of when one survives in the library (`root_of`), else gets a note
 with the erase date; the erased file is never looked for. quarantine/xcheck-<batch> (quarantine-only: no
 plan or manifest) holds messaging copies of library photos and videos; each entry's `of`
 is shown as the original, same roots check, and its erase gets no --phone.
-Every item can also be trashed (`intake.py trash`: plain delete for junk that
-isn't private, remembered so it never comes back). --maybe-trash adds a tab of
+Review and Maybe trash items can also be trashed (`intake.py trash`: plain
+delete for junk that isn't private, remembered so it never comes back).
+Quarantined items can't: they are flagged sensitive, so they are erased or
+kept (submit refuses a trash decision on one). --maybe-trash adds a tab of
 library files `suggest-trash` listed (maybe-trash.json): Keep runs `not-trash`.
 Bursts (bursts.py: one device, shots a moment apart) show as one stack per tab; "Keep this one, trash the
 rest" only sets those decisions (Keep on one, Trash on the others; Erase in Quarantine, where every shot is
@@ -475,11 +477,10 @@ class Runner:
             quar = os.path.join(STATE, "quarantine", qb)
             kept = [it for i, it in q_items if dec[i] == "keep"]
             erase = [it for i, it in q_items if dec[i] == "erase"]
-            trash = [it["path"] for i, it in q_items if dec[i] == "trash"]
-            self.log(f"{qb}: keep {len(kept)}, erase {len(erase)}, trash {len(trash)}")
-            if trash and self.run(["trash", "--batch", qb] + trash + self.phone_args(qb), f"trash {qb}") != 0:
-                self.log(f"{qb}: trash failed; stopping before any erase")
+            if len(kept) + len(erase) != len(q_items):  # submit refuses these; never trash a flagged file
+                self.log(f"{qb}: a quarantined item has a decision other than keep or erase; stopping")
                 return False
+            self.log(f"{qb}: keep {len(kept)}, erase {len(erase)}")
             if kept:
                 if self.run(["release", qb] + [it["path"] for it in kept], f"release {qb}") != 0:
                     self.log(f"{qb}: release failed; stopping before any erase")
@@ -509,6 +510,11 @@ class Runner:
 def run_job(job):
     """jobs.py's entry point for runner "review_ui"."""
     return Runner(job, job.spec).execute()
+
+
+# Decisions each tab takes. Quarantine is Erase-only (no plain trash): its items are flagged sensitive, and only
+# erase sweeps their copies (messaging copies, near-copies, the phone and drive) and logs the erase.
+ALLOWED = {"quarantine": ("keep", "erase"), "review": ("keep", "delete", "trash"), "maybe": ("keep", "trash")}
 
 
 class App:
@@ -577,9 +583,11 @@ class App:
         dec = {}
         for i, it in enumerate(self.items):
             d = raw.get(str(i))
-            allowed = {"quarantine": ("keep", "erase", "trash"), "review": ("keep", "delete", "trash"),
-                       "maybe": ("keep", "trash")}[it["tab"]]
-            if d not in allowed:
+            if it["tab"] == "quarantine" and d == "trash":
+                # Plain trash moves one file and leaves its messaging copies and near-copies: a flagged
+                # (sensitive) item is erased everywhere or kept, never trashed. Refused before anything is written.
+                return 400, "a quarantined item can't be trashed: erase or keep it"
+            if d not in ALLOWED[it["tab"]]:
                 return 409, "every item needs a decision"
             dec[i] = d
         if set(raw) - {str(i) for i in range(len(self.items))}:
@@ -931,6 +939,7 @@ main{padding:16px;max-width:1100px;margin:0 auto}
 .name{font-weight:600;word-break:break-all;margin:8px 0 4px}
 .labels span{display:inline-block;background:var(--bg);border:1px solid var(--line);border-radius:999px;padding:2px 10px;margin:2px 4px 2px 0;font-size:15px}
 .why{color:var(--mut)}
+.notrash{flex:1;align-self:center;text-align:center;color:var(--mut);font-size:15px}
 .btns{display:flex;gap:10px;margin-top:10px}
 .btns button{flex:1;font:inherit;font-weight:700;padding:14px;border-radius:8px;border:2px solid var(--line);background:var(--bg);color:var(--fg);cursor:pointer}
 .btns .k[aria-pressed=true]{background:var(--keep);border-color:var(--keep);color:#fff}
@@ -969,7 +978,7 @@ pre{white-space:pre-wrap;word-break:break-all;font-size:15px;background:var(--bg
  <section id="run" class="panel"><h2 id="runh">Running…</h2><p id="runs" class="help"></p><pre id="out"></pre></section>
  <div id="lists">
   <p class="note" id="last" hidden></p>
-  <p class="help" id="helpq">K = keep (back to the library), E = erase everywhere, T = trash (plain delete for junk that isn't private). ← → or ↑ ↓ move between items.</p>
+  <p class="help" id="helpq">K = keep (back to the library), E = erase everywhere. No Trash here: these are flagged sensitive, and only Erase removes their copies too. ← → or ↑ ↓ move between items.</p>
   <p class="help" id="helpb" hidden>A stack is a burst (shots from one camera a moment apart): X opens or closes it, and "Keep this one" on a shot decides the whole stack: the rest are erased everywhere in Quarantine, trashed elsewhere. Nothing is deleted until you submit and type ERASE.</p>
   <p class="help" id="helpr" hidden>K = keep, E or D = delete (near-duplicates and junk), T = trash (delete, and never take it in again). ← → or ↑ ↓ move between items.</p>
   <p class="help" id="helpm" hidden>Suggested junk from your library. K = keep (never suggested again), T = trash. Nothing is deleted until you submit. ← → or ↑ ↓ move between items.</p>
@@ -1006,6 +1015,8 @@ function mediaEl(kind,src,alt){const m=el("div","media");
 function metaEl(x){return el("div","meta",`${x.res} · ${x.size} · ${x.date} · ${x.folder}`)}
 function side(title,m,x){const s=el("div","side");s.append(el("h3",null,title),m,metaEl(x));return s}
 function second(it){return it.tab==="quarantine"?"erase":it.tab==="review"?"delete":null}
+/* Quarantine is Erase-only: plain trash would leave a flagged file's copies behind (the server refuses it too). */
+function canTrash(it){return it.tab!=="quarantine"}
 const TABS=["quarantine","review","maybe"],TID={quarantine:"#tq",review:"#tr",maybe:"#tm"},TNAME={quarantine:"Quarantine",review:"Review",maybe:"Maybe trash"};
 function render(){
  const L=$("#list");L.replaceChildren();
@@ -1030,10 +1041,12 @@ function render(){
   if(it.reasons.length){const lb=el("div","labels");it.reasons.forEach(r=>lb.append(el("span",null,r)));c.append(lb)}
   if(it.why)c.append(el("div","why",it.why));
   if(it.tab==="quarantine"&&!it.releasable)c.append(el("div","why","No library place: Keep leaves it in quarantine and skips this batch's erase."));
-  const b=el("div","btns"),k=el("button","k","Keep (K)"),t=el("button","t","Trash (T)");
-  k.onclick=()=>{decide(it,"keep",n,false)};t.onclick=()=>{decide(it,"trash",n,false)};b.append(k);
+  const b=el("div","btns"),k=el("button","k","Keep (K)");
+  k.onclick=()=>{decide(it,"keep",n,false)};b.append(k);
   if(second(it)){const e=el("button","e",(it.tab==="quarantine"?"Erase":"Delete")+" (E)");e.onclick=()=>{decide(it,second(it),n,false)};b.append(e)}
-  b.append(t);c.append(b);
+  if(canTrash(it)){const t=el("button","t","Trash (T)");t.onclick=()=>{decide(it,"trash",n,false)};b.append(t)}
+  else b.append(el("span","notrash","Sensitive: erase or keep"));
+  c.append(b);
   if(it.burst!=null&&open[it.burst]){const o1=el("button","one",oneLabel(it));o1.onclick=()=>{keepOne(it)};c.append(o1)}
   c.onclick=ev=>{if(ev.target.tagName!=="BUTTON"&&ev.target.tagName!=="VIDEO"){cur[tab]=n;paint(false)}};
   L.append(c);
@@ -1044,7 +1057,7 @@ function paint(scroll){
  visibleOf(tab).forEach((it,n)=>{const c=$("#c"+it.id);if(!c)return;
   const d=dec[it.id],e=c.querySelector(".e");
   c.classList.toggle("focus",n===cur[tab]);c.setAttribute("aria-current",n===cur[tab]);c.classList.toggle("keep",d==="keep");c.classList.toggle("erase",d==="erase"||d==="delete");c.classList.toggle("trash",d==="trash");
-  c.querySelector(".k").setAttribute("aria-pressed",d==="keep");if(e)e.setAttribute("aria-pressed",d==="erase"||d==="delete");c.querySelector(".t").setAttribute("aria-pressed",d==="trash");
+  c.querySelector(".k").setAttribute("aria-pressed",d==="keep");if(e)e.setAttribute("aria-pressed",d==="erase"||d==="delete");const t=c.querySelector(".t");if(t)t.setAttribute("aria-pressed",d==="trash");
   const bd=c.querySelector(".badge");if(bd){const ms=members(it),u=ms.filter(m=>!dec[m.id]).length;
    bd.textContent=`Burst: ${ms.length} shots`+(u?`, ${u} undecided`:", all decided")}
   if(scroll&&n===cur[tab])c.scrollIntoView({block:"center",behavior:"smooth"});});
@@ -1062,7 +1075,7 @@ document.addEventListener("keydown",ev=>{
  const its=visibleOf(tab),it=its[cur[tab]];const k=ev.key.toLowerCase();
  if(k==="k"&&it){decide(it,"keep",cur[tab],true);ev.preventDefault()}
  else if((k==="e"||k==="d")&&it&&second(it)){decide(it,second(it),cur[tab],true);ev.preventDefault()}
- else if(k==="t"&&it){decide(it,"trash",cur[tab],true);ev.preventDefault()}
+ else if(k==="t"&&it&&canTrash(it)){decide(it,"trash",cur[tab],true);ev.preventDefault()}
  else if(k==="x"&&it&&it.burst!=null){toggleStack(it);ev.preventDefault()}
  else if(k==="arrowright"||k==="arrowdown"||k==="j"){move(1);ev.preventDefault()}
  else if(k==="arrowleft"||k==="arrowup"){move(-1);ev.preventDefault()}
@@ -1071,7 +1084,7 @@ $("#submit").onclick=()=>{
  const n=(t,d)=>itemsOf(t).filter(i=>dec[i.id]===d).length;
  const dv=[];if(data.devices.phone)dv.push("phone ("+data.devices.phone+")");if(data.devices.drive)dv.push("backup drive ("+data.devices.drive+")");
  const parts=[];
- if(itemsOf("quarantine").length)parts.push(`Quarantine: ${n("quarantine","keep")} keep / ${n("quarantine","erase")} erase / ${n("quarantine","trash")} trash; erased from this computer`+(dv.length?" and "+dv.join(" and "):" only (no phone or drive passed)"));
+ if(itemsOf("quarantine").length)parts.push(`Quarantine: ${n("quarantine","keep")} keep / ${n("quarantine","erase")} erase; erased from this computer`+(dv.length?" and "+dv.join(" and "):" only (no phone or drive passed)"));
  if(itemsOf("review").length)parts.push(`Review: ${n("review","keep")} keep / ${n("review","delete")} delete / ${n("review","trash")} trash`);
  if(itemsOf("maybe").length)parts.push(`Maybe trash: ${n("maybe","keep")} keep / ${n("maybe","trash")} trash`);
  $("#summary").textContent=parts.join(". ")+(data.devices.phone?". Trashed items are also deleted from the phone (not xcheck copies).":".");

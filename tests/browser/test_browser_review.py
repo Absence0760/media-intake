@@ -4,7 +4,7 @@
   .venv-browser/bin/python -I -m unittest discover -s tests/browser -t tests -p test_browser_review.py
 
 Covers what the HTTP tests in tests/test_review_ui.py can't: the K / E / D / T keys and the
-arrows on the focused card, Submit unlocking only when every item is decided, the confirm
+arrows on the focused card, no Trash (button or T) on a quarantined card, Submit unlocking only when every item is decided, the confirm
 panel with ERASE typed, HTTP Range while a card's video loads and seeks, and the run's
 progress, including re-attaching to a running job after a reload.
 
@@ -85,7 +85,8 @@ class ReviewBrowserTest(B.BrowserCase):
         return page.locator(f'[data-item="{rel}"]')
 
     def pressed(self, page, rel, which):
-        """Expect exactly the decision button `which` (Keep / Erase / Delete / Trash) pressed on the card."""
+        """Expect exactly the decision button `which` (Keep / Erase / Delete / Trash; None: no decision)
+        pressed on the card."""
         c = self.card(page, rel)
         for name in ("Keep", "Erase", "Delete", "Trash"):
             btn = c.get_by_role("button", name=re.compile(rf"^{name} \("))
@@ -96,17 +97,17 @@ class ReviewBrowserTest(B.BrowserCase):
         B.expect(page.locator('[data-item][aria-current="true"]')).to_have_attribute("data-item", rel)
 
     def decide_all(self, page):
-        """Keys only: K, E, T in Quarantine; D, K in Review. Returns the decisions by path."""
+        """Keys only: K, E, E in Quarantine (no Trash there); D, K in Review. Returns the decisions by path."""
         q = self.cards(page)
         self.assertEqual(sorted(q), ["DCIM/Camera/a.jpg", "DCIM/Camera/b.png", "DCIM/Camera/c.mp4"])
-        for k in ("k", "e", "t"):
+        for k in ("k", "e", "e"):
             page.keyboard.press(k)
         page.get_by_role("button", name=re.compile(r"^Review \(")).click()
         r = self.cards(page)
         self.assertEqual(sorted(r), ["DCIM/Camera/r1.jpg", "Pictures/Screenshots/r2.png"])
         page.keyboard.press("d")
         page.keyboard.press("k")
-        return dict(zip(q, ("keep", "erase", "trash"))), dict(zip(r, ("delete", "keep")))
+        return dict(zip(q, ("keep", "erase", "erase"))), dict(zip(r, ("delete", "keep")))
 
     # ------------------------------------------------------------ keys, Submit and the ERASE panel
     def test_keys_and_confirm(self):
@@ -131,8 +132,11 @@ class ReviewBrowserTest(B.BrowserCase):
         self.focused(page, q[2])
         page.keyboard.press("ArrowDown")  # stops at the last card
         self.focused(page, q[2])
-        page.keyboard.press("t")
-        self.pressed(page, q[2], "Trash")
+        page.keyboard.press("t")  # Quarantine is Erase-only: T decides nothing here
+        self.pressed(page, q[2], None)
+        self.focused(page, q[2])
+        page.keyboard.press("e")
+        self.pressed(page, q[2], "Erase")
         page.keyboard.press("ArrowUp")
         page.keyboard.press("k")
         self.pressed(page, q[1], "Keep")
@@ -155,7 +159,7 @@ class ReviewBrowserTest(B.BrowserCase):
         submit.click()
         typed, run = page.get_by_role("textbox", name="Type ERASE"), page.get_by_role("button", name="Run")
         B.expect(typed).to_be_focused()
-        B.expect(page.get_by_text("Quarantine: 1 keep / 1 erase / 1 trash")).to_be_visible()
+        B.expect(page.get_by_text("Quarantine: 1 keep / 2 erase;", exact=False)).to_be_visible()
         B.expect(page.get_by_text("Review: 1 keep / 1 delete / 0 trash", exact=False)).to_be_visible()
         B.expect(run).to_be_disabled()
         page.keyboard.press("k")  # keys do nothing while the panel is up (the focus is in the textbox)
@@ -177,13 +181,71 @@ class ReviewBrowserTest(B.BrowserCase):
         B.expect(page.get_by_role("heading", name="Done. You can close this tab.")).to_be_visible()
         B.expect(page.locator("pre")).to_contain_text("verify-gone: no copies remain")
         cmds = [c[0] for c in self.calls()]
-        self.assertIn("trash", cmds)
+        self.assertNotIn("trash", cmds)
         self.assertIn("release", cmds)
         self.assertIn("erase", cmds)
         with open(os.path.join(self.state, "batches", BATCH, "review-decisions.json")) as f:
             saved = json.load(f)
         self.assertIn("keep", json.dumps(saved))
         self.assertIn("erase", json.dumps(saved))
+
+    def test_quarantined_items_offer_no_trash_and_erase_still_runs(self):
+        """Quarantine is Erase-only: no Trash button or T key on a quarantined card, a hint says why, and the
+        server refuses a trash decision sent anyway. Review keeps Trash. Erase runs as before."""
+        s = self.start()
+        page = self.new_page()
+        self.open(page, s)
+        trash = re.compile(r"^Trash \(")
+        q = self.cards(page)
+        for rel in q:
+            c = self.card(page, rel)
+            B.expect(c.get_by_role("button", name=trash)).to_have_count(0)
+            B.expect(c.get_by_text("Sensitive: erase or keep")).to_be_visible()
+            B.expect(c.get_by_role("button", name=re.compile(r"^Erase \("))).to_be_visible()
+        B.expect(page.get_by_text("No Trash here", exact=False)).to_be_visible()
+        self.focused(page, q[0])
+        page.keyboard.press("t")
+        self.pressed(page, q[0], None)
+        self.focused(page, q[0])  # T neither decides nor moves on
+        B.expect(page.get_by_text("5 undecided (quarantine 3, review 2)")).to_be_visible()
+        # The server refuses it too: a trash decision posted straight to the API is a 400, nothing runs.
+        status = page.evaluate("""async () => {
+          const d = {}; data.items.forEach(i => d[i.id] = i.tab === "quarantine" ? "trash" : "keep");
+          const r = await fetch("/api/submit", {method: "POST", credentials: "same-origin",
+            headers: {"Content-Type": "application/json", "X-CSRF": CSRF},
+            body: JSON.stringify({decisions: d, confirm: "ERASE"})});
+          return [r.status, (await r.json()).error];
+        }""")
+        self.assertEqual(status, [400, "a quarantined item can't be trashed: erase or keep it"])
+        self.assertEqual(self.calls(), [])
+        # Erase (button and key) decides as before.
+        self.card(page, q[0]).get_by_role("button", name=re.compile(r"^Erase \(")).click()
+        self.pressed(page, q[0], "Erase")
+        self.card(page, q[1]).click()
+        page.keyboard.press("e")
+        page.keyboard.press("e")
+        for rel in q:
+            self.pressed(page, rel, "Erase")
+        # Review keeps Trash, by button and by T.
+        page.get_by_role("button", name="Review (2)").click()
+        r = self.cards(page)
+        for rel in r:
+            B.expect(self.card(page, rel).get_by_role("button", name=trash)).to_be_visible()
+            B.expect(self.card(page, rel).get_by_text("Sensitive: erase or keep")).to_have_count(0)
+        page.keyboard.press("t")
+        self.pressed(page, r[0], "Trash")
+        page.keyboard.press("k")
+        page.get_by_role("button", name="Submit").click()
+        B.expect(page.get_by_text("Quarantine: 0 keep / 3 erase;", exact=False)).to_be_visible()
+        page.get_by_role("textbox", name="Type ERASE").fill("ERASE")
+        page.get_by_role("button", name="Run").click()
+        B.expect(page.locator("[data-job]")).to_have_attribute("data-job", "done")
+        calls = self.calls()
+        self.assertIn(["erase", BATCH, "--yes"], calls)
+        self.assertEqual([c for c in calls if c[0] == "trash"],
+                         [["trash", "--batch", BATCH,
+                           os.path.join(self.state, "batches", BATCH, "review", r[0])]], "only the review item")
+        self.assertFalse(os.path.exists(os.path.join(self.state, "quarantine", BATCH)))
 
     # ------------------------------------------------------------ video: Range while loading and seeking
     def test_quarantine_burst_keep_one_erases_the_rest(self):
