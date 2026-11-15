@@ -11,7 +11,7 @@ Share-safe copy and Trash suggestions' Apply never carry a token. Sidecars are w
 writer); UndoBlockTest runs in-process and needs none.
 """
 import os, shutil, subprocess, sys, tempfile, unittest
-from unittest import mock
+import unittest.mock
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import support  # noqa: E402  (hermetic config; puts media_intake on sys.path)
@@ -216,7 +216,7 @@ class UndoTest(unittest.TestCase):
         with open(launcher, "w") as f:
             f.write(f"import sys\nsys.path.insert(0, {G.HERE!r})\nimport gallery\ngallery.UNDO_KEEP = 2\n"
                     "sys.exit(gallery.main())\n")
-        with mock.patch.object(G, "GALLERY", launcher):
+        with unittest.mock.patch.object(G, "GALLERY", launcher):
             s = self.start()
         first, second, third = (self.act(s, "/api/rotate", {"ids": [self.ids[n]], "dir": "cw"})
                                 for n in ("a.jpg", "b.jpg", "c.jpg"))

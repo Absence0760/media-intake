@@ -361,9 +361,10 @@ class Queue(unittest.TestCase):
 
     def held_run_lock(self):
         os.makedirs(os.path.join(self.state, "queue"), exist_ok=True)
-        f = self.enterContext(open(os.path.join(self.state, "queue", "run.lock"), "a"))  # closed at cleanup
         import fcntl
-        fcntl.flock(f, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        fd = os.open(os.path.join(self.state, "queue", "run.lock"), os.O_WRONLY | os.O_CREAT | os.O_APPEND, 0o600)
+        self.addCleanup(os.close, fd)  # closing the descriptor releases the lock
+        fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
 
     def test_status_table_rows_for_every_state(self):
         long_root = self.every_state()
