@@ -7,7 +7,7 @@ Every clip is an ffmpeg lavfi pattern made here (mandelbrot zooms, so its frames
 trimmed copy is a real test; testsrc is the different clip). `plan` and `apply` are the real intake.py in a
 throwaway HOME with the hermetic config. No real video, library or state folder is touched.
 """
-import json, os, shutil, subprocess, sys, tempfile, unittest
+import hashlib, json, os, shutil, subprocess, sys, tempfile, unittest
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import support  # noqa: E402
@@ -17,6 +17,24 @@ import videohash  # noqa: E402  (support put media_intake on sys.path)
 
 INTAKE = os.path.join(support.PKG, "intake.py")
 PY = sys.executable
+
+
+def have_x264():
+    """ffmpeg and ffprobe on PATH, and an ffmpeg that encodes with libx264 (the clips here are H.264)."""
+    if not (shutil.which("ffmpeg") and shutil.which("ffprobe")):
+        return False
+    r = subprocess.run(["ffmpeg", "-hide_banner", "-encoders"], capture_output=True, text=True,
+                       stdin=subprocess.DEVNULL)
+    return " libx264 " in r.stdout
+
+
+X264 = have_x264()
+NEEDS = "ffmpeg/ffprobe missing, or this ffmpeg has no libx264 encoder"
+
+
+def sha(p):
+    with open(p, "rb") as f:
+        return hashlib.sha256(f.read()).hexdigest()
 
 
 def ff(*args):
@@ -43,6 +61,7 @@ def junk(path):
     return path
 
 
+@unittest.skipUnless(X264, NEEDS)
 class Hash(unittest.TestCase):
     """video_hash and near on their own."""
 
@@ -97,12 +116,41 @@ class Hash(unittest.TestCase):
         self.assertEqual(videohash.frame_dhash(list(range(255, 255 - 72 * 3, -3))), (1 << 64) - 1,
                          "each pixel brighter than its right neighbour sets every bit")
 
+    def test_protocol_like_names_are_read_as_files(self):
+        """A relative clip path named like an ffmpeg protocol (and in a folder named like one) is passed as
+        file:<absolute path>; no argument ffmpeg or ffprobe gets starts with the protocol."""
+        old = os.getcwd()
+        os.chdir(self.tmp)
+        self.addCleanup(os.chdir, old)
+        rels = ["concat:x.mp4", "http:x.mp4", os.path.join("concat:x.mp4.d", "http:x.mp4")]
+        for rel in rels:
+            os.makedirs(os.path.dirname(rel) or ".", exist_ok=True)
+            shutil.copyfile(self.a, rel)
+        calls, real = [], videohash.subprocess.run
+
+        def spy(argv, *a, **kw):
+            calls.append(list(argv))
+            return real(argv, *a, **kw)
+
+        videohash.subprocess.run = spy
+        self.addCleanup(setattr, videohash.subprocess, "run", real)
+        for rel in rels:
+            del calls[:]
+            frames, note = videohash.video_hash(rel, work=os.path.join(self.tmp, "work"))
+            self.assertIsNone(note, rel)
+            self.assertTrue(videohash.near(frames, self.h("a")), rel)
+            self.assertEqual([c[0] for c in calls], ["ffprobe", "ffmpeg"], rel)
+            for c in calls:
+                self.assertIn("file:" + os.path.abspath(rel), c, rel)
+                self.assertFalse([x for x in c if x.startswith(("concat:", "http:"))], c)
+
     def test_near_needs_enough_frames(self):
         f = self.h("a")
         self.assertFalse(videohash.near(f[:videohash.MIN_FRAMES - 1], f))
         self.assertFalse(videohash.near([], f))
 
 
+@unittest.skipUnless(X264, NEEDS)
 class Plan(unittest.TestCase):
     """intake.py plan: a near-copy video goes to review like a near-copy photo; nothing is deleted."""
 
@@ -157,6 +205,36 @@ class Plan(unittest.TestCase):
                       "Pictures/WhatsApp/VID-20261101-WA0003.mp4", out)
         self.assertTrue(all(p["action"] != "delete" for p in plan.values()), "a near-copy is never deleted")
 
+    def test_plan_twice_and_apply_twice_change_nothing(self):
+        cam = clip(self.P("DCIM/Camera/VID_20261101_100000.mp4"))
+        batch = "2026-11-14-again"
+        rel = "DCIM/Camera/VID_20261101_100000.mp4"
+        self.intake("stage", self.phone, "--kind", "phone", "--batch", batch)
+        raw = os.path.join(self.state, "batches", batch, "raw", rel)
+        before = sha(raw)
+        self.assertEqual(before, sha(cam))
+        plans = []
+        for _ in range(2):
+            self.intake("plan", batch)
+            with open(os.path.join(self.state, "batches", batch, "plan.json")) as f:
+                plans.append(json.load(f))
+            self.assertEqual(sha(raw), before, "plan only reads the staged video")
+        self.assertEqual(plans[0], plans[1], "a second plan gives the same plan, vhash included")
+        self.assertEqual([p["rel"] for p in plans[1]], [rel], "nothing duplicated")
+        vh = plans[1][0]["vhash"]
+        self.assertGreaterEqual(len(vh), videohash.MIN_FRAMES)
+        with open(os.path.join(self.state, "batches", batch, "scan.json"), "w") as f:
+            json.dump({}, f)
+        indexes = []
+        for _ in range(2):
+            self.intake("apply", batch, "--allow-missing-detectors")
+            with open(os.path.join(self.state, "index.json")) as f:
+                indexes.append(json.load(f))
+        self.assertEqual(indexes[0], indexes[1], "a second apply adds nothing")
+        (lib_path, entry), = indexes[1].items()
+        self.assertEqual(entry["vhash"], vh, "the plan's hashes, stored once")
+        self.assertEqual(sha(lib_path), before, "the filed video is the staged one, unchanged")
+
     def test_messaging_copy_of_a_library_video(self):
         cam = clip(self.P("DCIM/Camera/VID_20261101_100000.mp4"))
         self.plan("2026-11-14-first")
@@ -170,7 +248,11 @@ class Plan(unittest.TestCase):
         wa = "Pictures/WhatsApp/VID-20261102-WA0001.mp4"
         reencode(cam, self.P(wa), post=("-b:v", "120k"))
         os.remove(cam)
+        lib_sha = sha(lib_path)
         plan, _ = self.plan("2026-11-14-second")
+        self.assertEqual(sha(lib_path), lib_sha, "plan only reads the library video it compares against")
+        staged = os.path.join(self.state, "batches", "2026-11-14-second", "raw", wa)
+        self.assertEqual(sha(staged), sha(self.P(wa)), "plan only reads the staged copy")
         self.assertEqual((plan[wa]["action"], plan[wa]["why"]), ("review", f"near-duplicate of library {lib_path}"))
 
 

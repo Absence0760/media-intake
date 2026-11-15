@@ -383,7 +383,6 @@ class Folder(unittest.TestCase):
     def test_sweep_skip_trees_are_refused(self):
         """erase's home sweep skips these trees: a folder source never sits in one, so a confirmed
         erase always reaches a copy left in the source folder."""
-        import intake
         for rel in intake.SWEEP_SKIP:
             if not rel.startswith(".."):
                 self.refused(os.path.join(self.home, rel))
