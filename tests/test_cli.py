@@ -86,10 +86,18 @@ class Doctor(unittest.TestCase):
         self.assertEqual(len(hits), 1, f"{text!r} in {lines}")
         return hits[0]
 
+    def summary(self, lines):
+        """The lines after the `== Summary ==` heading."""
+        return lines[lines.index("== Summary ==") + 1:]
+
+    def dnf(self, lines):
+        return [ln for ln in lines if "dnf install" in ln]
+
     def test_everything_present_passes_with_no_install_line(self):
         code, lines = self.run_doctor()
         self.assertEqual(code, 0, lines)
         self.assertFalse([ln for ln in lines if "dnf install" in ln], lines)
+        self.assertEqual(self.summary(lines), ["no problems, no optional items not available"])
         self.assertTrue(self.line(lines, "SigLIP vision model").startswith("ok "))
         self.assertTrue(self.line(lines, "digest").startswith("ok "))
         self.assertEqual(sorted(self.p.hashed), sorted([VISION, TEXT, TOKENIZER]))
@@ -99,24 +107,26 @@ class Doctor(unittest.TestCase):
         self.p.modules -= {"zxingcpp", "yaml"}
         code, lines = self.run_doctor()
         self.assertEqual(code, 1)
-        self.assertIn("Install what's missing:  sudo dnf install perl-Image-ExifTool ffmpeg-free "
-                      "util-linux-core python3-zxing-cpp python3-pyyaml", lines)
+        self.assertEqual(self.dnf(lines), ["sudo dnf install -y perl-Image-ExifTool ffmpeg-free "
+                                           "util-linux-core python3-zxing-cpp python3-pyyaml"])
+        self.assertEqual(self.summary(lines)[0], "6 problems, no optional items not available")
         self.assertTrue(self.line(lines, "exiftool (perl-Image-ExifTool)").startswith("MISSING "))
 
     def test_tesseract_without_eng(self):
         self.p.langs = "List of available languages (1):\nosd\n"
         code, lines = self.run_doctor()
         self.assertEqual(code, 1)
-        self.assertIn("Install what's missing:  sudo dnf install tesseract-langpack-eng", lines)
+        self.assertEqual(self.dnf(lines), ["sudo dnf install -y tesseract-langpack-eng"])
 
     def test_optional_missing_passes_and_prints_its_own_line(self):
         self.p.plugins = "nothing useful\n"
         del self.p.files[cli.MTP_BACKEND]
         code, lines = self.run_doctor()
         self.assertEqual(code, 0, lines)
-        self.assertIn("Optional:  sudo dnf install gstreamer1-plugins-bad-free gstreamer1-plugin-openh264 gvfs-mtp",
-                      lines)
-        self.assertFalse([ln for ln in lines if ln.startswith("Install what's missing")], lines)
+        self.assertEqual(self.dnf(lines),
+                         ["sudo dnf install -y gstreamer1-plugins-bad-free gstreamer1-plugin-openh264 gvfs-mtp"])
+        self.assertEqual(self.summary(lines), ["no problems, 3 optional items not available", "Optional packages:",
+                                               self.dnf(lines)[0]])
 
     def test_no_xdg_open_is_optional(self):
         self.assertTrue(self.line(self.run_doctor()[1], "xdg-open").startswith("ok "))
@@ -125,7 +135,7 @@ class Doctor(unittest.TestCase):
         self.assertEqual(code, 0, lines)
         self.assertEqual(self.line(lines, "xdg-open"),
                          "optional xdg-open (the gallery's Open in the system player button) (xdg-utils)")
-        self.assertIn("Optional:  sudo dnf install xdg-utils", lines)
+        self.assertEqual(self.dnf(lines), ["sudo dnf install -y xdg-utils"])
 
     def test_h264_encoder_for_gallery_proxies(self):
         """An H.264 encoder for the gallery's HEVC proxies is optional: GStreamer's, or ffmpeg's only when that
@@ -136,7 +146,7 @@ class Doctor(unittest.TestCase):
         code, lines = self.run_doctor()
         self.assertEqual(code, 0, lines)
         self.assertTrue(self.line(lines, what).startswith("optional "), lines)
-        self.assertIn("Optional:  sudo dnf install gstreamer1-plugin-openh264", lines)
+        self.assertEqual(self.dnf(lines), ["sudo dnf install -y gstreamer1-plugin-openh264"])
         self.p.ffmpeg["-decoders"] += " VFS..D hevc                 HEVC\n"  # ffmpeg alone can do it now
         self.assertEqual(self.line(self.run_doctor()[1], what), f"ok       {what} (ffmpeg libopenh264)")
         self.p.tools -= {"gst-inspect-1.0", "ffmpeg"}
@@ -152,7 +162,7 @@ class Doctor(unittest.TestCase):
         self.p.tools.discard("gst-inspect-1.0")
         code, lines = self.run_doctor()
         self.assertEqual(code, 0, lines)
-        self.assertIn("Optional:  sudo dnf install gstreamer1 gstreamer1-plugin-openh264", lines)
+        self.assertEqual(self.dnf(lines), ["sudo dnf install -y gstreamer1 gstreamer1-plugin-openh264"])
 
     def test_vision_model_checksum_mismatch_fails(self):
         self.p.files[VISION] = OTHER
@@ -205,12 +215,163 @@ class Doctor(unittest.TestCase):
     def test_bad_config_stops_early(self):
         with mock.patch.object(cli.config, "load", side_effect=cli.config.ConfigError("nope")):
             code, lines = self.run_doctor()
-        self.assertEqual((code, lines), (1, ["BAD      config: nope"]))
+        self.assertEqual((code, lines), (1, ["== Config and folders ==", "BAD      config: nope", "",
+                                             "== Summary ==", "1 problem, no optional items not available"]))
+
+    HEADINGS = ["== Config and folders ==", "== System tools ==", "== Python modules ==", "== Optional extras ==",
+                "== Venv, models and data ==", "== Ollama (local, 127.0.0.1) ==", "== Summary =="]
+    STATUS = re.compile(r"^(ok|MISSING|optional|BAD|absent) +\S")
+
+    def test_grouped_under_headings_in_order(self):
+        code, lines = self.run_doctor()
+        self.assertEqual([ln for ln in lines if ln.startswith("== ")], self.HEADINGS)
+        sections = {}
+        for ln in lines:
+            if ln.startswith("== "):
+                current = ln
+            elif ln:
+                sections.setdefault(current, []).append(ln)
+        self.assertIn("exiftool", " ".join(sections["== System tools =="]))
+        self.assertIn("tesseract eng language data", " ".join(sections["== System tools =="]))
+        self.assertIn("python3-pyyaml", " ".join(sections["== Python modules =="]))
+        self.assertIn("gvfs MTP backend", " ".join(sections["== Optional extras =="]))
+        self.assertIn("SigLIP vision model", " ".join(sections["== Venv, models and data =="]))
+        self.assertIn("digest", " ".join(sections["== Ollama (local, 127.0.0.1) =="]))
+
+    def test_all_ok_prints_only_ok_lines_headings_and_summary(self):
+        code, lines = self.run_doctor()
+        self.assertEqual(code, 0, lines)
+        body = lines[:lines.index("== Summary ==")]
+        for ln in body:
+            if ln and not ln.startswith("== "):
+                self.assertRegex(ln, r"^(ok|absent) +\S", ln)  # absent: the throwaway HOME's folders
+        self.assertFalse([ln for ln in body if ln.startswith(("MISSING", "BAD", "optional"))], lines)
+        self.assertEqual(self.summary(lines), ["no problems, no optional items not available"])
+
+    def test_every_status_line_keeps_its_greppable_shape(self):
+        self.p.tools -= {"exiftool", "ollama"}
+        self.p.files[VISION] = OTHER
+        code, lines = self.run_doctor()
+        self.assertEqual(code, 1)
+        body = lines[:lines.index("== Summary ==")]
+        for ln in body:
+            if ln and not ln.startswith("== "):
+                self.assertRegex(ln, self.STATUS)
+                self.assertEqual(ln[8], " ", ln)  # status padded to 8, then a space, as before
+        self.assertEqual(self.summary(lines)[0], "2 problems, 1 optional item not available")
+
+    def test_required_and_optional_dnf_lines_each_once_deduplicated(self):
+        """ffmpeg and ffprobe share ffmpeg-free; it appears once. Required and optional lines are separate."""
+        self.p.tools -= {"ffmpeg", "ffprobe", "exiftool", "xdg-open"}
+        del self.p.files[cli.MTP_BACKEND]
+        code, lines = self.run_doctor()
+        self.assertEqual(code, 1)
+        self.assertEqual(self.dnf(lines), ["sudo dnf install -y perl-Image-ExifTool ffmpeg-free",
+                                           "sudo dnf install -y gvfs-mtp xdg-utils"])
+        self.assertEqual(self.summary(lines), ["3 problems, 2 optional items not available",
+                                               "Install the required packages:", self.dnf(lines)[0],
+                                               "Optional packages:", self.dnf(lines)[1]])
+
+    def test_dnf_line_has_exactly_the_missing_packages(self):
+        self.p.modules -= {"PIL"}
+        _, lines = self.run_doctor()
+        (line,) = self.dnf(lines)
+        self.assertEqual(line.split()[:4], ["sudo", "dnf", "install", "-y"])
+        self.assertEqual(line.split()[4:], ["python3-pillow"])
+
+    def test_exit_code_unaffected_by_optional_only(self):
+        self.p.tools -= {"ollama", "xdg-open"}
+        self.assertEqual(self.run_doctor()[0], 0)
+        self.p.files.pop(os.path.join(os.environ["MEDIA_INTAKE_STATE"], "geo", "cities1000.zip"))
+        code, lines = self.run_doctor()
+        self.assertEqual(code, 1)
+        self.assertFalse([ln for ln in lines if "sudo dnf install -y" in ln and "geo" in ln.lower()])
+
+    def test_no_colour_unless_asked(self):
+        _, lines = self.run_doctor()
+        self.assertFalse([ln for ln in lines if "\033[" in ln])
+        lines = []
+        self.p.tools.discard("exiftool")
+        cli.doctor(self.p, out=lines.append, colour=True)
+        self.assertTrue(self.line(lines, "exiftool (perl-Image-ExifTool)").startswith("\033[1;31mMISSING\033[0m "))
+        self.assertIn("\033[1m== Summary ==\033[0m", lines)
+        plain = [re.sub(r"\033\[[0-9;]*m", "", ln) for ln in lines]
+        self.assertEqual(plain, self.run_doctor()[1])  # colour adds escapes, nothing else
+
+    def test_default_colour_follows_the_terminal_and_no_color(self):
+        class Tty(io.StringIO):
+            def isatty(self):
+                return True
+        for stream, env, want in ((io.StringIO(), {}, False), (Tty(), {}, True),
+                                  (Tty(), {"NO_COLOR": "1"}, False), (Tty(), {"NO_COLOR": ""}, True)):
+            with self.subTest(tty=stream.isatty(), env=env):
+                environ = {k: v for k, v in os.environ.items() if k != "NO_COLOR"} | env
+                with mock.patch.dict(os.environ, environ, clear=True), mock.patch("sys.stdout", stream):
+                    self.assertEqual(cli.use_colour(stream), want)
+                    cli.doctor(self.p)
+                self.assertEqual("\033[" in stream.getvalue(), want)
+        self.assertFalse(cli.use_colour(object()))
 
     def test_main_dispatches_doctor(self):
         with mock.patch.object(cli, "doctor", return_value=0) as d, mock.patch("sys.stdout", io.StringIO()):
             self.assertEqual(cli.main(["doctor"]), 0)
         d.assert_called_once_with()
+
+
+class Commands(unittest.TestCase):
+    """`media-intake` with no command or --help prints the usage (exit 0); an unknown one names the nearest
+    real command and exits 2, as argparse does."""
+
+    def run_main(self, argv):
+        out, err = io.StringIO(), io.StringIO()
+        with mock.patch("sys.stdout", out), mock.patch("sys.stderr", err):
+            code = cli.main(argv)
+        return code, out.getvalue(), err.getvalue()
+
+    def test_no_args_and_help_print_usage_and_exit_0(self):
+        for argv in ([], ["--help"], ["-h"], ["help"]):
+            with self.subTest(argv=argv):
+                code, out, err = self.run_main(argv)
+                self.assertEqual((code, err), (0, ""))
+                self.assertIn("media-intake doctor", out)
+                self.assertIn("Intake commands:", out)
+
+    def test_names_include_every_intake_subcommand(self):
+        import argparse, intake
+        sub = next(a for a in intake.build_parser()._actions if isinstance(a, argparse._SubParsersAction))
+        names = cli.command_names()
+        self.assertTrue(set(sub.choices) <= set(names))
+        self.assertTrue(intake.LOCKED | intake.READ_ONLY <= set(names))
+        self.assertTrue({*cli.COMMANDS, *cli.VENV_SCRIPTS} <= set(names))
+        self.assertEqual(names, sorted(set(names)))
+
+    def test_unknown_command_suggests_and_exits_2(self):
+        for typo, near in (("stag", "stage"), ("doctr", "doctor"), ("galery", "gallery"), ("prune-cach", "prune-cache"),
+                           ("vlm-trsh", "vlm-trash"), ("suggest-trsh", "suggest-trash")):
+            with self.subTest(typo):
+                code, out, err = self.run_main([typo, "x"])
+                self.assertEqual((code, out), (2, ""))
+                first = err.splitlines()[0]
+                self.assertEqual(first, f"media-intake: unknown command {typo!r}; did you mean {near!r}?")
+                self.assertIn("usage: media-intake <command> [options]", err)
+
+    def test_unknown_command_without_a_close_match(self):
+        code, out, err = self.run_main(["zzzzzz"])
+        self.assertEqual(code, 2)
+        self.assertEqual(err.splitlines()[0], "media-intake: unknown command 'zzzzzz'")
+        self.assertIn("commands: ", err)
+
+    def test_unknown_command_never_reaches_intake(self):
+        import intake
+        with mock.patch.object(intake, "main") as m:
+            self.assertEqual(self.run_main(["nope"])[0], 2)
+        m.assert_not_called()
+
+    def test_known_intake_command_still_forwarded(self):
+        import intake
+        with mock.patch.object(intake, "main") as m:
+            self.assertEqual(self.run_main(["find", "--event", "x"])[0], 0)
+        m.assert_called_once_with(["find", "--event", "x"], prog="media-intake")
 
 
 class Pins(unittest.TestCase):

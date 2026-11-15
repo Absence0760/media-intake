@@ -173,9 +173,11 @@ media-intake backup MOUNT [--verify] [--dry-run]   # library, videos, sidecars t
 [gallery.md](gallery.md), the drive and laptop-folder queue [queue.md](queue.md),
 the backup to a mounted drive [backup.md](backup.md),
 semantic search and the VLM trash check [search.md](search.md). `media-intake
-doctor` checks system packages (and prints the `sudo dnf install` line for
-what's missing), the venv, the model files' sha256 and the local Ollama
-model's digest against `media_intake/pins.json`, and the config.
+doctor` checks system packages, the venv, the model files' sha256 and the
+local Ollama model's digest against `media_intake/pins.json`, and the config,
+grouped under headings, and ends with a summary: the problem count and one
+`sudo dnf install -y` line for missing required packages and another for
+optional ones ([README](../README.md#install-fedora)).
 
 A typical phone batch: `stage` the phone's storage root, `plan` (add
 `--event` for a shoot), `scan`, `apply`, open the review page, `tag`, then,
