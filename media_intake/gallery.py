@@ -462,7 +462,8 @@ class App:
         self.token, self.csrf = secrets.token_urlsafe(24), secrets.token_urlsafe(24)
         self.lock = threading.RLock()
         self.thumb_sem = threading.BoundedSemaphore(3)
-        self.proxy_lock = threading.Lock()  # one transcode at a time
+        self.proxy_lock = threading.Lock()  # guards proxy_making
+        self.proxy_making = {}  # sha -> Event set when its transcode ends; one transcode at a time (CPU)
         self.port = None
         self.reconciled = None  # id of the last finished job whose results are applied to items
         self.tail = None  # the shown job's log, through an open descriptor (jobs.Tail)
@@ -534,7 +535,12 @@ class App:
     def playable(self, it):
         """(path, mime) that /m/ serves: the original, or for a video whose codec browsers can't play (HEVC) an
         H.264 proxy, made on demand and cached by sha256 in PROXIES. When no proxy can be made the original is
-        served as before (the page then says the browser can't play it) and this item isn't tried again."""
+        served as before (the page then says the browser can't play it) and this item isn't tried again.
+
+        One transcode at a time, for the CPU. A request for the sha being converted (the player's Range
+        requests, a second open) waits for that one transcode and then serves its proxy; a request for another
+        video while one is being made is not held for up to PROXY_TIMEOUT: it gets the original now, and a later
+        open, once the conversion is done, makes that video's proxy."""
         orig = (it["path"], it["mime"])
         if it["media"] != "video" or it.get("noproxy"):
             return orig
@@ -547,16 +553,28 @@ class App:
             return orig
         dst = os.path.join(PROXIES, sha + ".mp4")
         if not os.path.isfile(dst):
-            with self.proxy_lock:  # a second request (the player's Range requests) waits, then finds it made
-                if not os.path.isfile(dst):
-                    try:
-                        private_cache()
-                        made = make_proxy(it["path"], dst)
-                    except OSError:
-                        made = False
-                    if not made:
-                        it["noproxy"] = True
-                        return orig
+            with self.proxy_lock:
+                done = self.proxy_making.get(sha)
+                mine = done is None and not self.proxy_making and not os.path.isfile(dst)
+                if mine:
+                    done = self.proxy_making[sha] = threading.Event()
+            if mine:
+                try:
+                    private_cache()
+                    made = make_proxy(it["path"], dst)
+                except OSError:
+                    made = False
+                finally:
+                    with self.proxy_lock:
+                        del self.proxy_making[sha]
+                    done.set()
+                if not made:
+                    it["noproxy"] = True
+                    return orig
+            elif done is not None:
+                done.wait()  # the same video's transcode: wait for it, then serve what it made
+            if not os.path.isfile(dst):
+                return orig  # another video's transcode is running, or this one's failed
             if it.get("busy") or it["gone"] or not os.path.lexists(it["path"]):
                 intake.gallery_thumb_forget(sha)  # trashed or erased while it was being made: no copy stays
                 return orig

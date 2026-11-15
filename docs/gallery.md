@@ -257,10 +257,16 @@ phones and GoPros record. When the large view asks for a video whose first
 video stream ffprobe reports as `hevc`, the gallery makes an H.264 MP4 proxy
 and serves that instead; every other video is served as it is.
 
-- **Made on demand**, on the first open, one at a time (a second open waits).
-  The request waits for the transcode, so a long clip shows its poster for a
-  while the first time. Longer side at most 1920 px (never scaled up), sound
-  re-encoded to AAC, no metadata copied.
+- **Made on demand**, on the first open, one transcode at a time (for the
+  CPU). The request waits for the transcode, so a long clip shows its poster
+  for a while the first time; the player's Range requests, another page, or
+  a duplicate file with the same content wait for that same transcode and
+  then get its proxy (it is made once). Opening a *different* HEVC video
+  while one is being converted doesn't wait behind it (that could be an
+  hour): the original is served at once, so the page says the browser can't
+  play it, and opening it again once the first conversion is done makes its
+  proxy. Longer side at most 1920 px (never scaled up), sound re-encoded to
+  AAC, no metadata copied.
 - **How**: ffmpeg first (`libx264`, else `libopenh264`), which needs an HEVC
   decoder; Fedora's `ffmpeg-free` has none, so then GStreamer's GPU decoder
   (`vah265dec` or Vulkan, as for thumbnails) into `x264enc`, `openh264enc` or
@@ -357,8 +363,15 @@ skipping GStreamer for an unsafe work path; the race where a video is trashed
 while its proxy is made (a gated ffmpeg that has written the proxy waits on a
 FIFO): with the trash job still running the fresh proxy is deleted and the
 original served, and after the trash ends it is deleted and nothing served,
-leaving the cache empty either way; Trash from the gallery deleting the
+leaving the cache empty either way; while one video's transcode is held,
+another HEVC video is served as its original at once, and gets its own
+proxy on the next open after; Trash from the gallery deleting the
 proxy; and `trash`, `forget` and `verify-gone` on planted proxies.
+`App.playable` in-process with `make_proxy` held on an event: a second
+request (and a same-content duplicate) for the video being converted waits
+and gets the one proxy (one transcode), another video gets its original at
+once and isn't marked as failed, and a failed transcode answers its waiters
+with the original and frees the slot.
 
 In headless Chromium (`tests/browser/test_browser_gallery.py`, see
 CONTRIBUTING.md, Tests): keys, click and shift-click selection, the bottom
