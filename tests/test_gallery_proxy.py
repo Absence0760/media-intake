@@ -10,7 +10,7 @@ verify-gone run the real intake.py. Failure paths put fake ffmpeg / GStreamer to
 server's PATH (ffprobe stays the real one), which record their arguments and fail. PlayableTest
 runs App.playable in-process with make_proxy held on an event (who waits for which transcode).
 """
-import json, os, shutil, stat, subprocess, sys, tempfile, threading, unittest
+import contextlib, io, json, os, shutil, stat, subprocess, sys, tempfile, threading, unittest
 import unittest.mock as mock
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
@@ -559,8 +559,28 @@ class ProxyCommandsTest(unittest.TestCase):
             self.assertFalse([x for x in c if '"' in x or " " in x or "b.MOV" in x], c)
 
     def test_an_unsafe_work_path_skips_gstreamer(self):
-        for work in ('/home/a b/.cache/media-intake/proxies/.work-1', "/home/a!b/.work-1", '/h/"q"/.work-1'):
-            self.assertEqual([c[0] for c in self.g.proxy_commands("/lib/v.MOV", work)], ["ffmpeg"], work)
+        import scan_sensitive
+        scan_sensitive._GST_SKIP_NOTED.clear()
+        self.addCleanup(scan_sensitive._GST_SKIP_NOTED.clear)
+        works = ('/home/a b/.cache/media-intake/proxies/.work-1', "/home/a!b/.work-1", '/h/"q"/.work-1',
+                 "/home/a!b/.work-2")
+        err = io.StringIO()
+        with contextlib.redirect_stderr(err):
+            for work in works:
+                self.assertEqual([c[0] for c in self.g.proxy_commands("/lib/v.MOV", work)], ["ffmpeg"], work)
+        # once per proxies folder (the second "/home/a!b" clip adds none), the folder only, never the clip
+        self.assertEqual([ln.split("are): ", 1)[1] for ln in err.getvalue().splitlines()],
+                         [f"{os.path.dirname(w)}; HEVC clips get no GStreamer proxy" for w in works[:3]])
+        self.assertNotIn("v.MOV", err.getvalue())
+
+    def test_no_skip_note_without_a_gstreamer_decoder(self):
+        import scan_sensitive
+        scan_sensitive._GST_SKIP_NOTED.clear()
+        self.addCleanup(scan_sensitive._GST_SKIP_NOTED.clear)
+        err = io.StringIO()
+        with mock.patch.object(scan_sensitive, "_gst_hevc_decoder", lambda: None), contextlib.redirect_stderr(err):
+            self.assertEqual([c[0] for c in self.g.proxy_commands("/lib/v.MOV", "/home/a b/.work-1")], ["ffmpeg"])
+        self.assertEqual(err.getvalue(), "")  # nothing would have been tried, so nothing to explain
 
 
 if __name__ == "__main__":

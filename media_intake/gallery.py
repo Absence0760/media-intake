@@ -485,7 +485,8 @@ def proxy_commands(src, work):
     has none) into an H.264 encoder, with the sound when it is AAC, then without. gst-launch-1.0 re-parses its
     arguments as one pipeline, so a file name with "!", quotes or spaces could add elements: it reads
     <work>/in, a link to src that make_proxy makes, and both of its paths are checked against SAFE_GST_PATH
-    (else GStreamer is not tried). The argv is built as a list, never split from a string. Nothing is fetched."""
+    (else GStreamer is not tried, said once per folder on stderr). The argv is built as a list, never split
+    from a string. Nothing is fetched."""
     cmds, out, link = [], os.path.join(work, "out.mp4"), os.path.join(work, "in")
     enc = ffmpeg_encoder(("libx264", "libopenh264"))
     if enc:
@@ -495,10 +496,11 @@ def proxy_commands(src, work):
         cmds.append(["ffmpeg", "-v", "error", "-nostdin", "-y", "-i", "file:" + src, "-map", "0:v:0", "-map", "0:a:0?",
                      "-map_metadata", "-1", "-vf", vf, "-c:v", enc, *q, "-c:a", "aac", "-b:a", "160k",
                      "-movflags", "+faststart", "-f", "mp4", "file:" + out])
-    if not SAFE_GST_PATH.fullmatch(work):
-        return cmds
     import scan_sensitive  # the GPU HEVC decoder thumbnails and scans use
     dec = scan_sensitive._gst_hevc_decoder()
+    if dec and not SAFE_GST_PATH.fullmatch(work):
+        scan_sensitive.note_gst_skipped(os.path.dirname(work), "HEVC clips get no GStreamer proxy")
+        return cmds
     genc = gst_element(("x264enc", "openh264enc", "vah264enc")) if dec else None
     if dec and genc:
         post = ["vapostproc"] if dec == "vah265dec" else ["vulkandownload"]

@@ -51,7 +51,9 @@ default; all of them come from `~/.config/media-intake/config.toml`
   writes the frames there, and its argv is built as a list
   (`scan_sensitive.gst_frames_command`). A work folder whose path has anything
   but letters, digits and `._/+-` (an unusual HOME) means GStreamer is not
-  tried, so the clip is `unscanned-video`, never clean. The same sampling
+  tried, so the clip is `unscanned-video`, never clean, and `scan` says why
+  once per folder on stderr (`[gst] fallback skipped: ...`, the folder's path
+  only), so you can tell it from a missing decoder. The same sampling
   serves `label`, `semantic`, `vlm_trash` and gallery thumbnails; the gallery's
   HEVC proxy does the same (docs/gallery.md).
   ffmpeg and ffprobe get every path as `file:` plus the absolute path, so a
@@ -823,5 +825,5 @@ stdin deletes nothing, with no traceback; the typed word does); `test_library_lo
 CLI, a gallery write and a job contending for the library lock; `test_library_ops_media_kinds`: every
 library-side command on a photo, an mp4 and a .mov, alone and mixed; `test_detectors_media_kinds`: scan,
 vlm_trash, semantic, label and the plugin hook on photos, videos and mixed batches, broken videos that
-must be flagged "not checked", never clean, and the GStreamer fallback with a hostile file name (fake tools); `test_offline_guard`). Run long jobs under your
+must be flagged "not checked", never clean, and the GStreamer fallback with a hostile file name and its one-line skip note for an unsafe work folder (fake tools); `test_offline_guard`). Run long jobs under your
 own memory cap if you like.
