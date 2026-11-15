@@ -304,12 +304,47 @@ which is part of the content). So a byte-identical copy rotated in its own
 sidecar shows its own rotation, and copies turned alike share one file.
 Rotate shows the new turn at once (the next request makes, or reuses, that
 turn's thumbnail; a video's frame too: the page turns the player itself),
-leaving the other turns for any copy that still shows them.
+leaving the other turns for any copy that still shows them
+(`media-intake prune-cache`, below, removes the ones none does).
 They are copies of photo content, so `trash`, `forget` and `erase` delete
 every turn of that sha256 (and `<sha256>.jpg`, the content-only key older
 versions wrote), and `verify-gone` reports any one still there as STILL
 PRESENT. Previews of formats a browser can't show are made in memory, never on
 disk. Safe to delete the whole folder at any time; it rebuilds.
+
+### Pruning the cache
+
+Rotating keeps the old turn, so a photo can hold up to four thumbnails plus
+the legacy `<sha256>.jpg`, and content that leaves the library some other way
+than `trash`, `forget` or `erase` (moved or deleted by hand) keeps its
+thumbnails and proxy. `media-intake prune-cache --dry-run` counts them (and
+their size); `media-intake prune-cache` deletes:
+
+- every `<sha256>.jpg`: the content-only key older versions wrote, never
+  served now;
+- a `<sha256>-r<turn>.jpg` when no library copy of that content shows that
+  turn (the sidecar's orientation on top of the file's own, as above);
+- every thumbnail and `proxies/<sha256>.mp4` of content no longer in the
+  library. A proxy of content still there is kept.
+
+"In the library" is what the gallery lists: the library, videos and project
+folders, never the state folder or a flagged file (so a flagged file's cached
+copies go too). Each file's sha256 comes from `index.json` when its size
+matches, else it is hashed (slow once for a large folder intake didn't file).
+When a library folder isn't there (a project folder on an unplugged drive) or
+a file can't be read, what the library holds is unknown: only the legacy
+thumbnails go, and the summary says why.
+
+Only names the gallery writes are touched (`<sha256>.jpg`,
+`<sha256>-r<0|90|180|270>.jpg`, `<sha256>.mp4`), and only regular files: a
+symlink under one of those names is never followed or removed (the summary
+counts it), and a folder in the cache path that is a symlink is not entered.
+Temporary files and the proxy work folders (`proxies/.work-*`) are left alone.
+Originals and sidecars are only read. Output is counts and sizes, never file
+names. The real run holds the library lock (docs/intake.md, "One writer at a
+time"); `--dry-run` writes nothing and doesn't. With the gallery open, a
+thumbnail deleted mid-request shows again on a reload. The gallery doesn't
+prune on its own: run the command now and then, or after a big reorganisation.
 
 ## Video proxies (HEVC in the browser)
 

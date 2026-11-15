@@ -4,6 +4,7 @@
   media-intake gallery [--drive MOUNT] [--port N] [--share-out DIR]   local web gallery of the library (gallery.py)
   media-intake queue add|run|status|offload ...   external-drive process queue (drive_queue.py)
   media-intake review BATCH ...          local review page for a batch (review_ui.py)
+  media-intake prune-cache [--dry-run]   delete gallery thumbnails and proxies nothing shows (cache_prune.py)
   media-intake index                     build or update the semantic search index  (venv)
   media-intake search "TEXT" ...         semantic search                             (venv)
   media-intake similar FILE ...          nearest neighbours of a file                (venv)
@@ -238,6 +239,9 @@ def main(argv=None):
     if cmd == "gallery":  # here, not in intake.py: gallery imports intake, so intake never imports gallery
         import gallery
         return gallery.main(rest)
+    if cmd == "prune-cache":  # cli.py's too: it reads the library as the gallery does (cache_prune imports gallery)
+        import cache_prune
+        return cache_prune.main(rest)
     if cmd in VENV_SCRIPTS:
         script, pre = VENV_SCRIPTS[cmd]
         vp = venv_python()
