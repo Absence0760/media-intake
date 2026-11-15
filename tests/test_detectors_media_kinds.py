@@ -386,6 +386,92 @@ class ScanMediaKinds(Base):
         self.assertFalse(any(c.endswith(".jpg") and "/p/" in c for c in FakeNudeDetector.calls))
 
 
+# ================================================================ GStreamer fallback: no name in the pipeline
+# A stand-in tool: records its arguments (one JSON line per run). ffprobe and ffmpeg fail (so the GStreamer
+# fallback runs); gst-inspect-1.0 says yes only to vah265dec; gst-launch-1.0 also records where each
+# location= path resolves to while it runs, and writes two frames where its multifilesink points.
+FAKE_GST = r'''#!/usr/bin/env python3
+import json, os, sys
+name = os.path.basename(sys.argv[0])
+with open(os.environ["FAKE_TOOL_LOG"], "a") as f:
+    f.write(json.dumps([name, *sys.argv[1:]]) + "\n")
+    if name == "gst-launch-1.0":
+        f.write(json.dumps(["gst-where"] + [os.path.realpath(a[9:]) for a in sys.argv[1:]
+                                            if a.startswith("location=")]) + "\n")
+if name == "gst-inspect-1.0":
+    sys.exit(0 if len(sys.argv) == 1 or sys.argv[1] == "vah265dec" else 1)
+if name == "gst-launch-1.0":
+    sink = [a[9:] for a in sys.argv[1:] if a.startswith("location=")][-1]
+    for i in (1, 2):
+        with open(sink % i, "wb") as f:
+            f.write(b"frame")
+    sys.exit(0)
+sys.exit(1)
+'''
+
+
+class ScanGstPipeline(Base):
+    """scan_sensitive.video_frames' GStreamer fallback (HEVC where ffmpeg has no decoder) on a hostile name.
+    gst-launch-1.0 re-parses its arguments as one pipeline, so "!" or a quote in the clip's name or folder
+    could add elements (a sink writing anywhere): it must read a link in a private work folder instead.
+    The tools are fakes on PATH (the CI image has no GStreamer); the clip is a few synthetic bytes."""
+    def setUp(self):
+        super().setUp()
+        b = os.path.join(self.d, "fakebin")
+        os.makedirs(b)
+        for n in ("ffprobe", "ffmpeg", "gst-inspect-1.0", "gst-launch-1.0"):
+            with open(os.path.join(b, n), "w") as f:
+                f.write(FAKE_GST)
+            os.chmod(os.path.join(b, n), 0o700)
+        self.log = os.path.join(self.d, "fake-tools.log")
+        p = mock.patch.dict(os.environ, {"PATH": b + os.pathsep + os.environ.get("PATH", ""),
+                                         "FAKE_TOOL_LOG": self.log})
+        p.start()
+        self.addCleanup(p.stop)
+        self.clip = os.path.join(self.d, "incoming", "b ! c", 'a ! fakesink "x" y.MOV')
+        os.makedirs(os.path.dirname(self.clip))
+        with open(self.clip, "wb") as f:
+            f.write(b"not really hevc")
+
+    def runs(self, name):
+        if not os.path.exists(self.log):
+            return []
+        with open(self.log) as f:
+            return [r[1:] for r in map(json.loads, f) if r[0] == name]
+
+    def test_hostile_name_never_reaches_the_pipeline(self):
+        fd = tempfile.mkdtemp(dir=self.d)
+        self.assertEqual(scan_sensitive.video_frames(self.clip, fd), ["001.jpg", "002.jpg"])
+        self.assertEqual(sorted(os.listdir(fd)), ["001.jpg", "002.jpg"])  # the work folder is gone
+        (a,), ((src, sink),) = self.runs("gst-launch-1.0"), self.runs("gst-where")
+        self.assertEqual(a[0], "-q")
+        locs = [x[9:] for x in a if x.startswith("location=")]
+        self.assertEqual(len(locs), 2, a)  # filesrc and multifilesink, nothing more
+        work = os.path.dirname(locs[0])
+        self.assertEqual(os.path.dirname(work), os.path.abspath(fd))
+        self.assertTrue(os.path.basename(work).startswith(".gst-"), work)
+        self.assertEqual(locs, [os.path.join(work, "in"), os.path.join(work, "%03d.jpg")])
+        self.assertEqual(src, os.path.realpath(self.clip))  # the link reads the original
+        self.assertEqual(sink, os.path.realpath(os.path.join(work, "%03d.jpg")))
+        for x in a:  # no part of the name or its folder in any argument
+            for bit in ("! fakesink", '"', "y.MOV", "b ! c", "incoming"):
+                self.assertNotIn(bit, x, a)
+        self.assertEqual(a.count("fakesink"), 0, a)
+        for el in ("filesrc", "vah265dec", "vapostproc", "jpegenc", "multifilesink"):
+            self.assertEqual(a.count(el), 1, (el, a))
+        self.assertTrue(all(x == "!" or "!" not in x for x in a), a)
+
+    def test_unsafe_work_folder_skips_gstreamer_and_is_not_clean(self):
+        tmp = os.path.join(self.d, "work dir ! x")
+        os.makedirs(tmp, mode=0o700)
+        self.assertEqual(scan_sensitive.scan_file(FakeNudeDetector(), self.clip, tmp), ["unscanned-video"])
+        self.assertEqual(self.runs("gst-launch-1.0"), [])
+        self.assertEqual(os.listdir(tmp), [])  # nothing left behind
+        fd = tempfile.mkdtemp(prefix='q"', dir=self.d)
+        self.assertEqual(scan_sensitive.video_frames(self.clip, fd), [])
+        self.assertEqual((os.listdir(fd), self.runs("gst-launch-1.0")), ([], []))
+
+
 # ================================================================ scan -> apply -> tag (+ plugin) end to end
 PLUGIN = '''import json, os
 def after_tag(files):
