@@ -15,7 +15,9 @@ intake.py in a throwaway HOME. A video's sidecar is <clip>.mp4.xmp, and its byte
 No test opens a quarantined or flagged file's content; quarantine checks are
 paths, counts and checksums.
 """
-import hashlib, json, os, shutil, stat, subprocess, sys, tempfile, unittest, urllib.parse
+import argparse, builtins, hashlib, io, json, os, shutil, stat, subprocess, sys, tempfile, unittest, urllib.parse
+import unittest.mock as mock
+from contextlib import redirect_stdout
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import support  # noqa: E402,F401  (hermetic config)
@@ -351,6 +353,45 @@ class Forget(Base):
         out = self.out("forget", v, os.path.join(self.vids, "2026/2026-11/../2026-11/v.mp4"), "--yes")
         self.assertIn("erased 1 files", out)
         self.assertFalse(os.path.exists(v))
+
+
+class CtrlCAtThePrompt(unittest.TestCase):
+    """intake.ask() in-process: Ctrl-C at a delete prompt is no answer, so nothing is deleted and no
+    KeyboardInterrupt traceback escapes. input() is patched to raise it; STATE points at a temp folder."""
+
+    def setUp(self):
+        import intake
+        self.intake = intake
+        self.tmp = tempfile.mkdtemp(prefix="ask-ctrl-c-")
+        self.addCleanup(shutil.rmtree, self.tmp, True)
+        for target, name, value in ((intake, "STATE", os.path.join(self.tmp, "state")),
+                                    (builtins, "input", mock.Mock(side_effect=KeyboardInterrupt))):
+            p = mock.patch.object(target, name, value)
+            p.start()
+            self.addCleanup(p.stop)
+
+    def test_ask_returns_no_answer_on_ctrl_c(self):
+        with redirect_stdout(io.StringIO()):
+            try:
+                answer = self.intake.ask("Type ERASE: ")
+            except KeyboardInterrupt:  # caught here, or it would stop the whole test run
+                self.fail("Ctrl-C at the prompt escaped ask()")
+        self.assertEqual(answer, "")
+
+    def test_forget_interrupted_at_the_prompt_erases_nothing(self):
+        f = os.path.join(self.tmp, "lib", "v.mp4")
+        os.makedirs(os.path.dirname(f))
+        with open(f, "wb") as fh:
+            fh.write(b"synthetic video bytes")
+        a = argparse.Namespace(files=[f], drive=None, yes=False)
+        with redirect_stdout(io.StringIO()), self.assertRaises(SystemExit) as e:
+            try:
+                self.intake.cmd_forget(a)
+            except KeyboardInterrupt:  # caught here, or it would stop the whole test run
+                self.fail("Ctrl-C at forget's prompt escaped as a traceback")
+        self.assertEqual(e.exception.code, "nothing erased")
+        self.assertTrue(os.path.isfile(f))
+        self.assertFalse(os.path.exists(os.path.join(self.tmp, "state")), "nothing moved into quarantine")
 
 
 class KeepAndSuggest(Base):
