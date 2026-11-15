@@ -23,7 +23,7 @@ Detectors (docs/intake.md has the research and pins):
 Videos: one frame every 2 s (max 90, at least one for a clip under 2 s) through
 the nudity detector; a detector error on any frame flags "unscanned-nudity".
 """
-import contextlib, json, os, re, shlex, shutil, subprocess, sys, tempfile
+import contextlib, json, os, re, shutil, subprocess, sys, tempfile
 
 from PIL import Image, ImageOps
 
@@ -182,15 +182,41 @@ def _video_frames(path, fd, max_frames):
     dec = _gst_hevc_decoder()
     if not dec:
         return []
-    post = "vapostproc ! " if dec == "vah265dec" else "vulkandownload ! "
+    # gst-launch-1.0 joins its arguments and parses them as one pipeline, so a "!" or a quote in the clip's
+    # name (or in fd's path) could add elements, a sink writing anywhere among them. GStreamer reads the
+    # clip through a link in a private (0700) work folder inside fd and writes the frames there; that
+    # folder's path must pass SAFE_GST_PATH, else GStreamer is not tried ([]: "not checked", never clean).
+    work = os.path.abspath(tempfile.mkdtemp(prefix=".gst-", dir=fd))
+    try:
+        if not SAFE_GST_PATH.fullmatch(work):
+            return []
+        os.symlink(os.path.abspath(path), os.path.join(work, "in"))
+        r = subprocess.run(gst_frames_command(dec, work, every), capture_output=True, timeout=1800,
+                           stdin=subprocess.DEVNULL)
+        frames = sorted(f for f in os.listdir(work) if f.endswith(".jpg"))[:max_frames]
+        if r.returncode != 0 or not frames:
+            return []
+        for f in frames:
+            os.replace(os.path.join(work, f), os.path.join(fd, f))
+        return frames
+    finally:
+        shutil.rmtree(work, ignore_errors=True)
+
+
+SAFE_GST_PATH = re.compile(r"[A-Za-z0-9._/+-]+")  # what may stand as a location= value (as gallery.SAFE_GST_PATH)
+
+
+def gst_frames_command(dec, work, every):
+    """gst-launch-1.0 argv that decodes <work>/in (a link to the clip) with the GPU HEVC decoder dec and writes
+    a 960 px wide JPEG every `every` seconds to <work>/NNN.jpg. Built as a list, never split from a string;
+    work must already match SAFE_GST_PATH. No path but work's reaches it."""
+    post = "vapostproc" if dec == "vah265dec" else "vulkandownload"
     num, den = 1000, int(round(every * 1000))
-    pipe = (f"filesrc location={shlex.quote(path)} ! qtdemux ! h265parse ! {dec} ! {post}"
-            f"videoconvert ! videoscale ! video/x-raw,width=960,pixel-aspect-ratio=1/1 ! "
-            f"videorate ! video/x-raw,framerate={num}/{den} ! jpegenc ! "
-            f"multifilesink location={shlex.quote(os.path.join(fd, '%03d.jpg'))}")
-    r = subprocess.run(["gst-launch-1.0", "-q"] + shlex.split(pipe), capture_output=True, timeout=1800)
-    frames = sorted(os.listdir(fd))[:max_frames]
-    return frames if r.returncode == 0 and frames else []
+    return ["gst-launch-1.0", "-q", "filesrc", "location=" + os.path.join(work, "in"), "!", "qtdemux", "!",
+            "h265parse", "!", dec, "!", post, "!", "videoconvert", "!", "videoscale", "!",
+            "video/x-raw,width=960,pixel-aspect-ratio=1/1", "!", "videorate", "!",
+            f"video/x-raw,framerate={num}/{den}", "!", "jpegenc", "!",
+            "multifilesink", "location=" + os.path.join(work, "%03d.jpg")]
 
 
 def scan_file(det, path, tmpdir):

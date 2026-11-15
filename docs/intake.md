@@ -42,6 +42,18 @@ default; all of them come from `~/.config/media-intake/config.toml`
   reports labels only. An assistant may run the commands for you, but must
   never read, view, montage or describe a file under `quarantine/` or a file
   `scan.json` flags.
+- **A file name is data, never part of a command.** Names come from devices
+  and are untrusted. When ffmpeg can't decode a video (HEVC on Fedora's
+  `ffmpeg-free`), `scan` samples its frames through GStreamer, and
+  `gst-launch-1.0` re-parses its arguments as one pipeline description, so a
+  `!` or a quote in a name could add elements. It reads the clip through a link
+  (`in`) in a private (0700) `.gst-*` work folder inside the frames folder,
+  writes the frames there, and its argv is built as a list
+  (`scan_sensitive.gst_frames_command`). A work folder whose path has anything
+  but letters, digits and `._/+-` (an unusual HOME) means GStreamer is not
+  tried, so the clip is `unscanned-video`, never clean. The same sampling
+  serves `label`, `semantic`, `vlm_trash` and gallery thumbnails; the gallery's
+  HEVC proxy does the same (docs/gallery.md).
 
 ## Commands
 
@@ -778,6 +790,6 @@ stage, plan, apply, erase, offload and verify-gone with photos, videos and a mix
 a drive, a laptop folder and the drive queue; `test_library_lock`: the
 CLI, a gallery write and a job contending for the library lock; `test_library_ops_media_kinds`: every
 library-side command on a photo, an mp4 and a .mov, alone and mixed; `test_detectors_media_kinds`: scan,
-vlm_trash, semantic, label and the plugin hook on photos, videos and mixed batches, and broken videos that
-must be flagged "not checked", never clean; `test_offline_guard`). Run long jobs under your
+vlm_trash, semantic, label and the plugin hook on photos, videos and mixed batches, broken videos that
+must be flagged "not checked", never clean, and the GStreamer fallback with a hostile file name (fake tools); `test_offline_guard`). Run long jobs under your
 own memory cap if you like.

@@ -53,6 +53,11 @@ The goal: someone else can install it on Fedora, import a phone, and trust it.
       `.sh`, workflow, `.claude/` file and the Markdown at the repo root and in `docs/`
       (code comments and Markdown lines that say "never" state the rule, so they pass).
 - [x] Don't move library files while a scan/tag/apply job runs: take a lock per library.
+- [x] **No file name in a GStreamer pipeline:** `gst-launch-1.0` re-parses its arguments as one
+      pipeline, so a "!" or a quote in a device file's name could add elements (a sink writing
+      anywhere). Video frame sampling (scans, labels, search, thumbnails) now reads the clip through
+      a link in a private work folder whose path is checked, with the argv built as a list; an unsafe
+      work path skips GStreamer and the clip stays "not checked" (`scan_sensitive.gst_frames_command`).
 
 ### Dates and devices
 - [x] Implausible camera dates (GoPro with an unset clock writes 2015-12-31/2016-01-01):

@@ -38,7 +38,10 @@ In scope: everything in this repository, including `setup.sh` and the
 download pins; the gallery's local-app launch (`/api/open`, which runs the
 desktop's default app on one library file); and the state folder's lock and
 salt files (`locks/`, whose holder note must never name a file, and
-`device-salt`, which keeps device ids from revealing camera serial numbers).
+`device-salt`, which keeps device ids from revealing camera serial numbers);
+and file names from devices reaching an external tool's command line or a
+GStreamer pipeline description (video frames and HEVC proxies are read through
+a link in a private work folder, never by name).
 Out of scope: bugs in dependencies alone (report upstream),
 detector misses (NudeNet, OCR and the label model are hints, not
 guarantees; see README), and attacks that need a compromised account on the
