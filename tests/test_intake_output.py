@@ -6,7 +6,7 @@
 
 Synthetic photos in a throwaway HOME; `scan` runs a fake venv python (no detectors, no model).
 """
-import os, pty, re, shlex, shutil, subprocess, sys, tempfile, unittest
+import hashlib, json, os, pty, re, shlex, shutil, subprocess, sys, tempfile, unittest
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import support  # noqa: E402,F401  (hermetic config)
@@ -18,6 +18,15 @@ FAKE_SCAN = """#!/bin/sh
 printf '{}\\n' > "$4"
 echo '{"scanned": 0, "flagged": 0, "by_reason": {}, "unavailable": []}'
 """
+def read_bytes(p):
+    with open(p, "rb") as f:
+        return f.read()
+
+
+def sha256(p):
+    return hashlib.sha256(read_bytes(p)).hexdigest()
+
+
 PROGRESS = re.compile(r"^(stage|plan|apply|tag): ")
 
 
@@ -46,13 +55,13 @@ class IntakeOutput(unittest.TestCase):
         os.makedirs(os.path.dirname(venv))
         with open(venv, "w") as f:
             f.write(FAKE_SCAN)
-        os.chmod(venv, 0o755)
+        os.chmod(venv, 0o700)  # owner-only: only this test runs it
 
     def tearDown(self):
         shutil.rmtree(self.tmp, ignore_errors=True)
 
-    def intake(self, *args, code=0, **env):
-        r = subprocess.run([PY, "-I", INTAKE, *args], env=dict(self.env, **env), capture_output=True, text=True,
+    def intake(self, *args, code=0, script=INTAKE, **env):
+        r = subprocess.run([PY, "-I", script, *args], env=dict(self.env, **env), capture_output=True, text=True,
                            stdin=subprocess.DEVNULL)
         self.assertEqual(r.returncode, code, f"{args}\n{r.stdout}\n{r.stderr}")
         return r.stdout.splitlines()
@@ -104,6 +113,45 @@ class IntakeOutput(unittest.TestCase):
         out = self.intake("tag", batch, "--no-labels", MEDIA_INTAKE_NEXT_HINT="1")
         self.assertEqual(out[-1], f"next: media-intake backup <MOUNT>, then media-intake offload {batch} "
                                   f"--phone {shlex.quote(self.phone)}")
+
+    @unittest.skipUnless(shutil.which("exiftool"), "exiftool not installed")
+    def test_tag_writes_in_chunks(self):
+        """intake.WRITE_CHUNK patched to 5 against 12 files: three exiftool runs (5, 5, 2) cross the chunk
+        boundaries; every sidecar holds its tags, the originals are unchanged, the count line is right, and a
+        second run writes the same sidecars."""
+        launcher = os.path.join(self.tmp, "intake_chunk5.py")
+        with open(launcher, "w") as f:
+            f.write(f"import sys\nsys.path.insert(0, {os.path.dirname(INTAKE)!r})\nimport intake\n"
+                    "intake.WRITE_CHUNK = 5\nintake.main()\n")
+        batch = "2026-11-15-chunks"
+        self.flow(batch)
+        lib = os.path.join(self.home, "Pictures/library")
+        files = sorted(os.path.join(d, n) for d, _, ns in os.walk(lib) for n in ns if n.endswith(".jpg"))
+        self.assertEqual(len(files), self.N)
+        originals = {p: sha256(p) for p in files}
+        # A line prints when the count crosses a multiple of MEDIA_INTAKE_PROGRESS_EVERY; at 4, each chunk's tick
+        # (5, 10, 12) crosses one, so every chunk boundary shows, the last as "12 of 12".
+        out = self.intake("tag", batch, "--no-labels", script=launcher, MEDIA_INTAKE_PROGRESS_EVERY="4")
+        self.assertEqual([ln for ln in out if ln.endswith("sidecars written")],
+                         ["tag: 5 of 12 sidecars written", "tag: 10 of 12 sidecars written",
+                          "tag: 12 of 12 sidecars written"], out)
+        self.assertTrue(out[-1].startswith("tagged 12 files (sidecars <file>.xmp)"), out)
+        self.assert_no_names(out)
+        first = {p: read_bytes(p + ".xmp") for p in files}
+        r = subprocess.run(["exiftool", "-j", "-q", "-HierarchicalSubject", "-XMP-exif:DateTimeOriginal",
+                            *(p + ".xmp" for p in files)], capture_output=True, text=True, check=True)
+        rows = {row["SourceFile"][:-4]: row for row in json.loads(r.stdout)}
+        self.assertEqual(set(rows), set(files), "every file has its sidecar")
+        for p, row in rows.items():
+            tags = row.get("HierarchicalSubject")
+            tags = tags if isinstance(tags, list) else [tags]
+            self.assertTrue([t for t in tags if str(t).startswith("Project|")], (p, tags))
+            self.assertTrue([t for t in tags if str(t).startswith("Source|")], (p, tags))
+            self.assertTrue(row.get("DateTimeOriginal", "").startswith("2026:10:20 12:00:"), (p, row))
+        self.assertEqual({p: sha256(p) for p in files}, originals, "originals never written")
+        self.intake("tag", batch, "--no-labels", script=launcher)
+        self.assertEqual({p: read_bytes(p + ".xmp") for p in files}, first, "a second run writes the same")
+        self.assertEqual({p: sha256(p) for p in files}, originals)
 
     def test_next_line_clean_batch(self):
         batch = "2026-11-15-clean"

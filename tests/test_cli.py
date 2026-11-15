@@ -340,9 +340,9 @@ class Commands(unittest.TestCase):
         import argparse, intake
         sub = next(a for a in intake.build_parser()._actions if isinstance(a, argparse._SubParsersAction))
         names = cli.command_names()
-        self.assertTrue(set(sub.choices) <= set(names))
-        self.assertTrue(intake.LOCKED | intake.READ_ONLY <= set(names))
-        self.assertTrue({*cli.COMMANDS, *cli.VENV_SCRIPTS} <= set(names))
+        self.assertLessEqual(set(sub.choices), set(names))
+        self.assertLessEqual(intake.LOCKED | intake.READ_ONLY, set(names))
+        self.assertLessEqual({*cli.COMMANDS, *cli.VENV_SCRIPTS}, set(names))
         self.assertEqual(names, sorted(set(names)))
 
     def test_unknown_command_suggests_and_exits_2(self):

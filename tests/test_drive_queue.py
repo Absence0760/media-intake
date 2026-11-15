@@ -7,7 +7,7 @@ stage, plan, apply and offload are the real intake.py; scan, tag, the semantic
 index and the VLM are simulated (scan.json, a sidecar, exit codes), so no model
 runs. MEDIA_INTAKE_TEST_MOUNT/UUID stand in for findmnt. Never touches a real drive.
 """
-import hashlib, importlib.util, io, json, os, shutil, subprocess, sys, tempfile, unittest
+import datetime, hashlib, importlib.util, io, json, os, shutil, subprocess, sys, tempfile, time, unittest
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import support  # noqa: E402,F401  (hermetic config)
@@ -361,10 +361,9 @@ class Queue(unittest.TestCase):
 
     def held_run_lock(self):
         os.makedirs(os.path.join(self.state, "queue"), exist_ok=True)
-        f = open(os.path.join(self.state, "queue", "run.lock"), "a")
+        f = self.enterContext(open(os.path.join(self.state, "queue", "run.lock"), "a"))  # closed at cleanup
         import fcntl
         fcntl.flock(f, fcntl.LOCK_EX | fcntl.LOCK_NB)
-        self.addCleanup(f.close)
 
     def test_status_table_rows_for_every_state(self):
         long_root = self.every_state()
@@ -395,6 +394,36 @@ class Queue(unittest.TestCase):
         self.assertTrue(review.startswith("/run/"))
         self.assertNotIn(long_root, out.split("Waiting for you:")[0])
         self.assertEqual([x[cols[0]:].split()[0] for x in lines[5:7]], ["done", "done"])
+
+    def skew_tz(self, tz):
+        """Run under TZ=tz (time.tzset), put back for whatever the runner set (CI: America/New_York)."""
+        old = os.environ.get("TZ")
+
+        def restore():
+            if old is None:
+                os.environ.pop("TZ", None)
+            else:
+                os.environ["TZ"] = old
+            time.tzset()
+        self.addCleanup(restore)
+        os.environ["TZ"] = tz
+        time.tzset()
+
+    def test_status_changed_is_local_time_under_a_skewed_tz(self):
+        """CHANGED shows the time the queue recorded as local wall-clock time, whatever TZ the runner has: here
+        UTC+13:45 (a POSIX zone, no tzdata needed), which never shares a minute with UTC."""
+        self.skew_tz("XST-13:45")
+        before = time.time()
+        self.qrun("add", self.root, "--label", "d")
+        after = time.time()
+        minute = lambda t, tz=None: datetime.datetime.fromtimestamp(t, tz).strftime("%Y-%m-%d %H:%M")  # noqa: E731
+        local = {minute(before), minute(after)}  # the add may straddle a minute
+        lines = self.qrun("status").splitlines()
+        self.assertEqual(lines[0].split()[-1], "CHANGED")
+        changed = lines[1][lines[0].index("CHANGED"):].strip()
+        self.assertIn(changed, local)
+        self.assertNotIn(changed, {minute(before, datetime.timezone.utc), minute(after, datetime.timezone.utc)})
+        self.assertEqual(self.status_json()["sources"][0]["changed"][:16].replace("T", " "), changed)
 
     def test_status_waiting_section_and_next(self):
         self.every_state()

@@ -1211,6 +1211,35 @@ class EventBlockTest(unittest.TestCase):
         self.assertFalse(os.path.exists(os.path.join(self.g.LIBRARY, "share")), "nothing created on refusal")
 
 
+class SemanticArgvTest(unittest.TestCase):
+    """The gallery asks semantic.py for --format machine explicitly (the `score  path` lines it parses), never
+    relying on the auto default that turns human at a terminal."""
+
+    def test_search_and_similar_pass_format_machine(self):
+        import gallery
+        from unittest import mock
+        tmp = tempfile.mkdtemp(prefix="gallery-argv-test-")
+        self.addCleanup(shutil.rmtree, tmp, True)
+        p = os.path.join(tmp, "a.jpg")
+        img(p, (10, 20, 30))
+        app = gallery.App([dict(path=p, gone=False, tags=[], place="", event="")])
+        app.text_why = None
+        app.text_checked.set()
+        calls = []
+
+        def run(argv, **kw):
+            calls.append(argv)
+            return subprocess.CompletedProcess(argv, 0, stdout="", stderr="")  # no hits: only the argv matters
+        real_exists = os.path.exists
+        exists = lambda q: q == gallery.intake.VENV_PY or q.endswith("embeddings.npz") or real_exists(q)  # noqa: E731
+        with mock.patch.object(gallery.subprocess, "run", run), mock.patch.object(gallery.os.path, "exists", exists):
+            for f in ({"q": "beach"}, {"similar": "0"}):
+                self.assertEqual(app.listing(f)["total"], 0)
+        self.assertEqual([c[3] for c in calls], ["search", "similar"])
+        for argv in calls:
+            self.assertEqual(argv[-2:], ["--format", "machine"], argv)
+
+
 class AddedFilterTest(unittest.TestCase):
     """The "added in the last N days" filter on items whose inode changed long ago (no test can set a ctime)."""
 

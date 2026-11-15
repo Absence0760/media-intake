@@ -397,7 +397,7 @@ def run_lock_held():
         except BlockingIOError:
             return True
         except OSError:
-            pass
+            return False  # flock unsupported on that filesystem: no run can hold it either, so not held
     return False
 
 

@@ -750,9 +750,8 @@ class App:
                     used=it["used"], kept=it["kept"], has_xmp=it["has_xmp"])
 
     def facets(self):
-        from collections import Counter
-        c = {k: Counter() for k in ("project", "source", "event", "place", "label", "month", "mine")}
-        counts = Counter()  # the sidebar's view and option counts (whole library, not cross-filtered)
+        c = {k: collections.Counter() for k in ("project", "source", "event", "place", "label", "month", "mine")}
+        counts = collections.Counter()  # the sidebar's view and option counts (whole library, not cross-filtered)
         recent = time.time() - RECENT_DAYS * 86400
         n = 0
         for it in self.items:
@@ -882,7 +881,7 @@ class App:
                     return dict(total=0, items=[], ranked=True,
                                 note="Similar needs the semantic index (semantic.py index); not available here")
                 try:
-                    self.search_cache[key] = self.semantic(["similar", self.items[si]["path"], "-n", "300"])
+                    self.search_cache[key] = self.semantic(["similar", self.items[si]["path"], "-n", "300", "--format", "machine"])
                 except (RuntimeError, OSError, subprocess.TimeoutExpired) as e:
                     return dict(total=0, items=[], ranked=True, note=f"Similar failed: {e}")
             ids, ranked = [i for _, i in self.search_cache[key]], True
@@ -893,7 +892,7 @@ class App:
                 key = ("search", q)
                 if key not in self.search_cache:
                     try:
-                        self.search_cache[key] = self.semantic(["search", q, "-n", "400"])
+                        self.search_cache[key] = self.semantic(["search", q, "-n", "400", "--format", "machine"])
                     except (RuntimeError, OSError, subprocess.TimeoutExpired) as e:
                         self.search_cache.pop(key, None)
                         note = f"semantic search failed ({e}); showing tag and file-name matches"
