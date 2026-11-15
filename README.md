@@ -112,6 +112,7 @@ media-intake offload phone-1 --phone <device root> --yes   # after a backup: fre
 | `vlm-trash` | Local vision-model second opinion on trash candidates |
 | `gallery` | Local web gallery: browse, keep, trash, erase, tag, rotate, events, bulk edits, share-safe copies |
 | `prune-cache` | Delete gallery thumbnails and video proxies nothing in the library shows any more (`--dry-run` first) |
+| `backup` | Copy the library (photos, videos, sidecars) to a mounted drive: incremental, never deletes there |
 | `queue add/run/status/offload` | Process an old external drive or a laptop folder in resumable chunks |
 | `share-copy` | Copy files with GPS and metadata stripped, for posting |
 | `doctor` | Check the install |
@@ -119,7 +120,7 @@ media-intake offload phone-1 --phone <device root> --yes   # after a backup: fre
 `media-intake <command> --help` for options. Details:
 [intake](docs/intake.md), [review page](docs/review-ui.md),
 [gallery](docs/gallery.md), [search and VLM](docs/search.md),
-[drive and folder queue](docs/queue.md), [configuration](docs/configuration.md),
+[drive and folder queue](docs/queue.md), [backup](docs/backup.md), [configuration](docs/configuration.md),
 [plugins](docs/plugins.md), [releases](docs/release.md).
 
 ## Tested devices

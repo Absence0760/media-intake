@@ -149,8 +149,8 @@ The goal: someone else can install it on Fedora, import a phone, and trust it.
 
 ## Milestone 0.5: backups and erase everywhere
 
-- [ ] Built-in `backup` to a mounted drive (photos + videos + sidecars, never quarantine or
-      staging), with `--verify`. Recommend LUKS-encrypted drives: exFAT deletes leave
+- [x] Built-in `backup` to a mounted drive (photos + videos + sidecars, never quarantine or
+      staging), with `--verify` ([docs/backup.md](docs/backup.md)). Recommend LUKS-encrypted drives: exFAT deletes leave
       data readable until overwritten.
 - [ ] Optional S3/offsite module: uploads only reviewed batches, no sidecars versioned
       forever, never Object Lock; erase deletes every object version and delete marker.

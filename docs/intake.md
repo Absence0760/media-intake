@@ -504,7 +504,8 @@ quarantine. A file named twice is forgotten once.
   path whose mount (`findmnt -T`) is `/`, `/home`, `/var`, `/tmp` or `/boot*`.
   On flash (`rotational` 0) it also tries `fstrim`, but wear-levelling keeps
   spare blocks, so an overwrite is no guarantee there. The robust fix is a
-  LUKS-encrypted backup drive, or a drive wiped whole.
+  LUKS-encrypted backup drive, or a drive wiped whole. `media-intake backup`
+  writes that drive ([backup.md](backup.md)).
 - **Phone.** `erase --phone` deletes the originals over MTP and, by default,
   `DCIM/.thumbnails` and `Pictures/.thumbnails` (Android rebuilds them;
   `--keep-phone-thumbnails` leaves them alone). Exactly those two paths: a
