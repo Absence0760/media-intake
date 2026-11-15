@@ -48,7 +48,7 @@ Test: python3 -I -m unittest discover -s tests (synthetic media, throwaway HOME)
 An AI assistant may run these commands for you, but must never read, view,
 montage or describe a file under quarantine/ or a file scan.json flags.
 """
-import argparse, collections, datetime, glob, hashlib, json, os, re, shutil, stat, subprocess, sys, time, urllib.parse
+import argparse, collections, datetime, glob, hashlib, json, os, re, shlex, shutil, stat, subprocess, sys, time, urllib.parse
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import config  # noqa: E402
@@ -298,6 +298,8 @@ def cmd_stage(a):
         a.batch = default_batch(root, a.kind, files, os.path.abspath(a.origin or root))
         print(f"batch {a.batch}")
     raw = private_dir(os.path.join(private_dir(bdir(a.batch)), "raw"))
+    prog = Progress("stage", f"copying {len(files):,} media files into the batch (size-checked)",
+                    unit="files staged", hits=None, total=len(files))
     # Google Takeout JSON / iCloud CSV beside the files (exports.py): their dates and places ride in the manifest.
     exported, ec = exports.scan(root, files) if a.kind in ("drive", "folder") else ({}, {})
     for path, rel in files:
@@ -311,6 +313,7 @@ def cmd_stage(a):
             sys.exit(f"size mismatch after copy: {rel}")
         origin = os.path.join(os.path.abspath(a.origin), rel) if a.origin else path
         man[rel] = dict(src=origin, size=st.st_size, **({"export": exported[rel]} if rel in exported else {}))
+        prog.tick()
     for dirpath, _, names in os.walk(root) if a.kind == "gopro" else []:
         for n in names:
             if os.path.splitext(n)[1].lower() in sources.CAMERA_JUNK_EXT:
@@ -327,6 +330,8 @@ def cmd_stage(a):
             skipped[what] = ec[k]
     for k, v in skipped.items():
         print(f"  skipped {v} {k}")
+    if man:
+        next_hint(["plan", a.batch])
 
 
 # ---------------------------------------------------------------- plan
@@ -352,6 +357,8 @@ def cmd_plan(a):
     by_sha = {v["sha"]: k for k, v in index.items()}
 
     paths = [os.path.join(raw, rel) for rel in man["files"]]
+    prog = Progress("plan", f"reading dates, then hashing {len(paths):,} files (sha256, dHash, video hash)",
+                    unit="files hashed", hits=None, total=len(paths))
     exp = {os.path.abspath(os.path.join(raw, rel)): f["export"] for rel, f in man["files"].items() if f.get("export")}
     try:
         metas = None
@@ -376,6 +383,7 @@ def cmd_plan(a):
                          export_gps=exports.gps_of(man["files"][rel]),  # tag's place when the file has no GPS
                          cat=category(rel, kind), dhash=dh, w=w, h=h, ext=ext,
                          vhash=vh, vhash_note=vnote))  # videohash frame dHashes ([] + a note: not compared)
+        prog.tick()
 
     pref = {"photo": 5, "video": 5, "gopro": 5, "screenshot": 3, "screenrec": 3}
     CAMERA = ("photo", "gopro")  # camera originals: one is never a near-duplicate of another
@@ -404,7 +412,13 @@ def cmd_plan(a):
         (near nothing) and its vhash_note says why; plan prints the count."""
         items = [r for r in rows if r.get(key) is not None and r["rel"] not in action]
         lib = [(k, v) for k, v in index.items() if v.get(key) is not None]
+        what = "photos" if key == "dhash" else "videos"
+        near = Progress("plan", f"comparing {len(items):,} {what} for near-copies (the batch and "
+                                f"{len(lib):,} library entries)", unit=f"{what} compared", hits=None,
+                        total=len(items)) if items else None
         for i, x in enumerate(items):
+            if near:
+                near.tick()
             if x["rel"] in action:
                 continue
             for y in items[i + 1:]:
@@ -496,6 +510,7 @@ def cmd_plan(a):
               + ", ".join(sorted(rels)[:5]) + (" ..." if len(rels) > 5 else ""))
     for k in sorted({os.path.dirname(os.path.relpath(p["dst"], HOME)) for p in plan if p["action"] == "file"}):
         print("  ~/" + k)
+    next_hint(["scan", a.batch])
 
 
 # ---------------------------------------------------------------- scan
@@ -505,7 +520,9 @@ def cmd_scan(a):
         sys.exit(f"no venv: run bash {SETUP} first")
     out = os.path.join(b, "scan.json")
     r = subprocess.run([VENV_PY, "-I", os.path.join(HERE, "scan_sensitive.py"), os.path.join(b, "raw"), out])
-    sys.exit(r.returncode)
+    if r.returncode:
+        sys.exit(r.returncode)
+    next_hint(["apply", a.batch])  # flagged files go to quarantine there; the review page comes after
 
 
 # ---------------------------------------------------------------- apply
@@ -531,7 +548,10 @@ def cmd_apply(a):
     qman = load(os.path.join(quar, "quarantine.json"), {})
     c = collections.Counter()
     moved = 0  # plan entries whose place was taken since `plan`: filed under a free name instead
+    prog = Progress("apply", f"moving {len(plan):,} planned files (library, review folder, quarantine)",
+                    unit="files done", hits=None, total=len(plan))
     for p in plan:
+        prog.tick()
         src = os.path.join(raw, p["rel"])
         if not os.path.exists(src):
             continue
@@ -582,6 +602,9 @@ def cmd_apply(a):
         f.write("\n".join(gps) + "\n")
     print(f"{len(gps)} filed files carry GPS location (list: {os.path.join(b, 'gps.txt')}); "
           f"use `share-copy` before posting any of them")
+    # From what is there now, not this run's counts: a second apply moves nothing but the review is still due.
+    reviewing = os.path.isdir(os.path.join(b, "review")) and any(fs for _, _, fs in os.walk(os.path.join(b, "review")))
+    next_hint(["review" if qman or reviewing else "tag", a.batch])
 
 
 # ---------------------------------------------------------------- quarantine review
@@ -747,28 +770,49 @@ def near_roots():
     return [r for r in roots if os.path.isdir(r)]
 
 
-# Progress of a long walk (the HOME sweep, the near-duplicate search): a line every PROGRESS_EVERY files or
-# PROGRESS_SECS seconds, whichever comes first, so a gallery Erase or a forget never sits silent for minutes.
-# MEDIA_INTAKE_PROGRESS_EVERY / _SECS override them (tests drive the lines by count with SECS=inf).
+# Progress of a long walk or step (the HOME sweep, the near-duplicate search, stage, plan, apply, tag): a line
+# every PROGRESS_EVERY files or PROGRESS_SECS seconds, whichever comes first, so a gallery Erase, a forget or a
+# big batch never sits silent for minutes. MEDIA_INTAKE_PROGRESS_EVERY / _SECS override them (tests drive the
+# lines by count with SECS=inf). One line per report, newline-terminated, on a terminal too: job logs stream them.
 PROGRESS_EVERY, PROGRESS_SECS = 10000, 2.0
 
 
 class Progress:
-    """Counts-only progress lines, flushed at once so a job log streams them. Never a file name."""
+    """Counts-only progress lines, flushed at once so a job log streams them. Never a file name.
 
-    def __init__(self, label, start, unit="files checked", hits="copies"):
-        self.label, self.unit, self.hits, self.n = label, unit, hits, 0
+    With total, a tick line reads "label: N of TOTAL unit"; with hits=None it has no ", F hits so far" part."""
+
+    def __init__(self, label, start, unit="files checked", hits="copies", total=None):
+        self.label, self.unit, self.hits, self.total, self.n = label, unit, hits, total, 0
         self.every = max(1, int(os.environ.get("MEDIA_INTAKE_PROGRESS_EVERY") or PROGRESS_EVERY))
         self.secs = float(os.environ.get("MEDIA_INTAKE_PROGRESS_SECS") or PROGRESS_SECS)
         self.last = time.monotonic()
         print(f"{label}: {start}", flush=True)
 
-    def tick(self, found):
-        self.n += 1
+    def say(self, what):
+        """A phase line under the label (counts and step names only)."""
+        print(f"{self.label}: {what}", flush=True)
+
+    def tick(self, found=0, by=1):
+        before = self.n
+        self.n += by
         now = time.monotonic()
-        if self.n % self.every == 0 or now - self.last >= self.secs:
+        if self.n // self.every > before // self.every or now - self.last >= self.secs:
             self.last = now
-            print(f"{self.label}: {self.n:,} {self.unit}, {found:,} {self.hits} so far", flush=True)
+            done = f"{self.n:,}" + (f" of {self.total:,}" if self.total is not None else "")
+            print(f"{self.label}: {done} {self.unit}" + (f", {found:,} {self.hits} so far" if self.hits else ""),
+                  flush=True)
+
+
+def next_hint(*cmds):
+    """End a main-flow step (stage, plan, scan, apply, tag) with one "next: media-intake ..." line naming the
+    command(s) to run next; each of cmds is an argument list, "<NAME>" a placeholder left unquoted. Only for a
+    person at a terminal: a job log, the drive queue, a pipe or a test sees nothing new unless
+    MEDIA_INTAKE_NEXT_HINT=1 (=0 turns it off on a terminal too)."""
+    v = os.environ.get("MEDIA_INTAKE_NEXT_HINT")
+    if v == "1" if v in ("0", "1") else sys.stdout.isatty():
+        print("next: " + ", then ".join(" ".join(x if re.fullmatch(r"<[A-Z]+>", x) else shlex.quote(x)
+                                                  for x in ("media-intake", *c)) for c in cmds), flush=True)
 
 
 def where(path, base):
@@ -2183,10 +2227,14 @@ def merge_tags(old, new, pick="", relabelled=True, owner_leaves=()):
     return new, remove, leaves
 
 
-def tag_files(items, labels=True):
+WRITE_CHUNK = 200  # sidecars per exiftool run in tag_files, so its progress moves while they are written
+
+
+def tag_files(items, labels=True, label="tag"):
     """items: [(path, project, source, event, datetime or None[, fallback (lat, lon)])]; source a string or a
     tuple of them (the kind, then the device model: Source|gopro, Source|HERO11 Black). The fallback place (a
-    cloud export's, exports.py) is used only when the file has no GPS. Writes sidecars; prints counts only."""
+    cloud export's, exports.py) is used only when the file has no GPS. Writes sidecars; prints counts only,
+    progress (Progress) under label."""
     need_exiftool()
     lab = guard_label()
     bad = set(lab.refused([i[0] for i in items], STATE))
@@ -2197,14 +2245,19 @@ def tag_files(items, labels=True):
         print("nothing to tag")
         return
     paths = [i[0] for i in items]
+    prog = Progress(label, f"{len(items):,} files: GPS, place names{', content labels' if labels else ''}, "
+                           "then sidecars", unit="sidecars written", hits=None, total=len(items))
     gps = read_gps(paths)
     gps.update({i[0]: tuple(i[5]) for i in items if len(i) > 5 and i[5] and i[0] not in gps})
     pts = list(gps)
+    if pts:
+        prog.say(f"place names for {len(pts):,} files with GPS (offline)")
     places = dict(zip(pts, venv_json("geocode.py", [list(gps[p]) for p in pts]))) if pts else {}
     lbl = {}
     if labels:
         if not os.path.exists(VENV_PY):
             sys.exit(f"no venv: run bash {SETUP} first (or --no-labels)")
+        prog.say(f"content labels for {len(paths):,} files (CPU-heavy; one pass, no per-file lines)")
         lbl = venv_json("label.py", paths)
     entries, c, lc = [], collections.Counter(), collections.Counter()
     existing = read_sidecar_tags(paths)
@@ -2238,7 +2291,9 @@ def tag_files(items, labels=True):
         if remove:
             c["stale tags replaced"] += len(remove)
         entries.append((path, dict(t, hier=hier, remove=remove, drop_leaves=leaves)))
-    write_tags(entries)
+    for i in range(0, len(entries), WRITE_CHUNK):  # one exiftool run per chunk, each a progress tick
+        write_tags(entries[i:i + WRITE_CHUNK])
+        prog.tick(by=len(entries[i:i + WRITE_CHUNK]))
     print(f"tagged {len(entries)} files (sidecars <file>.xmp); " + ", ".join(f"{k} {v}" for k, v in sorted(c.items())))
     if lc:
         print("labels: " + ", ".join(f"{k} {v}" for k, v in lc.most_common()))
@@ -2271,13 +2326,17 @@ def cmd_tag(a):
     tag_files(items, labels=not a.no_labels)
     # Plugins (docs/plugins.md) get the filed files, e.g. to register a project's clips.
     import plugins
-    if not plugins.modules():
-        return
-    live = [i for i in items if os.path.isfile(i[0])]
-    bad = set(guard_label().refused([i[0] for i in live], STATE))
-    plugins.call("after_tag", [dict(path=os.path.abspath(i[0]), project=i[1], event=i[3],
-                                    date=i[4].strftime("%Y-%m-%d") if i[4] else None)
-                               for i in live if i[0] not in bad])
+    if plugins.modules():
+        live = [i for i in items if os.path.isfile(i[0])]
+        bad = set(guard_label().refused([i[0] for i in live], STATE))
+        plugins.call("after_tag", [dict(path=os.path.abspath(i[0]), project=i[1], event=i[3],
+                                        date=i[4].strftime("%Y-%m-%d") if i[4] else None)
+                                   for i in live if i[0] not in bad])
+    man = load(os.path.join(b, "manifest.json"), {}) or {}
+    if man.get("kind") == "folder":  # offload is refused for a laptop folder: browse what was filed
+        next_hint(["gallery"])
+    else:  # the end of the flow: back the library up, then free the device
+        next_hint(["backup", "<MOUNT>"], ["offload", a.batch, "--phone", man.get("root") or "<ROOT>"])
 
 
 def sidecar_dates(paths):
@@ -2307,7 +2366,7 @@ def cmd_tag_files(a):
         if model.get(f):
             src = (src, model[f])
         items.append((f, project, src, a.event or event, fresh[f].aware() if f in fresh else None))
-    tag_files(items, labels=not a.no_labels)
+    tag_files(items, labels=not a.no_labels, label="tag-files")
 
 
 def cmd_mark_used(a):
