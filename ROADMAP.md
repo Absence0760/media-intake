@@ -140,8 +140,9 @@ The goal: someone else can install it on Fedora, import a phone, and trust it.
 
 - [ ] HEIC/HEIF (pillow-heif), DNG/RAW previews, iPhone Live Photos (HEIC/JPG + MOV pairs),
       Samsung motion photos (embedded video).
-- [ ] Google Takeout and iCloud exports (JSON sidecars for dates/places), with dedupe
-      against the library.
+- [x] Google Takeout and iCloud exports (JSON sidecars for dates/places), with dedupe
+      against the library: `media_intake/exports.py`, the `export` date source
+      (docs/intake.md, "Cloud exports"). Not yet checked on a real export.
 - [ ] External drive queue: tested on real exFAT/NTFS/HFS+ drives; checksum-verified,
       resumable copies; faster parallel copy.
 - [ ] Messaging media beyond WhatsApp (Signal, Telegram exports) behind explicit allowlist

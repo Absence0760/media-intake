@@ -7,12 +7,14 @@ source, tried in this order:
   video     Apple's Keys:CreationDate (local time with its offset), else QuickTime
             CreateDate / ffprobe creation_time, which is UTC and is converted to local time
   gps       GPSDateTime (EXIF, or GoPro's GPMF track with exiftool -ee), else GPSDateStamp
+  export    a cloud export's own record (exports.py: Google Takeout JSON photoTakenTime, iCloud
+            Photo Details CSV originalCreationDate), UTC; read_meta() rows carry it as ExportTime
   filename  a date in the file name (20261108_071502, 2026-11-08 07.15.02, 20261108)
   folder    an iPhone export's DCIM/YYYYMM__ folder: the first of that month
   mtime     the file's modification time, the last resort
 
 A camera date (exif, video) is used unless it is impossible or GPS overrules it; then the
-GPS date wins, and only without one do the weaker sources get a turn.
+GPS date wins, and only without one do the weaker sources (export first) get a turn.
 
   - impossible: before 2000-01-02 (QuickTime 1904, Unix 1970 and DOS 1980 epochs, and
     the 2000-01-01 many cameras reset to) or more than a day after now. The clock was
@@ -41,7 +43,7 @@ of a clip, and walking back to the run's start gives the recording's start, not 
 pre-lock sample (which the earliest sample would be).
 
 `--clock-offset DEVICE=+-Nh` shifts every date that came from a device's own clock
-(everything but GPS) for the files whose Make, Model, "Make Model" or device id
+(everything but GPS and export) for the files whose Make, Model, "Make Model" or device id
 (devices.py, e.g. gopro-hero11-black-3fa9c2) is DEVICE (or every file, for DEVICE `all`);
 the source becomes "offset" and `base` keeps the clock it shifted. Corrected dates are
 written to the XMP sidecar only; originals are never written.
@@ -63,7 +65,7 @@ import devices
 
 # Mirrors intake.VID (tests/test_dates.py checks they agree).
 VIDEO_EXT = {".mp4", ".mov", ".3gp", ".mkv", ".webm"}
-SOURCES = ("exif", "video", "gps", "filename", "folder", "mtime", "offset")
+SOURCES = ("exif", "video", "gps", "export", "filename", "folder", "mtime", "offset")
 
 FLOOR = datetime.datetime(2000, 1, 2)
 FUTURE_SLACK = datetime.timedelta(days=1)
@@ -381,6 +383,16 @@ def _locked_start(utcs):
     return utcs[i]
 
 
+def _export(meta, tz, local_tz):
+    """A cloud export's date (ExportTime, UTC, merged into the row by plan from the manifest), or None."""
+    p = parse(meta.get("ExportTime"))
+    if not p:
+        return None
+    u = p[0].replace(tzinfo=UTC)
+    loc, z = _local(u, tz, local_tz)
+    return _Cand("export", loc, u, z)
+
+
 def _weak(path, meta, local_tz):
     out = []
     n = os.path.basename(path)
@@ -431,9 +443,12 @@ def resolve(path, meta, offsets=None, now=None, local_tz=None):
         if c and shift:
             c.local += shift
             c.utc = c.utc + shift if c.utc else None
+    exp = _export(meta, tz, local_tz)  # Google's or Apple's record, not this device's clock: never shifted
+    if exp:
+        weak.insert(0, exp)
 
     def done(c, note=None, suspect=False):
-        shifted = bool(shift) and c.src != "gps"
+        shifted = bool(shift) and c.src not in ("gps", "export")
         return Dated(c.local, "offset" if shifted else c.src, tz_str(c.tz), c.src if shifted else None,
                      key, note, suspect, meta.get("Device"), meta.get("DeviceModel"), burst_id=burst_id(meta))
 

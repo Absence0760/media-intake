@@ -178,14 +178,15 @@ order (`date_src` in `plan.json`; `plan` prints a count per source):
 | `exif` | `DateTimeOriginal`, else EXIF `CreateDate`, else `ModifyDate`; local time, with `OffsetTimeOriginal` (else `OffsetTime`) as its offset |
 | `video` | Apple's `Keys:CreationDate` (local time with its own offset), else QuickTime `CreateDate` / ffprobe `creation_time`, which is UTC: converted to local time with `OffsetTimeOriginal` when the file has one, else this machine's time zone for that date |
 | `gps` | `GPSDateTime` (EXIF, or a GoPro's GPMF track read with `exiftool -ee`; the start of the locked run, below), else `GPSDateStamp` alone (noon UTC of that day). UTC, converted like `video` |
+| `export` | a cloud export's own record of the date, from the file's Google Takeout JSON (`photoTakenTime`) or iCloud `Photo Details.csv` row (`originalCreationDate`): UTC, converted like `video` ("Cloud exports", below) |
 | `filename` | a date in the name (`20261108_071502`, `2026-11-08 07.15.02`, `20261108`) |
 | `folder` | an iPhone export's `DCIM/YYYYMM__/` folder: the 1st of that month (day unknown, so `--event` days don't match it) |
 | `mtime` | the file's modification time, last resort |
-| `offset` | any of the above except `gps`, shifted by `--clock-offset`; `date_from` keeps which |
+| `offset` | any of the above except `gps` and `export`, shifted by `--clock-offset`; `date_from` keeps which |
 
 A camera date (`exif`, `video`) is used unless it is **impossible** or **GPS
-overrules it**; then the GPS date wins, and only without one do `filename`,
-`folder` and `mtime` get a turn.
+overrules it**; then the GPS date wins, and only without one do `export`,
+`filename`, `folder` and `mtime` get a turn, in that order.
 
 - **Impossible**: before 2000-01-02 (the QuickTime 1904, Unix 1970 and DOS
   1980 epochs, and the 2000-01-01 many cameras reset to), or more than a day
@@ -248,6 +249,77 @@ Without exiftool, Pillow (images) and ffprobe (videos) read the same tags,
 except a GoPro video's GPMF GPS time and any serial number: ffprobe can't
 read a video's serial, so neither fallback reads one, and a camera's photos
 and videos get the same Make/Model device id (Devices, below).
+
+### Cloud exports (Google Takeout, iCloud)
+
+A Google Photos Takeout or an iCloud Photos export ("Request a copy of your
+data" at privacy.apple.com) is a folder of photos and videos: unzip it and
+queue or stage it as a folder or drive source ([queue.md](queue.md)). Many of
+its files have lost their own capture date (edited copies, messaging images,
+scans, screenshots) and their mtime is the download time, but the export
+keeps the date beside them. `stage` (`media_intake/exports.py`) reads it, for
+`--kind folder` and `--kind drive` only, into the batch manifest
+(`files[rel].export`: `time` in UTC, `via` `google-takeout` or `icloud`, the
+`sidecar` it came from, and `lat`/`lon` when there is a place), and prints
+how many files matched. `plan` turns it into the `export` date source above:
+below the file's own EXIF, QuickTime and GPS dates (Google and Apple usually
+copied those from the file anyway), above the file name, folder and mtime.
+`--clock-offset` never shifts it (it is Google's or Apple's record, not the
+camera's clock).
+
+- **Google Takeout**: one JSON per media file, in the same folder.
+  `photoTakenTime.timestamp` (UTC epoch seconds; `0` or missing: no date) and
+  `geoDataExif`, else `geoData` (`latitude`, `longitude`; `0, 0` means no
+  place). The JSON's name is the media's original name plus
+  `.supplemental-metadata` (exports since about late 2024) or nothing (older
+  exports), cut to 46 characters, then the media's `(N)` duplicate counter if
+  it has one, then `.json`: `IMG_0001.jpg.supplemental-metadata.json`,
+  `IMG_0001.jpg.supplemental-metadata(1).json` for `IMG_0001(1).jpg`,
+  `Screenshot_20231027_123303_Facebook.jpg.supple.json`, or
+  `IMG_0001.jpg(1).json` in the older form. An `-edited` copy (English
+  exports only) uses its original's JSON, and a Live Photo's video half
+  (`IMG_4488.MP4`) the still image's (`IMG_4488.HEIC...json`). Matching is
+  by these exact candidate names, compared in Unicode NFC, never by a loose
+  prefix: when two media files would claim the same JSON (two long names
+  with the same first 46 characters), neither gets it (counted as
+  ambiguous). A JSON without a valid `photoTakenTime` is not used.
+- **iCloud Photos**: `Photo Details.csv` (or `Photos Details*.csv`,
+  numbered variants too) in the same folder as the media, header
+  `imgName,fileChecksum,favorite,hidden,deleted,originalCreationDate,viewCount,importDate`;
+  `originalCreationDate` looks like `Saturday June 4,2022 12:11 PM GMT`
+  (minutes only, GMT). Rows match by `imgName`; a name listed with two
+  different dates in that folder gets none. `importDate` is never used (it
+  is when the file reached iCloud, not when it was taken). A file with both
+  kinds of record takes the Google one.
+- **Places**: the export's place is stored only when the file has no GPS of
+  its own: `plan.json` keeps it as `export_gps`, and `tag` geocodes it
+  offline like file GPS (a `Place|` tag, `XMP-exif:GPSLatitude/Longitude` in
+  the sidecar). Nothing is ever looked up online.
+- **Duplicates**: the JSON and CSV files are never staged or filed (only
+  media extensions are walked). A Takeout puts the same photo in its year
+  folder and in each album folder; `plan` drops the copies by sha256 against
+  the batch and the library like any other duplicate ("Duplicates", below).
+- Only these small files (at most 1 MiB for a JSON, 64 MiB for a CSV) are
+  read, never through a symlink; nothing is written to the export. Offload of
+  a drive deletes only the media originals: the JSON and CSV files stay on
+  the drive, as does `erase`'s reach: an erased file's Takeout JSON or CSV row
+  (which can hold its date, place and description) is not deleted; delete
+  the export folder yourself once it is filed.
+
+Neither format is documented by Google or Apple. The rules above follow the
+open-source importers that parse them, checked 2026-11-14:
+[immich-go](https://github.com/simulot/immich-go) (`adapters/googlePhotos/matchers.go`
+and its test cases, `adapters/googlePhotos/json.go`, `adapters/folder/icloud.go`
+and its `Photo Details.csv` fixture; commit `bc54ad2`),
+[GooglePhotosTakeoutHelper](https://github.com/TheLastGimbus/GooglePhotosTakeoutHelper)
+(`lib/date_extractors/json_extractor.dart`: the 51-character `<name>.json`
+limit of the older form) and
+[PhotoMigrator](https://github.com/jaimetur/PhotoMigrator)
+(`help/05-icloud-takeout.md`, `src/Features/ICloudTakeout/ClassICloudTakeoutFolder.py`:
+the CSV header and date formats; commit `5a6b770`). No code was copied; the
+names and fields are facts of the format. Apple's
+[data request page](https://support.apple.com/en-us/HT208502) describes the
+export but not the CSV's columns.
 
 ### GoPro chapters
 
@@ -830,6 +902,10 @@ Rejected:
   the shorter clip) on real phone video: tested on synthetic clips only. A
   static scene filmed twice, or a clip that is mostly one title card, may
   match: it only goes to review.
+- Cloud exports: the Google Takeout and iCloud rules ("Cloud exports") were
+  tested on synthetic folders built from the open-source importers' test
+  cases, not on a real Takeout or iCloud export. Google localises the
+  `-edited` suffix (`-modifié`, ...); only the English one is recognised.
 - NudeNet false-positive rate on real photo libraries (no published numbers).
 - Tesseract on embossed card numbers and cheque MICR lines.
 - `scan` time: about 1-2 s an image on CPU (OCR dominates), estimated.
@@ -857,7 +933,7 @@ Rejected:
 
 `python3 -I -m unittest discover -s tests` (synthetic media, a throwaway HOME,
 a hermetic config), or one module: `python3 -I -m unittest discover -s tests -p test_intake.py`
-(also `test_dates`, `test_devices`, `test_sources`, `test_tagging`, `test_config`, and `test_device_case`: offload,
+(also `test_dates`, `test_devices`, `test_sources`, `test_exports` (Google Takeout and iCloud export metadata), `test_tagging`, `test_config`, and `test_device_case`: offload,
 erase and trash on fake MTP, gphoto2 and drive trees with case-only collisions, in the manifests or only in the live listing, and a listing that fails; `test_device_ops_media_kinds`:
 stage, plan, apply, erase, offload and verify-gone with photos, videos and a mix from a phone, a GoPro card,
 a drive, a laptop folder and the drive queue, and erase's and offload's prompts (a wrong answer or closed
