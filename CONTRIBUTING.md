@@ -131,7 +131,13 @@ close the PR.
   saying how many more match. `test_browser_gallery_layout.py` checks the
   gallery at 390 px and 800 px: no sideways scroll, the header fitting, a burst
   badge clear of its tile's checkbox, and the last row above the selection
-  bar. They skip with a reason
+  bar; at 390 px the compact "×N" burst button (opening and closing the
+  stack, with `x` still working), the burst help as one line with "more"
+  (remembered), the large view's close button pinned at the top right and a
+  downward swipe closing it; the desktop keeping the full burst labels; and
+  4.5:1 contrast for the labels on the accent colour, key hints and
+  placeholders in light and dark, on the gallery and the review page (with
+  its `color-scheme`). They skip with a reason
   when Playwright or its Chromium is missing, so the commands above are
   unaffected; the `browser` job in `ci.yml` runs them (and fails, not skips,
   through `MEDIA_INTAKE_BROWSER_REQUIRED=1`). Locally, once:

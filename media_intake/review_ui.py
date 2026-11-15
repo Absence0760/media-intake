@@ -917,17 +917,18 @@ PAGE = r"""<!doctype html>
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <meta name="referrer" content="no-referrer">
 <meta name="csrf" content="__CSRF__">
+<meta name="color-scheme" content="light dark">
 <title>Media review</title>
 <style>
-:root{--bg:#fff;--fg:#111;--mut:#555;--line:#ccc;--card:#f6f6f6;--keep:#1b7a33;--erase:#b3261e;--trash:#8a5a00;--focus:#1a56db}
-@media (prefers-color-scheme: dark){:root{--bg:#121212;--fg:#eee;--mut:#aaa;--line:#444;--card:#1e1e1e;--keep:#4cc26a;--erase:#ff6b5e;--trash:#e0a030;--focus:#7aa7ff}}
+:root{--bg:#fff;--fg:#111;--mut:#555;--line:#ccc;--card:#f6f6f6;--keep:#1b7a33;--erase:#b3261e;--trash:#8a5a00;--focus:#1a56db;--on:#fff}
+@media (prefers-color-scheme: dark){:root{--bg:#121212;--fg:#eee;--mut:#aaa;--line:#444;--card:#1e1e1e;--keep:#4cc26a;--erase:#ff6b5e;--trash:#e0a030;--focus:#7aa7ff;--on:#111}}
 *{box-sizing:border-box}
 body{margin:0;background:var(--bg);color:var(--fg);font:18px/1.4 system-ui,sans-serif}
 header{position:sticky;top:0;z-index:5;background:var(--bg);border-bottom:1px solid var(--line);padding:10px 16px;display:flex;flex-wrap:wrap;gap:10px;align-items:center}
 .tab{font:inherit;padding:10px 16px;border:2px solid var(--line);border-radius:8px;background:var(--card);color:var(--fg);cursor:pointer}
 .tab[aria-selected=true]{border-color:var(--focus)}
 #count{font-weight:700;margin-left:auto}
-#submit{font:inherit;font-weight:700;padding:10px 18px;border-radius:8px;border:2px solid var(--erase);background:var(--erase);color:#fff;cursor:pointer}
+#submit{font:inherit;font-weight:700;padding:10px 18px;border-radius:8px;border:2px solid var(--erase);background:var(--erase);color:var(--on);cursor:pointer}
 #submit:disabled{opacity:.4;cursor:not-allowed}
 main{padding:16px;max-width:1100px;margin:0 auto}
 .help{color:var(--mut);margin:0 0 12px}
@@ -951,21 +952,21 @@ main{padding:16px;max-width:1100px;margin:0 auto}
 .notrash{flex:1;align-self:center;text-align:center;color:var(--mut);font-size:15px}
 .btns{display:flex;gap:10px;margin-top:10px}
 .btns button{flex:1;font:inherit;font-weight:700;padding:14px;border-radius:8px;border:2px solid var(--line);background:var(--bg);color:var(--fg);cursor:pointer}
-.btns .k[aria-pressed=true]{background:var(--keep);border-color:var(--keep);color:#fff}
-.btns .e[aria-pressed=true]{background:var(--erase);border-color:var(--erase);color:#fff}
-.btns .t[aria-pressed=true]{background:var(--trash);border-color:var(--trash);color:#fff}
+.btns .k[aria-pressed=true]{background:var(--keep);border-color:var(--keep);color:var(--on)}
+.btns .e[aria-pressed=true]{background:var(--erase);border-color:var(--erase);color:var(--on)}
+.btns .t[aria-pressed=true]{background:var(--trash);border-color:var(--trash);color:var(--on)}
 #confirm,#run{display:none}
 .panel{background:var(--card);border-radius:10px;padding:16px;margin:16px 0}
 .panel input{font:inherit;padding:10px;width:12em;max-width:100%;border:2px solid var(--line);border-radius:8px;background:var(--bg);color:var(--fg)}
 .panel button{font:inherit;font-weight:700;padding:10px 18px;border-radius:8px;margin:8px 8px 0 0;cursor:pointer}
-#go{background:var(--erase);color:#fff;border:2px solid var(--erase)}
+#go{background:var(--erase);color:var(--on);border:2px solid var(--erase)}
 #go:disabled{opacity:.4}
 .card.stack{box-shadow:6px 6px 0 -2px var(--card),6px 6px 0 0 var(--line),12px 12px 0 -2px var(--card),12px 12px 0 0 var(--line)}
 .card.stack.keep{box-shadow:inset 8px 0 0 var(--keep),6px 6px 0 -2px var(--card),6px 6px 0 0 var(--line)}
 .card.stack.erase{box-shadow:inset 8px 0 0 var(--erase),6px 6px 0 -2px var(--card),6px 6px 0 0 var(--line)}
 .card.stack.trash{box-shadow:inset 8px 0 0 var(--trash),6px 6px 0 -2px var(--card),6px 6px 0 0 var(--line)}
 .burst{display:flex;flex-wrap:wrap;gap:10px;align-items:center;margin-bottom:8px}
-.badge{font-weight:700;background:var(--focus);color:#fff;border-radius:999px;padding:2px 12px;font-size:15px}
+.badge{font-weight:700;background:var(--focus);color:var(--on);border-radius:999px;padding:2px 12px;font-size:15px}
 .burst button,.one{font:inherit;font-size:15px;padding:6px 12px;border-radius:8px;border:2px solid var(--line);background:var(--bg);color:var(--fg);cursor:pointer}
 .one{width:100%;margin-top:10px;font-weight:700}
 pre{white-space:pre-wrap;word-break:break-all;font-size:15px;background:var(--bg);border:1px solid var(--line);border-radius:8px;padding:10px;max-height:70vh;overflow:auto}
