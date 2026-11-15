@@ -19,6 +19,11 @@ review files it prints `nothing to review for BATCH` and exits 0.
   K keep, E (or D) erase/delete, T trash (not in Quarantine), X opens or
   closes a burst stack, arrows move. Submit unlocks when every
   item is decided, shows a summary and needs ERASE typed.
+- **Colours** follow the system's light or dark scheme (the page declares
+  `color-scheme: light dark`, so form controls and scroll bars follow too).
+  Every label meets WCAG 2's 4.5:1 contrast in both: the burst badge, a
+  pressed Keep / Erase / Trash and Submit carry white text in light and
+  near-black text in dark.
 - **Near-duplicates** (in either tab) show their original beside them:
   "Original (kept)" left, "This copy" right, each with resolution, size, date
   and folder (from plan.json's `why`; display only, served by id only from the
@@ -202,11 +207,13 @@ CONTRIBUTING.md, Tests): the keys and arrows, no Trash button or T on a
 quarantined card (and the 400 for a trash posted anyway) while Erase still
 runs, Submit unlocking, the ERASE
 panel, a card's video seeking by Range, and the run's progress and re-attach
-after a reload. `tests/browser/test_browser_review_media_kinds.py`: burst
+after a reload. `tests/browser/test_browser_gallery_layout.py` checks the
+burst badge, a pressed Keep and Submit at 4.5:1 or more in light and dark,
+and the `color-scheme` declaration. `tests/browser/test_browser_review_media_kinds.py`: burst
 stacks (K on a closed stack, X, "Keep this one" in Quarantine and Review) with
 a video beside each that is never stacked, the cards for files the browser
 can't decode, and a messaging copy of a video beside its original.
 
 Not verified: the crash message in a real browser (the HTTP tests cover the
 crash itself), a real HEVC file (the test stands in a file with sound and no
-picture), layout, and any browser but Chromium.
+picture), the layout beyond those colours, and any browser but Chromium.

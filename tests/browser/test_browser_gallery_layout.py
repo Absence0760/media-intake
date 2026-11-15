@@ -8,7 +8,8 @@ Gallery: no horizontal page scroll; the header's title shown and its controls in
 badge and X button inside their tile and clear of its checkbox, and on a phone tile a compact "×N" button
 that opens and closes the stack; the selection bar's long Select all label wrapping inside the bar; the last
 row of tiles reachable above the selection bar; the burst help one line on a phone with "more" (remembered);
-the large view's close button in view at 390x844 without scrolling, and swipe-down closing it; and every
+the large view's close button pinned at the top right of a 390x844 phone however far the view is
+scrolled, and a downward swipe on the photo closing it (not a sideways or short one, nor one while scrolled down); and every
 label on an accent colour, the key hints and the placeholders at 4.5:1 or more in both colour schemes.
 Review page: the burst badge, a pressed Keep and Submit at 4.5:1 or more in both schemes.
 
@@ -84,9 +85,10 @@ class LayoutCase(B.BrowserCase):
         return page
 
     def assert_contrast(self, loc, what, pseudo=None):
-        B.expect(loc).to_be_visible()
-        ratio = loc.evaluate(CONTRAST, pseudo)
-        self.assertGreaterEqual(ratio, 4.5, f"{what}: contrast {ratio:.2f}:1")
+        with self.subTest(label=what):  # every label reports, not only the first below 4.5:1
+            B.expect(loc).to_be_visible()
+            ratio = loc.evaluate(CONTRAST, pseudo)
+            self.assertGreaterEqual(ratio, 4.5, f"{what}: contrast {ratio:.2f}:1")
 
 
 class GalleryLayoutBrowserTest(LayoutCase):
@@ -231,42 +233,53 @@ class GalleryLayoutBrowserTest(LayoutCase):
         B.expect(desk.locator("#helpb .hfull")).to_be_visible()
         B.expect(desk.locator("#hmore")).to_be_hidden()
 
-    def test_phone_viewer_close_in_view_and_swipe_down(self):
-        page = self.page(PHONE)
+    def open_lone(self, page):
         viewer = page.get_by_role("dialog", name="Item")
         page.locator('[data-item="lone.jpg"] img').click()
         B.expect(viewer).to_have_attribute("data-current", "lone.jpg")
+        return viewer
+
+    def test_phone_viewer_close_pinned_at_the_top(self):
+        page = self.page(PHONE)
+        viewer = self.open_lone(page)
         close = viewer.get_by_role("button", name="Close (Esc)")
-        for scrolled in (False, True):
-            if scrolled:  # the info pane scrolled into view: the button stays pinned
-                page.locator("#viewer").evaluate("v => { v.scrollTop = v.scrollHeight }")
+        for scroll in ("0", "200", "v.scrollHeight"):  # the photo, part way, the info pane's end
+            page.locator("#viewer").evaluate(f"v => {{ v.scrollTop = {scroll} }}")
+            if scroll != "0":
                 self.assertGreater(page.locator("#viewer").evaluate("v => v.scrollTop"), 0)
             box = close.bounding_box()
-            self.assertTrue(0 <= box["x"] and box["x"] + box["width"] <= 390 and 0 <= box["y"]
-                            and box["y"] + box["height"] <= 844, f"close button out of view: {box}")
-            self.assertGreaterEqual(min(box["width"], box["height"]), 24)
+            self.assertTrue(0 <= box["y"] <= 16 and 390 - 16 <= box["x"] + box["width"] <= 390,
+                            f"scrolled to {scroll}: the close button is not pinned at the top right: {box}")
+            self.assertGreaterEqual(min(box["width"], box["height"]), 44, "a phone touch target")
             self.assertTrue(close.evaluate("b => { const r = b.getBoundingClientRect();"
                                            " return b.contains(document.elementFromPoint(r.x + r.width / 2, r.y + r.height / 2)) }"),
-                            "the close button is covered")
+                            f"scrolled to {scroll}: the close button is covered")
+        self.assert_contrast(close.locator("svg"), "the pinned close icon")
         close.tap()
         B.expect(viewer).to_be_hidden()
-        # swipe down on the photo closes it; a sideways swipe doesn't
-        page.locator('[data-item="lone.jpg"] img').click()
-        B.expect(viewer).to_have_attribute("data-current", "lone.jpg")
+        viewer = self.open_lone(page)
         self.assertEqual(page.locator("#viewer").evaluate("v => v.scrollTop"), 0, "reopened scrolled down")
+        page.keyboard.press("Escape")  # Esc still closes it
+        B.expect(viewer).to_be_hidden()
+
+    def test_phone_viewer_swipe_down_closes(self):
+        page = self.page(PHONE)
+        viewer = self.open_lone(page)
         swipe = """([dx, dy]) => { const s = document.querySelector('#stage');
           const t = (x, y) => new Touch({identifier: 1, target: s, clientX: x, clientY: y});
           s.dispatchEvent(new TouchEvent('touchstart', {touches: [t(200, 200)], changedTouches: [t(200, 200)], bubbles: true}));
           s.dispatchEvent(new TouchEvent('touchend', {touches: [], changedTouches: [t(200 + dx, 200 + dy)], bubbles: true})) }"""
-        page.evaluate(swipe, [150, 20])
+        page.evaluate(swipe, [150, 20])  # sideways: stays open
+        B.expect(viewer).to_be_visible()
+        page.evaluate(swipe, [10, 30])  # too short: stays open
         B.expect(viewer).to_be_visible()
         page.evaluate(swipe, [10, 160])
         B.expect(viewer).to_be_hidden()
-        # Esc still closes it
-        page.locator('[data-item="lone.jpg"] img').click()
+        # scrolled down to the info pane, a downward swipe scrolls back rather than closing
+        viewer = self.open_lone(page)
+        page.locator("#viewer").evaluate("v => { v.scrollTop = 200 }")
+        page.evaluate(swipe, [10, 160])
         B.expect(viewer).to_be_visible()
-        page.keyboard.press("Escape")
-        B.expect(viewer).to_be_hidden()
 
     def test_label_contrast_in_both_schemes(self):
         for scheme in SCHEMES:
@@ -325,7 +338,7 @@ class ReviewLayoutBrowserTest(LayoutCase):
         for scheme in SCHEMES:
             with self.subTest(scheme=scheme):
                 page = self.context_page(self.server, PHONE, scheme)
-                self.assertEqual(page.locator('meta[name="color-scheme"]').get_attribute("content"), "light dark")
+                B.expect(page.locator('meta[name="color-scheme"]')).to_have_attribute("content", "light dark")
                 cover = page.locator('[data-item="DCIM/Camera/IMG_0001.jpg"]')
                 self.assert_contrast(cover.locator(".badge"), f"{scheme}: burst badge")
                 cover.locator(".burst .x").click()

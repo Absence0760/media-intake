@@ -41,8 +41,18 @@ copies there go too.
   something is selected (Trash suggestions keeps its Apply bar there). It
   floats over the grid while you scroll and takes its own room at the end, so
   the last row is never stuck under it, however many rows its buttons wrap to.
-  On a small tile a burst's badge and X button shorten with an ellipsis rather
-  than cover the checkbox.
+  On a small tile (narrower than 150 px, as at phone width) a burst's badge and
+  X button give way to a compact **×N** button on the cover (it opens and
+  closes the stack, and is named "Burst: N shots, open stack" for screen
+  readers) and an open stack's other shots show their badge as "×N"; on a
+  wider tile the full labels stay, shortening with an ellipsis rather than
+  covering the checkbox. At phone width the burst help above the grid is one
+  line ("Bursts are stacked; X opens one.") with a **more** link for the whole
+  text (open / closed remembered per browser).
+- **Colours** follow the system's light or dark scheme. Every label meets
+  WCAG 2's 4.5:1 contrast in both: text on the accent colour (burst badges,
+  ×N, the rail's filter count, primary buttons) is white in light and near
+  black in dark, and key hints and placeholders use the muted text colour.
 - **Large view**: the photo or video fills everything left of the info pane.
   A video starts playing on open (muted, with an Unmute button, if the
   browser refuses sound), Space plays / pauses, Prev / Next play the next one,
@@ -52,6 +62,10 @@ copies there go too.
   large with **Open in the system player**, which
   runs `xdg-open` on that one file (below; `xdg-open` comes from Fedora's
   `xdg-utils`, which `media-intake doctor` lists as optional).
+  At phone width the photo takes most of the screen with the info pane
+  below it; the close button stays pinned at the top right however far you
+  scroll, a downward swipe on the photo closes the view (not while scrolled
+  down to the info pane), and a reopened view starts at the photo.
 
 The sidebar rail, open sections and tile size live in the browser's
 `localStorage` (a per-browser convenience; the page works without it).
@@ -112,7 +126,9 @@ look and keys as the review page ([review-ui.md](review-ui.md)): the cover
 shots") and a **Show all 4 (X)** button. **X** or `x` on a focused shot, or
 the button, opens the stack (every shot follows the cover, each with the
 badge) or closes it, and focus goes back to the cover either way. A line
-above the grid says what a stack is and how actions behave.
+above the grid says what a stack is and how actions behave. At phone width
+the cover shows a compact **×N** button instead, and the line is shortened
+with a **more** link ("Layout" above).
 
 - **A closed stack acts on its cover only.** Selecting (Space, a click, a
   shift-click range across it, Select all), K / T / E and every bar action reach only
