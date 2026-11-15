@@ -378,11 +378,12 @@ camera's clock).
   folder and in each album folder; `plan` drops the copies by sha256 against
   the batch and the library like any other duplicate ("Duplicates", below).
 - Only these small files (at most 1 MiB for a JSON, 64 MiB for a CSV) are
-  read, never through a symlink; nothing is written to the export. Offload of
-  a drive deletes only the media originals: the JSON and CSV files stay on
-  the drive, as does `erase`'s reach: an erased file's Takeout JSON or CSV row
-  (which can hold its date, place and description) is not deleted; delete
-  the export folder yourself once it is filed.
+  read, never through a symlink; nothing is written to the export.
+- **Offload** of a drive deletes only the media originals: the JSON and CSV
+  files stay on the drive; delete the export folder yourself once it is filed.
+- **Erase** doesn't reach them either: an erased file's Takeout JSON or iCloud
+  CSV row (which can hold its date, place and description) stays beside where
+  it was, and the coverage report lists it under `cant_reach`.
 
 Neither format is documented by Google or Apple. The rules above follow the
 open-source importers that parse them, checked 2026-11-14:
@@ -611,7 +612,11 @@ quarantine. A file named twice is forgotten once.
     reports, near-duplicates moved to quarantine (not deleted), gvfs-metadata
     entries cleared, localsearch resets and files checked forgotten, and with
     `--phone` the device originals, camera previews and phone thumbnails, with
-    `--drive` the drive's copies and the MB the free-space wipe wrote.
+    `--drive` the drive's copies and the MB the free-space wipe wrote, and the
+    erased library files dropped from the backup records
+    (`<state>/backup/*.json`, matched by path and sha256: the record keeps
+    names; `erase --drive` removes the copies on the drive by checksum, and
+    the next `backup` has nothing to bring back).
   - `left`: what it found but did not remove (exact copies inside git repos,
     near-duplicates left in place, thumbnails the phone refused, files
     localsearch still has indexed after the reset or could not check,
@@ -625,8 +630,9 @@ quarantine. A file named twice is forgotten once.
     services and sync, chat apps, email and the people it was sent to,
     app-private storage on a phone or camera (a gallery app's own trash),
     other computers and backup drives not named with `--drive`, filesystem
-    snapshots and the blocks an SSD keeps aside, and re-encoded or trimmed
-    video copies.
+    snapshots and the blocks an SSD keeps aside, re-encoded or trimmed video
+    copies, and a cloud export's Takeout JSON or iCloud CSV row left beside an
+    erased file on its source drive.
 
   `erase` prints a short form (places with a count, what was left, what was
   not checked, what it can't reach); `verify-gone BATCH` prints the full one.
@@ -655,7 +661,8 @@ quarantine. A file named twice is forgotten once.
   videos and project folders, plus batches' `raw/` and `review/`), never in
   caches, app icons, map tiles or git repos, which hold look-alikes that
   aren't your photos. Images under 200 px and featureless hashes are ignored.
-  Videos: exact copies only; a re-encoded or trimmed video isn't found.
+  Videos: exact copies only; a re-encoded or trimmed video isn't found
+  (`plan` finds near-copy videos for review, § Duplicates; erase does not).
 - **App traces** (GNOME apps, checked against Loupe 49, Showtime 49 and
   localsearch 3.10 as distro packages, not Flatpaks):
   - Recent files (`~/.local/share/recently-used.xbel`): bookmarks for erased
@@ -673,7 +680,9 @@ quarantine. A file named twice is forgotten once.
     info` on it to check the index forgot it (a stored file has a `nie:url`),
     and deletes its failure reports
     (`~/.cache/tracker3/files/errors/<md5(uri)>`). A file still indexed is
-    counted under `left` in the coverage report. The whole index is never
+    counted under `left` in the coverage report, and so is one `localsearch`
+    could not answer for: each call gets 20 s (`GIO_TIMEOUT`), and after one
+    times out the rest of that erase skips localsearch. The whole index is never
     reset. verify-gone can't repeat the check: the erase log keeps no paths.
   - Thumbnails: `erase` clears `~/.cache/thumbnails` entirely (rebuildable),
     since thumbnails are keyed by URI and a phone browsed in Files gets
@@ -708,7 +717,9 @@ quarantine. A file named twice is forgotten once.
   the drive by checksum, then `wipe-free` fills the free space with zeros
   (64 MiB writes to `.media-intake-wipe.N` until the drive is full, fsync,
   delete, sync), since exFAT deletes only free the clusters. It refuses any
-  path whose mount (`findmnt -T`) is `/`, `/home`, `/var`, `/tmp` or `/boot*`.
+  path whose mount (`findmnt -T`) is `/`, `/home`, `/var`, `/tmp` or `/boot*`
+  (`backup` refuses a wider list of the laptop's own mounts,
+  `sources.LAPTOP_MOUNTS`: see [backup.md](backup.md)).
   On flash (`rotational` 0) it also tries `fstrim`, but wear-levelling keeps
   spare blocks, so an overwrite is no guarantee there. The robust fix is a
   LUKS-encrypted backup drive, or a drive wiped whole. `media-intake backup`
@@ -1040,6 +1051,12 @@ Rejected:
 - Cloud exports: the Google Takeout and iCloud rules ("Cloud exports") were
   tested on synthetic folders written from the naming rules above, not on a real Takeout or iCloud export. Google localises the
   `-edited` suffix (`-modifié`, ...); only the English one is recognised.
+- Erase on a real GNOME session: `gio set -t unset` (gvfs-metadata) and
+  `localsearch reset --file` / `localsearch info` (the search-index check)
+  were checked against their documentation and source and run against fakes
+  only, not against a real `gvfsd-metadata` or localsearch miner. In
+  particular the `nie:url` test for "still indexed", and whether `reset`
+  has finished before `info` runs, are unconfirmed.
 - Messaging-app layouts (Telegram, Signal; "Messaging apps" above): read from
   each app's source code, not checked on a real phone or a real export.
 - NudeNet false-positive rate on real photo libraries (no published numbers).

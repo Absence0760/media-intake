@@ -46,7 +46,8 @@ media-intake backup /run/media/$USER/<label> --verify    # then re-read every co
   the drive's filesystem UUID). While both sides still look as recorded the
   recorded sha256 is trusted; otherwise both are hashed again. Like
   `index.json`, that record names library files; each run drops the entries
-  of files no longer in the library. A plain run
+  of files no longer in the library, and `erase` / `forget` drop an erased
+  file's entry at once (matched by path and sha256). A plain run
   therefore does not notice bit rot that leaves size and time alone:
   `--verify` does.
 - **Atomic per file.** Each copy is written to a hidden
