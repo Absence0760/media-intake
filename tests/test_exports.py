@@ -423,6 +423,20 @@ class StagePlan(unittest.TestCase):
             man = json.load(f)["files"]
         self.assertEqual(sorted(r for r, e in man.items() if "export" in e), [os.path.join("good", "IMG_0704.jpg")])
         self.assertEqual(snapshot(src), before, "the source is untouched")
+        # Staged again over the same folder (a resumed or repeated stage): the same files, export dates and
+        # skip report, the staged files untouched, and the source still as it was.
+        raw = os.path.join(self.state, "batches", "refused-1", "raw")
+        staged = snapshot(raw)
+        again = self.intake("stage", src, "--kind", "folder", "--batch", "refused-1")
+        skips = lambda text: sorted(ln.strip() for ln in text.splitlines() if ln.strip().startswith("skipped "))
+        self.assertEqual(skips(again), skips(out))
+        self.assertEqual(len(skips(again)), 3)
+        self.assertIn("staged 4 media files", again)
+        self.assertIn("Google Takeout 1, iCloud 0", again)
+        with open(os.path.join(self.state, "batches", "refused-1", "manifest.json")) as f:
+            self.assertEqual(json.load(f)["files"], man)
+        self.assertEqual(snapshot(raw), staged, "nothing staged is rewritten")
+        self.assertEqual(snapshot(src), before, "the source is untouched by the second stage too")
 
 
 class TagPlace(unittest.TestCase):

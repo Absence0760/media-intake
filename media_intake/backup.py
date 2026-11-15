@@ -144,13 +144,18 @@ def manifest_path(mount, cfg=None):
     return os.path.join((cfg or config.get())["state"], "backup", f"{drive_id(mount)}.json")
 
 
-def load_manifest(path):
+def load_manifest(path, strict=False):
+    """The record's files ({} when there is none yet). A record that can't be read, isn't JSON or isn't this
+    version's also gives {} (every file is compared by content again, and the run rewrites it), or None with
+    strict, so a caller that must know (erase's prune) can tell it from an empty one."""
     try:
-        m = intake.load(path, {})
+        m = intake.load(path)
     except (OSError, ValueError):
-        return {}  # unreadable: every file is compared by content again
+        return None if strict else {}
+    if m is None:
+        return {}  # no record yet
     if not isinstance(m, dict) or m.get("version") != MANIFEST_VERSION or not isinstance(m.get("files"), dict):
-        return {}
+        return None if strict else {}
     return m["files"]
 
 
