@@ -5,7 +5,7 @@
                                            register a folder (counts, size, free-space check);
                                            --kind folder = a folder on the laptop's own disk
   drive_queue.py run [--chunk 2000] [--inhibit]   process every source in chunks (resumable)
-  drive_queue.py status                    progress, and what waits for you
+  drive_queue.py status [--json]           one row per source, what waits for you, the next command
   drive_queue.py offload NAME [--yes]      delete the drive originals of finished, reviewed chunks
                                            (refused for --kind folder: you delete the folder yourself)
 
@@ -378,43 +378,180 @@ def run_queue(a):
 
 
 # ---------------------------------------------------------------- status
+WIDTH = 80  # status fits an 80-column terminal; commands are never cut (they must stay copyable)
+ME = "media-intake queue"
+ADD_HINT = f"{ME} add PATH --label NAME  (--kind folder for a folder on the laptop)"
+
+
+def run_lock_held():
+    """True while a `queue run` holds <state>/queue/run.lock. Never creates the lock file or its folder."""
+    p = os.path.join(QDIR, "run.lock")
+    try:
+        f = open(p)
+    except OSError:
+        return False
+    with f:
+        try:
+            fcntl.flock(f, fcntl.LOCK_SH | fcntl.LOCK_NB)
+            fcntl.flock(f, fcntl.LOCK_UN)
+        except BlockingIOError:
+            return True
+        except OSError:
+            pass
+    return False
+
+
+def shorten(text, width):
+    """Cut text to width in the middle with an ellipsis, keeping the end (the part that tells paths apart)."""
+    if len(text) <= width:
+        return text
+    if width < 2:
+        return "\u2026"[:width]
+    head = (width - 1) // 4  # a short start, most of the room for the end
+    return text[:head] + "\u2026" + text[len(text) - (width - 1 - head):]
+
+
+def changed_at(src):
+    """The newest time recorded for a source: added, a step finished, a chunk done, the source finished."""
+    times = [src.get("added"), src.get("finished")]
+    for ch in src["chunks"].values():
+        times.append(ch.get("done"))
+        times += [st.get("at") for st in ch.get("steps", {}).values()]
+    return max(t for t in times if t)
+
+
+def status_model(q):
+    """Counts and paths only: one entry per source, what waits for you, and the next command."""
+    running = run_lock_held()
+    current = next((lb for lb, s in q["sources"].items() if not s.get("finished")), None) if running else None
+    rows, waiting = [], []
+    for label, src in q["sources"].items():
+        kind = src.get("kind", "drive")
+        chunks = chunks_of(src)
+        detail, quar, review, failed = [], 0, 0, None
+        for n in range(1, len(chunks) + 1):
+            ch = src["chunks"].get(str(n)) or {}
+            d = dict(chunk=n, batch=ch.get("batch") or batch_name(src, n), files=ch.get("files", len(chunks[n - 1])),
+                     done=bool(ch.get("done")))
+            if ch.get("done"):
+                qn, near, rv = pending(d["batch"])
+                mt = ch.get("summary", {}).get("maybe_trash", 0)
+                d.update(quarantine=qn, near_and_messaging=near, review_folder=rv, trash_suggestions=mt)
+                quar, review = quar + qn + near, review + rv + mt
+                if qn or near or rv or mt:
+                    cmds = [f"media-intake review {d['batch']}"]
+                    if qn:
+                        cmds.append(f"xdg-open {os.path.join(STATE, 'quarantine', d['batch'])}")
+                    if mt:
+                        cmds.append(f"media-intake gallery   (or media-intake suggest-trash --batch {d['batch']})")
+                    waiting.append(dict(what="review", label=label, chunk=n, batch=d["batch"], quarantine=qn,
+                                        near_and_messaging=near, review_folder=rv, trash_suggestions=mt,
+                                        commands=cmds))
+            else:
+                d["step"] = next((s for s in STEPS if s not in ch.get("steps", {})), "-")
+                if ch.get("error"):
+                    d["error"] = ch["error"]
+                    failed = failed or d
+            detail.append(d)
+        done = sum(1 for d in detail if d["done"])
+        offloaded = list(src.get("offloaded") or [])
+        all_done = bool(chunks) and done == len(chunks)
+        if label == current:
+            state = "running"
+        elif failed:
+            state = "failed"
+            waiting.append(dict(what="failed", label=label, chunk=failed["chunk"], batch=failed["batch"],
+                                step=failed["step"], reason=failed["error"],
+                                commands=[f"{ME} run --inhibit"]))
+        elif any(w["label"] == label and w["what"] == "review" for w in waiting):
+            state = "needs your review"
+        elif not all_done:
+            state = "waiting"
+        else:
+            state = "done"
+        if all_done and not any(w["label"] == label for w in waiting):
+            if kind == "folder":
+                waiting.append(dict(what="delete-folder", label=label, root=src["root"], commands=[]))
+            elif len(offloaded) < done:
+                waiting.append(dict(what="offload", label=label, commands=[f"{ME} offload {label} --yes"]))
+        rows.append(dict(label=label, kind=kind, root=src["root"], state=state, files=src["files"],
+                         bytes=src["bytes"], quarantined=quar, in_review=review, changed=changed_at(src),
+                         chunks_total=len(chunks), chunks_done=done, offloaded=offloaded, chunks=detail))
+    first = {w["what"]: w for w in reversed(waiting)}  # the first entry of each kind
+    if "failed" in first:
+        nxt = f"fix {first['failed']['label']} (see above), then {ME} run --inhibit"
+    elif "review" in first:
+        nxt = first["review"]["commands"][0]
+    elif "offload" in first:
+        nxt = first["offload"]["commands"][0]
+    elif "delete-folder" in first:
+        nxt = f"check the library, then delete {first['delete-folder']['root']} yourself"
+    elif current:
+        nxt = f"nothing yet: the run is going; check again with {ME} status"
+    elif any(r["state"] == "waiting" for r in rows):
+        nxt = f"{ME} run --inhibit"
+    else:
+        nxt = f"nothing waits; add another folder: {ME} add PATH --label NAME"
+    return dict(sources=rows, waiting=waiting, next=nxt)
+
+
+def wrap(text, indent=""):
+    import textwrap
+    return textwrap.fill(text, WIDTH, initial_indent=indent, subsequent_indent=indent + "  ",
+                         break_long_words=False, break_on_hyphens=False)
+
+
+def render_status(m):
+    rows = m["sources"]
+    head = ("SOURCE", "STATE", "FILES", "QUAR", "REVIEW", "CHANGED")
+    cells = [[r["root"], r["state"], str(r["files"]), str(r["quarantined"]), str(r["in_review"]),
+              r["changed"].replace("T", " ")[:16]] for r in rows]
+    widths = [max(len(head[i]), *(len(c[i]) for c in cells)) for i in range(len(head))]
+    widths[0] = max(len(head[0]), min(widths[0], WIDTH - sum(widths[1:]) - 2 * (len(head) - 1)))
+    right = {2, 3, 4}
+
+    def line(vals):
+        out = [(v.rjust(w) if i in right else v.ljust(w)) for i, (v, w) in enumerate(zip(vals, widths))]
+        return "  ".join(out).rstrip()
+    out = [line(head)] + [line([shorten(c[0], widths[0]), *c[1:]]) for c in cells]
+    out += ["", "Waiting for you:"]
+    if not m["waiting"]:
+        out.append("  nothing")
+    for w in m["waiting"]:
+        if w["what"] == "review":
+            out.append(wrap(f"{w['label']}, chunk {w['chunk']} ({w['batch']}): quarantine {w['quarantine']}, "
+                            f"near and messaging copies {w['near_and_messaging']}, review folder "
+                            f"{w['review_folder']}, trash suggestions {w['trash_suggestions']}", "  "))
+            names = ["review page", "quarantine", "trash suggestions"]
+            if not w["quarantine"]:
+                names.remove("quarantine")
+            for name, c in zip(names, w["commands"]):
+                out.append(f"    {name + ':':<20}{c}")
+        elif w["what"] == "failed":
+            out.append(wrap(f"{w['label']}, chunk {w['chunk']} ({w['batch']}) failed at {w['step']}: "
+                            f"{w['reason']}", "  "))
+            out.append(f"    {'fix it, then retry:':<20}{w['commands'][0]}")
+        elif w["what"] == "offload":
+            out.append(wrap(f"{w['label']}: every chunk is reviewed; OK to offload (delete the drive originals):",
+                            "  "))
+            out.append(f"    {w['commands'][0]}")
+        else:
+            out.append(f"  {w['label']}: everything is reviewed; delete the source folder yourself")
+            out.append(f"    (check the library first; the tool never deletes it): {w['root']}")
+    out += ["", f"next: {m['next']}"]
+    return "\n".join(out)
+
+
 def cmd_status(a):
     q = load_q()
     if not q["sources"]:
-        print("queue is empty")
+        if a.json:
+            print(json.dumps(dict(sources=[], waiting=[], next=f"{ME} add PATH --label NAME"), indent=1))
+        else:
+            print(f"queue is empty; add a folder: {ADD_HINT}")
         return
-    me = "media-intake queue"
-    for label, src in q["sources"].items():
-        chunks = chunks_of(src)
-        done = [n for n in range(1, len(chunks) + 1) if src["chunks"].get(str(n), {}).get("done")]
-        print(f"{label}: {src['root']}  {src['files']} files, {gb(src['bytes'])}; "
-              f"chunks done {len(done)}/{len(chunks)}" + ("; offloaded " + ",".join(map(str, src["offloaded"]))
-                                                           if src["offloaded"] else ""))
-        for n in range(1, len(chunks) + 1):
-            ch = src["chunks"].get(str(n))
-            if ch and not ch.get("done"):
-                nxt = next((s for s in STEPS if s not in ch["steps"]), "-")
-                print(f"  chunk {n}: at {nxt}" + (f"  ERROR {ch['error']}" if ch.get("error") else ""))
-        wait = []
-        for n in done:
-            batch = src["chunks"][str(n)]["batch"]
-            qn, near, rv = pending(batch)
-            mt = src["chunks"][str(n)].get("summary", {}).get("maybe_trash", 0)
-            if qn or near or rv or mt:
-                wait.append((n, batch, qn, near, rv, mt))
-        if not wait and done and len(done) == len(chunks) and src.get("kind") == "folder":
-            print(f"  waiting for you: everything is reviewed; check the library, then delete the source "
-                  f"folder yourself (the tool never does): {src['root']}")
-        elif not wait and done and len(done) == len(chunks) and len(src["offloaded"]) < len(done):
-            print(f"  waiting for you: OK to offload (delete the drive originals): {me} offload {label} --yes")
-        for n, batch, qn, near, rv, mt in wait:
-            print(f"  waiting for you, chunk {n} ({batch}): quarantine {qn}, near and messaging copies {near}, "
-                  f"review folder {rv}, trash suggestions {mt}")
-            print(f"    review page: media-intake review {batch}")
-            if qn:
-                print(f"    quarantine:  xdg-open {os.path.join(STATE, 'quarantine', batch)}")
-            if mt:
-                print(f"    trash suggestions: media-intake gallery   (or media-intake suggest-trash --batch {batch})")
+    m = status_model(q)
+    print(json.dumps(m, indent=1, ensure_ascii=False) if a.json else render_status(m))
 
 
 # ---------------------------------------------------------------- offload
@@ -467,7 +604,7 @@ def main(argv=None, prog=None):
     s.add_argument("--event", action="append", metavar="[PROJECT/]SLUG@YYYY-MM-DD",
                    help="an event (shoot day) in this source, passed to every chunk's plan --event")
     s = sp.add_parser("run"); s.add_argument("--chunk", type=int, default=2000); s.add_argument("--inhibit", action="store_true")
-    sp.add_parser("status")
+    s = sp.add_parser("status"); s.add_argument("--json", action="store_true", help="the same, as JSON for scripts")
     s = sp.add_parser("offload"); s.add_argument("name"); s.add_argument("--yes", action="store_true")
     a = ap.parse_args(argv)
     if a.cmd == "run" and a.chunk < 1:
