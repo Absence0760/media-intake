@@ -165,11 +165,13 @@ media-intake mark-used FILE... --post SLUG
 media-intake find [--tag T] [--event E] [--place P] [--project P] [--unused-since 30d] [--never-used]
 media-intake gallery [--drive MOUNT] [--share-out DIR]
 media-intake prune-cache [--dry-run]          # gallery thumbnails and proxies nothing shows any more
+media-intake backup MOUNT [--verify] [--dry-run]   # library, videos, sidecars to a mounted drive (backup.md)
 ```
 
 `media-intake <command> --help` shows every option. The review page is
 `media-intake review BATCH` ([review-ui.md](review-ui.md)), the web gallery
 [gallery.md](gallery.md), the drive and laptop-folder queue [queue.md](queue.md),
+the backup to a mounted drive [backup.md](backup.md),
 semantic search and the VLM trash check [search.md](search.md). `media-intake
 doctor` checks system packages (and prints the `sudo dnf install` line for
 what's missing), the venv, the model files' sha256 and the local Ollama
@@ -212,6 +214,9 @@ run and a CLI `apply` never interleave (`media_intake/library_lock.py`):
   `media-intake prune-cache` is cli.py's too (it reads the library as the
   gallery does) and holds the lock while it deletes, for a steady view of the
   library; with `--dry-run` it writes nothing and doesn't take it.
+  `media-intake backup` is cli.py's too and takes no library lock: it only
+  reads the library, and checks each file before and after copying it, so one
+  that changes mid-copy is skipped for the next run ([backup.md](backup.md)).
   `vlm-trash` takes it around each batch of verdicts it writes.
 - **Jobs** (the review page's run, the gallery's Trash, Erase and Share-safe copy) take it with
   their job lock at submit and hold it until their last step is over; each
@@ -1064,6 +1069,9 @@ Rejected:
   check that crashes on one file `unscanned-error` (the rest of the batch is
   still scanned and `scan.json` still written). GoPro `.gpr` raw files are
   read through Pillow; one it can't open is `unreadable`.
+- `backup` on real exFAT, ext4-on-LUKS and NTFS drives (fsync refusals, name
+  rules, timestamps): tested on a folder standing in for the drive and a faked
+  `findmnt` only ([backup.md](backup.md), "Not tested here").
 
 ## Tests
 

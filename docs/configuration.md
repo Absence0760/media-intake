@@ -40,6 +40,11 @@ and checking the desktop search index; the tests set both, and the erase
 coverage report then lists those places as not checked ([intake.md](intake.md),
 "Erasing, and what it can't reach").
 
+`MEDIA_INTAKE_TEST_MOUNT` (and `MEDIA_INTAKE_TEST_UUID`) are for tests only:
+they stand in for `findmnt`'s mount point (and filesystem UUID) and turn off
+the laptop-disk check in `stage --kind drive`, `queue add` and `backup`. Never
+set them for a real run.
+
 `MEDIA_INTAKE_LIBRARY_LOCK_FD` is internal, not a setting: a detached job's
 worker sets it for the steps it starts, so they share the library lock it
 already holds. Don't set it yourself: a step accepts it only when that

@@ -7,7 +7,8 @@ The "media" are a few bytes with photo and video extensions: backup never decode
 MEDIA_INTAKE_TEST_MOUNT/UUID stand in for findmnt; the laptop-disk test fakes findmnt's answer.
 Never touches a real drive.
 """
-import json, os, subprocess, sys, tempfile, unittest
+import hashlib, json, os, stat, subprocess, sys, tempfile, unittest
+import unittest.mock as mock
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import support  # noqa: E402
@@ -193,6 +194,80 @@ class Backup(unittest.TestCase):
         lines = []
         self.assertEqual(backup.backup(self.mount, out=lines.append), 0)
         self.assertIn("backup: 1 copied, 0 replaced (changed in the library)", lines)
+
+    def test_file_vanished_before_its_copy_is_counted_and_leaves_nothing(self):
+        src = os.path.join(self.lib, "2024/2024-06/IMG_0002.heic")
+        orig = backup.copy_one
+
+        def vanish_first(s, dest, rel):
+            if s == src:
+                os.remove(src)
+            return orig(s, dest, rel)
+
+        lines = []
+        with mock.patch.object(backup, "copy_one", vanish_first):
+            self.assertEqual(backup.backup(self.mount, out=lines.append), 0)
+        self.assertIn("backup: 1 gone from the library since it was listed, skipped", lines)
+        self.assertIn("backup: 5 copied, 0 replaced (changed in the library)", lines)
+        self.assertFalse(os.path.lexists(os.path.join(self.dest, "library/2024/2024-06/IMG_0002.heic")))
+        self.assertFalse([n for n in tree(self.mount) if n.endswith(backup.TMP_SUFFIX)])
+
+    def test_not_enough_free_space_refused_before_writing(self):
+        lines = []
+        with mock.patch.object(backup.shutil, "disk_usage", return_value=mock.Mock(free=10)):
+            self.assertEqual(backup.backup(self.mount, out=lines.append), 1)
+        self.assertTrue(any(ln.startswith("backup: refused:") and "MB free" in ln for ln in lines), lines)
+        self.assertEqual(os.listdir(self.mount), [])  # no marker, no backup folder
+
+    def test_originals_unchanged(self):
+        def snap():
+            out = {}
+            for base in (self.lib, self.vids, self.proj):
+                for rel in tree(base):
+                    p = os.path.join(base, rel)
+                    if os.path.islink(p):
+                        continue
+                    with open(p, "rb") as f:
+                        out[p] = (hashlib.sha256(f.read()).hexdigest(), os.stat(p).st_mtime_ns)
+            return out
+
+        before = snap()
+        self.assertEqual(self.run_cli(self.mount, "--verify").returncode, 0)
+        after = snap()
+        after = {p: v for p, v in after.items() if not p.startswith(os.path.join(self.state, "backup"))}
+        self.assertEqual(before, after)
+
+    def test_record_and_marker_are_private(self):
+        self.assertEqual(self.run_cli(self.mount).returncode, 0)
+        d = os.path.join(self.state, "backup")
+        self.assertEqual(stat.S_IMODE(os.stat(d).st_mode), 0o700)
+        for p in (os.path.join(d, os.listdir(d)[0]), os.path.join(self.mount, sources.BACKUP_MARKER)):
+            self.assertEqual(stat.S_IMODE(os.stat(p).st_mode), 0o600, p)
+
+    def test_mount_that_is_a_symlink_refused(self):
+        link = os.path.join(self.d.name, "drive-link")
+        os.symlink(self.mount, link)
+        os.environ["MEDIA_INTAKE_TEST_MOUNT"] = link
+        r = self.run_cli(link)
+        self.assertEqual(r.returncode, 2)
+        self.assertIn("symlink", r.stdout)
+        self.assertEqual(os.listdir(self.mount), [])
+
+    def test_destination_file_that_is_a_symlink_or_folder_refused(self):
+        target = put(self.d.name, "elsewhere/keep.jpg", b"not yours")
+        os.makedirs(os.path.join(self.dest, "library/2024/2024-05"), mode=0o700)
+        os.symlink(target, os.path.join(self.dest, "library/2024/2024-05/IMG_0001.jpg"))
+        os.makedirs(os.path.join(self.dest, "library/2024/2024-06/IMG_0002.heic"), mode=0o700)
+        r = self.run_cli(self.mount)
+        self.assertEqual(r.returncode, 1)
+        self.assertIn("backup: 2 could not be copied:", r.stdout)
+        self.assertIn("library/2024/2024-05/IMG_0001.jpg: not a plain file at the destination", r.stdout)
+        self.assertIn("library/2024/2024-06/IMG_0002.heic: not a plain file at the destination", r.stdout)
+        with open(target, "rb") as f:
+            self.assertEqual(f.read(), b"not yours")
+        self.assertTrue(os.path.islink(os.path.join(self.dest, "library/2024/2024-05/IMG_0001.jpg")))
+        self.assertEqual(os.listdir(os.path.join(self.dest, "library/2024/2024-06/IMG_0002.heic")), [])
+        self.assertFalse([n for n in tree(self.mount) if n.endswith(backup.TMP_SUFFIX)])
 
     def test_case_only_clash_is_reported_not_copied(self):
         put(self.lib, "2024/2024-05/img_0001.JPG", b"another photo")

@@ -54,7 +54,7 @@ media-intake backup /run/media/$USER/<label> --verify    # then re-read every co
   the source's modification time and renamed over the final name, so an
   interrupted run never leaves a half-written file under a real name (the
   next run overwrites a leftover partial). exFAT and FUSE mounts that refuse
-  fsync are tolerated. A file that changes while it is copied is skipped
+  fsync are tolerated. A file that changes or vanishes while it is copied is skipped
   and counted ("run backup again").
 - **Nothing on the drive is deleted.** A file removed from the library stays
   on the backup; the run only counts them. There is no `--prune`: erasing
