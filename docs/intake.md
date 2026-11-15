@@ -1076,7 +1076,8 @@ a drive, a laptop folder and the drive queue, and erase's and offload's prompts 
 stdin deletes nothing, with no traceback; the typed word does); `test_library_lock`: the
 CLI, a gallery write and a job contending for the library lock; `test_videohash`: the video hash on
 ffmpeg patterns (re-encoded, resized and trimmed copies match, a different, blank or unreadable clip
-doesn't) and `plan` routing a near-copy video to review; `test_library_ops_media_kinds`: every
+doesn't, a name like `concat:x.mp4` is read as a file), `plan` routing a near-copy video to review, and
+plan and apply run twice storing the same hashes once; `test_library_ops_media_kinds`: every
 library-side command on a photo, an mp4 and a .mov, alone and mixed; `test_detectors_media_kinds`: scan,
 vlm_trash, semantic, label and the plugin hook on photos, videos and mixed batches, broken videos that
 must be flagged "not checked", never clean, and the GStreamer fallback with a hostile file name and its one-line skip note for an unsafe work folder (fake tools); `test_offline_guard`). Run long jobs under your
