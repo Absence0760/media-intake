@@ -286,7 +286,7 @@ def backup(mount, verify=False, dry_run=False, out=print):
         for rel in clashes:
             out(f"  {rel}")
     copied = updated = 0
-    changed, failed = [], []
+    changed, failed, vanished = [], [], 0
     if not dry_run and todo:
         free = shutil.disk_usage(mount).free
         if need > free:
@@ -303,8 +303,9 @@ def backup(mount, verify=False, dry_run=False, out=print):
                 changed.append(rel)
                 continue
             except OSError as e:
-                if not os.path.lexists(src):
-                    continue  # gone from the library since the listing: nothing to back up
+                if not os.path.lexists(src):  # gone from the library since the listing: nothing to back up
+                    vanished += 1
+                    continue
                 failed.append((rel, e.strerror or str(e) or type(e).__name__))
                 continue
             manifest[rel] = dict(sha=sha, src=list(src_st), dst=list(dst_st))
@@ -315,6 +316,8 @@ def backup(mount, verify=False, dry_run=False, out=print):
         manifest = {rel: e for rel, e in manifest.items() if rel in live}  # bookkeeping only; the drive keeps them
         save_manifest(mpath, manifest)
         out(f"backup: {copied:,} copied, {updated:,} replaced (changed in the library)")
+    if vanished:
+        out(f"backup: {vanished} gone from the library since it was listed, skipped")
     if changed:
         out(f"backup: {len(changed)} changed while being copied, skipped (run backup again):")
         for rel in changed:
