@@ -84,6 +84,12 @@ case-insensitively so a case-insensitive disk can't slip one past. Everything
 is checked again when `run` stages each chunk: a folder that has since become
 a repository (or moved) stops the run with `folder refused now`.
 
+**A Google Takeout or iCloud Photos export** is queued like any other folder
+(unzip it first): `stage` reads the export's JSON or `Photo Details.csv`
+beside each file for its date and place ([intake.md](intake.md), "Cloud
+exports"), and `plan` drops the album folders' copies of the same photo as
+duplicates. The same holds for an export on a drive (`--kind drive`).
+
 A folder source has no mount and no UUID. The free-space, duplicate-label and
 overlap checks above apply to it as well. **Offload never deletes its
 originals**: `media-intake queue offload` and `media-intake offload` refuse a

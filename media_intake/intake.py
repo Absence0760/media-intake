@@ -54,6 +54,7 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import config  # noqa: E402
 import dates  # noqa: E402
 import devices  # noqa: E402
+import exports  # noqa: E402
 import owner  # noqa: E402
 import sources  # noqa: E402
 
@@ -296,6 +297,8 @@ def cmd_stage(a):
         a.batch = default_batch(root, a.kind, files, os.path.abspath(a.origin or root))
         print(f"batch {a.batch}")
     raw = private_dir(os.path.join(private_dir(bdir(a.batch)), "raw"))
+    # Google Takeout JSON / iCloud CSV beside the files (exports.py): their dates and places ride in the manifest.
+    exported, ec = exports.scan(root, files) if a.kind in ("drive", "folder") else ({}, {})
     for path, rel in files:
         dst = os.path.join(raw, rel)
         os.makedirs(os.path.dirname(dst), exist_ok=True)
@@ -306,13 +309,16 @@ def cmd_stage(a):
         if os.path.getsize(dst) != st.st_size:
             sys.exit(f"size mismatch after copy: {rel}")
         origin = os.path.join(os.path.abspath(a.origin), rel) if a.origin else path
-        man[rel] = dict(src=origin, size=st.st_size)
+        man[rel] = dict(src=origin, size=st.st_size, **({"export": exported[rel]} if rel in exported else {}))
     for dirpath, _, names in os.walk(root) if a.kind == "gopro" else []:
         for n in names:
             if os.path.splitext(n)[1].lower() in sources.CAMERA_JUNK_EXT:
                 skipped["gopro preview (.lrv/.thm)"] += 1
     save(os.path.join(bdir(a.batch), "manifest.json"), dict(kind=a.kind, root=os.path.abspath(a.origin or root), files=man, **extra))
     print(f"staged {len(man)} media files into {raw}")
+    if exported or ec.get("ambiguous"):
+        print(f"  cloud export metadata: Google Takeout {ec['google']}, iCloud {ec['icloud']}, "
+              f"with a place {ec['places']}, ambiguous (ignored) {ec['ambiguous']}")
     for k, v in skipped.items():
         print(f"  skipped {v} {k}")
 
@@ -339,9 +345,15 @@ def cmd_plan(a):
     index = load(os.path.join(STATE, "index.json"), {})
     by_sha = {v["sha"]: k for k, v in index.items()}
 
+    paths = [os.path.join(raw, rel) for rel in man["files"]]
+    exp = {os.path.abspath(os.path.join(raw, rel)): f["export"] for rel, f in man["files"].items() if f.get("export")}
     try:
-        dated = dates.resolve_all([os.path.join(raw, rel) for rel in man["files"]],
-                                  dates.clock_offsets(a.clock_offset))
+        metas = None
+        if exp:  # a cloud export's date (exports.py) is dates.py's "export" source
+            metas = dates.read_meta(paths)
+            for p, e in exp.items():
+                metas[p]["ExportTime"] = e["time"]
+        dated = dates.resolve_all(paths, dates.clock_offsets(a.clock_offset), metas=metas)
     except ValueError as e:
         sys.exit(str(e))
     rows = []
@@ -354,6 +366,7 @@ def cmd_plan(a):
                          date_tz=dd.tz, date_from=dd.base, date_note=dd.note, date_suspect=dd.suspect,
                          chapter_of=dd.chapter_of, device=dd.device, device_model=dd.model,
                          burst_id=dd.burst_id,  # the camera's BurstUUID / GCamera BurstID, for bursts.py
+                         export_gps=exports.gps_of(man["files"][rel]),  # tag's place when the file has no GPS
                          cat=category(rel, kind), dhash=dh, w=w, h=h, ext=ext))
 
     pref = {"photo": 5, "video": 5, "gopro": 5, "screenshot": 3, "screenrec": 3}
@@ -1869,8 +1882,9 @@ def merge_tags(old, new, pick="", relabelled=True, owner_leaves=()):
 
 
 def tag_files(items, labels=True):
-    """items: [(path, project, source, event, datetime or None)]; source a string or a tuple of them
-    (the kind, then the device model: Source|gopro, Source|HERO11 Black). Writes sidecars; prints counts only."""
+    """items: [(path, project, source, event, datetime or None[, fallback (lat, lon)])]; source a string or a
+    tuple of them (the kind, then the device model: Source|gopro, Source|HERO11 Black). The fallback place (a
+    cloud export's, exports.py) is used only when the file has no GPS. Writes sidecars; prints counts only."""
     need_exiftool()
     lab = guard_label()
     bad = set(lab.refused([i[0] for i in items], STATE))
@@ -1882,6 +1896,7 @@ def tag_files(items, labels=True):
         return
     paths = [i[0] for i in items]
     gps = read_gps(paths)
+    gps.update({i[0]: tuple(i[5]) for i in items if len(i) > 5 and i[5] and i[0] not in gps})
     pts = list(gps)
     places = dict(zip(pts, venv_json("geocode.py", [list(gps[p]) for p in pts]))) if pts else {}
     lbl = {}
@@ -1891,7 +1906,7 @@ def tag_files(items, labels=True):
         lbl = venv_json("label.py", paths)
     entries, c, lc = [], collections.Counter(), collections.Counter()
     existing = read_sidecar_tags(paths)
-    for path, project, source, event, dt in items:
+    for path, project, source, event, dt, *_ in items:
         hier = [f"Project|{project}"]
         for s in (source if isinstance(source, (list, tuple)) else [source]):  # e.g. ("gopro", "HERO11 Black")
             if s and not any(h.casefold() == f"source|{s}".casefold() for h in hier):  # Make-only "GoPro"
@@ -1949,7 +1964,7 @@ def cmd_tag(a):
         if p.get("device_model"):
             src = (src, p["device_model"])
         items.append((p["dst"], project, src, p.get("event"),
-                      dates.aware(datetime.datetime.fromisoformat(p["date"]), p.get("date_tz"))))
+                      dates.aware(datetime.datetime.fromisoformat(p["date"]), p.get("date_tz")), p.get("export_gps")))
     print(f"{len(items)} filed files to tag" + (f"; {sum(1 for p in plan if p['rel'] in flags)} flagged by scan are never tagged" if flags else ""))
     tag_files(items, labels=not a.no_labels)
     # Plugins (docs/plugins.md) get the filed files, e.g. to register a project's clips.
