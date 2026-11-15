@@ -56,6 +56,7 @@ import dates  # noqa: E402
 import devices  # noqa: E402
 import owner  # noqa: E402
 import sources  # noqa: E402
+import videohash  # noqa: E402
 
 CFG = config.get()
 HOME = os.path.expanduser("~")
@@ -350,11 +351,13 @@ def cmd_plan(a):
         dd = dated[p]
         ext = os.path.splitext(rel)[1].lower()
         dh, w, h = dhash(p) if ext in IMG else (None, 0, 0)
+        vh, vnote = videohash.video_hash(p) if ext in VID else (None, None)
         rows.append(dict(rel=rel, sha=sha256(p), size=os.path.getsize(p), date=dd.dt.isoformat(), date_src=dd.src,
                          date_tz=dd.tz, date_from=dd.base, date_note=dd.note, date_suspect=dd.suspect,
                          chapter_of=dd.chapter_of, device=dd.device, device_model=dd.model,
                          burst_id=dd.burst_id,  # the camera's BurstUUID / GCamera BurstID, for bursts.py
-                         cat=category(rel, kind), dhash=dh, w=w, h=h, ext=ext))
+                         cat=category(rel, kind), dhash=dh, w=w, h=h, ext=ext,
+                         vhash=vh, vhash_note=vnote))  # videohash frame dHashes ([] + a note: not compared)
 
     pref = {"photo": 5, "video": 5, "gopro": 5, "screenshot": 3, "screenrec": 3}
     CAMERA = ("photo", "gopro")  # camera originals: one is never a near-duplicate of another
@@ -376,25 +379,34 @@ def cmd_plan(a):
         g.sort(key=rank, reverse=True)
         for r in g[1:]:
             action[r["rel"]] = ("delete", f"duplicate of {g[0]['rel']}")
-    imgs = [r for r in rows if r["dhash"] is not None and r["rel"] not in action]
-    lib_imgs = [(k, v) for k, v in index.items() if v.get("dhash") is not None]
-    for i, x in enumerate(imgs):
-        if x["rel"] in action:
-            continue
-        for y in imgs[i + 1:]:
-            if y["rel"] in action or bin(x["dhash"] ^ y["dhash"]).count("1") > 2:
+    def near_pass(key, camera, same, lib_same):
+        """Route near-copies to review: within the batch (same(x, y)), then a non-camera file against the
+        library index (lib_same(x, entry)). Photos by dHash, videos by videohash; never deleted here. Two
+        camera originals (cats in camera) are never merged. A video that couldn't be hashed has vhash []
+        (near nothing) and its vhash_note says why; plan prints the count."""
+        items = [r for r in rows if r.get(key) is not None and r["rel"] not in action]
+        lib = [(k, v) for k, v in index.items() if v.get(key) is not None]
+        for i, x in enumerate(items):
+            if x["rel"] in action:
                 continue
-            if (x["w"] >= x["h"]) != (y["w"] >= y["h"]) or (x["cat"] in CAMERA and y["cat"] in CAMERA):
-                continue  # burst shots and time-lapse frames (phone or GoPro) are never merged
-            keep, drop = (x, y) if rank(x) >= rank(y) else (y, x)
-            action[drop["rel"]] = ("review", f"near-duplicate of {keep['rel']}")
-            if drop is x:
-                break
-        if x["rel"] not in action and x["cat"] not in CAMERA:
-            for k, v in lib_imgs:
-                if bin(x["dhash"] ^ v["dhash"]).count("1") <= 2:
-                    action[x["rel"]] = ("review", f"near-duplicate of library {k}")
+            for y in items[i + 1:]:
+                if y["rel"] in action or (x["cat"] in camera and y["cat"] in camera) or not same(x, y):
+                    continue  # burst shots and time-lapse frames (phone or GoPro) are never merged
+                keep, drop = (x, y) if rank(x) >= rank(y) else (y, x)
+                action[drop["rel"]] = ("review", f"near-duplicate of {keep['rel']}")
+                if drop is x:
                     break
+            if x["rel"] not in action and x["cat"] not in camera:
+                for k, v in lib:
+                    if lib_same(x, v):
+                        action[x["rel"]] = ("review", f"near-duplicate of library {k}")
+                        break
+
+    near_pass("dhash", CAMERA, lambda x, y: bin(x["dhash"] ^ y["dhash"]).count("1") <= 2
+              and (x["w"] >= x["h"]) == (y["w"] >= y["h"]),
+              lambda x, v: bin(x["dhash"] ^ v["dhash"]).count("1") <= 2)
+    near_pass("vhash", CAMERA + ("video",), lambda x, y: videohash.near(x["vhash"], y["vhash"]),
+              lambda x, v: videohash.near(x["vhash"], v["vhash"]))
     for r in rows:
         if r["rel"] not in action and (r["size"] == 0 or (r["w"] and max(r["w"], r["h"]) < 200)):
             action[r["rel"]] = ("review", "junk: tiny or empty")
@@ -457,6 +469,13 @@ def cmd_plan(a):
         hit = sorted(p["rel"] for p in plan if sel(p))
         if hit:
             print(f"  {len(hit)} {label}: " + ", ".join(hit[:5]) + (" ..." if len(hit) > 5 else ""))
+    unhashed = collections.defaultdict(list)
+    for p in plan:
+        if p.get("vhash_note"):
+            unhashed[p["vhash_note"]].append(p["rel"])
+    for note, rels in sorted(unhashed.items()):
+        print(f"  {len(rels)} videos not checked for near-duplicates ({note}): "
+              + ", ".join(sorted(rels)[:5]) + (" ..." if len(rels) > 5 else ""))
     for k in sorted({os.path.dirname(os.path.relpath(p["dst"], HOME)) for p in plan if p["action"] == "file"}):
         print("  ~/" + k)
 
@@ -521,7 +540,8 @@ def cmd_apply(a):
             os.makedirs(os.path.dirname(p["dst"]), exist_ok=True)
             shutil.move(src, p["dst"])
             if p["action"] == "file":
-                index[p["dst"]] = dict(sha=p["sha"], size=p["size"], dhash=p["dhash"])
+                index[p["dst"]] = dict(sha=p["sha"], size=p["size"], dhash=p["dhash"],
+                                       **({"vhash": p["vhash"]} if p.get("vhash") else {}))
                 c["filed"] += 1
             else:
                 c["to review"] += 1
