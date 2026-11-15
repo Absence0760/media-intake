@@ -371,6 +371,7 @@ class CtrlCAtThePrompt(unittest.TestCase):
             self.addCleanup(p.stop)
 
     def test_ask_returns_no_answer_on_ctrl_c(self):
+        answer = None
         with redirect_stdout(io.StringIO()):
             try:
                 answer = self.intake.ask("Type ERASE: ")
