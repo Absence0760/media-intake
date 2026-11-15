@@ -17,7 +17,7 @@ export keeps the date beside them:
                   still image's JSON (same name, image extension).
   iCloud Photos   "Photo Details.csv" (and numbered variants) beside the media, a header row
                   imgName,fileChecksum,favorite,hidden,deleted,originalCreationDate,viewCount,
-                  importDate; originalCreationDate like "Saturday June 4,2022 12:11 PM GMT".
+                  importDate; originalCreationDate like "Tuesday March 3,2015 7:45 PM GMT".
 
 Neither format is documented by its vendor; the rules above, and where they were checked, are in
 docs/intake.md ("Cloud exports"). Nothing here touches the network or writes a file: scan() only
@@ -139,7 +139,7 @@ def read_google(path):
 
 
 def parse_icloud_date(s):
-    """An aware UTC datetime from an iCloud CSV date ("Saturday June 4,2022 12:11 PM GMT"), else None."""
+    """An aware UTC datetime from an iCloud CSV date ("Tuesday March 3,2015 7:45 PM GMT"), else None."""
     t = " ".join(str(s or "").split())
     t = re.sub(r",(?=\d{4}\b)", ", ", t)
     t = re.sub(r"\s*(GMT|UTC|Z)$", "", t, flags=re.I)

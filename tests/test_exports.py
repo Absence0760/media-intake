@@ -5,8 +5,8 @@
 
 Synthetic exports only, in a throwaway HOME: fabricated Takeout folders with JSON sidecars
 (new and old names, truncated long names, a (1) duplicate, an -edited copy, a Live Photo pair,
-0,0 places, a symlinked and a non-Takeout JSON) and an iCloud folder with its CSV. The name
-cases follow the open-source importers' own test cases (docs/intake.md, "Cloud exports").
+0,0 places, a symlinked and a non-Takeout JSON) and an iCloud folder with its CSV. Every name
+and row is made up here from the naming rules in docs/intake.md ("Cloud exports").
 """
 import datetime, hashlib, json, os, shutil, subprocess, sys, tempfile, types, unittest
 
@@ -49,43 +49,44 @@ def jpg(path, seed):
 
 
 class Names(unittest.TestCase):
-    """The JSON names Takeout gives a media file (cases from immich-go's matcher tests)."""
+    """The JSON names Takeout gives a media file, from the rules in docs/intake.md ("Cloud exports")."""
 
     def test_google_names(self):
-        cases = {
+        cases = {  # newer form: <name>.supplemental-metadata cut to 46 characters, then (N), then .json
             "IMG_0001.jpg": "IMG_0001.jpg.supplemental-metadata.json",
             "IMG_0001(1).jpg": "IMG_0001.jpg.supplemental-metadata(1).json",
-            "Screenshot_20231027_123303_Facebook.jpg": "Screenshot_20231027_123303_Facebook.jpg.supple.json",
-            "MVIMG_20191230_232926.jpg": "MVIMG_20191230_232926.jpg.supplemental-metadat.json",
-            "Screenshot_20200301-161151.png": "Screenshot_20200301-161151.png.supplemental-me.json",
-            "CLIP0001(10).AVI": "CLIP0001.AVI.supplemental-metadata(10).json",
+            "Scan_garden_shed_before_paint.jpg": "Scan_garden_shed_before_paint.jpg.supplemental.json",
+            "Panorama_lake_shore_morning.jpg": "Panorama_lake_shore_morning.jpg.supplemental-m.json",
+            "sample_scan_page_0001.png": "sample_scan_page_0001.png.supplemental-metadat.json",
+            "VID_0007(12).mp4": "VID_0007.mp4.supplemental-metadata(12).json",
         }
         for media, js in cases.items():
             self.assertEqual(exports.google_names(media)[0], js, media)
-        old = {  # the older form: no suffix, the whole name cut to 46 characters
-            "DSC_0101(1).JPG": "DSC_0101.JPG(1).json",
-            "PXL_20230809_203449253.LONG_EXPOSURE-02.ORIGINA.jpg": "PXL_20230809_203449253.LONG_EXPOSURE-02.ORIGIN.json",
-            "05yqt21kruxwwlhhgrwrdyb6chhwszi9bqmzu16w0 2.jpg": "05yqt21kruxwwlhhgrwrdyb6chhwszi9bqmzu16w0 2.jp.json",
-            "13039_327707840323_537645323_9470255_27214_n(1).jpg": "13039_327707840323_537645323_9470255_27214_n.j(1).json",
+        old = {  # the older form: no suffix, the whole name cut to 46 characters (51 with .json)
+            "IMG_0002(1).jpg": "IMG_0002.jpg(1).json",
+            "an_old_photo_from_the_attic_box_number_seven.jpg": "an_old_photo_from_the_attic_box_number_seven.j.json",
+            "a_family_photo_scanned_from_an_album_page_twelve(2).jpg":
+                "a_family_photo_scanned_from_an_album_page_twel(2).json",
         }
         for media, js in old.items():
             self.assertIn(js, exports.google_names(media), media)
+            self.assertLessEqual(len(js.replace("(1)", "").replace("(2)", "")), 51)
         # A file without a counter never takes a numbered JSON, and the reverse.
-        self.assertNotIn("DSC_0104.JPG.json", exports.google_names("DSC_0104(1).JPG"))
-        self.assertNotIn("DSC_0103.JPG(1).json", exports.google_names("DSC_0103.JPG"))
+        self.assertNotIn("IMG_0003.jpg.json", exports.google_names("IMG_0003(1).jpg"))
+        self.assertNotIn("IMG_0003.jpg(1).json", exports.google_names("IMG_0003.jpg"))
 
     def test_fallbacks(self):
-        self.assertIn("IMAG0061.JPG.supplemental-metadata.json", exports.fallback_names("IMAG0061-edited.JPG", []))
-        sib = ["IMG_4488(1).HEIC", "IMG_4488(1).MP4", "IMG_4488(2).HEIC"]
-        self.assertEqual(exports.fallback_names("IMG_4488(1).MP4", sib)[0], "IMG_4488.HEIC.supplemental-metadata(1).json")
-        self.assertEqual(exports.fallback_names("IMG_4488.jpg", ["IMG_4488.HEIC"]), [], "only a video takes the still's")
+        self.assertIn("IMG_0010.jpg.supplemental-metadata.json", exports.fallback_names("IMG_0010-edited.jpg", []))
+        sib = ["IMG_0042(1).HEIC", "IMG_0042(1).MOV", "IMG_0042(2).HEIC"]
+        self.assertEqual(exports.fallback_names("IMG_0042(1).MOV", sib)[0], "IMG_0042.HEIC.supplemental-metadata(1).json")
+        self.assertEqual(exports.fallback_names("IMG_0042.jpg", ["IMG_0042.HEIC"]), [], "only a video takes the still's")
 
     def test_icloud_dates(self):
-        self.assertEqual(exports.parse_icloud_date("Saturday June 4,2022 12:11 PM GMT"),
-                         datetime.datetime(2022, 6, 4, 12, 11, tzinfo=UTC))
-        self.assertEqual(exports.parse_icloud_date("Friday October 06,2023 9:05 AM GMT"),
-                         datetime.datetime(2023, 10, 6, 9, 5, tzinfo=UTC))
-        for bad in ("", "yesterday", "Saturday June 31,2022 12:11 PM GMT"):
+        self.assertEqual(exports.parse_icloud_date("Tuesday March 3,2015 7:45 PM GMT"),
+                         datetime.datetime(2015, 3, 3, 19, 45, tzinfo=UTC))
+        self.assertEqual(exports.parse_icloud_date("Wednesday January 09,2013 8:02 AM GMT"),
+                         datetime.datetime(2013, 1, 9, 8, 2, tzinfo=UTC))
+        for bad in ("", "yesterday", "Monday February 30,2015 1:00 PM GMT"):
             self.assertIsNone(exports.parse_icloud_date(bad), bad)
 
 
@@ -118,9 +119,9 @@ class Scan(unittest.TestCase):
         touch(os.path.join(y, "IMG_0003.jpg"))
         touch(os.path.join(y, "IMG_0003-edited.jpg"))
         takeout_json(os.path.join(y, "IMG_0003.jpg.supplemental-metadata.json"), T2020)
-        touch(os.path.join(y, "IMG_4488.HEIC"))
-        touch(os.path.join(y, "IMG_4488.MP4"))
-        takeout_json(os.path.join(y, "IMG_4488.HEIC.supplemental-metadata.json"), T2019)
+        touch(os.path.join(y, "IMG_0042.HEIC"))
+        touch(os.path.join(y, "IMG_0042.MP4"))
+        takeout_json(os.path.join(y, "IMG_0042.HEIC.supplemental-metadata.json"), T2019)
         # Two long names with the same first 46 characters claim one JSON: neither gets it.
         a, b = "A" * 50 + "_one.jpg", "A" * 50 + "_two.jpg"
         touch(os.path.join(y, a))
@@ -150,29 +151,29 @@ class Scan(unittest.TestCase):
         self.assertEqual(out[rel(long_name)]["time"], "2019-05-10 12:00:00Z")
         self.assertEqual(out[rel("IMG_0003-edited.jpg")]["time"], "2020-06-15 12:00:00Z")
         self.assertEqual(out[rel("IMG_0003.jpg")]["time"], "2020-06-15 12:00:00Z")
-        self.assertEqual(out[rel("IMG_4488.MP4")]["time"], "2019-05-10 12:00:00Z", "Live Photo video: the still's")
+        self.assertEqual(out[rel("IMG_0042.MP4")]["time"], "2019-05-10 12:00:00Z", "Live Photo video: the still's")
         for n in (a, b, "IMG_0004.jpg", "IMG_0005.jpg"):
             self.assertNotIn(rel(n), out, n)
         self.assertEqual(c, dict(google=8, icloud=0, places=2, ambiguous=2))
 
     def test_icloud_csv(self):
         d = os.path.join(self.root, "iCloud Photos Part 1 of 1", "Photos")
-        for n in ("IMG_7938.HEIC", "IMG_7939.jpg", "IMG_7940.jpg", "IMG_7941.jpg"):
+        for n in ("IMG_0501.HEIC", "IMG_0502.jpg", "IMG_0503.jpg", "IMG_0504.jpg"):
             touch(os.path.join(d, n))
+        head = "imgName,fileChecksum,favorite,hidden,deleted,originalCreationDate,viewCount,importDate\n"
         with open(os.path.join(d, "Photo Details.csv"), "w", encoding="utf-8-sig") as f:
-            f.write("imgName,fileChecksum,favorite,hidden,deleted,originalCreationDate,viewCount,importDate\n"
-                    'IMG_7938.HEIC,c1,no,no,no,"Saturday June 4,2022 12:11 PM GMT",10,"Monday June 6,2022 8:00 AM GMT"\n'
-                    'IMG_7939.jpg,c2,no,no,no,"Friday October 06,2023 9:05 PM GMT",1,"Friday October 06,2023 9:05 PM GMT"\n'
-                    'IMG_7940.jpg,c3,no,no,no,"not a date",1,"Friday October 06,2023 9:05 PM GMT"\n')
-        with open(os.path.join(d, "Photo Details-1.csv"), "w") as f:  # a second CSV contradicts IMG_7939
-            f.write("imgName,fileChecksum,favorite,hidden,deleted,originalCreationDate,viewCount,importDate\n"
-                    'IMG_7939.jpg,c9,no,no,no,"Saturday June 4,2022 12:11 PM GMT",1,"x"\n')
+            f.write(head
+                    + 'IMG_0501.HEIC,sum-a,yes,no,no,"Tuesday March 3,2015 7:45 PM GMT",3,"Friday March 6,2015 9:00 AM GMT"\n'
+                    + 'IMG_0502.jpg,sum-b,no,no,no,"Thursday July 2,2015 6:30 AM GMT",0,"Thursday July 2,2015 6:31 AM GMT"\n'
+                    + 'IMG_0503.jpg,sum-c,no,no,no,"sometime",0,"Thursday July 2,2015 6:31 AM GMT"\n')
+        with open(os.path.join(d, "Photo Details-1.csv"), "w") as f:  # a second CSV contradicts IMG_0502
+            f.write(head + 'IMG_0502.jpg,sum-d,no,no,no,"Friday July 3,2015 6:30 AM GMT",0,"later"\n')
         with open(os.path.join(d, "Other.csv"), "w") as f:  # not a Photo Details file
-            f.write('imgName,originalCreationDate\nIMG_7941.jpg,"Saturday June 4,2022 12:11 PM GMT"\n')
+            f.write('imgName,originalCreationDate\nIMG_0504.jpg,"Tuesday March 3,2015 7:45 PM GMT"\n')
         out, c = exports.scan(self.root, self.files())
         r = os.path.join("iCloud Photos Part 1 of 1", "Photos")
-        self.assertEqual(out, {os.path.join(r, "IMG_7938.HEIC"): dict(
-            time="2022-06-04 12:11:00Z", via="icloud", sidecar=os.path.join(r, "Photo Details.csv"))})
+        self.assertEqual(out, {os.path.join(r, "IMG_0501.HEIC"): dict(
+            time="2015-03-03 19:45:00Z", via="icloud", sidecar=os.path.join(r, "Photo Details.csv"))})
         self.assertEqual(c, dict(google=0, icloud=1, places=0, ambiguous=1))
 
 
