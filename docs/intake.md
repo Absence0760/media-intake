@@ -235,6 +235,19 @@ digit counts, `.LRV`/`.THM` previews, `.360` files and look-alikes such as
 When the first chapter isn't in the batch, the lowest one present dates the
 rest.
 
+### Burst id
+
+`plan.json` also records a camera's own burst id as `burst_id` (else `null`),
+read with the date (exiftool only; without it, `null`): Apple's MakerNotes
+`BurstUUID` ("unique ID for all images in a burst") or Google Camera's
+`XMP-GCamera:BurstID`, Apple's first when a file has both. Only a plain token
+(letters, digits and `._:{}-`, at most 128) counts. No other camera documents
+one; their bursts are found by file name and clock. `bursts.py` takes it as
+the burst marker, so the review page ([review-ui.md](review-ui.md)) and the
+gallery ([gallery.md](gallery.md), "Burst stacks") stack a burst whose shots
+are further apart than the 2 s gap, and never join two bursts with different
+ids. It is only read: nothing writes it to a sidecar.
+
 ### Devices
 
 Each file's device comes from its EXIF/QuickTime `Make`, `Model` and serial

@@ -74,8 +74,8 @@ review files it prints `nothing to review for BATCH` and exits 0.
   burst marker wins over the clock: the same marker is one burst whatever the
   gap, two different markers never are. Markers come from the file name
   (`IMG_20261108_071500_BURST001.jpg`, Pixel's `..._BURST<start time>...jpg`)
-  or a `burst_id` in the plan entry (a camera's BurstUUID; intake does not
-  record one yet). The date, device and dHash come from `plan.json` (this
+  or a `burst_id` in the plan entry (a camera's BurstUUID or GCamera BurstID,
+  which `plan` records: [intake.md](intake.md), "Burst id"). The date, device and dHash come from `plan.json` (this
   batch's quarantine and review items; a maybe-trash library file by its
   `dst`, plus `index.json` for its dHash), so near- and xcheck- items, and
   library files with no plan entry, are never stacked. Stacks never cross a

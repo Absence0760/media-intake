@@ -49,6 +49,11 @@ written to the XMP sidecar only; originals are never written.
 GoPro chapters (GX01nnnn, GX02nnnn, ...; devices.chapter) take the date of the first
 chapter of their recording in the batch, so a recording that crosses midnight or an hour
 is filed together; `chapter_of` names that first chapter.
+
+A camera's own burst id rides along (`burst_id`, for bursts.py): Apple's MakerNotes BurstUUID
+(exiftool `BurstUUID`: "unique ID for all images in a burst") or Google Camera's XMP
+`XMP-GCamera:BurstID`. Only exiftool reads them; the Pillow fallback leaves it None, and so
+does every other camera (no documented equivalent), whose bursts bursts.py finds by name and clock.
 """
 import dataclasses, datetime, json, os, re, shutil, statistics, subprocess
 from dataclasses import dataclass
@@ -71,8 +76,11 @@ RESET_DAYS = {datetime.date(2015, 12, 31), datetime.date(2016, 1, 1)}  # GoPro (
 MAX_OFFSET_H = 24 * 366 * 30  # a clock can be years out; more than 30 is a typo
 UTC = datetime.timezone.utc
 
+# A camera's burst id, first found wins: Apple MakerNotes BurstUUID, Google Camera XMP-GCamera:BurstID.
+BURST_TAGS = ("BurstUUID", "BurstID")
+BURST_ID_RX = re.compile(r"[A-Za-z0-9._:{}-]{1,128}")
 TAGS = ("DateTimeOriginal", "CreateDate", "ModifyDate", "OffsetTimeOriginal", "OffsetTime",
-        "GPSDateTime", "GPSDateStamp", "CreationDate", "Make", "Model", *devices.SERIAL_TAGS)
+        "GPSDateTime", "GPSDateStamp", "CreationDate", "Make", "Model", *BURST_TAGS, *devices.SERIAL_TAGS)
 DT_RX = re.compile(r"(\d{4})[:-](\d\d)[:-](\d\d)[ T](\d\d):(\d\d):(\d\d)(?:\.\d+)?\s*(Z|[+-]\d\d:?\d\d)?$")
 DAY_RX = re.compile(r"(\d{4})[:-](\d\d)[:-](\d\d)$")
 FOLDER_RX = re.compile(r"(?:^|/)DCIM/(\d{4})(\d\d)__/")
@@ -94,6 +102,7 @@ class Dated:
     device: str = None         # devices.Device.id (never a raw serial)
     model: str = None          # devices.Device.model, for the Source|<model> tag
     chapter_of: str = None     # a later GoPro chapter: the first chapter's file name, whose date it took
+    burst_id: str = None       # the camera's own burst id (burst_id() below), for bursts.py
 
     def aware(self):
         return aware(self.dt, self.tz)
@@ -198,6 +207,18 @@ def offset_for(meta, offsets):
     if len(hits) > 1:
         raise ValueError(f"--clock-offset {', '.join(sorted(hits))} all match {device_label(meta)}; keep one")
     return (hits[0], offsets[hits[0]]) if hits else (None, None)
+
+
+def burst_id(meta):
+    """The camera's burst id from a read_meta() row (BURST_TAGS, first found), else None. Only a plain
+    token (letters, digits and ._:{}-, at most 128) counts, so a garbled value never joins two bursts."""
+    for t in BURST_TAGS:
+        v = meta.get(t)
+        if isinstance(v, int) and not isinstance(v, bool):
+            v = str(v)  # exiftool -j prints an all-digit value as a JSON number
+        if isinstance(v, str) and BURST_ID_RX.fullmatch(v.strip()):
+            return v.strip()
+    return None
 
 
 # ---------------------------------------------------------------- reading metadata
@@ -414,7 +435,7 @@ def resolve(path, meta, offsets=None, now=None, local_tz=None):
     def done(c, note=None, suspect=False):
         shifted = bool(shift) and c.src != "gps"
         return Dated(c.local, "offset" if shifted else c.src, tz_str(c.tz), c.src if shifted else None,
-                     key, note, suspect, meta.get("Device"), meta.get("DeviceModel"))
+                     key, note, suspect, meta.get("Device"), meta.get("DeviceModel"), burst_id=burst_id(meta))
 
     def why(c):
         if impossible(c.local, now):
