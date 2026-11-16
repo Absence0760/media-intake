@@ -74,7 +74,7 @@ first run on a folder of test photos, from install to the gallery.
 ```sh
 sudo dnf install perl-Image-ExifTool tesseract tesseract-langpack-eng python3-zxing-cpp \
   python3-pillow python3-numpy python3-pyyaml ffmpeg-free gstreamer1-plugins-bad-free gvfs-mtp
-git clone https://github.com/Absence0760/media-intake.git
+git clone https://github.com/jaredhoward-dev/media-intake.git
 cd media-intake
 bash setup.sh            # venv, SigLIP vision model, GeoNames, ~/.local/bin/media-intake
 media-intake doctor      # what's installed, checksums, and the dnf line for what's missing

@@ -22,7 +22,7 @@ classifiers = [
 ]
 
 [project.urls]
-Source = "https://github.com/Absence0760/media-intake"
+Source = "https://github.com/jaredhoward-dev/media-intake"
 
 [project.scripts]
 media-intake = "media_intake.cli:main"
