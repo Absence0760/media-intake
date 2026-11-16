@@ -49,6 +49,8 @@ same machine.
 
 ## Defensive scaffolding
 
-gitleaks on every push and PR (and pre-commit), CodeQL for Python and GitHub
+A TruffleHog secret scan on every push and PR and over the whole history
+weekly (`.github/workflows/secret-scan.yml`; a verified or unverifiable
+credential fails it), gitleaks in pre-commit, CodeQL for Python and GitHub
 Actions, OpenSSF Scorecard, zizmor and osv-scanner (advisory), and grouped
 Dependabot updates with a 7-day cooldown. Actions are pinned by SHA.

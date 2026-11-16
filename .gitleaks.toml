@@ -1,7 +1,9 @@
 # gitleaks config: the default rules, plus reviewed false positives.
 #
-# gitleaks (CI's gitleaks.yml, the weekly full-history sweep, and the
-# pre-commit hook) reads this file from the repo root automatically.
+# The gitleaks pre-commit hook reads this file from the repo root
+# automatically. CI scans with TruffleHog (secret-scan.yml), which does not
+# read it; a reviewed TruffleHog false positive gets a `trufflehog:ignore`
+# comment on its line instead.
 #
 # How to add an entry (the rules every project converged on):
 #
