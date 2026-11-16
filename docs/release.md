@@ -18,14 +18,14 @@ Pin a release by **tag and commit SHA**, not by tag alone: a tag is a
 movable name, the SHA is what you reviewed. Each release's notes give both.
 
 ```sh
-git clone --branch vX.Y.Z https://github.com/Absence0760/media-intake.git
+git clone --branch vX.Y.Z https://github.com/jaredhoward-dev/media-intake.git
 cd media-intake
 git rev-parse 'HEAD^{commit}'     # must equal the SHA in the release notes
 bash setup.sh
 ```
 
 To check a tag without cloning, `git ls-remote
-https://github.com/Absence0760/media-intake.git 'refs/tags/vX.Y.Z^{}'` prints
+https://github.com/jaredhoward-dev/media-intake.git 'refs/tags/vX.Y.Z^{}'` prints
 the commit an annotated tag points at. If the tag and the SHA you recorded
 ever disagree, stop: a published tag is never moved (see below), so a
 mismatch means something is wrong. Anything that installs it for you (a
