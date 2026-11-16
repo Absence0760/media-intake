@@ -9,4 +9,4 @@ rules:
   # supports `$/`, then switch and delete this entry.
   self-repository:
     ignore:
-      - gitleaks-sweep.yml
+      - secret-scan-sweep.yml
