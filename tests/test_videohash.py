@@ -255,6 +255,57 @@ class Plan(unittest.TestCase):
         self.assertEqual(sha(staged), sha(self.P(wa)), "plan only reads the staged copy")
         self.assertEqual((plan[wa]["action"], plan[wa]["why"]), ("review", f"near-duplicate of library {lib_path}"))
 
+    def flag_and_apply(self, batch, rels):
+        """apply batch with rels flagged by the scan: they go to quarantine, the rest is filed."""
+        with open(os.path.join(self.state, "batches", batch, "scan.json"), "w") as f:
+            json.dump({r: ["nudity"] for r in rels}, f)
+        self.intake("apply", batch, "--allow-missing-detectors")
+
+    def index(self):
+        with open(os.path.join(self.state, "index.json")) as f:
+            return json.load(f)
+
+    def test_released_video_keeps_its_hash_and_catches_a_later_copy(self):
+        rel = "DCIM/Camera/VID_20261101_100000.mp4"
+        cam = clip(self.P(rel))
+        plan, _ = self.plan("2026-11-17-first")
+        vh = plan[rel]["vhash"]
+        self.flag_and_apply("2026-11-17-first", [rel])
+        self.assertEqual(self.index(), {}, "a quarantined video is not in the library yet")
+        out = self.intake("release", "2026-11-17-first", rel)
+        (dst, entry), = self.index().items()
+        self.assertIn(f"released -> {dst}", out)
+        self.assertTrue(entry["released"])
+        self.assertIsNone(entry["dhash"], "videos have no dHash")
+        self.assertEqual(entry["vhash"], vh, "release hashes the video as plan did")
+        self.assertNotIn("vhash_note", entry)
+        # An index written before videohash has video entries with no vhash key: plan reads past them.
+        idx = self.index()
+        idx[os.path.join(self.home, "Videos/personal/2025/2025-01/old.mp4")] = dict(sha="0" * 64, size=1, dhash=None)
+        with open(os.path.join(self.state, "index.json"), "w") as f:
+            json.dump(idx, f)
+        wa = "Pictures/WhatsApp/VID-20261102-WA0001.mp4"
+        reencode(cam, self.P(wa), post=("-b:v", "120k"))
+        os.remove(cam)
+        plan, _ = self.plan("2026-11-17-second")
+        self.assertEqual((plan[wa]["action"], plan[wa]["why"]), ("review", f"near-duplicate of library {dst}"))
+
+    def test_unhashable_video_keeps_its_note_when_filed_or_released(self):
+        kept, flagged = "Pictures/WhatsApp/VID-20261101-WA0003.mp4", "Pictures/WhatsApp/VID-20261101-WA0004.mp4"
+        junk(self.P(kept))
+        with open(self.P(kept), "ab") as f:
+            f.write(b"filed")  # a different sha256 from the flagged one
+        junk(self.P(flagged))
+        self.plan("2026-11-17-junk")
+        self.flag_and_apply("2026-11-17-junk", [flagged])
+        self.intake("release", "2026-11-17-junk", flagged)
+        entries = self.index()
+        self.assertEqual(len(entries), 2)
+        for path, entry in entries.items():
+            self.assertEqual((entry["vhash"], entry["vhash_note"]), ([], videohash.UNREADABLE),
+                             f"{path}: not hashed is recorded, never read as unique")
+        self.assertEqual(sorted(e.get("released", False) for e in entries.values()), [False, True])
+
 
 if __name__ == "__main__":
     unittest.main()
