@@ -651,7 +651,7 @@ class GalleryTest(unittest.TestCase):
         until(lambda: any("waiting at the gate" in x for x in s.get("/api/job")["lines"]), "the trash to start")
         code, j = s.post("/plugin/toy/write", {"a": 1})
         self.assertEqual(code, 409, j)
-        self.assertIn("the library is busy: job gallery", j["error"])
+        self.assertEqual((j["error"], j.get("busy")), ("a Trash is still running; wait for it to finish, then try again", True))  # plain words: no PID, no lock path
         self.assertEqual(s.get("/plugin/toy/posts"), {"posts": 0})  # the handler never ran
         code, j = s.post("/plugin/ro/look", {"b": 2})  # declared read-only: not locked
         self.assertEqual((code, j), (200, {"got": {"b": 2}}))
@@ -1087,7 +1087,7 @@ class ViewsEndpointsTest(unittest.TestCase):
         for path, body in self.bodies(s).items():
             code, j = s.post(path, body)
             self.assertEqual(code, 409, (path, j))
-            self.assertRegex(j["error"], r"the library is busy: job gallery|still running", path)
+            self.assertEqual((j["error"], j.get("busy")), ("a Trash is still running; wait for it to finish, then try again", True), path)
         self.assertEqual(self.files(), before)
         self.assertEqual(os.listdir(self.share_root), [])  # the export's folder went with the refusal
         fd = os.open(gate, os.O_WRONLY)  # the fake is waiting on it: this returns at once
@@ -1251,6 +1251,44 @@ class AddedFilterTest(unittest.TestCase):
         for it, f, want in ((old, {"added": "30"}, False), (new, {"added": "30"}, True), (old, {"added": "41"}, True),
                             (old, {"added": "0"}, True), (old, {"added": "x"}, True), (old, {}, True)):
             self.assertEqual(app.matches(it, f), want, (it["ctime"], f))
+
+
+class PlainWordsTest(unittest.TestCase):
+    """busy_text (a 409's words on the page) and WORDS (the one map of internal names): what is running in plain
+    words, never a PID, a lock-file path or a tool namespace."""
+
+    def busy(self, status, holder):
+        import gallery
+        from unittest import mock
+        with mock.patch.object(gallery.jobs, "status", lambda key: status):
+            return gallery.busy_text(holder)
+
+    def test_busy_text_names_what_runs(self):
+        tail = " is still running; wait for it to finish, then try again"
+        for label, what in (("trash", "a Trash"), ("erase", "an Erase"), ("share", "a Share-safe copy")):
+            st = dict(done=False, spec=dict(label=label), label="")
+            self.assertEqual(self.busy(st, {"what": "job gallery", "pid": 510}), what + tail)
+        done = dict(done=True, spec=dict(label="trash"))
+        for holder, what in (({"what": "job review-phone-1", "pid": 7}, "a run from the review page"),
+                             ({"what": "job maybe-trash"}, "a run from the review page"),
+                             ({"what": "job gallery"}, "a Trash, Erase or Share-safe copy from another gallery"),
+                             ({"what": "gallery keep", "pid": 9}, "a change from another gallery page"),
+                             ({"what": "intake.py apply", "pid": 3}, "the media-intake apply command"),
+                             ({"what": "intake.py /tmp/x (PID"}, "another media-intake command"),
+                             ({}, "another media-intake command")):
+            got = self.busy(done if holder.get("what") else None, holder)
+            self.assertEqual(got, what + tail, holder)
+            self.assertNotRegex(got, r"PID|/|lock")
+
+    def test_words_name_no_tool_namespace(self):
+        import gallery
+        shown = json.dumps({k: v for k, v in gallery.WORDS.items() if k != "tag"})
+        shown += json.dumps(list(gallery.WORDS["tag"].values()))
+        self.assertNotRegex(shown, r"(Owner|Review|Label|AI|Used|Project|Source|Event|Place)\|")
+        for f in ("maybe-trash", "child-in-shot", "kept", "trashed copy", "used"):  # summary()'s flags
+            self.assertIn(f, gallery.WORDS["flag"])
+        for k in ("trash", "erase", "share", "forget", "share-copy"):  # a job by its spec and by its step
+            self.assertIn(k, gallery.WORDS["job"])
 
 
 if __name__ == "__main__":

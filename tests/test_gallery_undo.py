@@ -248,7 +248,7 @@ class UndoTest(unittest.TestCase):
         mid = self.snap()
         code, e = s.post("/api/undo", {"undo": j["undo"]})
         self.assertEqual(code, 409, e)
-        self.assertRegex(e["error"], r"the library is busy: job gallery")
+        self.assertEqual(e["error"], "a Trash is still running; wait for it to finish, then try again")
         self.assertEqual(self.snap(), mid)
         fd = os.open(gate, os.O_WRONLY)
         os.write(fd, b"go")

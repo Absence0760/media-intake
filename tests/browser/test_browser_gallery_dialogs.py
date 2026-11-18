@@ -12,12 +12,15 @@ the time the ordinary message fades (Playwright's clock, no sleep); the "?" shor
 and by the sidebar's Keyboard shortcuts, listing every key the page's handlers check (read from the served
 page's own source); Undo of Rotate, Keep (by Ctrl+Z), a tag added in the large view and Set event, each
 putting the sidecar back as it was, an Undo refused once the item changed again, and none offered after Trash,
-Erase or a Share-safe copy.
+Erase or a Share-safe copy. Plain words: the job dialog's end state (Hide while it runs, the header's pill,
+Close and a role=status line when it ends, a message when it ends while hidden), the busy refusal naming what
+runs (no PID, no lock path) with Show progress, the Keep message, and no tool namespace (Owner|, Review|,
+Label|) in any text the page shows; on a phone the message sits above the action bar.
 
 Hooks (beside tests/browser/test_browser_gallery.py's): the message as role=status (#toast) with its Undo
 button; the error as role=alert (#etoast) with "Dismiss error"; the shortcut list as role=dialog named
-"Keyboard shortcuts", its keys as <kbd>; the confirm dialog's text field by its label ("Tag (yours", "Event (a
-slug"), its refusal in its <pre>. The real intake.py runs Trash, Erase and share-copy; the lock test swaps in
+"Keyboard shortcuts", its keys as <kbd>; the confirm dialog's text field by its label ("Tag (yours", "Event
+name"), its refusal in its <pre>; the job's pill as the header button "<Trash> running… Show". The real intake.py runs Trash, Erase and share-copy; the lock test swaps in
 tests/test_gallery.py's GATED fake, held at a FIFO.
 """
 import os, re, shutil, subprocess, sys, tempfile, unittest
@@ -201,21 +204,43 @@ class GalleryDialogsBrowserTest(B.BrowserCase):
         # a trash held at the gate holds the library lock
         self.box(page, "d.jpg").click()
         page.keyboard.press("t")
-        dlg.get_by_role("button", name="Confirm").click()
+        dlg.get_by_role("button", name="Trash 1 file").click()
         B.expect(dlg).to_have_attribute("data-job", "running")
         B.expect(dlg.locator("pre")).to_contain_text("trash: waiting at the gate")
-        dlg.get_by_role("button", name="Cancel").click()  # closes the dialog; the job keeps going
+        B.expect(dlg.locator("#mb")).to_have_text("")  # the confirm text is gone once it runs
+        hide = dlg.get_by_role("button", name="Hide (it keeps running)")
+        B.expect(hide).to_be_focused()
+        hide.click()  # hides the dialog; the job keeps going (there is no stop)
         B.expect(dlg).to_be_hidden()
+        pill = page.get_by_role("button", name="Trash running… Show progress")
+        B.expect(pill).to_be_visible()
         self.box(page, "d.jpg").click()  # (off again)
         self.box(page, "a.jpg").click()
         with page.expect_response(lambda r: r.url.endswith("/api/keep")) as resp:
             page.keyboard.press("k")
         self.assertEqual(resp.value.status, 409)
         err = page.get_by_role("alert")
-        B.expect(err).to_contain_text("Keep refused: the library is busy: job gallery")
+        # plain words: what runs and what to do; never a PID or the lock file's path
+        B.expect(err).to_contain_text("Keep refused: a Trash is still running; wait for it to finish, then try again")
+        B.expect(err).not_to_contain_text("PID")
+        B.expect(err).not_to_contain_text("lock")
         self.assertNotIn("Owner|keep", G.tags_of(self.path["a.jpg"])[0])
+        # the alert's Show progress, and the pill, bring the dialog back
+        err.get_by_role("button", name="Show progress").click()
+        B.expect(dlg).to_have_attribute("data-job", "running")
+        B.expect(dlg.locator("pre")).to_contain_text("trash: waiting at the gate")
+        B.expect(pill).to_be_hidden()
+        page.keyboard.press("Escape")
+        B.expect(dlg).to_be_hidden()
+        pill.click()
+        B.expect(dlg).to_be_visible()
+        page.keyboard.press("Escape")
+        # it ends while hidden: announced in the message (role=status), the pill gone
         B.open_gate(gate)
+        B.expect(page.locator("#toast")).to_have_text("Done: 1 file trashed.")
+        B.expect(pill).to_be_hidden()
         B.expect(dlg).to_have_attribute("data-job", "done")
+        B.expect(dlg).to_be_hidden()
         self.assertEqual(self.sidecar("b.jpg"), before)
 
     # ------------------------------------------------------------ the "?" shortcut list
@@ -238,7 +263,7 @@ class GalleryDialogsBrowserTest(B.BrowserCase):
         listed = set(keys.locator("kbd").all_inner_texts())
         self.assertGreaterEqual(len(handled), 15, handled)
         self.assertEqual(handled - listed, set(), "keys the page handles but the list doesn't name")
-        for section in ("Grid", "Bursts", "Large view", "Trash suggestions", "Dialogs"):
+        for section in ("Grid", "Bursts", "Large view", "Suggested junk", "Dialogs"):
             B.expect(keys.get_by_role("heading", name=section, exact=True)).to_be_visible()
         # Tab stays in it; a key for the page does nothing while it is open; Esc closes, focus back on the tile
         for _ in range(3):
@@ -296,17 +321,18 @@ class GalleryDialogsBrowserTest(B.BrowserCase):
         self.box(page, "a.jpg").click()
         with page.expect_response(lambda r: r.url.endswith("/api/keep")):
             page.keyboard.press("k")
-        B.expect(page.locator('[data-item="a.jpg"] .flag')).to_have_text("kept")
+        B.expect(page.locator('[data-item="a.jpg"] .flag')).to_have_text("Kept")
+        B.expect(toast).to_have_text("Kept 1. It won't be suggested as junk again.Undo")  # plain: no Owner|keep
         with page.expect_response(lambda r: r.url.endswith("/api/undo")):
             page.keyboard.press("Control+z")
-        B.expect(page.locator('[data-item="a.jpg"] .flag')).to_have_text("maybe-trash")
+        B.expect(page.locator('[data-item="a.jpg"] .flag')).to_have_text("Suggested junk")
         self.assertEqual(self.sidecar("a.jpg"), before["a.jpg"])
         # Set event on two (one in another event, in both fields), then Undo
         page.keyboard.press("Escape")
         self.box(page, "a.jpg").click()
         self.box(page, "b.jpg").click()
         bar.get_by_role("button", name="Set event…").click()
-        dlg.get_by_label("Event (a slug").fill("beach")
+        dlg.get_by_label("Event name").fill("beach")
         with page.expect_response(lambda r: r.url.endswith("/api/event/set")):
             dlg.get_by_role("button", name="Confirm").click()
         B.expect(page.locator('#evlist [data-ev="beach"]')).to_contain_text("2")
@@ -365,20 +391,20 @@ class GalleryDialogsBrowserTest(B.BrowserCase):
         dlg.get_by_role("button", name="Confirm").click()
         B.expect(dlg).to_have_attribute("data-job", "done")
         B.expect(undo).to_have_count(0)
-        dlg.get_by_role("button", name="Cancel").click()
+        dlg.get_by_role("button", name="Close", exact=True).click()
         # Trash
         self.box(page, "b.jpg").click()
         page.keyboard.press("t")
         B.expect(dlg.get_by_role("heading")).to_have_text("Trash 1 item?")
-        dlg.get_by_role("button", name="Confirm").click()
+        dlg.get_by_role("button", name="Trash 1 file").click()
         B.expect(dlg).to_have_attribute("data-job", "done")
         self.assertFalse(os.path.exists(self.path["b.jpg"]))
         B.expect(undo).to_have_count(0)
-        dlg.get_by_role("button", name="Cancel").click()
+        dlg.get_by_role("button", name="Close", exact=True).click()
         # Erase: still ERASE typed
         self.box(page, "c.png").click()
         page.keyboard.press("e")
-        go = dlg.get_by_role("button", name="Confirm")
+        go = dlg.get_by_role("button", name="Erase 1 file")
         B.expect(go).to_be_disabled()
         dlg.get_by_role("textbox", name="Type ERASE").fill("ERASE")
         go.click()
@@ -390,6 +416,98 @@ class GalleryDialogsBrowserTest(B.BrowserCase):
             self.assertFalse(r.url.endswith("/api/undo"), r.url)
             if re.search(r"/api/(trash|erase|share)$", r.url):
                 self.assertNotIn("undo", r.json(), r.url)
+
+    # ------------------------------------------------------------ plain words
+    def test_no_tool_namespace_in_any_text_shown(self):
+        """Grid flags, filters and chips, the large view's tags, Keep's message and every dialog: no Owner|,
+        Review| or Label| in what the page shows (its text, tooltips and accessible names)."""
+        G.write_tags(self.path["b.jpg"], ["Project|Personal", "Label|food", "Review|child-in-shot", "Owner|keep",
+                                          "Owner|not-trash", "AI|vlm/m1/trash/blurry", "AI|vlm/m1/conf/0.9",
+                                          "Used|2026-11-10-demo", "Trips|Spain"])
+        s = self.start()
+        page = self.page_for(s)
+        dlg = self.dlg(page)
+        seen = []
+
+        def scan(where):
+            text = page.evaluate(r"""() => document.body.innerText + "\n" + [...document.querySelectorAll(
+                "[title],[aria-label],img[alt]")].filter(e => e.getClientRects().length)
+                .map(e => [e.title, e.getAttribute("aria-label"), e.alt].filter(Boolean).join(" ")).join("\n")""")
+            seen.append(where)
+            for ns in ("Owner|", "Review|", "Label|"):
+                self.assertNotIn(ns, text, where)
+
+        scan("grid")
+        B.expect(page.locator('[data-item="b.jpg"] .flag')).to_have_text("Junk score 0.9 · Possible child · Kept · "
+                                                                       "Used in a post")
+        page.locator(".fs-h").evaluate_all(  # every filter section open
+            "hs => hs.forEach(h => h.getAttribute('aria-expanded') === 'false' && h.click())")
+        B.expect(page.locator(".fs-h[aria-expanded=false]")).to_have_count(0)
+        B.expect(page.locator('.opts[data-k=review]')).to_contain_text("Suggested junk")
+        scan("filters")
+        page.locator('.opts[data-k=review] .opt[data-val="child-in-shot"]').click()
+        page.locator('.opts[data-k=label] .opt[data-val="food"]').click()
+        B.expect(page.locator("#chips")).to_contain_text("Flags: Possible child")
+        B.expect(page.locator("#chips")).to_contain_text("Looks like: food")
+        scan("chips")
+        page.locator('.opts[data-k=ai] .opt[data-val="trash"]').click()
+        B.expect(page.locator("#chips")).to_contain_text("Junk check: Junk score ≥ 0.70")
+        page.locator("#clear").click()
+        B.expect(page.locator("[data-item]")).to_have_count(4)
+        # the large view: your tags apart, the tools' in plain words, Owner| as "Marked Keep"
+        page.locator('[data-item="b.jpg"]').click()
+        viewer = page.get_by_role("dialog", name="Item")
+        B.expect(viewer).to_have_attribute("data-current", "b.jpg")
+        B.expect(viewer.locator("#mytagl")).to_have_text(re.compile(r"^Trips\|Spain×$"))
+        auto = viewer.locator("#tooltagl .tag").all_inner_texts()
+        self.assertEqual(sorted(auto), ["Junk check: Judged junk (blurry)", "Looks like: food", "Possible child",
+                                        "Project: Personal", "Used in: 2026-11-10-demo"])
+        B.expect(viewer).to_contain_text("Marked Keep")
+        for name in ("Rotate left (Shift+R)", "Rotate right (R)", "Find similar"):
+            B.expect(viewer.get_by_role("button", name=name, exact=True)).to_be_visible()
+        scan("large view")
+        page.keyboard.press("Escape")
+        # Keep's message, then the Trash, Erase, tag, Set event and Share-safe copy dialogs
+        self.box(page, "a.jpg").click()
+        with page.expect_response(lambda r: r.url.endswith("/api/keep")):
+            page.keyboard.press("k")
+        B.expect(page.locator("#toast")).to_contain_text("Kept 1. It won't be suggested as junk again.")
+        scan("keep message")
+        self.box(page, "b.jpg").click()
+        for key, title in (("t", "Trash 2 items?"), ("e", "Erase 2 items everywhere?")):
+            page.keyboard.press(key)
+            B.expect(dlg.get_by_role("heading")).to_have_text(title)
+            B.expect(dlg.locator(".mthumbs img")).to_have_count(2)
+            B.expect(dlg).to_contain_text("This can't be undone." if key == "e" else "this can't be undone")
+            scan(title)
+            page.keyboard.press("Escape")
+        for button in ("+ tag", "Set event…", "Share-safe copy"):
+            self.bar(page).get_by_role("button", name=button).click()
+            B.expect(dlg).to_be_visible()
+            scan(button)
+            page.keyboard.press("Escape")
+        self.assertEqual(len(seen), 10)
+        self.assert_originals()
+
+    def test_phone_message_sits_above_the_action_bar(self):
+        s = self.start()
+        ctx = self.browser.new_context(viewport={"width": 390, "height": 844}, device_scale_factor=2,
+                                       is_mobile=True, has_touch=True)
+        ctx.set_default_timeout(B.STEP_MS)
+        self.addCleanup(ctx.close)
+        page = ctx.new_page()
+        page.on("pageerror", lambda e: self.errors.append(str(e)))
+        self.open(page, s)
+        for n in ("a.jpg", "b.jpg"):
+            self.box(page, n).tap()
+        bar, toast = page.locator("#actionbar"), page.locator("#toast")
+        B.expect(bar).to_be_visible()
+        with page.expect_response(lambda r: r.url.endswith("/api/keep")):
+            self.bar(page).get_by_role("button", name="Keep").tap()
+        B.expect(toast).to_have_class(re.compile(r"\bon\b"))
+        t, b = toast.bounding_box(), bar.bounding_box()
+        self.assertLessEqual(t["y"] + t["height"], b["y"], (t, b))  # the whole message above the bar's top
+        B.expect(toast.get_by_role("button", name="Undo")).to_be_visible()
 
 
 if __name__ == "__main__":

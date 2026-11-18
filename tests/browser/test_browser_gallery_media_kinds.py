@@ -118,10 +118,10 @@ class GalleryMediaKindsBrowserTest(B.BrowserCase):
         self.assertEqual(resp.value.status, 200)
         for n in ("b.png", "w.MOV"):
             self.assertEqual(sorted(G.tags_of(self.path[n])[0]), ["Owner|keep", "Owner|not-trash"], n)
-            B.expect(self.tile(page, n).locator(".flag")).to_have_text("kept")  # the tile shows it at once
+            B.expect(self.tile(page, n).locator(".flag")).to_have_text("Kept")  # the tile shows it at once
         for n in ("a.jpg", "v.mp4"):
             self.assertNotIn("Owner|keep", G.tags_of(self.path[n])[0], n)
-            B.expect(self.tile(page, n).locator(".flag")).to_have_text("maybe-trash")  # not kept yet
+            B.expect(self.tile(page, n).locator(".flag")).to_have_text("Suggested junk")  # not kept yet
         B.expect(bar).to_contain_text("2 selected")  # the selection stays for the next action
         page.keyboard.press("Escape")
         B.expect(bar).to_be_hidden()
@@ -137,7 +137,7 @@ class GalleryMediaKindsBrowserTest(B.BrowserCase):
         with page.expect_response(lambda r: r.url.endswith("/api/keep")) as resp:
             bar.get_by_role("button", name="Keep").click()
         self.assertEqual(resp.value.status, 200)
-        B.expect(page.locator("#toast")).to_contain_text("kept 4:")
+        B.expect(page.locator("#toast")).to_have_text("Kept 4. They won't be suggested as junk again.Undo")
         for n, p in self.path.items():
             h, dc, _ = G.tags_of(p)
             self.assertIn("Owner|keep", h, n)
@@ -145,11 +145,11 @@ class GalleryMediaKindsBrowserTest(B.BrowserCase):
             self.assertNotIn("Review|maybe-trash", h, n)
             self.assertNotIn("maybe-trash", dc, n)
             self.assertEqual(h.count("Owner|keep"), 1, n)
-            B.expect(self.tile(page, n).locator(".flag")).to_have_text("kept")  # maybe-trash gone too
+            B.expect(self.tile(page, n).locator(".flag")).to_have_text("Kept")  # Suggested junk gone too
         self.assertIn("Trips|coast", G.tags_of(self.path["v.mp4"])[0])
         B.expect(bar).to_contain_text("4 selected")
         # nothing is suggested for the trash any more
-        page.get_by_role("button", name="Trash suggestions").click()
+        page.get_by_role("navigation", name="Views").get_by_role("button", name="Suggested junk").click()
         B.expect(page.get_by_text("No trash suggestions here.")).to_be_visible()
         self.assert_originals()
 
@@ -161,7 +161,7 @@ class GalleryMediaKindsBrowserTest(B.BrowserCase):
         names = self.tiles(page)
         self.box(page, names[-1]).click()  # the anchor: the last of four
         B.expect(self.bar(page)).to_contain_text("1 selected")
-        page.get_by_role("button", name="Possible child").click()
+        page.get_by_role("navigation", name="Views").get_by_role("button", name="Possible child").click()
         B.expect(page.locator("[data-item]")).to_have_count(1)
         B.expect(self.bar(page)).to_be_hidden()
         self.box(page, "w.MOV").click(modifiers=["Shift"])
@@ -208,7 +208,7 @@ class GalleryMediaKindsBrowserTest(B.BrowserCase):
         self.select_all_by_range(page)
         bar.get_by_role("button", name="Set event…").click()
         B.expect(dlg.get_by_role("heading")).to_have_text("Set the event on 4 items?")
-        dlg.get_by_label("Event (a slug").fill("beach")
+        dlg.get_by_label("Event name").fill("beach")
         with page.expect_response(lambda r: r.url.endswith("/api/event/set")) as resp:
             dlg.get_by_role("button", name="Confirm").click()
         self.assertEqual(resp.value.status, 200)
@@ -247,7 +247,7 @@ class GalleryMediaKindsBrowserTest(B.BrowserCase):
         B.expect(dlg.get_by_role("heading")).to_have_text("Trash 2 items?")
         B.expect(dlg).to_contain_text("a.jpg")
         B.expect(dlg).to_contain_text("w.MOV")
-        dlg.get_by_role("button", name="Confirm").click()
+        dlg.get_by_role("button", name="Trash 2 files").click()
         B.expect(dlg).to_have_attribute("data-job", "done")
         B.expect(dlg.get_by_role("heading")).to_have_text("Done")
         B.expect(dlg.locator("pre")).to_contain_text("trashed 2 files")
@@ -259,7 +259,8 @@ class GalleryMediaKindsBrowserTest(B.BrowserCase):
             B.expect(self.tile(page, n)).to_have_count(0)
         for n in ("b.png", "v.mp4"):
             self.assertTrue(os.path.isfile(th[n]), n)
-        dlg.get_by_role("button", name="Cancel").click()
+        B.expect(dlg.get_by_role("status")).to_have_text("Done: 2 files trashed.")
+        dlg.get_by_role("button", name="Close", exact=True).click()
         self.assertEqual(sorted(self.tiles(page)), ["b.png", "v.mp4"])
         B.expect(self.bar(page)).to_be_hidden()  # the trashed ones left the selection
         self.assert_originals()

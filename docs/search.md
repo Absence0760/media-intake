@@ -109,7 +109,7 @@ media-intake similar ~/Videos/personal/2026/2026-05/GX010123.MP4 -n 20
     ```
   - **machine** (the default when stdout is piped or captured): `score  path`
     lines, score to 3 decimals, and `N results` on stderr. The gallery's
-    search box and Similar read this form (they run `semantic.py` with
+    search box and Find similar read this form (they run `semantic.py` with
     `--format machine`, never relying on the default), so it stays byte for
     byte as it is; `--format machine` forces it on a terminal too.
 - Nothing to search yet: `search` and `similar` stop with one line naming
