@@ -11,7 +11,9 @@ Two tools beside intake, both offline:
 
 Both run in the venv `bash setup.sh` builds (`<state>/venv`); the
 `media-intake` launcher starts them there. Run long jobs under your own memory
-cap if you like.
+cap if you like. Before `setup.sh` has built the venv, `media-intake index
+--help` (and `search`, `similar`, `vlm-trash`) still prints the options, then
+one line saying the command needs the venv: `run bash setup.sh first`.
 
 ## Privacy guarantees
 
@@ -123,8 +125,10 @@ media-intake similar ~/Videos/personal/2026/2026-05/GX010123.MP4 -n 20
   every second); hashing on a first run shows as `index (checking): ...`
   every 1,000 files. It ends with a summary: `index: indexed N new (photos,
   videos), M unchanged, K failed (undecodable)[, C copies of new files];
-  R refused, D dropped; took T`. stdout still ends with the counts as one
-  JSON line (what the queue log and the tests read).
+  R refused, D dropped; took T`. On a terminal it then prints
+  `next: media-intake search "a photo of a dog" -n 20`; piped or captured
+  (the queue's step log, scripts), stdout instead ends with the counts as
+  one JSON line.
   `MEDIA_INTAKE_PROGRESS_EVERY` / `MEDIA_INTAKE_PROGRESS_SECS` override the
   cadence, as for intake's sweeps.
 

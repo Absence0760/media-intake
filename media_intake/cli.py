@@ -343,6 +343,22 @@ def unknown_command(cmd, err=None):
     return 2
 
 
+def no_venv(cmd, script, pre, rest, vp):
+    """A venv command before setup.sh built the venv. --help still works: the script's parser needs only the
+    standard library, so the system Python prints it, then one line saying the command needs the venv. Any
+    other use exits 1 with that line."""
+    need = f"media-intake {cmd} needs the venv, which is not built yet ({vp}): run bash setup.sh first"
+    if not any(x in ("-h", "--help") for x in rest):
+        print(need, file=sys.stderr)
+        return 1
+    r = subprocess.run([sys.executable, "-I", os.path.join(HERE, script), *pre, "--help"],
+                       capture_output=True, text=True, stdin=subprocess.DEVNULL)
+    sys.stdout.write(r.stdout)
+    sys.stderr.write(r.stderr)
+    print(f"\nnote: {need}")
+    return r.returncode
+
+
 def main(argv=None):
     argv = list(sys.argv[1:] if argv is None else argv)
     if not argv or argv[0] in HELP:
@@ -357,7 +373,7 @@ def main(argv=None):
         script, pre = VENV_SCRIPTS[cmd]
         vp = venv_python()
         if not os.path.exists(vp):
-            sys.exit(f"no venv at {vp}: run bash setup.sh first")
+            return no_venv(cmd, script, pre, rest, vp)
         os.execv(vp, [vp, "-I", os.path.join(HERE, script), *pre, *rest])
     if cmd not in intake_commands():
         return unknown_command(cmd)

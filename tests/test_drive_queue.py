@@ -72,6 +72,7 @@ class Queue(unittest.TestCase):
         self.calls, self.fails, self.kill, self.kill_after = [], {}, None, None
         self.q.run_cmd = self.fake_run
         self.flag_first = False
+        self.fail_line = None
 
     def tearDown(self):
         sys.modules.pop("review_ui", None)
@@ -93,6 +94,9 @@ class Queue(unittest.TestCase):
         if self.kill == (step, len([c for c in self.calls if c[0] == step])):
             raise KeyboardInterrupt  # the run is killed mid-step
         if step in self.fails:
+            if self.fail_line:
+                with open(log, "a") as f:
+                    f.write(f"== 2026-01-01T00:00:00 {' '.join(cmd[:3])}\nworking\n{self.fail_line}\n\n")
             return self.fails[step]
         b = os.path.join(self.state, "batches", batch or "")
         if step == "scan":
@@ -297,12 +301,98 @@ class Queue(unittest.TestCase):
         self.fails = {"scan": 1}
         with self.assertRaises(SystemExit) as e:
             self.qrun("run")
-        self.assertIn("scan failed", str(e.exception))
+        self.assertIn("[d] stopped at scan: it failed (exit 1) with no message. Fix it, then run again: "
+                      "media-intake queue run --inhibit (it resumes at scan; log: ", str(e.exception))
         self.assertIn("failed at scan: scan failed (exit 1)", self.qrun("status"))
         self.fails, self.calls = {}, []
         self.qrun("run")
         self.assertEqual(self.calls[0][0], "scan")
         self.assertNotIn("error", self.state_q()["sources"]["d"]["chunks"]["1"])
+
+    def test_failed_step_says_why_without_file_names(self):
+        """The stop message and status give the step log's last line, with paths and media names taken out."""
+        self.qrun("add", self.root, "--label", "d")
+        self.fails = {"scan": 1}
+        self.fail_line = (f"no venv at {self.state}/venv: run bash /opt/media-intake/setup.sh first "
+                          f"(checked '{self.root}/2019/IMG_0003.jpg' and IMG_0004.jpg)")
+        with self.assertRaises(SystemExit) as e:
+            self.qrun("run")
+        msg = str(e.exception)
+        self.assertIn("[d] stopped at scan: no venv at (a path): run bash setup.sh first (checked (a path) and "
+                      "(a file)). Fix it, then run again: media-intake queue run --inhibit (it resumes at scan; log: ",
+                      msg)
+        log = msg.rsplit("log: ", 1)[1].rstrip(")")
+        self.assertTrue(os.path.isfile(log), "the log path is given as is")
+        self.assertEqual(msg.count("\n"), 0, "one line")
+        reason, _ = msg.split(". Fix it")
+        for leak in ("IMG_", self.root, self.state, "Old laptop"):
+            self.assertNotIn(leak, reason)
+        st = self.qrun("status")
+        waiting = " ".join(x.strip() for x in st.split("Waiting for you:")[1].splitlines())
+        self.assertIn("d, chunk 1 (", waiting)
+        self.assertIn(") failed at scan: scan failed (exit 1): no venv at (a path): run bash setup.sh first", waiting)
+        self.assertIn(f"    log:                {log}\n", st)
+        self.assertNotIn("IMG_", st)
+        failed = self.status_json()["waiting"][0]
+        self.assertEqual((failed["what"], failed["log"]), ("failed", log))
+        self.fails, self.fail_line = {}, None
+        self.qrun("run")
+        ch = self.state_q()["sources"]["d"]["chunks"]["1"]
+        self.assertNotIn("error", ch)
+        self.assertNotIn("log", ch)
+
+    def test_plain_reason(self):
+        r = self.q.plain_reason
+        self.assertEqual(r("OSError: [Errno 28] No space left on device: '/home/u/My Photos/x.jpg'"),
+                         "OSError: [Errno 28] No space left on device: (a path)")
+        self.assertEqual(r("copying DSC 0001.MOV and IMG_1.heic failed, 3 of 12 files"),
+                         "copying DSC (a file) and (a file) failed, 3 of 12 files")
+        self.assertEqual(r("drive gone and/or unplugged"), "drive gone and/or unplugged")
+        self.assertEqual(r("see ~/Pictures/old"), "see (a path)")
+        self.assertEqual(r("run bash /x/y/setup.sh first"), "run bash setup.sh first")
+        long = r("x " * 200)
+        self.assertEqual(len(long), self.q.REASON_MAX)
+        self.assertTrue(long.endswith("\u2026"))
+        self.assertEqual(self.q.log_reason(os.path.join(self.tmp, "no-such.log")), "")
+        log = os.path.join(self.tmp, "step.log")
+        with open(log, "w") as f:
+            f.write("== 2026-01-01T00:00:00 python3 -I intake.py plan b\nplan: 3 files in /a/b/c\n")
+        start = os.path.getsize(log)
+        self.assertEqual(self.q.log_reason(log), "plan: 3 files in (a path)")
+        self.assertEqual(self.q.log_reason(log, start), "", "only what the failed step wrote")
+        with open(log, "a") as f:
+            f.write("== 2026-01-01T00:01:00 python3 -I intake.py scan b\n")
+        self.assertEqual(self.q.log_reason(log, start), "", "the header line is never the reason")
+
+    def test_run_output_says_done_not_exit_codes(self):
+        self.qrun("add", self.root, "--label", "d")
+        out = self.qrun("run")
+        self.assertIn("  stage done\n", out)
+        self.assertIn("  plan done\n", out)
+        self.assertNotIn("exit 0", out)
+
+    def test_help_is_for_the_user(self):
+        out = io.StringIO()
+        with contextlib.redirect_stdout(out), self.assertRaises(SystemExit) as e:
+            self.q.main(["--help"], prog="media-intake queue")
+        self.assertEqual(e.exception.code, 0)
+        h = out.getvalue()
+        self.assertIn("media-intake queue add PATH --label NAME", h)
+        for maintainer in ("drive_queue.py add", "shadow", "unittest", "Test:"):
+            self.assertNotIn(maintainer, h)
+        for sub in ("run", "offload", "add"):
+            out = io.StringIO()
+            with contextlib.redirect_stdout(out), self.assertRaises(SystemExit):
+                self.q.main([sub, "--help"], prog="media-intake queue")
+            self.assertNotRegex(out.getvalue(), r"\n  (--inhibit|--yes|path|LABEL)\s*\n", "every option has help")
+
+    def test_no_subcommand_names_the_choices(self):
+        err = io.StringIO()
+        with contextlib.redirect_stderr(err), self.assertRaises(SystemExit) as e:
+            self.q.main([], prog="media-intake queue")
+        self.assertEqual(e.exception.code, 2)
+        self.assertIn("add|run|status|offload", err.getvalue())
+        self.assertNotIn("cmd", err.getvalue().replace("command", ""))
 
     def test_drive_unplugged_stops(self):
         self.qrun("add", self.root, "--label", "d")
@@ -374,7 +464,10 @@ class Queue(unittest.TestCase):
             out = self.qrun("status")
         lines = out.splitlines()
         self.assertTrue(all(len(x) <= 80 for x in lines[:7]), "the table fits 80 columns")
-        self.assertEqual(lines[0].split(), ["SOURCE", "STATE", "FILES", "QUAR", "REVIEW", "CHANGED"])
+        self.assertEqual(lines[0].split(), ["LABEL", "SOURCE", "STATE", "FILES", "QUAR", "REVIEW", "CHANGED"])
+        src = lines[0].index("SOURCE")
+        self.assertEqual([x[:src].strip() for x in lines[1:7]], ["busy", "idle", "broken", "review", "clean", "pics"],
+                         "the label queue offload takes, first and never cut")
         cols = [lines[0].index(h) for h in ("STATE", "CHANGED")]
         rows = {}
         for x in lines[1:7]:
@@ -382,7 +475,8 @@ class Queue(unittest.TestCase):
             rows[x[cols[0]:].split("  ")[0].strip()] = x
         self.assertEqual(sorted(rows), ["done", "failed", "needs your review", "running", "waiting"])
         busy = lines[1]
-        self.assertTrue(busy.startswith("/mnt/d/busy  "))
+        self.assertTrue(busy.startswith("busy  "))
+        self.assertTrue(busy[src:].startswith("/mnt/d/busy  "))
         self.assertEqual(busy[cols[0]:].split()[:1] + busy[cols[0]:].split()[1:4],
                          ["running", "4", "0", "0"])
         self.assertTrue(busy.endswith("2026-01-03 11:30"), "the newest recorded time")
@@ -393,8 +487,8 @@ class Queue(unittest.TestCase):
         self.assertEqual(review[cols[0]:].split()[:5], ["needs", "your", "review", "2", "4"])
         self.assertEqual(review[cols[0]:].split()[5], "2")  # 2 trash suggestions, 0 in the review folder
         self.assertIn("\u2026", review, "a long path is shortened in the middle")
-        self.assertIn("Old photos 2009", review, "and keeps its end")
-        self.assertTrue(review.startswith("/run/"))
+        self.assertIn("hotos 2009  ", review, "and keeps its end (the label column takes some of its room)")
+        self.assertTrue(review[src:].startswith("/ru\u2026"), "a short start")
         self.assertNotIn(long_root, out.split("Waiting for you:")[0])
         self.assertEqual([x[cols[0]:].split()[0] for x in lines[5:7]], ["done", "done"])
 

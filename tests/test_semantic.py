@@ -366,6 +366,35 @@ class Ui(unittest.TestCase):
         self.assertIn("index: 1 files to embed, 4 already indexed", err)
         self.assertRegex(err.splitlines()[-1], r"^index: indexed 0 new \(0 photos, 0 videos\), 4 unchanged, 1 failed")
 
+    def test_index_on_a_terminal_ends_with_next_not_json(self):
+        """A person at a terminal gets the summary and a next: line; the JSON line is for the queue's log."""
+        paths, embed = self.index_fixture()
+        with mock.patch.object(semantic, "library_files", lambda: sorted(paths)), \
+                mock.patch.object(semantic, "vision", lambda ort: "session"), \
+                mock.patch.object(semantic, "embed_file", embed):
+            code, out, err = self.run_main("index", stdout=Tty())
+        self.assertEqual(code, 0)
+        self.assertEqual(out, semantic.INDEX_NEXT + "\n")
+        self.assertEqual(out, 'next: media-intake search "a photo of a dog" -n 20\n')
+        self.assertNotIn("{", out)
+        self.assertRegex(err.splitlines()[-1], r"^index: indexed 3 new")
+
+    def test_help_is_plain_and_names_media_intake(self):
+        for cmd, words in (("index", "Build or update the search index"),
+                           ("search", 'Find photos and videos that match a description, e.g. "dog on a beach".'),
+                           ("similar", "Find photos and videos that look like FILE.")):
+            with self.subTest(cmd):
+                code, out, err = self.run_main(cmd, "--help")
+                self.assertEqual((code, err), (0, ""))
+                h = " ".join(out.split())
+                self.assertIn(f"usage: media-intake {cmd} ", h)
+                self.assertIn(words, h)
+                self.assertNotIn("semantic.py", h)
+        code, out, _ = self.run_main("search", "--help")
+        for opt in ("-n N ", "--videos ", "--photos ", "--project NAME ", "--unused-since Nd ", "--clean "):
+            line = next(ln for ln in out.splitlines() if ln.strip().startswith(opt.strip()))
+            self.assertGreater(len(line.strip()), len(opt.strip()) + 4, f"{opt} has a help text")
+
     # ---- search / similar output
     def store(self):
         a = self.file(os.path.join("2026", "2026-11", "IMG_20261108_071502.jpg"), b"1")

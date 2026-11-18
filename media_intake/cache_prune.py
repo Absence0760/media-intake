@@ -138,15 +138,20 @@ def prune(dry_run=False, out=print):
     if unread:
         out(f"{unread} library files could not be read")
     if not certain:
-        out("so what the library holds is unknown: only legacy thumbnails were pruned; "
-            "run it again once every library folder is there and readable")
+        why = " and ".join(x for x in ((missing and "a library folder is missing"),
+                                       (unread and "a library file could not be read")) if x)
+        out(f"only legacy thumbnails are in scope this time ({why}, so what the library holds is unknown). "
+            "Run it again once every library folder is there and readable.")
     return counts
 
 
 def main(argv=None, prog="media-intake prune-cache"):
-    ap = argparse.ArgumentParser(prog=prog, description="Delete the gallery's cached thumbnails and video "
-                                 "proxies that nothing in the library shows any more (docs/gallery.md).")
-    ap.add_argument("--dry-run", action="store_true", help="count and size them, delete nothing")
+    ap = argparse.ArgumentParser(prog=prog, description="DELETES the gallery's cached thumbnails and video "
+                                 "proxies that nothing in the library shows any more, to free disk space. Never "
+                                 "touches your photos, videos or tags; anything deleted is made again the next "
+                                 "time the gallery shows it. Try --dry-run first (docs/gallery.md).")
+    ap.add_argument("--dry-run", action="store_true",
+                    help="only count what would be deleted and how much space it frees; delete nothing")
     a = ap.parse_args(argv)
     if a.dry_run:
         prune(True)
