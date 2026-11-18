@@ -428,6 +428,27 @@ class ReviewUITest(unittest.TestCase):
         self.assertEqual(self.calls(), [])
         self.assertFalse(os.path.exists(os.path.join(self.state, "batches", BATCH, "review-decisions.json")))
 
+    def test_erase_word_only_when_something_is_removed(self):
+        """ERASE is asked for only when a decision removes something; an all-keep submit needs no word."""
+        self.quarantine()
+        self.review()
+        s = self.start("--phone", self.phone)
+        items = self.items(s)
+        csrf = s.csrf()
+        keep = {str(i["id"]): "keep" for i in items}
+        one_gone = dict(keep, **{str(items[0]["id"]): "erase" if items[0]["tab"] == "quarantine" else "trash"})
+        for body in ({"decisions": one_gone}, {"decisions": one_gone, "confirm": ""},
+                     {"decisions": one_gone, "confirm": "erase"}):
+            r, b = s.req("POST", "/api/submit", headers={"X-CSRF": csrf}, body=body)
+            self.assertEqual(r.status, 400, b)
+        self.assertEqual(self.calls(), [])  # nothing ran
+        self.assertFalse(os.path.exists(os.path.join(self.state, "batches", BATCH, "review-decisions.json")))
+        r, b = s.req("POST", "/api/submit", headers={"X-CSRF": csrf}, body={"decisions": keep})
+        self.assertEqual(r.status, 202, b)
+        j, out = self.wait_done(s)
+        self.assertTrue(j["ok"], out)
+        self.assertFalse(any(c[0] in ("erase", "trash", "purge-review") for c in self.calls()), self.calls())
+
     def test_submit_flow(self):
         quar, _ = self.quarantine()
         rv = self.review()

@@ -19,7 +19,8 @@ review files it prints `nothing to review for BATCH` and exits 0.
   Trash. Keys: K keep, E erase (Quarantine only), D delete this copy (Review
   only), T trash (not in Quarantine), X opens or closes a burst stack,
   arrows (and J) move. Submit unlocks when every item is decided, shows a
-  summary and needs ERASE typed.
+  summary and needs ERASE typed when anything will be removed (an all-keep
+  apply asks for no word).
 - **The words** match the gallery's: **Keep**, **Trash** (removed, and
   skipped if the same photo is imported again: `media-intake trash`) and
   **Erase** (every copy removed). Review adds **Delete this copy**: only that
@@ -52,8 +53,9 @@ review files it prints `nothing to review for BATCH` and exits 0.
   tab ("Quarantine: keep 8, erase 1", "Review: keep 1, delete this copy 0,
   trash 1"), then what goes where in words ("Erase removes every copy: on
   this computer and your phone."; no device path), and how many files will
-  be removed for good, or "Nothing will be deleted.". The server needs ERASE
-  typed for every submit, an all-keep one included.
+  be removed for good, or "Nothing will be deleted.". ERASE is typed only
+  when something is removed (erase, trash or delete this copy); an all-keep
+  apply deletes nothing, so the box is hidden and the server needs no word.
 - **Keyboard and screen readers.**
   - `?` (or the header's "Keys (?)") opens a list of every key the page
     handles and where each applies: K everywhere; E in Quarantine only; D in

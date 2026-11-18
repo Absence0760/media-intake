@@ -33,7 +33,7 @@ Bursts (bursts.py: one device, shots a moment apart) show as one stack per tab; 
 rest" only sets those decisions (Keep on one, Trash on the others; Erase in Quarantine, where every shot is
 flagged), which go through the same submit.
 
-On submit (every item decided, ERASE typed) it starts a detached job
+On submit (every item decided, and ERASE typed when anything is removed) it starts a detached job
 (jobs.py, key review-<batch>; one at a time per batch, taken with flock) that
 runs, as subprocesses of the same Python: deletions of review items, then for
 each near- level (deepest first), xcheck-<batch> and <batch>: `release` for kept files,
@@ -584,8 +584,6 @@ class App:
     # ------------------------------------------------------------ submit
     def submit(self, body):
         """Validate and start. Returns (http code, message)."""
-        if body.get("confirm") != "ERASE":
-            return 400, "type ERASE to confirm"
         raw = body.get("decisions")
         if not isinstance(raw, dict):
             return 400, "no decisions"
@@ -601,6 +599,10 @@ class App:
             dec[i] = d
         if set(raw) - {str(i) for i in range(len(self.items))}:
             return 400, "unknown item"
+        # Typing ERASE is asked for only when something is removed (erase, trash, delete). An all-keep submit
+        # deletes nothing, so it needs no confirm word; checked here, after every decision is known and valid.
+        if any(d != "keep" for d in dec.values()) and body.get("confirm") != "ERASE":
+            return 400, "type ERASE to confirm"
         if self.current() and self.submitted:
             return 409, "already submitted"
         with self.lock:
@@ -1043,8 +1045,8 @@ kbd{font:inherit;font-weight:700;border:1px solid var(--line);border-radius:4px;
 <div id="confirm" class="modal" role="dialog" aria-modal="true" aria-labelledby="confirmh" aria-describedby="summary">
  <section class="panel box">
   <h2 id="confirmh">Apply your decisions?</h2><div id="summary"></div>
-  <p>Type <b>ERASE</b> to apply them.</p>
-  <input id="typed" autocomplete="off" spellcheck="false" aria-label="Type ERASE">
+  <div id="typedbox"><p>Type <b>ERASE</b> to apply them.</p>
+  <input id="typed" autocomplete="off" spellcheck="false" aria-label="Type ERASE"></div>
   <div><button type="button" id="go" disabled>Apply</button><button type="button" id="back">Back</button></div>
  </section>
 </div>
@@ -1225,7 +1227,7 @@ function plainErr(m){m=String(m);
 function showErr(msg){$("#err").hidden=false;$("#errmsg").replaceChildren(document.createTextNode(msg));
  if(!$("#confirm").classList.contains("on"))$("#err").scrollIntoView({block:"nearest"})}
 function hideErr(){$("#err").hidden=true;$("#errmsg").replaceChildren()}
-$("#errx").onclick=()=>{hideErr();const t=$("#confirm").classList.contains("on")?$("#typed"):$("#submit");if(!t.disabled)t.focus();else focusCur()};
+$("#errx").onclick=()=>{hideErr();const t=$("#confirm").classList.contains("on")?($("#typedbox").hidden?$("#go"):$("#typed")):$("#submit");if(!t.disabled)t.focus();else focusCur()};
 document.addEventListener("keydown",ev=>{
  const dlg=document.querySelector(".modal.on");
  if(dlg){if(ev.key==="Escape"){ev.preventDefault();if(dlg.id==="keys")closeKeys();else back()}else if(ev.key==="Tab")trap(dlg,ev);return}
@@ -1254,7 +1256,9 @@ $("#submit").onclick=()=>{
  notes.push(gone?`${gone} file${s(gone)} will be removed for good. This can't be undone.`:"Nothing will be deleted.");
  $("#summary").replaceChildren(ul,...notes.map(x=>el("p",null,x)));
  setText($("#confirmh"),`Apply ${N} decision${s(N)}?`);setText($("#go"),`Apply ${N} decision${s(N)}`);
- $("#submit").disabled=true;$("#typed").value="";$("#go").disabled=true;modal($("#confirm"),true);$("#typed").focus();
+ /* ERASE is typed only when something is removed; an all-keep apply deletes nothing, so it asks for no word */
+ $("#typedbox").hidden=!gone;$("#submit").disabled=true;$("#typed").value="";$("#go").disabled=!!gone;
+ modal($("#confirm"),true);(gone?$("#typed"):$("#go")).focus();
 };
 function back(){modal($("#confirm"),false);paint(false);$("#submit").focus();if(!$("#err").hidden)$("#err").scrollIntoView({block:"nearest"})}
 $("#back").onclick=back;

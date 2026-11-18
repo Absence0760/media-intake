@@ -133,6 +133,26 @@ class ReviewCase(B.BrowserCase):
 
 
 class ReviewBrowserTest(ReviewCase):
+    # ------------------------------------------------------------ all keep: no ERASE word
+    def test_all_keep_asks_for_no_erase_word(self):
+        s = self.start()
+        page = self.new_page()
+        self.open(page, s)
+        for _ in range(3):
+            page.keyboard.press("k")
+        page.get_by_role("tab", name="Review (2)").click()
+        page.keyboard.press("k")
+        page.keyboard.press("k")
+        page.get_by_role("button", name="Submit").click()
+        B.expect(page.get_by_text("Nothing will be deleted.")).to_be_visible()
+        B.expect(page.get_by_role("textbox", name="Type ERASE")).to_be_hidden()
+        run = page.get_by_role("button", name="Apply 5 decisions")
+        B.expect(run).to_be_enabled()
+        B.expect(run).to_be_focused()
+        run.click()
+        B.expect(page.get_by_role("heading", name="Done. You can close this tab.")).to_be_visible(timeout=20000)
+        self.assertFalse(any(c[0] in ("erase", "trash", "purge-review") for c in self.calls()), self.calls())
+
     # ------------------------------------------------------------ keys, Submit and the ERASE panel
     def test_keys_and_confirm(self):
         s = self.start()
