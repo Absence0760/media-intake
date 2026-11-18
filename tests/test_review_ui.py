@@ -668,6 +668,21 @@ class ReviewUITest(unittest.TestCase):
         for text in (b'role="alert"', b'role="dialog" aria-modal="true"', b'role="tablist"', b'role="log"'):
             self.assertIn(text, page)
 
+    def test_page_words(self):
+        """The page's own words (the browser tests drive them): one counter that says why Submit is locked, the
+        Apply dialog named for its action, plain names for tag groups and scanner flags, and refusals without a
+        PID or a lock file's path."""
+        self.quarantine()
+        s = self.start()
+        _, page = s.req("GET", "/")
+        for text in (b"Decide ${left} more to submit", b'aria-describedby="done"', b"Apply ${N} decision${s(N)}?",
+                     b'"Review|maybe-trash":"Suggested junk"', b'Label:"Looks like"', b'"nudity":"Possible nudity"',
+                     b"Another action is using the library", b'replace(/\\s*\\(PID \\d+\\)/g,"")',
+                     b"Press a pressed button again to clear it."):
+            self.assertIn(text, page)
+        for text in (b'id="count"', b">Run<", b">Confirm<", b"not xcheck copies", b"No library place"):
+            self.assertNotIn(text, page)
+
     def test_maybe_trash_tab(self):
         lib = os.path.join(self.home, "photo_library/2026/2026-11")
         pasta, floor = os.path.join(lib, "pasta.jpg"), os.path.join(lib, "floor.jpg")
@@ -690,7 +705,7 @@ class ReviewUITest(unittest.TestCase):
             self.assertEqual((r.status, b), (200, f.read()))
         r, page = s.req("GET", "/")
         self.assertIn(b"Maybe trash", page)
-        self.assertIn(b"Trash (T)", page)
+        self.assertIn(b'VERB={keep:"Keep",erase:"Erase",delete:"Delete this copy",trash:"Trash"}', page)
         csrf = s.csrf()
         bad = {str(items[0]["id"]): "erase", str(items[1]["id"]): "trash"}
         r, _ = s.req("POST", "/api/submit", headers={"X-CSRF": csrf}, body={"decisions": bad, "confirm": "ERASE"})
