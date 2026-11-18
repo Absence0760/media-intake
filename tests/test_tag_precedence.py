@@ -181,7 +181,7 @@ class Sidecars(Base):
         os.makedirs(self.state, mode=0o700)
         with open(os.path.join(self.state, "index.json"), "w") as f:
             json.dump({p: {"sha": s, "size": os.path.getsize(a), "dhash": None} for p in (a, copy, kept)}, f)
-        out = self.intake("trash", a)
+        out = self.intake("trash", a, "--yes")
         self.assertIn("copies left on disk marked Owner|trash 1", out)
         self.assertIn("copies you kept left alone 1", out)
         self.assertFalse(os.path.exists(a) or os.path.exists(a + ".xmp"))

@@ -178,8 +178,8 @@ media-intake forget LIBRARY_FILE... [--drive MOUNT] [--yes]   # asks (type ERASE
 media-intake verify-gone [BATCH] [--drive MOUNT]   # with BATCH, also its last erase coverage report
 media-intake wipe-free MOUNT
 media-intake offload BATCH --phone ROOT [--yes]   # asks (type DELETE); refused for a --kind folder batch
-media-intake purge-review BATCH        # a batch name, never a path
-media-intake trash [BATCH] FILE... [--phone ROOT]
+media-intake purge-review BATCH [--yes]   # a batch name, never a path; a dry run without --yes
+media-intake trash [BATCH] FILE... [--phone ROOT] [--yes]   # a dry run without --yes
 media-intake trash --from-digikam [--yes]
 media-intake suggest-trash [--batch B] [--phone ROOT]
 media-intake not-trash FILE...
@@ -259,6 +259,14 @@ closed) or Ctrl-C at the prompt, the command prints `nothing erased` /
 `nothing deleted` and exits 1, with no traceback. Every such prompt goes
 through one helper, `intake.ask()`; `--yes` skips the prompt only, never the
 checks on what may be deleted.
+
+`trash` and `purge-review` don't ask: without `--yes` they are a dry run.
+They run every check (the folder-batch, letter-case and quarantine refusals
+included), print what would go as counts (`would trash 2 files; phone
+originals 2`, `would delete 5 reviewed near-duplicates/junk from batch B`),
+then `dry run: nothing deleted` and the exact command to run again with
+`--yes`. A dry run exits 0, or 1 when the real run would refuse a file. The
+review page and the gallery ask in the page first, then run them with `--yes`.
 
 ### One writer at a time: the library lock
 
@@ -655,9 +663,9 @@ cameras of one model share a folder, as above.
 
 ## Trash vs erase
 
-`trash [BATCH] FILE... [--phone ROOT]` is a plain delete for junk that isn't
-private: the file (library or review copy), its `.xmp` sidecar,
-its thumbnails (freedesktop and the gallery's) and the gallery's H.264 proxy
+`trash [BATCH] FILE... [--phone ROOT] --yes` is a plain delete for junk that
+isn't private (without `--yes`, a dry run: see "Confirmation prompts"): the
+file (library or review copy), its `.xmp` sidecar, its thumbnails (freedesktop and the gallery's) and the gallery's H.264 proxy
 of a video, its `index.json` entry, and
 with `--phone` its phone original (the manifest's `src`, checked by
 `sources.check`). No home sweep, near-duplicate search, erase log or

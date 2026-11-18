@@ -515,7 +515,7 @@ class GalleryTest(unittest.TestCase):
         other = [os.path.join(self.thumbs, "f" * 64 + n) for n in names]
         for p in ta + tk + other:
             open(p, "wb").close()
-        r = subprocess.run([PY, "-I", INTAKE, "trash", self.a], env=self.env, capture_output=True, text=True)
+        r = subprocess.run([PY, "-I", INTAKE, "trash", self.a, "--yes"], env=self.env, capture_output=True, text=True)
         self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
         self.assertEqual([p for p in ta if os.path.exists(p)], [])
         r = subprocess.run([PY, "-I", INTAKE, "forget", self.k, "--yes"], env=self.env, capture_output=True, text=True)
@@ -552,7 +552,7 @@ class GalleryTest(unittest.TestCase):
         ida2, idb2 = self.id_of(s2, "a.jpg"), self.id_of(s2, "b.jpg")
         j = s2.get("/api/job")
         self.assertEqual((j["done"], j["ids"]), (False, [ida2]))
-        self.assertEqual(j["lines"][0], "$ intake.py trash 'a.jpg'")
+        self.assertEqual(j["lines"][0], "$ intake.py trash 'a.jpg' --yes")
         self.assertEqual(s2.req("GET", f"/m/{ida2}")[0].status, 404)
         code, j = s2.post("/api/trash", {"ids": [idb2], "confirm": True})
         self.assertEqual(code, 409, j)

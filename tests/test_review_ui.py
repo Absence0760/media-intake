@@ -6,7 +6,8 @@
 Images are drawn with Pillow and the video is an ffmpeg test pattern: no real
 photo is read. intake.py is replaced (MEDIA_REVIEW_INTAKE) by a fake that
 records its argv and mimics release/erase/purge-review on the fake state, so
-the real erase never runs. Nothing points at the real ~/.local/share/media-intake,
+the real erase never runs. Like the real one, its trash and purge-review delete
+nothing without --yes. Nothing points at the real ~/.local/share/media-intake,
 ~/Pictures, ~/Videos or /run/user/*/gvfs. With FAKE_GATE (a FIFO) the fake's first
 erase waits until the test opens the FIFO, so a run can be held mid-step without
 a sleep: the tests then kill servers or the job's worker and check what the next
@@ -52,8 +53,10 @@ elif cmd == "erase":
     shutil.rmtree(quar)
 elif cmd == "verify-gone":
     print("verify-gone: no copies remain")
+elif cmd in ("trash", "purge-review") and "--yes" not in sys.argv:
+    print("dry run: nothing deleted")  # as the real intake: a delete needs --yes
 elif cmd == "trash":
-    args = sys.argv[2:]
+    args = [x for x in sys.argv[2:] if x != "--yes"]
     if "--phone" in args:
         i = args.index("--phone"); del args[i:i + 2]
     if "--batch" in args:
@@ -511,7 +514,7 @@ class ReviewUITest(unittest.TestCase):
         self.assertEqual(r.status, 202)
         j, out = self.wait_done(s)
         self.assertTrue(j["ok"], out)
-        self.assertEqual(self.calls(), [["purge-review", BATCH]])
+        self.assertEqual(self.calls(), [["purge-review", BATCH, "--yes"]])
         self.assertEqual(s.p.wait(timeout=30), 0)
 
     def xcheck(self):
@@ -599,8 +602,8 @@ class ReviewUITest(unittest.TestCase):
         self.assertTrue(j["ok"], out)
         ph, dr = ["--phone", self.phone], ["--drive", self.drive]
         self.assertEqual(self.calls(), [
-            ["trash", "--batch", BATCH, os.path.join(rv, "DCIM/Camera/r1.jpg"), *ph],
-            ["purge-review", BATCH],
+            ["trash", "--batch", BATCH, os.path.join(rv, "DCIM/Camera/r1.jpg"), *ph, "--yes"],
+            ["purge-review", BATCH, "--yes"],
             ["release", f"near-{BATCH}", os.path.join(self.state, "quarantine", f"near-{BATCH}", "Downloads/n.jpg")],
             ["release", X, os.path.join(xq, w + "w1.jpg")],
             ["erase", X, "--yes", *dr],  # xcheck: never --phone
@@ -644,7 +647,7 @@ class ReviewUITest(unittest.TestCase):
         self.assertTrue(j["ok"], out)
         self.assertEqual([c for c in self.calls() if c[0] == "trash"],
                          [["trash", "--batch", BATCH, os.path.join(self.state, "batches", BATCH, "review", rv["rel"]),
-                           "--phone", self.phone]], "only the review item is trashed")
+                           "--phone", self.phone, "--yes"]], "only the review item is trashed")
         self.assertEqual(s.p.wait(timeout=30), 0)
 
     def test_page_offers_no_trash_on_quarantined_items(self):
@@ -700,7 +703,7 @@ class ReviewUITest(unittest.TestCase):
         self.assertEqual(r.status, 202, b)
         j, out = self.wait_done(s)
         self.assertTrue(j["ok"], out)
-        self.assertEqual(self.calls(), [["not-trash", floor], ["trash", pasta, "--phone", self.phone]])
+        self.assertEqual(self.calls(), [["not-trash", floor], ["trash", pasta, "--phone", self.phone, "--yes"]])
         dp = os.path.join(self.state, "maybe-trash-decisions.json")
         self.assertEqual(stat.S_IMODE(os.stat(dp).st_mode), 0o600)
         self.assertTrue(os.path.isfile(outside) and os.path.isfile(inq))
@@ -761,7 +764,7 @@ class ReviewUITest(unittest.TestCase):
         j, out = self.wait_done(s)
         self.assertTrue(j["ok"], out)
         self.assertEqual(self.calls(), [["not-trash", p["b2.jpg"], p["b4.jpg"], p["solo.jpg"]],
-                                        ["trash", p["b1.jpg"], p["b3.jpg"], "--phone", self.phone]])
+                                        ["trash", p["b1.jpg"], p["b3.jpg"], "--phone", self.phone, "--yes"]])
         self.assertTrue(all(os.path.isfile(p[n]) for n in ("b2.jpg", "b4.jpg", "solo.jpg")))
         self.assertEqual(s.p.wait(timeout=30), 0)
 

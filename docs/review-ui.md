@@ -89,9 +89,9 @@ review files it prints `nothing to review for BATCH` and exits 0.
   written or any job starts. The run itself also stops if one ever reaches it.
   `media-intake trash` refuses a path under `quarantine/` the same way, from
   the command line.
-- **Trash** (T) on Review and Maybe trash items: `media-intake trash` (plain
-  delete for junk that isn't private, remembered by checksum so `plan` drops
-  it next time; with `--phone` when the page has it). It runs first in each
+- **Trash** (T) on Review and Maybe trash items: `media-intake trash --yes`
+  (the page's ERASE confirm is the question; plain delete for junk that isn't
+  private, remembered by checksum so `plan` drops it next time; with `--phone` when the page has it). It runs first in each
   of those tabs. `--maybe-trash` (or `media-intake suggest-trash`, which opens it)
   adds a "Maybe trash" tab from `maybe-trash.json`, re-checked against the
   library roots: Keep runs `not-trash` (`Owner|keep` + `Owner|not-trash`, the
@@ -128,7 +128,7 @@ review files it prints `nothing to review for BATCH` and exits 0.
   tab or a quarantine batch. No file is opened to group them.
 - **On submit** it writes `batches/BATCH/review-decisions.json` (0600,
   relative paths and decisions) first, then runs: review deletions
-  (`purge-review` when all are deleted, else file by file plus its
+  (`purge-review --yes` when all are deleted, else file by file plus its
   freedesktop thumbnail; kept review items stay in `review/`, there is no
   command to file them yet); then for each near- level of `BATCH` (deepest
   first), each near- level of `xcheck-BATCH` (deepest first), `xcheck-BATCH`,

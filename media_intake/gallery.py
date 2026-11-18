@@ -1377,7 +1377,7 @@ class App:
             bad = [p for p in paths if not intake.trash_allowed(p) or under_state(p)]
             if bad:
                 raise ValueError(f"{len(bad)} items are not library files")
-        self.start_job("trash", [["trash", *paths]], ids)
+        self.start_job("trash", [["trash", *paths, "--yes"]], ids)
         return f"trashing {len(ids)}"
 
     def erase(self, ids, confirm):
