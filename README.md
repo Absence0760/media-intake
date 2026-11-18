@@ -92,8 +92,11 @@ when something required is missing or a pinned file is wrong. Colour is used
 only on a terminal and never when `NO_COLOR` is set.
 
 `setup.sh` prints a `==> [n/N]` heading per step and ends with a summary of
-what it installed or found already present, and where, then `next:
-media-intake doctor`. If a step fails it names the step and the likely fix:
+what it installed or found already present, and where, how to find a phone
+(unlock it, choose "File transfer", then `ls /run/user/$UID/gvfs/`), and a
+`next:` line: the first import, or fixing what `doctor` (its last step) found.
+When `~/.local/bin` isn't on your `PATH` it says so and prints the `export
+PATH=...` line to add. If a step fails it names the step and the likely fix:
 the exact `sudo dnf install -y ...` line for a missing package, no network, or
 a download that didn't match its sha256 pin (that file is deleted and nothing
 is installed from it; re-run, and never skip the check). Colour only on a

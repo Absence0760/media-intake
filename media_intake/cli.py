@@ -143,7 +143,7 @@ def doctor(probe=None, out=print, colour=None):
     if colour is None:
         colour = out is print and use_colour(sys.stdout)
     ok, need, want = True, [], []   # need/want: Fedora packages missing (required / optional)
-    counts, first = {"problems": 0, "optional": 0}, True
+    counts, first = {"problems": 0, "optional": 0, "setup": 0}, True   # setup: problems `bash setup.sh` fixes
 
     def paint(text, code):
         return f"\033[{code}m{text}\033[0m" if colour and code else text
@@ -158,6 +158,7 @@ def doctor(probe=None, out=print, colour=None):
     def report(status, text):
         if status in PROBLEMS:
             counts["problems"] += 1
+            counts["setup"] += "bash setup.sh" in text
         elif status == "optional":
             counts["optional"] += 1
         out(paint(status, STATUS_COLOURS.get(status)) + " " * max(1, 9 - len(status)) + text)
@@ -169,6 +170,8 @@ def doctor(probe=None, out=print, colour=None):
         if need:
             out("Install the required packages:")
             out("sudo dnf install -y " + " ".join(dict.fromkeys(need)))
+        if counts["setup"]:
+            out(("Then run" if need else "Run") + ": bash setup.sh   (venv, SigLIP model, GeoNames data)")
         if want:
             out("Optional packages:")
             out("sudo dnf install -y " + " ".join(dict.fromkeys(want)))
@@ -367,12 +370,27 @@ def command_names():
     return sorted({*COMMANDS, *VENV_SCRIPTS, *intake_commands()})
 
 
+def package_version():
+    """The version, from media_intake/__init__.py (its one home, docs/release.md). Read as text: cli.py runs as
+    a script, so the package itself may not be importable."""
+    with open(os.path.join(HERE, "__init__.py")) as f:
+        for line in f:
+            if line.startswith("__version__ = "):
+                return line.split("=", 1)[1].strip().strip("\"'")
+    return "unknown"
+
+
 def unknown_command(cmd, err=None):
-    """One-line error (with a "did you mean" when a real command is close), the short usage; exit code 2."""
+    """One-line error (with a "did you mean" when a real command is close), the short usage; exit code 2.
+    An unknown option (`-x`, `--foo`) gets no guess: a flag is never a misspelt command."""
     err = err or sys.stderr
     names = command_names()
-    close = difflib.get_close_matches(cmd, names, n=1)
-    print(f"media-intake: unknown command {cmd!r}" + (f"; did you mean {close[0]!r}?" if close else ""), file=err)
+    if cmd.startswith("-"):
+        print(f"media-intake: unknown option {cmd!r} (on its own it takes only --help and --version; "
+              "other options go after a command)", file=err)
+    else:
+        close = difflib.get_close_matches(cmd, names, n=1)
+        print(f"media-intake: unknown command {cmd!r}" + (f"; did you mean {close[0]!r}?" if close else ""), file=err)
     print("usage: media-intake <command> [options]\ncommands: " + ", ".join(names)
           + "\n'media-intake --help' describes them; 'media-intake <command> --help' shows a command's options",
           file=err)
@@ -401,6 +419,18 @@ def main(argv=None):
         print(__doc__.strip())  # one list, by task; tests/test_cli.py checks it names every command
         return 0
     cmd, rest = argv[0], argv[1:]
+    if cmd in ("--version", "-V", "version"):
+        print(f"media-intake {package_version()}")
+        return 0
+    if cmd == "doctor" and rest:  # doctor takes no options; only --help is answered
+        if rest[0] in HELP:
+            print("usage: media-intake doctor\n\nCheck the install: system packages, venv, model checksums, "
+                  "Ollama, config.\nChanges nothing. Exits 1 if something required is missing or a pinned file "
+                  "is wrong.")
+            return 0
+        print("media-intake doctor takes no options ('media-intake doctor --help' says what it checks)",
+              file=sys.stderr)
+        return 2
     if cmd in COMMANDS:
         return COMMANDS[cmd](rest)
     if cmd in VENV_SCRIPTS:

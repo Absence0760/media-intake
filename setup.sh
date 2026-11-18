@@ -34,7 +34,7 @@ else
 fi
 if [ -t 2 ] && [ -z "${NO_COLOR:-}" ]; then e_err=$'\e[1;31m' e_off=$'\e[0m'; else e_err='' e_off=''; fi
 
-step_no=0 step_total=5 step_name='start' step_hint='' fail_hint=''
+step_no=0 step_total=5 step_name='start' step_hint='' fail_hint='' path_hint=''
 [ "$build_labels" = 1 ] && step_total=$((step_total + 1))
 [ "$launcher" = 1 ] && step_total=$((step_total + 1))
 summary=()
@@ -244,13 +244,26 @@ if [ "$launcher" = 1 ]; then
     printf '%sok%s  launcher %s (already present)\n' "$c_ok" "$c_off" "$bin"
     note 'launcher' 'already present' "$bin"
   fi
+  # A new user's shell may not look in ~/.local/bin yet: say so now, not at `command not found`.
+  case ":$PATH:" in
+    *":$HOME/.local/bin:"*|*":$HOME/.local/bin/:"*) ;;
+    *)
+      warn "Your PATH lacks ~/.local/bin, so the shell won't find media-intake yet (the end of this run says how)"
+      path_hint="Your PATH lacks ~/.local/bin, where the launcher is. Add this line to your shell's profile
+(~/.bashrc for bash, ~/.zshrc for zsh), then open a new terminal:
+  export PATH=\"\$HOME/.local/bin:\$PATH\"
+Until then, run it as: python3 -I $pkg/cli.py"
+      ;;
+  esac
 fi
 
 # The full check (system packages, model checksums, Ollama digest), with a dnf line for gaps.
 step 'media-intake doctor' ''
+doctor_ok=1
 if python3 -I "$pkg/cli.py" doctor; then
   note 'doctor' 'all checks passed'
 else
+  doctor_ok=0
   warn "doctor lists what is still missing (above)"
   note 'doctor' 'gaps listed above'
 fi
@@ -258,4 +271,18 @@ fi
 trap - ERR
 printf '\n%s==> Summary%s\n' "$c_head" "$c_off"
 printf '  %s\n' "${summary[@]}"
-printf '\nnext: media-intake doctor\n'
+if [ "$launcher" = 1 ]; then
+  printf '\nThe launcher runs this copy (%s): if you move or delete it, remove\n%s and run setup.sh again from the new place.\n' \
+    "$here" "$HOME/.local/bin/media-intake"
+fi
+if [ -n "$path_hint" ]; then printf '\n%s\n' "$path_hint"; fi
+# Literal $UID: the line is for the user to type.
+# shellcheck disable=SC2016
+printf '\n'; printf '%s\n' 'To find a phone: unlock it, pull down the USB notification and choose "File transfer".' \
+  'Then  ls /run/user/$UID/gvfs/  shows it (mtp:host=...); its "Internal shared storage"' \
+  'folder is the source for  media-intake stage <path> --kind phone  (docs/getting-started.md).'
+if [ "$doctor_ok" = 1 ]; then
+  printf '\nnext: media-intake stage <folder> --kind folder   (guide: docs/getting-started.md)\n'
+else
+  printf '\nnext: fix what doctor listed above, then run: media-intake doctor\n'
+fi

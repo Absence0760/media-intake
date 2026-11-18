@@ -317,6 +317,42 @@ class Doctor(unittest.TestCase):
             self.assertEqual(cli.main(["doctor"]), 0)
         d.assert_called_once_with()
 
+    def test_doctor_help_prints_help_and_runs_nothing(self):
+        for flag in ("--help", "-h", "help"):
+            with self.subTest(flag=flag):
+                out, err = io.StringIO(), io.StringIO()
+                with mock.patch.object(cli, "doctor") as d, mock.patch("sys.stdout", out), mock.patch("sys.stderr", err):
+                    self.assertEqual(cli.main(["doctor", flag]), 0)
+                d.assert_not_called()
+                self.assertEqual(err.getvalue(), "")
+                self.assertTrue(out.getvalue().startswith("usage: media-intake doctor\n"), out.getvalue())
+                self.assertIn("Changes nothing. Exits 1 if something required is missing", out.getvalue())
+
+    def test_doctor_rejects_other_arguments(self):
+        out, err = io.StringIO(), io.StringIO()
+        with mock.patch.object(cli, "doctor") as d, mock.patch("sys.stdout", out), mock.patch("sys.stderr", err):
+            self.assertEqual(cli.main(["doctor", "--bogus"]), 2)
+        d.assert_not_called()
+        self.assertEqual(out.getvalue(), "")
+        self.assertIn("media-intake doctor takes no options", err.getvalue())
+
+    def test_setup_problems_add_a_run_setup_line(self):
+        del self.p.files[cli.venv_python()]
+        code, lines = self.run_doctor()
+        self.assertEqual(code, 1)
+        self.assertEqual(self.summary(lines), ["1 problem, no optional items not available",
+                                               "Run: bash setup.sh   (venv, SigLIP model, GeoNames data)"])
+        self.p.modules -= {"PIL"}
+        _, lines = self.run_doctor()
+        self.assertEqual(self.summary(lines)[1:], ["Install the required packages:", "sudo dnf install -y python3-pillow",
+                                                   "Then run: bash setup.sh   (venv, SigLIP model, GeoNames data)"])
+
+    def test_no_run_setup_line_for_packages_or_optional_only(self):
+        self.p.modules -= {"PIL"}
+        del self.p.files[TEXT], self.p.files[TOKENIZER]
+        _, lines = self.run_doctor()
+        self.assertFalse([ln for ln in self.summary(lines) if "setup.sh" in ln], lines)
+
 
 class Commands(unittest.TestCase):
     """`media-intake` with no command or --help prints the usage (exit 0); an unknown one names the nearest
@@ -354,6 +390,23 @@ class Commands(unittest.TestCase):
                 first = err.splitlines()[0]
                 self.assertEqual(first, f"media-intake: unknown command {typo!r}; did you mean {near!r}?")
                 self.assertIn("usage: media-intake <command> [options]", err)
+
+    def test_version(self):
+        with open(os.path.join(support.PKG, "__init__.py")) as f:
+            (want,) = re.findall(r'^__version__ = "([^"]+)"$', f.read(), re.M)
+        for argv in (["--version"], ["-V"], ["version"]):
+            with self.subTest(argv=argv):
+                self.assertEqual(self.run_main(argv), (0, f"media-intake {want}\n", ""))
+
+    def test_unknown_option_gets_no_command_guess(self):
+        for flag in ("--verison", "--verbose", "-x"):
+            with self.subTest(flag=flag):
+                code, out, err = self.run_main([flag])
+                self.assertEqual((code, out), (2, ""))
+                first = err.splitlines()[0]
+                self.assertTrue(first.startswith(f"media-intake: unknown option {flag!r} "), first)
+                self.assertNotIn("did you mean", err)
+                self.assertIn("--version", first)
 
     def test_unknown_command_without_a_close_match(self):
         code, out, err = self.run_main(["zzzzzz"])
