@@ -522,7 +522,7 @@ class Quarantine(Base):
         self.assertEqual(idx[self.filed["mp4"]]["dhash"], None, "videos have no dHash")
         self.assertTrue(idx[mov_dst]["released"])
         self.assertEqual(list(jload(os.path.join(quar, "quarantine.json"))), ["DCIM/Camera/20261020_120000.jpg"])
-        self.assertIn("1 files in quarantine", self.out("quarantine", batch))
+        self.assertIn("1 file in quarantine", self.out("quarantine", batch))
         # A released false positive stays untagged (docs/intake.md, "Never tagged"), video or photo...
         r = self.intake("mark-used", self.filed["mp4"], "--post", "2026-11-09-demo-x", code=1)
         self.assertIn("1 quarantined/flagged", r.stderr)
@@ -602,7 +602,7 @@ class Tagging(Base):
         with open(os.path.join(q, "quarantine.json"), "w") as f:
             json.dump({"x.mp4": dict(reasons=["x"], sha=sha(v), size=os.path.getsize(v), dst=None)}, f)
         out = self.out("tag-files", v, p, "--no-labels")
-        self.assertIn("skipped 1 files", out)
+        self.assertIn("skipped 1 file:", out)
         self.assertFalse(os.path.exists(v + ".xmp"))
         self.assertTrue(os.path.exists(p + ".xmp"))
 

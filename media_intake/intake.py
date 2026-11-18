@@ -100,6 +100,50 @@ def bdir(batch):
     return os.path.join(STATE, "batches", batch)
 
 
+def shown_path(p):
+    """p for a line a person copies: ~/... under HOME, shell-quoted."""
+    rel = os.path.relpath(p, HOME)
+    return "~/" + shlex.quote(rel) if not rel.startswith("..") else shlex.quote(p)
+
+
+def batch_names():
+    """The staged batches (folders under batches/), most recently changed first."""
+    d = os.path.join(STATE, "batches")
+    try:
+        names = [n for n in os.listdir(d) if os.path.isdir(os.path.join(d, n))]
+    except FileNotFoundError:
+        return []
+    return sorted(names, key=lambda n: (-os.path.getmtime(os.path.join(d, n)), n))
+
+
+def need_batch(name, staged=True):
+    """Exit with one plain sentence unless name is a batch. Every command that takes a BATCH calls it first,
+    before it reads or writes anything of the batch. staged=True wants a staged batch (batches/<name>);
+    staged=False also takes one that only has a quarantine folder (near-<batch>, xcheck-<batch>), as quarantine
+    and release do. The sentence names the batches that exist and the
+    command that lists them all."""
+    if BATCH_NAME.match(name or ""):
+        if os.path.isdir(bdir(name)):
+            return
+        if os.path.isdir(os.path.join(STATE, "quarantine", name)):
+            if not staged:
+                return
+            sys.exit(f"{name!r} has no staged files, only quarantined ones: see them with "
+                     f"media-intake review {shlex.quote(name)}")
+    have = batch_names()
+    if not have:
+        sys.exit(f"no batch named {name!r}: nothing is staged yet. "
+                 "Start with: media-intake stage SRC --kind phone|gopro|drive|folder")
+    shown = ", ".join(have[:10]) + (f" (and {len(have) - 10} more)" if len(have) > 10 else "")
+    sys.exit(f"no batch named {name!r}. Batches, newest first: {shown}. "
+             f"List them all with: ls {shown_path(os.path.join(STATE, 'batches'))}")
+
+
+def plural(n, word, many=None):
+    """'1 file', '2 files', '1,200 files'."""
+    return f"{n:,} {word if n == 1 else many or word + 's'}"
+
+
 def load(p, default=None):
     try:
         with open(p) as f:
@@ -274,10 +318,27 @@ def default_batch(root, kind, files, origin):
         name = f"{base}-{n}"
 
 
+PHONE_TIP = ("A phone shows up only while it is unlocked and set to File transfer (pull down the USB notification); "
+             "then find it with: ls /run/user/$UID/gvfs/")
+# Why stage found no source folder, or no media in it, by --kind.
+STAGE_WHERE = {"phone": PHONE_TIP, "gopro": "Is the camera on and connected, or its card mounted?",
+               "drive": "Is the drive mounted? Its folder is under /run/media/$USER/."}
+STAGE_EMPTY = {
+    "phone": "It looks only under " + ", ".join(f"{d}/" for d in sources.PHONE_ALLOW + sources.PHONE_ALLOW_EXTRA)
+             + ". Pass the phone's storage folder (the one holding DCIM). " + PHONE_TIP,
+    "gopro": "It looks only under DCIM/<nnn>GOPRO/. Pass the card's or camera's top folder (the one holding DCIM).",
+    "drive": "It skips system, app and hidden folders, and files that are not photos or videos.",
+    "folder": "It skips hidden folders, code (git) folders, and files that are not photos or videos.",
+}
+
+
 def cmd_stage(a):
     root = os.path.abspath(a.src)
     if a.batch is not None and not BATCH_NAME.match(a.batch):
         sys.exit(f"--batch {a.batch!r}: letters, digits, '.', '_' and '-' only")
+    if not os.path.isdir(root):  # before any batch folder exists: a typo leaves nothing behind
+        sys.exit(f"{a.src}: {'not a folder' if os.path.exists(root) else 'no such folder'}. "
+                 + STAGE_WHERE.get(a.kind, ""))
     man = {}
     skipped = collections.Counter()
     extra = {}
@@ -296,6 +357,11 @@ def cmd_stage(a):
         with open(a.only) as f:
             only = {l.rstrip("\n") for l in f if l.strip()}
     files = [(path, rel) for path, rel in sources.walk(root, a.kind) if only is None or rel in only]
+    if not files:  # no batch is created for nothing
+        if only is not None:  # a queue chunk whose listed files are gone from the source
+            sys.exit(f"nothing to stage in {a.src}: none of the {plural(len(only), 'file')} in {a.only} is there now")
+        sys.exit(f"nothing to stage in {a.src}: no photos or videos found for --kind {a.kind}. "
+                 + STAGE_EMPTY[a.kind])
     if a.batch is None:
         a.batch = default_batch(root, a.kind, files, os.path.abspath(a.origin or root))
         print(f"batch {a.batch}")
@@ -325,10 +391,13 @@ def cmd_stage(a):
             if os.path.splitext(n)[1].lower() in sources.CAMERA_JUNK_EXT:
                 skipped["gopro preview (.lrv/.thm)"] += 1
     save(os.path.join(bdir(a.batch), "manifest.json"), dict(kind=a.kind, root=os.path.abspath(a.origin or root), files=man, **extra))
-    print(f"staged {len(man)} media files into {raw}")
-    if exported or ec.get("ambiguous"):
-        print(f"  cloud export metadata: Google Takeout {ec['google']}, iCloud {ec['icloud']}, Telegram {ec['telegram']}, "
-              f"with a place {ec['places']}, ambiguous (ignored) {ec['ambiguous']}")
+    print(f"staged {plural(len(man), 'media file')} into {raw}")
+    if exported or ec.get("ambiguous"):  # only the export kinds this source had
+        got = ", ".join(f"{name} {ec[k]}" for k, name in (("google", "Google Takeout"), ("icloud", "iCloud"),
+                                                          ("telegram", "Telegram")) if ec[k])
+        print("  dates from cloud export files: " + (got or "none")
+              + (f" ({ec['places']} with a place)" if ec["places"] else "")
+              + (f"; {ec['ambiguous']} ambiguous, ignored" if ec["ambiguous"] else ""))
     if ec.get("unreadable"):
         skipped["folders whose cloud export metadata could not be read"] = ec["unreadable"]
     for k, what in exports.REFUSED.items():  # a symlinked, oversized or non-UTF-8 JSON/CSV: its media get no export date
@@ -341,9 +410,18 @@ def cmd_stage(a):
 
 
 # ---------------------------------------------------------------- plan
+# plan's "dates:" line: where each file's date came from (dates.SOURCES), in words.
+DATE_FROM = {"exif": "from the camera", "video": "from the video's own date", "gps": "from GPS time",
+             "export": "from a cloud export", "filename": "from the file name", "folder": "from the folder name",
+             "mtime": "from file times (no camera date found)", "offset": "shifted by --clock-offset"}
+
+
 def cmd_plan(a):
+    need_batch(a.batch)
     b = bdir(a.batch)
     man = load(os.path.join(b, "manifest.json"))
+    if man is None:  # stage stopped before it wrote the manifest
+        sys.exit(f"{a.batch} was never fully staged: run media-intake stage again with --batch {a.batch}")
     raw = os.path.join(b, "raw")
     kind = man["kind"]
     routed, personal = {}, {}  # day -> (project, slug) / day -> slug
@@ -352,6 +430,10 @@ def cmd_plan(a):
         key, _, ev = spec.rpartition("/")
         if not re.fullmatch(r"\d{4}-\d\d-\d\d", day) or not config.SLUG.match(ev):
             sys.exit(f"--event wants [PROJECT/]SLUG@YYYY-MM-DD (slug: lowercase, digits, dashes), got {t}")
+        try:
+            datetime.date.fromisoformat(day)
+        except ValueError:
+            sys.exit(f"--event {t}: {day} is not a date")
         if key and key not in PROJECTS:
             sys.exit(f"--event {t}: no project {key!r} in {CFG['path']} (known: {', '.join(PROJECTS) or 'none'})")
         proj = PROJECTS[key] if key else config.project_for_event(ev, CFG)
@@ -363,8 +445,8 @@ def cmd_plan(a):
     by_sha = {v["sha"]: k for k, v in index.items()}
 
     paths = [os.path.join(raw, rel) for rel in man["files"]]
-    prog = Progress("plan", f"reading dates, then hashing {len(paths):,} files (sha256, dHash, video hash)",
-                    unit="files hashed", hits=None, total=len(paths))
+    prog = Progress("plan", f"reading dates, then comparing files to find duplicates ({plural(len(paths), 'file')})",
+                    unit="files read", hits=None, total=len(paths))
     exp = {os.path.abspath(os.path.join(raw, rel)): f["export"] for rel, f in man["files"].items() if f.get("export")}
     try:
         metas = None
@@ -419,8 +501,8 @@ def cmd_plan(a):
         items = [r for r in rows if r.get(key) is not None and r["rel"] not in action]
         lib = [(k, v) for k, v in index.items() if v.get(key) is not None]
         what = "photos" if key == "dhash" else "videos"
-        near = Progress("plan", f"comparing {len(items):,} {what} for near-copies (the batch and "
-                                f"{len(lib):,} library entries)", unit=f"{what} compared", hits=None,
+        near = Progress("plan", f"looking for look-alike {what} ({len(items):,} in this batch, "
+                                f"{len(lib):,} already in the library)", unit=f"{what} compared", hits=None,
                         total=len(items)) if items else None
         for i, x in enumerate(items):
             if near:
@@ -493,11 +575,13 @@ def cmd_plan(a):
                                   else None)))
     save(os.path.join(b, "plan.json"), plan)
     c = collections.Counter(p["action"] for p in plan)
-    print(f"plan: {len(plan)} files  file {c['file']}  delete(exact dup) {c['delete']}  review {c['review']}")
-    print("dates from", dict(collections.Counter(p["date_src"] for p in plan)))
+    print(f"plan: {plural(len(plan), 'file')}: {c['file']:,} to file, {plural(c['delete'], 'exact duplicate')} "
+          f"to drop, {c['review']:,} to review. Nothing has moved yet.")
+    print("dates: " + ", ".join(f"{n:,} {DATE_FROM.get(k, 'from ' + str(k))}"
+                                for k, n in collections.Counter(p["date_src"] for p in plan).most_common()))
     devs = collections.Counter(p["device"] for p in plan if p["device"])
     if devs:
-        print("devices", dict(sorted(devs.items())))
+        print("devices: " + ", ".join(f"{k} {v:,}" for k, v in sorted(devs.items())))
     for label, sel in (("camera dates replaced by GPS", lambda p: p["date_src"] == "gps" and p["date_note"]
                         and not p["chapter_of"]),
                        ("GoPro chapters dated by their first chapter", lambda p: p["chapter_of"]),
@@ -514,14 +598,22 @@ def cmd_plan(a):
     for note, rels in sorted(unhashed.items()):
         print(f"  {len(rels)} videos not checked for near-duplicates ({note}): "
               + ", ".join(sorted(rels)[:5]) + (" ..." if len(rels) > 5 else ""))
-    for k in sorted({os.path.dirname(os.path.relpath(p["dst"], HOME)) for p in plan if p["action"] == "file"}):
-        print("  ~/" + k)
+    folders = collections.Counter(os.path.dirname(p["dst"]) for p in plan if p["action"] == "file")
+    if folders:
+        print("will be filed in:")
+    for k, n in sorted(folders.items()):
+        print(f"  {shown_path(k)}  ({n:,})")
     next_hint(["scan", a.batch])
 
 
 # ---------------------------------------------------------------- scan
 def cmd_scan(a):
+    need_batch(a.batch)
     b = bdir(a.batch)
+    if not os.path.isdir(os.path.join(b, "raw")):  # apply removes raw/ once everything has moved
+        sys.exit(f"nothing to scan in {a.batch}: its staged files have already been moved by apply"
+                 if os.path.exists(os.path.join(b, "plan.json")) else
+                 f"nothing to scan in {a.batch}: no staged files (run media-intake stage again with --batch {a.batch})")
     if not os.path.exists(VENV_PY):
         sys.exit(f"no venv: run bash {SETUP} first")
     out = os.path.join(b, "scan.json")
@@ -546,22 +638,34 @@ def index_entry(sha, size, dh, vh=None, vnote=None, **extra):
 
 
 # ---------------------------------------------------------------- apply
-def cmd_apply(a):
-    b = bdir(a.batch)
-    plan = load(os.path.join(b, "plan.json"))
-    flags = load(os.path.join(b, "scan.json"))
-    if flags is None and not a.no_scan:
-        sys.exit("run `scan` first (or --no-scan to file everything without the sensitive check)")
-    flags = flags or {}
-    missing = [t for t in ("tesseract",) if not shutil.which(t)]
+def missing_detectors():
+    """The Fedora packages of the document detectors scan needs and can't find (tesseract, zxing-cpp), named
+    as doctor names them (cli.SYSTEM_TOOLS / SYSTEM_MODULES: one table for both)."""
+    import cli
+    missing = [] if shutil.which("tesseract") else [cli.SYSTEM_TOOLS["tesseract"]]
     try:
         import zxingcpp  # noqa: F401
     except ImportError:
-        missing.append("python3-zxing-cpp")
+        missing.append(cli.SYSTEM_MODULES["zxingcpp"])
+    return missing
+
+
+def cmd_apply(a):
+    need_batch(a.batch)
+    b = bdir(a.batch)
+    plan = load(os.path.join(b, "plan.json"))
+    if plan is None:
+        sys.exit(f"plan has not run for {a.batch}. Run: media-intake plan {a.batch}")
+    flags = load(os.path.join(b, "scan.json"))
+    if flags is None and not a.no_scan:
+        sys.exit(f"scan has not run for {a.batch}. Run: media-intake scan {a.batch}")
+    flags = flags or {}
+    missing = missing_detectors()
     if missing and not a.no_scan and not a.allow_missing_detectors:
-        sys.exit(f"document detectors missing ({', '.join(missing)}): IDs, cards and 2FA codes were not "
-                 f"checked. Install them ({DEPS}), then `scan` again "
-                 "(or --allow-missing-detectors to file anyway).")
+        sys.exit(f"Nothing was filed: the ID, card and 2FA-code checks need {', '.join(missing)}.\n"
+                 f"Install:  sudo dnf install -y {' '.join(missing)}\n"
+                 f"Then run: media-intake scan {a.batch}\n"
+                 "(media-intake doctor checks everything else the tool needs.)")
     raw = os.path.join(b, "raw")
     quar = private_dir(os.path.join(private_dir(os.path.join(STATE, "quarantine")), a.batch))
     index = load(os.path.join(STATE, "index.json"), {})
@@ -606,11 +710,19 @@ def cmd_apply(a):
     save(os.path.join(STATE, "index.json"), index)
     if moved:  # tag, offload and the review page read each file's place from the plan
         save(os.path.join(b, "plan.json"), plan)
-        print(f"{moved} files went to a free name (<name>_<n>): their planned place was taken since `plan`")
+        print(f"{plural(moved, 'file')} went to a free name (<name>_<n>): their planned place was taken since `plan`")
     left = [os.path.join(r, f) for r, _, fs in os.walk(raw) for f in fs]
     if not left and os.path.isdir(raw):  # a second apply finds raw/ already removed: nothing to do
         shutil.rmtree(raw)
-    print(dict(c), f"left in raw: {len(left)}")
+    done = [plural(c["filed"], "file") + " filed" if c["filed"] else "",
+            plural(c["deleted (exact duplicate)"], "exact duplicate") + " dropped" if c["deleted (exact duplicate)"] else "",
+            f"{c['quarantined']:,} quarantined" if c["quarantined"] else "",
+            f"{c['to review']:,} set aside for review" if c["to review"] else ""]
+    print("apply: " + (", ".join(x for x in done if x) or "nothing to move (already applied)"))
+    if left:
+        taken = c["left in raw (its quarantine place is taken)"]
+        print(f"{plural(len(left), 'file')} left in the batch folder {os.path.abspath(raw)}"
+              + (f" ({taken:,} because their quarantine place is taken)" if taken else ""))
     if c["quarantined"]:
         print(f"quarantine (you open it, nobody else): xdg-open {os.path.abspath(quar)}")
     if c["to review"]:
@@ -628,20 +740,35 @@ def cmd_apply(a):
 
 # ---------------------------------------------------------------- quarantine review
 def cmd_quarantine(a):
+    need_batch(a.batch, staged=False)
     quar = os.path.join(STATE, "quarantine", a.batch)
-    q = load(os.path.join(quar, "quarantine.json"), {})
+    q = load(os.path.join(quar, "quarantine.json"), {}) or {}
+    if not q:
+        print(f"nothing in quarantine for {a.batch}.")
+        return
     c = collections.Counter(r for v in q.values() for r in v["reasons"])
-    print(f"{len(q)} files in quarantine: {quar}")
+    print(f"{plural(len(q), 'file')} in quarantine: {quar}")
     for k, v in c.most_common():
         print(f"  {k:28} {v}")
-    print(f"Open it yourself:\n  xdg-open {os.path.abspath(quar)}\nFor any false positive, run\n"
-          f"  media-intake release {a.batch} <file>...\n"
-          f"then erase the rest with\n  media-intake erase {a.batch} --phone <device root>")
+    man = load(os.path.join(bdir(a.batch), "manifest.json"), {}) or {}
+    erase = ["media-intake", "erase", a.batch]
+    if man.get("kind") in ("phone", "gopro") and man.get("root"):
+        # erase --phone also deletes the originals on the phone or camera the batch came from. A laptop folder
+        # batch is refused there (folder_refusal), erase's device checks are the phone layout's (not a source
+        # drive's), and a quarantine-only batch has no source: plain erase for those.
+        erase += ["--phone", man["root"]]
+    print(f"Open it yourself:\n  xdg-open {shlex.quote(os.path.abspath(quar))}\nFor any false positive, run\n"
+          f"  media-intake release {shlex.quote(a.batch)} <file>...\n"
+          f"then erase the rest with\n  {' '.join(shlex.quote(x) for x in erase)}"
+          + ("\n  (--phone also deletes them from the phone or camera)" if "--phone" in erase else ""))
 
 
 def cmd_release(a):
+    need_batch(a.batch, staged=False)
     quar = os.path.join(STATE, "quarantine", a.batch)
-    q = load(os.path.join(quar, "quarantine.json"), {})
+    if not os.path.isdir(quar):  # nothing went to quarantine, or erase has removed it
+        sys.exit(f"nothing in quarantine for {a.batch}: it is empty or already erased")
+    q = load(os.path.join(quar, "quarantine.json"), {}) or {}
     index = load(os.path.join(STATE, "index.json"), {})
     for f in a.files:
         rel = os.path.relpath(os.path.abspath(f), quar) if os.path.isabs(f) or f.startswith(".") else f
@@ -2288,13 +2415,13 @@ def tag_files(items, labels=True, label="tag"):
     lab = guard_label()
     bad = set(lab.refused([i[0] for i in items], STATE))
     if bad:
-        print(f"skipped {len(bad)} files: quarantined, staged or flagged by scan (never tagged)")
+        print(f"skipped {plural(len(bad), 'file')}: quarantined, staged or flagged by scan (never tagged)")
     items = [i for i in items if i[0] not in bad and os.path.isfile(i[0])]
     if not items:
         print("nothing to tag")
         return
     paths = [i[0] for i in items]
-    prog = Progress(label, f"{len(items):,} files: GPS, place names{', content labels' if labels else ''}, "
+    prog = Progress(label, f"{plural(len(items), 'file')}: GPS, place names{', content labels' if labels else ''}, "
                            "then sidecars", unit="sidecars written", hits=None, total=len(items))
     gps = read_gps(paths)
     gps.update({i[0]: tuple(i[5]) for i in items if len(i) > 5 and i[5] and i[0] not in gps})
@@ -2343,7 +2470,8 @@ def tag_files(items, labels=True, label="tag"):
     for i in range(0, len(entries), WRITE_CHUNK):  # one exiftool run per chunk, each a progress tick
         write_tags(entries[i:i + WRITE_CHUNK])
         prog.tick(by=len(entries[i:i + WRITE_CHUNK]))
-    print(f"tagged {len(entries)} files (sidecars <file>.xmp); " + ", ".join(f"{k} {v}" for k, v in sorted(c.items())))
+    print(f"tagged {plural(len(entries), 'file')} (sidecars <file>.xmp)"
+          + ("; " + ", ".join(f"{k} {v}" for k, v in sorted(c.items())) if c else ""))
     if lc:
         print("labels: " + ", ".join(f"{k} {v}" for k, v in lc.most_common()))
     if lc.get("Review|child-in-shot"):
@@ -2355,10 +2483,11 @@ def tag_files(items, labels=True, label="tag"):
 
 
 def cmd_tag(a):
+    need_batch(a.batch)
     b = bdir(a.batch)
     plan = load(os.path.join(b, "plan.json"))
     if plan is None:
-        sys.exit("no plan.json: run plan and apply first")
+        sys.exit(f"plan and apply have not run for {a.batch}. Run: media-intake plan {a.batch}")
     flags = load(os.path.join(b, "scan.json"), {}) or {}
     items = []
     for p in plan:
@@ -2371,7 +2500,8 @@ def cmd_tag(a):
             src = (src, p["device_model"])
         items.append((p["dst"], project, src, p.get("event"),
                       dates.aware(datetime.datetime.fromisoformat(p["date"]), p.get("date_tz")), p.get("export_gps")))
-    print(f"{len(items)} filed files to tag" + (f"; {sum(1 for p in plan if p['rel'] in flags)} flagged by scan are never tagged" if flags else ""))
+    nflag = sum(1 for p in plan if p["rel"] in flags)
+    print(f"{plural(len(items), 'filed file')} to tag" + (f"; {nflag:,} flagged by scan are never tagged" if nflag else ""))
     tag_files(items, labels=not a.no_labels)
     # Plugins (docs/plugins.md) get the filed files, e.g. to register a project's clips.
     import plugins
@@ -2400,6 +2530,8 @@ def sidecar_dates(paths):
 
 
 def cmd_tag_files(a):
+    if a.event and not config.SLUG.match(a.event):  # before anything is read: same rule as plan --event
+        sys.exit(f"--event {a.event!r}: a slug is lowercase letters, digits and dashes")
     files = [os.path.abspath(f) for f in a.files]
     keep = sidecar_dates(files)
     live = [f for f in files if os.path.isfile(f)]
@@ -2573,7 +2705,11 @@ def build_parser(prog=None):
                    help="shift dates from a camera whose clock was wrong (DEVICE: its Make, Model, 'Make Model' or "
                         "all; e.g. 'HERO11 Black=+3h'); GPS dates are never shifted; sidecars only")
     s = sp.add_parser("scan"); s.add_argument("batch")
-    s = sp.add_parser("apply"); s.add_argument("batch"); s.add_argument("--no-scan", action="store_true"); s.add_argument("--allow-missing-detectors", action="store_true")
+    s = sp.add_parser("apply"); s.add_argument("batch")
+    s.add_argument("--no-scan", action="store_true", help="file everything WITHOUT the sensitive-file check (IDs, "
+                   "cards, nudity); only for photos you already know are safe")
+    s.add_argument("--allow-missing-detectors", action="store_true", help="file even though the ID and card "
+                   "detectors are not installed (those files will not be checked)")
     s = sp.add_parser("quarantine"); s.add_argument("batch")
     s = sp.add_parser("release"); s.add_argument("batch"); s.add_argument("files", nargs="+")
     s = sp.add_parser("erase"); s.add_argument("batch"); s.add_argument("--phone"); s.add_argument("--drive"); s.add_argument("--yes", action="store_true")

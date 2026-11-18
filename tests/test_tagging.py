@@ -200,7 +200,7 @@ class Sidecars(Base):
         # a released (scan-flagged) file is still never tagged
         self.intake("release", batch, "DCIM/Camera/20261023_100000.jpg")
         rel = os.path.join(self.lib, "2026", "2026-10", "20261023_100000.jpg")
-        self.assertIn("skipped 1 files", self.intake("tag-files", rel, "--no-labels"))
+        self.assertIn("skipped 1 file:", self.intake("tag-files", rel, "--no-labels"))
         self.assertFalse(os.path.exists(rel + ".xmp"))
 
     def test_erase_takes_sidecars(self):

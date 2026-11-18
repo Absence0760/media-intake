@@ -93,9 +93,9 @@ media-intake tag first-test
 | Step | What it does | What you'll see |
 | --- | --- | --- |
 | `stage` | Copies the folder's media files into the private state folder; your folder is only read. | How many files were staged, and counts of anything skipped. |
-| `plan` | Works out each file's date and library folder, and finds exact and near duplicates. Nothing moves yet. | A summary of what will be filed, dropped as an exact duplicate, or set aside for review. |
+| `plan` | Works out each file's date and library folder, and finds exact and near duplicates. Nothing moves yet. | A summary of what will be filed, dropped as an exact duplicate, or set aside for review; where the dates came from (`from file times` means the photo had no date of its own); and the folders they will go to, with a count each. |
 | `scan` | Runs the local detectors (nudity, text on IDs and cards, QR and barcodes). Flags only. | Progress and counts; never image content. |
-| `apply` | Files the clean files in the library, drops exact duplicates, and moves flagged files to the private quarantine. | A summary of counts per outcome. |
+| `apply` | Files the clean files in the library, drops exact duplicates, and moves flagged files to the private quarantine. | One line of counts, for example `apply: 6 files filed, 1 exact duplicate dropped`. |
 | `review` | Starts a local review page for what `apply` set aside. | One `xdg-open 'http://127.0.0.1:<port>/?t=<token>'` line, or `nothing to review for first-test`. |
 | `tag` | Writes XMP sidecar tags (source, date, place, content labels) for the filed files. | Counts. `--no-labels` skips the content labels if you want it faster. |
 
@@ -200,8 +200,11 @@ Use a LUKS-encrypted drive. [backup.md](backup.md).
 | `doctor` shows `BAD` for a model file | `bash setup.sh` deletes the wrong file; run it again to fetch the pinned one. |
 | Every command stops with a config error | Fix or remove the key it names ([configuration.md](configuration.md)). |
 | `stage --kind folder` or `queue add` is refused | The folder breaks a source rule (outside HOME, hidden, a git tree, the library itself): [queue.md](queue.md), "Laptop folders". Under `/run/media` use `--kind drive`. |
+| `no batch named '...'` | A typo in the batch name: the message lists your batches, newest first. |
+| `stage` says `no such folder` or `nothing to stage` | Check the path. For a phone: unlock it, pull down the USB notification and choose "File transfer", then find it with `ls /run/user/$UID/gvfs/`. A locked or charge-only phone looks empty. |
 | `scan` says `no venv` | `bash setup.sh`. |
-| `apply` says `run scan first` or `document detectors missing` | Run `scan`, or install the packages it names and `scan` again. |
+| `apply` says `scan has not run` or `plan has not run` | Run the command it prints. |
+| `apply` says the ID and card checks need a package | Run the `sudo dnf install -y` line it prints, then `media-intake scan <batch>` again. |
 | Videos are quarantined as `unscanned-video` | No video decoder could read them (most phone video is HEVC): install the GStreamer HEVC decoder `doctor` lists as optional before your next import. A *photo* with this flag is a motion photo whose short video couldn't be found or read ([intake.md](intake.md), "Principles"); open it yourself and release it if it's fine. |
 | `[gst] fallback skipped` on stderr | Your home folder's path has characters GStreamer can't take safely ([intake.md](intake.md), "Principles"). |
 | A command waits, then exits 75 | Another command or job holds the library lock; it names the holder. Try again when it ends, or set `MEDIA_INTAKE_LOCK_WAIT` ([intake.md](intake.md), "One writer at a time"). |
