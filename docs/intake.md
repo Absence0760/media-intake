@@ -165,7 +165,8 @@ media-intake mark-used FILE... --post SLUG
 media-intake find [--tag T] [--event E] [--place P] [--project P] [--unused-since 30d] [--never-used]
 media-intake gallery [--drive MOUNT] [--share-out DIR]
 media-intake prune-cache [--dry-run]          # gallery thumbnails and proxies nothing shows any more
-media-intake backup MOUNT [--verify] [--dry-run]   # library, videos, sidecars to a mounted drive (backup.md)
+media-intake backup MOUNT [--verify] [--dry-run] [--skip PART]   # library, videos, sidecars to a drive (backup.md)
+media-intake zip-check ROOT [--known DIR]... [--out JSON]   # what export zips hold that you lack; read-only
 ```
 
 `media-intake <command> --help` shows every option. The review page is
@@ -259,6 +260,8 @@ run and a CLI `apply` never interleave (`media_intake/library_lock.py`):
   `media-intake backup` is cli.py's too and takes no library lock: it only
   reads the library, and checks each file before and after copying it, so one
   that changes mid-copy is skipped for the next run ([backup.md](backup.md)).
+  `media-intake zip-check` is cli.py's and read-only, so it takes no lock
+  either (Cloud exports, below).
   `vlm-trash` takes it around each batch of verdicts it writes.
 - **Jobs** (the review page's run, the gallery's Trash, Erase and Share-safe copy) take it with
   their job lock at submit and hold it until their last step is over; each
@@ -376,6 +379,19 @@ read a video's serial, so neither fallback reads one, and a camera's photos
 and videos get the same Make/Model device id (Devices, below).
 
 ### Cloud exports (Google Takeout, iCloud)
+
+Before unzipping one, `media-intake zip-check ROOT` says what the zips under
+ROOT hold that this machine doesn't have. It streams every member through
+sha256 without extracting anything and counts each as `library` (in the
+library index), `known` (under a `--known DIR`, a folder outside the library
+you also keep), `trashed` (you trashed it before), `erased` (on the erase log:
+it must not come back), `json` (Takeout's metadata), `dir`, or `new-media`,
+`new-doc`, `new-other`; a zip or member it can't read is counted as such. It
+prints counts per top-level folder of ROOT and a total with sizes, never a
+member name. `--out JSON` writes each member's class for a later step (mode
+0600; it names files, so keep it out of shared folders, and never inside
+ROOT). The `--known` checksums are cached in `<state>/zipcheck/` by path,
+size and mtime.
 
 A Google Photos Takeout or an iCloud Photos export ("Request a copy of your
 data" at privacy.apple.com) is a folder of photos and videos: unzip it and
