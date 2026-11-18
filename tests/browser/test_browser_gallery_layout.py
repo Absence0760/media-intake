@@ -351,7 +351,8 @@ class ReviewLayoutBrowserTest(LayoutCase):
                 self.assert_contrast(cover.locator(".badge"), f"{scheme}: burst badge")
                 cover.locator(".burst .x").click()
                 cover.get_by_role("button", name="Keep this one, erase the rest").click()  # decides the stack
-                keep = cover.get_by_role("button", name=re.compile(r"^Keep \("))
+                # on a touch phone the key hint " (K)" is hidden, so the name is just "Keep"
+                keep = cover.get_by_role("button", name=re.compile(r"^Keep( \(K\))?$"))
                 B.expect(keep).to_have_attribute("aria-pressed", "true")
                 self.assert_contrast(keep, f"{scheme}: pressed Keep")
                 submit = page.get_by_role("button", name="Submit")
