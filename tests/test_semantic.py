@@ -6,7 +6,8 @@
 Skips when setup.sh hasn't run (no venv or vision model); the text-search cases
 also skip when the text model isn't in ~/.cache/media-intake-build. The UI cases
 (progress, summary, output formats, missing index/model messages) use fakes in
-place of the models and need only numpy.
+place of the models and need only numpy, as do the query prompt-ensemble cases
+(TextEnsemble: a fake tokenizer and text model).
 """
 import contextlib, hashlib, io, json, os, re, shutil, subprocess, sys, tempfile, time, types, unittest
 import unittest.mock as mock
@@ -449,6 +450,124 @@ class Ui(unittest.TestCase):
                         ("/l/2026/2026-13/a.jpg", ""), ("/l/2026-1108.jpg", ""), ("/l/20261340.jpg", "")):
             self.assertEqual(semantic.path_date(p), want, p)
 
+
+class FakeTokenizer:
+    """Stands in for tokenizers.Tokenizer: one id per word (2..51), then </s> (1), as SigLIP's appends it."""
+    @classmethod
+    def from_file(cls, path):
+        return cls()
+
+    def encode(self, text):
+        return types.SimpleNamespace(ids=[2 + sum(map(ord, w)) % 50 for w in text.split()] + [1])
+
+
+class FakeTextSession:
+    """Stands in for the SigLIP text model: a bag of token ids per row (padding and </s> left out)."""
+    feeds = []
+
+    def __init__(self, path, so=None, providers=None):
+        pass
+
+    def get_inputs(self):
+        return [types.SimpleNamespace(name="input_ids"), types.SimpleNamespace(name="attention_mask")]
+
+    def run(self, names, feed):
+        FakeTextSession.feeds.append(feed)
+        out = numpy.zeros((len(feed["input_ids"]), 768), numpy.float32)
+        for i, row in enumerate(feed["input_ids"]):
+            for t in row:
+                if t != semantic.PAD:
+                    out[i, t] += 1.0
+        return [out]
+
+
+def fake_vec(text):
+    """What FakeTextSession gives for one prompt, unit length."""
+    v = numpy.zeros(768, numpy.float32)
+    for t in FakeTokenizer().encode(text).ids[:-1]:
+        v[t] += 1.0
+    return v / numpy.linalg.norm(v)
+
+
+@unittest.skipIf(numpy is None, "numpy missing")
+class TextEnsemble(unittest.TestCase):
+    """The query's prompt ensemble, with a fake tokenizer and text model: nothing loads a model."""
+
+    def setUp(self):
+        FakeTextSession.feeds = []
+        self.ort = types.SimpleNamespace(SessionOptions=types.SimpleNamespace, InferenceSession=FakeTextSession)
+        self.patches = [mock.patch.object(semantic, "text_available", lambda: None),
+                        mock.patch.dict(sys.modules, {"tokenizers": types.SimpleNamespace(Tokenizer=FakeTokenizer)})]
+        for p in self.patches:
+            p.start()
+
+    def tearDown(self):
+        for p in reversed(self.patches):
+            p.stop()
+
+    def test_prompts(self):
+        self.assertEqual(semantic.query_prompts("Dog, on a  BEACH!"),
+                         ["a photo of dog on a beach", "a picture of dog on a beach", "dog on a beach"])
+        # a query already phrased as a template is not wrapped twice
+        for q in ("a photo of a dog", "A picture of a dog."):
+            self.assertEqual(semantic.query_prompts(q), ["a photo of a dog", "a picture of a dog", "a dog"], q)
+        self.assertEqual(semantic.query_prompts("a photo of"), ["a photo of a photo of", "a picture of a photo of",
+                                                                "a photo of"])
+        self.assertEqual(semantic.query_prompts("Dog!", ensemble=False), ["dog"])
+        self.assertEqual(semantic.query_prompts("a photo of a dog", ensemble=False), ["a photo of a dog"])
+        self.assertEqual(semantic.query_prompts("!!"), [""])
+
+    def test_ensemble_is_the_renormalised_mean(self):
+        v = semantic.embed_text("dog on a beach", numpy, self.ort)
+        want = numpy.mean([fake_vec(p) for p in semantic.query_prompts("dog on a beach")], axis=0)
+        numpy.testing.assert_allclose(v, want / numpy.linalg.norm(want), rtol=1e-6, atol=1e-7)
+        self.assertAlmostEqual(float(numpy.linalg.norm(v)), 1.0, places=6)
+        (feed,) = FakeTextSession.feeds  # one batch through the model, a row per prompt, padded to 64
+        self.assertEqual(feed["input_ids"].shape, (3, semantic.MAX_LEN))
+        self.assertEqual(feed["input_ids"].dtype, numpy.int64)
+        self.assertEqual(feed["attention_mask"].shape, (3, semantic.MAX_LEN))
+        self.assertEqual(list(feed["input_ids"][2][:5]), FakeTokenizer().encode("dog on a beach").ids)
+        self.assertTrue((feed["input_ids"][2][5:] == semantic.PAD).all())
+
+    def test_no_ensemble_is_the_query_alone(self):
+        v = semantic.embed_text("Dog on a beach!", numpy, self.ort, ensemble=False)
+        numpy.testing.assert_allclose(v, fake_vec("dog on a beach"), rtol=1e-6, atol=1e-7)
+        self.assertEqual(FakeTextSession.feeds[0]["input_ids"].shape, (1, semantic.MAX_LEN))
+        self.assertFalse(numpy.allclose(v, semantic.embed_text("Dog on a beach!", numpy, self.ort)))
+
+    def test_deterministic(self):
+        a = semantic.embed_text("a red square", numpy, self.ort)
+        b = semantic.embed_text("a red square", numpy, self.ort)
+        self.assertTrue(numpy.array_equal(a, b))
+
+    def test_long_query_keeps_its_end_token(self):
+        q = " ".join(f"w{i}" for i in range(100))
+        semantic.embed_text(q, numpy, self.ort)
+        ids = FakeTextSession.feeds[0]["input_ids"]
+        self.assertTrue((ids[:, -1] == 1).all())  # truncated to 64 with </s> last, as the labels
+
+    def test_search_uses_the_ensemble_and_keeps_the_machine_form(self):
+        ui = Ui("test_path_date")
+        ui.setUp()
+        self.addCleanup(ui.tearDown)
+        a, b, c = ui.store()
+        seen = []
+        real = semantic.embed_text
+
+        def spy(q, np, ort, **kw):
+            seen.append(kw)
+            return real(q, np, ort, **kw)
+        with mock.patch.object(semantic, "embed_text", spy), mock.patch.dict(sys.modules, {"onnxruntime": self.ort}):
+            outs = [ui.run_main("search", "dog", "--format", "machine"),
+                    ui.run_main("search", "dog", "--format", "machine", "--no-ensemble")]
+        self.assertEqual(seen, [{}, {"ensemble": False}])  # the default call stays embed_text(q, np, ort)
+        for code, out, err in outs:
+            self.assertEqual(code, 0)
+            self.assertEqual(err, "3 results\n")
+            got = [re.match(r"^\s*(-?\d+(?:\.\d+)?)\s+(/.*)$", ln) for ln in out.splitlines()]
+            self.assertTrue(all(got), out)
+            self.assertEqual(sorted(m.group(2) for m in got), sorted([a, b, c]))
+            self.assertTrue(all(re.fullmatch(r"-?\d+\.\d{3}  /.*", ln) for ln in out.splitlines()), out)
 
 if __name__ == "__main__":
     unittest.main(verbosity=1)

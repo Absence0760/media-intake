@@ -62,8 +62,25 @@ media-intake similar ~/Videos/personal/2026/2026-05/GX010123.MP4 -n 20
   in the build cache `~/.cache/media-intake-build` (made by `bash setup.sh
   --build-labels`), used read-only. Without it `search` says so and only
   `similar` works. Queries are lower-cased and stripped of punctuation as the
-  labels are. "a photo of ..." phrasing tends to rank better than single
-  words.
+  labels are.
+- **Prompt ensemble** (the default): `search` embeds the query through three
+  templates, `a photo of {}`, `a picture of {}` and the query as typed, in one
+  batch through the text model, averages the unit-length embeddings and
+  renormalises the mean (the standard CLIP/SigLIP zero-shot technique; a single
+  word otherwise sits far from how captions are phrased). A query that already
+  starts with a template's prefix is stripped of it first, so `a photo of a
+  dog` gives `a photo of a dog`, `a picture of a dog`, `a dog`. It is
+  deterministic: the same query gives the same vector. `--no-ensemble` embeds
+  the query alone, as before, to compare the two; scores of the two runs are
+  not comparable with each other. The `--format machine` output the gallery
+  reads is the same with or without it. Text handling (canonical form, 64
+  tokens, `</s>`) is `build_label_embeddings.py`'s, shared with the labels.
+- Videos have one vector each, the mean of their sampled frames (above), so a
+  query matches a video by its average look, and a scene that fills only part
+  of a long clip ranks it lower than a clip that is all that scene. Ranking by
+  the best frame would need a vector per frame in the index; the index format
+  is unchanged for now. (`label.py`'s content labels already take the max over
+  up to 30 frames.)
 - `similar FILE` ranks by cosine against FILE's vector (embedded on the fly
   if it isn't in the index; refused files exit 3).
 - Filters (read from sidecars via exiftool): `--photos` / `--videos`,
@@ -285,13 +302,15 @@ At 54 s a photo an overnight run covers only about 600 photos. This is why
 Ollama server; it doesn't measure model speed). `VLM_REAL=1` adds real calls
 against the local Ollama. The progress, summary and output-format cases in
 `test_semantic.py` (`Meter`, `Ui`) fake the encoders and need only numpy; they
-also check that the gallery still parses the machine form.
+also check that the gallery still parses the machine form. The prompt-ensemble
+cases (`TextEnsemble`) use a fake tokenizer and text model, also numpy only.
 
 ## Unverified
 
 - Verdict quality on real photos: tested on synthetic images only. Treat
   `AI|vlm/*` as a hint for review, never as a decision.
 - SigLIP text search quality on real footage (the base 224 px model is small;
-  checked only on synthetic shapes).
+  checked only on synthetic shapes), and how much the prompt ensemble helps on
+  it: compare `search "..."` with `search "..." --no-ensemble`.
 - The quantized vision encoder with the float text model: their embeddings
   line up well enough for `labels.npz`, so search uses the same pair.
