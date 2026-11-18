@@ -136,8 +136,14 @@ locking wrapper: its inner calls would wait on the same lock forever.
 frozen file list, chunk lists, one log per batch; step output goes to the
 log, never the terminal). A step is marked done only when it exits 0, so a
 killed run picks up at the step it was in, and a finished step is never run
-again. A failed step stops the run (`status` shows the error and the log);
-`run` again resumes there. It stops if the drive is unplugged or a different
+again. A failed step stops the run with one line saying why: the last line
+the step wrote to its log, with every path shown as `(a path)` and every
+photo or video name as `(a file)`, then the retry command and the log's
+path, e.g. `[old-drive] stopped at scan: no venv at (a path): run bash
+setup.sh first. Fix it, then run again: media-intake queue run --inhibit (it
+resumes at scan; log: <state>/queue/old-drive/<batch>.log)`. `status` shows
+the same reason and log; `run` again resumes there. While it runs, each step
+prints `stage done`, `plan done`, ... (or its note, e.g. the VLM's). It stops if the drive is unplugged or a different
 drive sits at that path, or a folder source is refused now. `--inhibit` holds `systemd-inhibit
 --what=sleep:idle` for the whole run. Each chunk ends with a counts-only
 summary.
@@ -157,16 +163,17 @@ nohup media-intake queue run --inhibit > ~/.local/share/media-intake/queue-run.l
 for you, then one `next:` line (synthetic example):
 
 ```
-SOURCE                  STATE              FILES  QUAR  REVIEW  CHANGED
-/run/…dia/u/DRIVE/busy  running                4     0       0  2026-01-03 11:30
-/run/…dia/u/DRIVE/idle  waiting                3     0       0  2026-01-02 03:04
-/run/…a/u/DRIVE/broken  failed                 2     0       0  2026-01-04 08:05
-/run/…ckup/Photos 2009  needs your review      2     4       2  2026-01-05 09:00
-/run/…ia/u/DRIVE/clean  done                   2     0       0  2026-01-06 12:00
+LABEL   SOURCE          STATE              FILES  QUAR  REVIEW  CHANGED
+busy    /ru…DRIVE/busy  running                4     0       0  2026-01-03 11:30
+idle    /ru…DRIVE/idle  waiting                3     0       0  2026-01-02 03:04
+broken  /ru…IVE/broken  failed                 2     0       0  2026-01-04 08:05
+review  /ru…hotos 2009  needs your review      2     4       2  2026-01-05 09:00
+clean   /ru…RIVE/clean  done                   2     0       0  2026-01-06 12:00
 
 Waiting for you:
-  broken, chunk 1 (2026-01-02-broken-1) failed at scan: scan failed (exit 1);
-    log <state>/queue/broken/2026-01-02-broken-1.log
+  broken, chunk 1 (2026-01-02-broken-1) failed at scan: scan failed (exit 1): no
+    venv at (a path): run bash setup.sh first
+    log:                <state>/queue/broken/2026-01-02-broken-1.log
     fix it, then retry: media-intake queue run --inhibit
   review, chunk 1 (2026-01-02-review-1): quarantine 3, near and messaging copies
     1, review folder 0, trash suggestions 2
@@ -179,6 +186,8 @@ Waiting for you:
 next: fix broken (see above), then media-intake queue run --inhibit
 ```
 
+- **LABEL** is the name you gave with `add --label`, the one `queue offload`
+  takes; it is never cut.
 - **SOURCE** is the path as queued; a long one is shortened in the middle
   with `…` so the end (the folder that tells sources apart) stays. The table
   fits 80 columns; command lines are never cut, so they stay copyable.
@@ -193,9 +202,9 @@ next: fix broken (see above), then media-intake queue run --inhibit
   trash suggestions; **CHANGED** the newest time the queue recorded for the
   source (added, a step or chunk finished).
 - **Waiting for you** lists each finished chunk with decisions left (its
-  counts and the commands to open them), each failed chunk (reason, log,
-  retry command), drive sources ready to offload, and laptop folders that are
-  fully reviewed (delete the folder yourself, after checking the library).
+  counts and the commands to open them), each failed chunk (the reason, log
+  and retry command), drive sources ready to offload, and laptop folders that
+  are fully reviewed (delete the folder yourself, after checking the library).
 - **next:** the first of: fix a failure, review a batch, offload, delete a
   reviewed folder, start the run, or nothing waits (add another folder).
 - An empty queue prints one line with the `queue add` command.
@@ -204,10 +213,10 @@ next: fix broken (see above), then media-intake queue run --inhibit
 `sources` (per source: `label`, `kind`, `root`, `state`, `files`, `bytes`,
 `quarantined`, `in_review`, `changed`, `chunks_total`, `chunks_done`,
 `offloaded`, and `chunks`, each with its `batch`, `files`, `done` and either
-the next `step` (and `error`) or its `quarantine`, `near_and_messaging`,
+the next `step` (and `error` and `log`) or its `quarantine`, `near_and_messaging`,
 `review_folder` and `trash_suggestions` counts), `waiting` (per item: `what`
 is `failed`, `review`, `offload` or `delete-folder`, with `label`,
-`commands` and its counts or reason) and `next`. Counts and paths only, as
+`commands` and its counts, or its `reason` and `log`) and `next`. Counts and paths only, as
 everywhere.
 
 ## Offload

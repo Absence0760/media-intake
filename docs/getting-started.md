@@ -172,10 +172,10 @@ media-intake queue run --inhibit
 media-intake queue status
 ```
 
-`status` prints a table, one row per source (`SOURCE`, `STATE`, `FILES`,
-`QUAR`, `REVIEW`, `CHANGED`), then `Waiting for you:` with each chunk that
-has decisions left (and the commands to open them), each failed chunk with
-its log and retry command, and drives ready to offload, then one `next:`
+`status` prints a table, one row per source (`LABEL`, `SOURCE`, `STATE`,
+`FILES`, `QUAR`, `REVIEW`, `CHANGED`), then `Waiting for you:` with each chunk
+that has decisions left (and the commands to open them), each failed chunk
+with the reason, its log and the retry command, and drives ready to offload, then one `next:`
 line. `--json` gives the same for scripts. A drive that looks like your
 backup drive is refused. [queue.md](queue.md), "Status".
 
