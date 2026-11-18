@@ -376,14 +376,24 @@ def _walk_tree(root, skip_repos=False):
             yield path, os.path.relpath(path, root)
 
 
-def drive_category(rel):
+def export_app(root, rel):
+    """"Telegram" when the file at root/rel is in a Telegram Desktop export (telegram_export: the source
+    root itself, a renamed export holding result.json or messages.html, or a ChatExport_ / DataExport_
+    folder), else None. stage records it in the manifest, so plan's category sees what rel alone can't."""
+    return "Telegram" if telegram_export(root, rel.split(os.sep)) else None
+
+
+def drive_category(rel, app=None):
     """photo / video / screenshot / messaging:<app> for a file from an external drive or laptop folder.
+    app: export_app()'s answer for the file, recorded by stage (the source root is not in rel).
     Recognised without any config: WhatsApp's IMG-YYYYMMDD-WA0001 names, Signal's saved
     signal-YYYY-MM-DD-... names, and a Telegram Desktop export's media (a file in photos/, video_files/
     or files/ under a ChatExport_<date> / DataExport_<date> folder, or named photo_<n>@<date>...)."""
     name = os.path.basename(rel)
     ext = os.path.splitext(name)[1].lower()
     parts = rel.replace(os.sep, "/").split("/")
+    if app:
+        return f"messaging:{app}"
     if WHATSAPP_NAME.match(name):
         return "messaging:WhatsApp"
     if SIGNAL_NAME.match(name):

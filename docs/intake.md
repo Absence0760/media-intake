@@ -117,16 +117,22 @@ Dates: an export's own names (`photo_<n>@DD-MM-YYYY_HH-MM-SS.jpg`,
 `video_<n>@...`, `file_<n>@...`, the message's time on the exporting
 computer) and Signal's `signal-YYYY-MM-DD-HH-mm-ss` names are `filename`
 dates ("Dates" below). A file an export keeps under its own name (a video
-or file sent with a name) is dated by its metadata, else its mtime: reading
-`result.json`'s per-message dates for those is a ROADMAP follow-up.
+or file sent with a name) is dated by its own metadata when it has a
+camera or GPS date, else by its message's date in the export's
+`result.json` (the `export` source; "Cloud exports" below), else by its
+mtime. An HTML-only export has no `result.json`, so its own-named files
+skip that step.
 
-**Stage the folder that holds the export, not the export itself.** A file is
-labelled `messaging:Telegram` by a `ChatExport_<date>` / `DataExport_<date>`
-folder in its path under the staged folder, or by its own `photo_<n>@...`,
-`video_<n>@...`, `file_<n>@...` name. When the staged folder *is* the export
-(or a renamed one), the same files are taken (the export rules still apply),
-but its files kept under their own names are filed as ordinary photos and
-videos; making the category see the source root is a ROADMAP follow-up.
+A file is labelled `messaging:Telegram` when it is inside a Telegram
+Desktop export: a `ChatExport_<date>` / `DataExport_<date>` folder, or a
+renamed one (`result.json` or `messages.html` beside `photos/` or
+`video_files/`), anywhere from the staged folder down, the staged folder
+itself included; or by its own `photo_<n>@...`, `video_<n>@...`,
+`file_<n>@...` name. So you can stage the export itself or the folder that
+holds it. `stage` checks the source folder and records the app in the batch
+manifest (`files[rel].app`), so `plan` files the export's media under
+`Messaging/Telegram/` even when the export's own folder isn't part of the
+file's path in the batch.
 
 Sources (checked 2026-11-14):
 [Telegram Android `ImageLoader.java`](https://github.com/DrKLO/Telegram/blob/master/TMessagesProj/src/main/java/org/telegram/messenger/ImageLoader.java)
@@ -375,7 +381,7 @@ except a GoPro video's GPMF GPS time and any serial number: ffprobe can't
 read a video's serial, so neither fallback reads one, and a camera's photos
 and videos get the same Make/Model device id (Devices, below).
 
-### Cloud exports (Google Takeout, iCloud)
+### Cloud exports (Google Takeout, iCloud, Telegram)
 
 A Google Photos Takeout or an iCloud Photos export ("Request a copy of your
 data" at privacy.apple.com) is a folder of photos and videos: unzip it and
@@ -384,8 +390,8 @@ its files have lost their own capture date (edited copies, messaging images,
 scans, screenshots) and their mtime is the download time, but the export
 keeps the date beside them. `stage` (`media_intake/exports.py`) reads it, for
 `--kind folder` and `--kind drive` only, into the batch manifest
-(`files[rel].export`: `time` in UTC, `via` `google-takeout` or `icloud`, the
-`sidecar` it came from, and `lat`/`lon` when there is a place), and prints
+(`files[rel].export`: `time` in UTC, `via` `google-takeout`, `icloud` or
+`telegram`, the `sidecar` it came from, and `lat`/`lon` when there is a place), and prints
 how many files matched. `plan` turns it into the `export` date source above:
 below the file's own EXIF, QuickTime and GPS dates (Google and Apple usually
 copied those from the file anyway), above the file name, folder and mtime.
@@ -419,32 +425,54 @@ camera's clock).
   different dates in that folder gets none. `importDate` is never used (it
   is when the file reached iCloud, not when it was taken). A file with both
   kinds of record takes the Google one.
+- **Telegram Desktop export** (JSON format, "Messaging apps" above): one
+  `result.json` at the export's top folder, holding one chat's object
+  (`messages`) or, for "Export Telegram data", every chat under
+  `chats.list` and `left_chats.list`. Each message's `photo` or `file` is a
+  path relative to that folder (`files/IMG_0007.HEIC`,
+  `chats/chat_001/video_files/clip.mp4`) and its date is `date_unixtime`
+  (UTC epoch seconds), else, in older exports, `date` (the exporting
+  computer's local time, read in this machine's time zone). Only a file
+  inside a Telegram export (the same test the walk uses), kept under its own
+  name, and listed by its exact path (compared in Unicode NFC) is matched:
+  `photo_<n>@<date>` names are already `filename` dates. A path listed with
+  two different dates gets none (counted as ambiguous). The nearest
+  `result.json` from the file's folder up to the staged folder is used, and
+  each is read once. A file with a Takeout or iCloud record takes that one.
 - **Places**: the export's place is stored only when the file has no GPS of
   its own: `plan.json` keeps it as `export_gps`, and `tag` geocodes it
   offline like file GPS (a `Place|` tag, `XMP-exif:GPSLatitude/Longitude` in
   the sidecar). Nothing is ever looked up online.
-- **Duplicates**: the JSON and CSV files are never staged or filed (only
+- **Duplicates**: the JSON (`result.json` too) and CSV files are never staged or filed (only
   media extensions are walked). A Takeout puts the same photo in its year
   folder and in each album folder; `plan` drops the copies by sha256 against
   the batch and the library like any other duplicate ("Duplicates", below).
-- Only these small files (at most 1 MiB for a JSON, `JSON_MAX`; 64 MiB for a
-  CSV, `CSV_MAX`) are read, never through a symlink, and a CSV must be UTF-8;
+- Only these small files (at most 1 MiB for a Takeout JSON, `JSON_MAX`;
+  64 MiB for a CSV, `CSV_MAX`, and for a Telegram `result.json`,
+  `TELEGRAM_MAX`, which also holds every message's text) are read, never
+  through a symlink, and a CSV or `result.json` must be UTF-8;
   nothing is written to the export (its files, mtimes and folders are left
   exactly as they were). A metadata file that breaks one of these rules, or
   isn't a regular file, or fails to read, is skipped without stopping
   `stage`, its media are staged without an export date, and `stage` reports
   each reason it hit: `skipped N symlinked cloud export metadata files (never
-  followed)`, `... over the size cap`, `skipped N cloud export CSV files that
-  are not UTF-8`, `... that are not regular files or could not be read`
+  followed)`, `... over the size cap`, `skipped N cloud export CSV files or
+  Telegram result.json files that are not UTF-8`, `... that are not regular files or could not be read`
   (`exports.REFUSED`; each file counted once). Staging the same folder
   again gives the same files, dates and report.
 - **Offload** of a drive deletes only the media originals: the JSON and CSV
-  files stay on the drive; delete the export folder yourself once it is filed.
+  files (and a Telegram export's `result.json`) stay on the drive; delete the export folder yourself once it is filed.
 - **Erase** doesn't reach them either: an erased file's Takeout JSON or iCloud
   CSV row (which can hold its date, place and description) stays beside where
   it was, and the coverage report lists it under `cant_reach`.
 
-Neither format is documented by Google or Apple. The rules above follow the
+Telegram's format is read from tdesktop's
+[`export_output_json.cpp`](https://github.com/telegramdesktop/tdesktop/blob/dev/Telegram/SourceFiles/export/output/export_output_json.cpp)
+(checked 2026-11-17: `result.json`, `date` / `date_unixtime`, `photo` /
+`file` relative to the export folder, the single-chat and whole-account
+layouts) and tested on synthetic exports, not a real one.
+
+Neither Google's nor Apple's format is documented by its vendor. The rules above follow the
 open-source importers that parse them, checked 2026-11-14:
 [immich-go](https://github.com/simulot/immich-go) (`adapters/googlePhotos/matchers.go`
 and its test cases, `adapters/googlePhotos/json.go`, `adapters/folder/icloud.go`

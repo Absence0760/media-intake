@@ -195,6 +195,7 @@ class Queue(unittest.TestCase):
         open(os.path.join(root, "video_files", "video_1@05-03-2019_14-30-00.mp4"), "w").close()
         out = self.qrun("add", root, "--label", "chat-drive")
         self.assertIn("3 files", out)
+        self.assertIn("(messaging 3)", out, "files/IMG_0007.jpg too: the source root is the export")
         rels = sorted(r for r, _ in jload(os.path.join(self.state, "queue", "chat-drive", "files.json")))
         self.assertEqual(rels, sorted([*self.TG_TAKEN, "video_files/video_1@05-03-2019_14-30-00.mp4"]))
 

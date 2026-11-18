@@ -228,14 +228,15 @@ def has_gps(path):
         return False
 
 
-def category(rel, kind):
+def category(rel, kind, app=None):
+    """app: the messaging app stage found the file's source folder to be an export of (manifest "app")."""
     p = rel.split("/")
     sub = p[1] if len(p) > 2 else ""
     ext = os.path.splitext(rel)[1].lower()
     if kind == "gopro":
         return "gopro"
     if kind in ("drive", "folder"):
-        return sources.drive_category(rel)
+        return sources.drive_category(rel, app)
     app = sources.extra_app(rel)
     if app:
         return f"messaging:{app}"
@@ -300,7 +301,8 @@ def cmd_stage(a):
     raw = private_dir(os.path.join(private_dir(bdir(a.batch)), "raw"))
     prog = Progress("stage", f"copying {len(files):,} media files into the batch (size-checked)",
                     unit="files staged", hits=None, total=len(files))
-    # Google Takeout JSON / iCloud CSV beside the files (exports.py): their dates and places ride in the manifest.
+    # Google Takeout JSON / iCloud CSV beside the files, a Telegram export's result.json (exports.py): their
+    # dates and places ride in the manifest.
     exported, ec = exports.scan(root, files) if a.kind in ("drive", "folder") else ({}, {})
     for path, rel in files:
         dst = os.path.join(raw, rel)
@@ -313,6 +315,9 @@ def cmd_stage(a):
             sys.exit(f"size mismatch after copy: {rel}")
         origin = os.path.join(os.path.abspath(a.origin), rel) if a.origin else path
         man[rel] = dict(src=origin, size=st.st_size, **({"export": exported[rel]} if rel in exported else {}))
+        app = sources.export_app(root, rel) if a.kind in ("drive", "folder") else None
+        if app:  # the staged folder may be the export itself: plan's category can't see that from rel
+            man[rel]["app"] = app
         prog.tick()
     for dirpath, _, names in os.walk(root) if a.kind == "gopro" else []:
         for n in names:
@@ -321,7 +326,7 @@ def cmd_stage(a):
     save(os.path.join(bdir(a.batch), "manifest.json"), dict(kind=a.kind, root=os.path.abspath(a.origin or root), files=man, **extra))
     print(f"staged {len(man)} media files into {raw}")
     if exported or ec.get("ambiguous"):
-        print(f"  cloud export metadata: Google Takeout {ec['google']}, iCloud {ec['icloud']}, "
+        print(f"  cloud export metadata: Google Takeout {ec['google']}, iCloud {ec['icloud']}, Telegram {ec['telegram']}, "
               f"with a place {ec['places']}, ambiguous (ignored) {ec['ambiguous']}")
     if ec.get("unreadable"):
         skipped["folders whose cloud export metadata could not be read"] = ec["unreadable"]
@@ -381,7 +386,7 @@ def cmd_plan(a):
                          chapter_of=dd.chapter_of, device=dd.device, device_model=dd.model,
                          burst_id=dd.burst_id,  # the camera's BurstUUID / GCamera BurstID, for bursts.py
                          export_gps=exports.gps_of(man["files"][rel]),  # tag's place when the file has no GPS
-                         cat=category(rel, kind), dhash=dh, w=w, h=h, ext=ext,
+                         cat=category(rel, kind, man["files"][rel].get("app")), dhash=dh, w=w, h=h, ext=ext,
                          vhash=vh, vhash_note=vnote))  # videohash frame dHashes ([] + a note: not compared)
         prog.tick()
 

@@ -1,13 +1,15 @@
 #!/usr/bin/env python3
-"""Cloud exports (exports.py): Google Takeout JSON and iCloud Photo Details CSV dates and places.
+"""Exports (exports.py): Google Takeout JSON and iCloud Photo Details CSV dates and places, and a
+Telegram Desktop export's result.json dates.
 
   python3 -I -m unittest discover -s tests -p test_exports.py
 
 Synthetic exports only, in a throwaway HOME: fabricated Takeout folders with JSON sidecars
 (new and old names, truncated long names, a (1) duplicate, an -edited copy, a Live Photo pair,
 0,0 places, a symlinked and a non-Takeout JSON) and an iCloud folder with its CSV, plus the
-metadata files scan refuses (symlinked, over the size cap, a non-UTF-8 CSV, a FIFO). Every name
-and row is made up here from the naming rules in docs/intake.md ("Cloud exports"). stage is
+metadata files scan refuses (symlinked, over the size cap, a non-UTF-8 CSV, a FIFO), and Telegram
+exports (one chat, all data, renamed, staged as the source itself) with a result.json built here. Every
+name and row is made up here from the rules in docs/intake.md ("Cloud exports"). stage is
 checked to leave the source tree byte-identical, with the same mtimes and no new entries.
 """
 import datetime, hashlib, json, os, shutil, subprocess, sys, tempfile, types, unittest
@@ -77,7 +79,28 @@ def snapshot(root):
 
 def counts(**kw):
     """scan()'s counts: zero for every key not given."""
-    return {**dict(google=0, icloud=0, places=0, ambiguous=0, unreadable=0), **dict.fromkeys(exports.REFUSED, 0), **kw}
+    return {**dict(google=0, icloud=0, telegram=0, places=0, ambiguous=0, unreadable=0),
+            **dict.fromkeys(exports.REFUSED, 0), **kw}
+
+
+def telegram_result(path, messages, data_export=False, raw=None):
+    """A synthetic Telegram Desktop result.json: one chat's object, or (data_export) the whole-account
+    form with the messages under chats.list[0]. raw: write these bytes instead."""
+    os.makedirs(os.path.dirname(path), exist_ok=True)
+    chat = {"name": "Example chat", "type": "personal_chat", "id": 1, "messages": messages}
+    d = {"about": "x", "chats": {"about": "x", "list": [chat]}} if data_export else chat
+    with open(path, "wb") as f:
+        f.write(raw if raw is not None else json.dumps(d).encode("utf-8"))
+
+
+def tg_msg(i, path, unixtime=None, local=None, key="file"):
+    """One message carrying a photo or file path; unixtime and/or local ISO date."""
+    m = {"id": i, "type": "message", key: path, "text": ""}
+    if unixtime is not None:
+        m["date_unixtime"] = str(unixtime)
+    if local is not None:
+        m["date"] = local
+    return m
 
 
 def jpg(path, seed):
@@ -215,6 +238,93 @@ class Scan(unittest.TestCase):
             time="2015-03-03 19:45:00Z", via="icloud", sidecar=os.path.join(r, "Photo Details.csv"))})
         self.assertEqual(c, counts(icloud=1, ambiguous=1))
 
+
+    def test_telegram_chat_export(self):
+        """A one-chat export staged as the source root: files kept under their own name take their message's
+        date; photo_<n>@<date> names (a filename date already), unlisted files and contested paths don't."""
+        msgs = [tg_msg(1, "video_files/holiday.MOV", T2019, key="file"),
+                tg_msg(2, "files/IMG_0007.HEIC", None, local="2020-06-15T12:00:00"),  # an older export: no unixtime
+                tg_msg(3, "photos/photo_1@05-03-2019_14-22-01.jpg", T2020, key="photo"),
+                tg_msg(4, "files/twice.jpg", T2019), tg_msg(5, "files/twice.jpg", T2020),
+                tg_msg(6, "files/same.jpg", T2019), tg_msg(7, "files/same.jpg", T2019),
+                tg_msg(8, "files/caf\u0065\u0301.jpg", T2019),  # decomposed in the JSON, composed on disk
+                tg_msg(9, "(File not included. Change data exporting settings to download.)", T2019),
+                {"id": 10, "type": "service", "date_unixtime": str(T2019)},
+                tg_msg(11, "files/bad-date.jpg", None, local="sometime"),
+                "not a message"]
+        telegram_result(os.path.join(self.root, "result.json"), msgs)
+        os.makedirs(os.path.join(self.root, "photos"))
+        for rel in ("video_files/holiday.MOV", "files/IMG_0007.HEIC", "photos/photo_1@05-03-2019_14-22-01.jpg",
+                    "files/twice.jpg", "files/same.jpg", "files/caf\u00e9.jpg", "files/unlisted.jpg",
+                    "files/bad-date.jpg"):
+            touch(os.path.join(self.root, rel))
+        files = self.files() + [(os.path.join(self.root, "video_files/holiday.MOV"), "video_files/holiday.MOV")]
+        out, c = exports.scan(self.root, files)
+        self.assertEqual(out["video_files/holiday.MOV"], dict(time="2019-05-10 12:00:00Z", via="telegram",
+                                                              sidecar="result.json"))
+        here = datetime.datetime(2020, 6, 15, 12).astimezone(UTC).strftime("%Y-%m-%d %H:%M:%SZ")
+        self.assertEqual(out["files/IMG_0007.HEIC"]["time"], here, "the local date, in this machine's time zone")
+        self.assertEqual(out["files/same.jpg"]["time"], "2019-05-10 12:00:00Z", "listed twice, same date")
+        self.assertEqual(out["files/caf\u00e9.jpg"]["time"], "2019-05-10 12:00:00Z", "compared in NFC")
+        for rel in ("photos/photo_1@05-03-2019_14-22-01.jpg", "files/twice.jpg", "files/unlisted.jpg",
+                    "files/bad-date.jpg"):
+            self.assertNotIn(rel, out, rel)
+        self.assertEqual(c, counts(telegram=4, ambiguous=1))
+
+    def test_telegram_data_export_and_takeout_first(self):
+        """An "Export Telegram data" folder: one result.json at its top, paths under chats/; a renamed
+        one-chat export below the root; a Takeout JSON beside a file wins; a result.json outside an export
+        (no Telegram layout) is never read."""
+        data = os.path.join(self.root, "DataExport_2026-11-14")
+        telegram_result(os.path.join(data, "result.json"),
+                        [tg_msg(1, "chats/chat_001/video_files/clip.mp4", T2019),
+                         tg_msg(2, "chats/chat_001/files/IMG_0008.jpg", T2019)], data_export=True)
+        touch(os.path.join(data, "chats", "chat_001", "video_files", "clip.mp4"))
+        touch(os.path.join(data, "chats", "chat_001", "files", "IMG_0008.jpg"))
+        takeout_json(os.path.join(data, "chats", "chat_001", "files", "IMG_0008.jpg.json"), T2020)
+        renamed = os.path.join(self.root, "old chats")
+        telegram_result(os.path.join(renamed, "result.json"), [tg_msg(1, "files/IMG_0009.jpg", T2020)])
+        os.makedirs(os.path.join(renamed, "photos"))
+        touch(os.path.join(renamed, "files", "IMG_0009.jpg"))
+        other = os.path.join(self.root, "project")
+        telegram_result(os.path.join(other, "result.json"), [tg_msg(1, "files/IMG_0010.jpg", T2019)])
+        touch(os.path.join(other, "files", "IMG_0010.jpg"))
+        with mock.patch.object(exports, "read_telegram", wraps=exports.read_telegram) as rt:
+            out, c = exports.scan(self.root, self.files())
+        self.assertEqual(out[os.path.join("DataExport_2026-11-14", "chats", "chat_001", "video_files", "clip.mp4")],
+                         dict(time="2019-05-10 12:00:00Z", via="telegram",
+                              sidecar=os.path.join("DataExport_2026-11-14", "result.json")))
+        self.assertEqual(out[os.path.join("DataExport_2026-11-14", "chats", "chat_001", "files", "IMG_0008.jpg")]["via"],
+                         "google-takeout")
+        self.assertEqual(out[os.path.join("old chats", "files", "IMG_0009.jpg")]["time"], "2020-06-15 12:00:00Z")
+        self.assertNotIn(os.path.join("project", "files", "IMG_0010.jpg"), out)
+        self.assertEqual(sorted(os.path.relpath(a.args[0], self.root) for a in rt.call_args_list),
+                         [os.path.join("DataExport_2026-11-14", "result.json"), os.path.join("old chats", "result.json")],
+                         "each export's result.json read once; one outside an export never")
+        self.assertEqual(c, counts(google=1, telegram=2))
+
+    def test_telegram_refusals(self):
+        """An oversized, non-UTF-8, symlinked or non-JSON result.json is skipped (counted by reason, never
+        followed) and its files get no export date."""
+        def export(name, **kw):
+            d = os.path.join(self.root, f"ChatExport_2026-11-0{name}")
+            telegram_result(os.path.join(d, "result.json"), [tg_msg(1, "files/IMG_1.jpg", T2019)], **kw)
+            touch(os.path.join(d, "files", "IMG_1.jpg"))
+            return d
+        big = export(1)
+        with open(os.path.join(big, "result.json"), "ab") as f:
+            f.write(b" " * 600)
+        export(2, raw='{"messages": [{"date_unixtime": "1557489600", "file": "files/IMG_1.jpg", "text": "caf\xe9"}]}'
+               .encode("latin-1"))
+        export(3, raw=b"not json")
+        link = export(4)
+        real = os.path.join(self.root, "real-result.json")
+        os.replace(os.path.join(link, "result.json"), real)
+        os.symlink(real, os.path.join(link, "result.json"))
+        with mock.patch.object(exports, "TELEGRAM_MAX", 512):
+            out, c = exports.scan(self.root, self.files())
+        self.assertEqual(out, {})
+        self.assertEqual(c, counts(refused_size=1, refused_encoding=1, refused_link=1))
 
     def test_limits_encoding_and_symlinks(self):
         d = os.path.join(self.root, "export")
@@ -366,7 +476,7 @@ class StagePlan(unittest.TestCase):
         out = self.intake("stage", src, "--kind", "folder", "--batch", "takeout-1")
         self.assertEqual(snapshot(src), before_snap, "stage leaves the source byte-identical, same mtimes, nothing new")
         self.assertIn("staged 5 media files", out)
-        self.assertIn("Google Takeout 4, iCloud 1, with a place 1, ambiguous (ignored) 0", out)
+        self.assertIn("Google Takeout 4, iCloud 1, Telegram 0, with a place 1, ambiguous (ignored) 0", out)
         self.assertNotIn("could not be read", out)
         b = os.path.join(self.state, "batches", "takeout-1")
         with open(os.path.join(b, "manifest.json")) as f:
@@ -394,6 +504,37 @@ class StagePlan(unittest.TestCase):
         self.assertEqual((ip["date_src"], ip["date"]), ("export", "2015-03-03T19:45:00"))
         self.assertEqual(sha_tree(src), before, "the export's JSON, CSV and media are never written")
         self.assertEqual(snapshot(src), before_snap, "nor touched, nor added to, by plan")
+
+    def test_telegram_export_as_the_source(self):
+        """A Telegram export staged as the folder itself: a file kept under its own name is dated by its
+        message in result.json (no EXIF of its own) and filed as messaging:Telegram, like photo_<n>@ names;
+        the result.json is never staged and the export is left as it was."""
+        src = os.path.join(self.home, "chat with a friend")
+        jpg(os.path.join(src, "files", "IMG_0801.jpg"), 1)
+        jpg(os.path.join(src, "photos", "photo_1@05-03-2019_14-22-01.jpg"), 2)
+        telegram_result(os.path.join(src, "result.json"), [tg_msg(1, "files/IMG_0801.jpg", T2020),
+                                                           tg_msg(2, "photos/photo_1@05-03-2019_14-22-01.jpg",
+                                                                  T2019, key="photo")])
+        before = snapshot(src)
+        out = self.intake("stage", src, "--kind", "folder", "--batch", "tg-1")
+        self.assertIn("staged 2 media files", out)
+        self.assertIn("Google Takeout 0, iCloud 0, Telegram 1,", out)
+        self.assertNotIn("IMG_0801", out, "no file name in stage's output")
+        with open(os.path.join(self.state, "batches", "tg-1", "manifest.json")) as f:
+            man = json.load(f)["files"]
+        own, named = os.path.join("files", "IMG_0801.jpg"), os.path.join("photos", "photo_1@05-03-2019_14-22-01.jpg")
+        self.assertEqual(sorted(man), [own, named])
+        self.assertEqual(man[own]["export"], dict(time="2020-06-15 12:00:00Z", via="telegram", sidecar="result.json"))
+        self.assertNotIn("export", man[named], "its name is dated already")
+        self.assertEqual({r: e.get("app") for r, e in man.items()}, {own: "Telegram", named: "Telegram"})
+        self.intake("plan", "tg-1")
+        with open(os.path.join(self.state, "batches", "tg-1", "plan.json")) as f:
+            plan = {p["rel"]: p for p in json.load(f)}
+        self.assertEqual((plan[own]["date_src"], plan[own]["date"], plan[own]["cat"]),
+                         ("export", "2020-06-15T12:00:00", "messaging:Telegram"))
+        self.assertEqual((plan[named]["date_src"], plan[named]["date"], plan[named]["cat"]),
+                         ("filename", "2019-03-05T14:22:01", "messaging:Telegram"))
+        self.assertEqual(snapshot(src), before, "the export is untouched")
 
     def test_refused_metadata_reported(self):
         """stage skips a symlinked JSON, an oversized JSON and a non-UTF-8 CSV, says so, stages their

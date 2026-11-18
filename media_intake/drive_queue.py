@@ -191,7 +191,7 @@ def cmd_add(a):
                                  events=list(a.event or []),
                                  files=len(files), bytes=total, chunk=None, chunks={}, offloaded=[])
     save(QFILE, q)
-    by = collections.Counter(sources.drive_category(r).split(":")[0] for r, _ in files)
+    by = collections.Counter(sources.drive_category(r, sources.export_app(root, r)).split(":")[0] for r, _ in files)
     print(f"queued {a.label}: {len(files)} files, {gb(total)} ({', '.join(f'{k} {v}' for k, v in sorted(by.items()))}); "
           f"{gb(free - total)} free after copying")
     print("next: media-intake queue run --inhibit")
