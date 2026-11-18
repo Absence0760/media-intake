@@ -2856,7 +2856,7 @@ def build_parser(prog=None):
     s.add_argument("--phone", metavar="PHONE", help="also delete the matching files on this phone or camera: "
                    + h_phone)
     s.add_argument("--drive", metavar="DRIVE", help="also delete the matching files on " + h_drive
-                   + ", then overwrite its free space")
+                   + ", then overwrite its free space (checked before anything is asked)")
     s.add_argument("--yes", action="store_true", help=h_yes.format(word="ERASE"))
     s.add_argument("--keep-phone-thumbnails", action="store_true", help="don't remove DCIM/.thumbnails and "
                    "Pictures/.thumbnails on the phone (removed by default with --phone)")
@@ -2870,7 +2870,7 @@ def build_parser(prog=None):
             "YES, for good, every copy it finds.")
     s.add_argument("files", nargs="+", metavar="FILE", help=h_files)
     s.add_argument("--drive", metavar="DRIVE", help="also delete the matching files on " + h_drive
-                   + ", then overwrite its free space")
+                   + ", then overwrite its free space (checked before anything is asked)")
     s.add_argument("--yes", action="store_true", help=h_yes.format(word="ERASE"))
     s.add_argument("--no-wipe-free", action="store_true", help="skip overwriting the backup drive's free space")
 
