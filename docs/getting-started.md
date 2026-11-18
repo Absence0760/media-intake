@@ -95,16 +95,19 @@ media-intake tag first-test
 | `stage` | Copies the folder's media files into the private state folder; your folder is only read. | How many files were staged, and counts of anything skipped. |
 | `plan` | Works out each file's date and library folder, and finds exact and near duplicates. Nothing moves yet. | A summary of what will be filed, dropped as an exact duplicate, or set aside for review; where the dates came from (`from file times` means the photo had no date of its own); and the folders they will go to, with a count each. |
 | `scan` | Runs the local detectors (nudity, text on IDs and cards, QR and barcodes). Flags only. | Progress and counts; never image content. |
-| `apply` | Files the clean files in the library, drops exact duplicates, and moves flagged files to the private quarantine. | One line of counts, for example `apply: 6 files filed, 1 exact duplicate dropped`. |
+| `apply` | Files the clean files in the library, drops exact duplicates, and moves flagged files to quarantine. | One line of counts, for example `apply: 6 files filed, 1 exact duplicate dropped`. |
 | `review` | Starts a local review page for what `apply` set aside. | One `xdg-open 'http://127.0.0.1:<port>/?t=<token>'` line, or `nothing to review for first-test`. |
 | `tag` | Writes XMP sidecar tags (source, date, place, content labels) for the filed files. | Counts. `--no-labels` skips the content labels if you want it faster. |
 
 On the review page (open the printed link in a private browser window):
-the **Quarantine** tab holds what the detectors flagged, with Keep (it was a
-false positive) or Erase only; the **Review** tab holds near-duplicates and
-junk, with Keep, Delete or Trash. Submit unlocks once every item is decided
-and asks you to type `ERASE`. Closing the tab without submitting changes
-nothing. Detail: [review-ui.md](review-ui.md).
+the **Quarantine** tab holds what the detectors flagged, with **Keep** (it was
+a false positive) or **Erase** only; the **Review** tab holds the review
+folder's near-duplicates and junk, with **Keep**, **Delete this copy** or
+**Trash**. Each choice is a mark until you apply it: **Submit** unlocks once
+every item is decided and opens the **Apply N decisions** dialog, which asks
+you to type `ERASE` when anything will be removed. Closing the tab without
+applying changes nothing. Detail: [review-ui.md](review-ui.md); what Keep,
+Trash, Erase and the other words mean: [words.md](words.md).
 
 At a terminal each step ends with one `next: media-intake <command> <batch>`
 line naming what to run next: after `apply`, `review` if anything was set

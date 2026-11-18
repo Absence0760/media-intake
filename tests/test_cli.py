@@ -333,8 +333,8 @@ class Commands(unittest.TestCase):
             with self.subTest(argv=argv):
                 code, out, err = self.run_main(argv)
                 self.assertEqual((code, err), (0, ""))
-                self.assertIn("media-intake doctor", out)
-                self.assertIn("Intake commands:", out)
+                self.assertIn("usage: media-intake <command> [options]", out)
+                self.assertIn("docs/words.md", out)
 
     def test_names_include_every_intake_subcommand(self):
         import argparse, intake
@@ -372,6 +372,107 @@ class Commands(unittest.TestCase):
         with mock.patch.object(intake, "main") as m:
             self.assertEqual(self.run_main(["find", "--event", "x"])[0], 0)
         m.assert_called_once_with(["find", "--event", "x"], prog="media-intake")
+
+
+class HelpText(unittest.TestCase):
+    """Help a non-technical owner can read: `media-intake --help` lists every command once, by task, with no
+    argparse `{a,b,...}` line; every intake command's --help says what it does, what it touches and whether it
+    deletes; and every option and positional (intake, gallery, review) has help text."""
+
+    @staticmethod
+    def intake_sub():
+        import argparse, intake
+        return next(a for a in intake.build_parser("media-intake")._actions
+                    if isinstance(a, argparse._SubParsersAction))
+
+    def top_help(self):
+        out = io.StringIO()
+        with mock.patch("sys.stdout", out):
+            self.assertEqual(cli.main(["--help"]), 0)
+        return out.getvalue()
+
+    def test_top_level_help_lists_each_command_once(self):
+        out = self.top_help()
+        listed = re.findall(r"^  ([a-z][a-z-]+)", out, re.M)
+        for name in cli.command_names():
+            if name == "social-copy":  # share-copy's older name, given on share-copy's line
+                self.assertIn("(or social-copy)", out)
+                continue
+            with self.subTest(name):
+                self.assertEqual(listed.count(name), 1, f"{name} listed once in media-intake --help")
+        self.assertLessEqual(set(listed), set(cli.command_names()), "no command listed that doesn't exist")
+        self.assertNotIn("{", out, "no argparse {a,b,...} usage line")
+        self.assertNotIn("positional arguments", out)
+        for line in out.splitlines():
+            self.assertLessEqual(len(line), 80, line)
+
+    def test_deleting_commands_say_so_in_the_list(self):
+        out = self.top_help()
+        for name in ("erase", "forget", "offload", "trash", "purge-review", "prune-cache"):
+            with self.subTest(name):
+                self.assertRegex(out, rf"(?m)^  {name}\b.*DELETES")
+
+    def test_every_intake_command_says_what_it_touches_and_deletes(self):
+        for name, p in self.intake_sub().choices.items():
+            with self.subTest(name):
+                desc = p.description or ""
+                self.assertRegex(desc, r"(?m)^Touches: \S", "says what it touches")
+                self.assertRegex(desc, r"(?m)^Deletes: \S", "says whether it deletes")
+                self.assertTrue(desc.split("\n\n")[0].strip(), "says what it does")
+                deletes = desc.split("Deletes: ", 1)[1]
+                summary = next(a.help for a in self.intake_sub()._choices_actions if a.dest == name)
+                self.assertEqual(deletes.startswith("YES"), summary.startswith("DELETES"),
+                                 "the one-line summary says DELETES exactly when the command deletes")
+                for line in p.format_help().splitlines():
+                    self.assertLessEqual(len(line), 80, line)
+
+    def assert_every_argument_has_help(self, parser):
+        for a in parser._actions:
+            if a.help == "show this help message and exit":
+                continue
+            with self.subTest(prog=parser.prog, arg=a.option_strings or a.dest):
+                self.assertTrue(a.help and len(a.help) > 8, "has help text")
+
+    def test_every_intake_option_and_positional_has_help(self):
+        for p in self.intake_sub().choices.values():
+            self.assert_every_argument_has_help(p)
+
+    def parser_of(self, module):
+        """gallery's or review_ui's parser, as main() builds it: captured from --help's parse."""
+        import argparse
+        seen = []
+        real = argparse.ArgumentParser.parse_args
+
+        def grab(ap, args=None, namespace=None):
+            seen.append(ap)
+            return real(ap, args, namespace)
+        with mock.patch.object(argparse.ArgumentParser, "parse_args", grab), \
+                mock.patch("sys.stdout", io.StringIO()) as out, self.assertRaises(SystemExit) as e:
+            module.main(["--help"])
+        self.assertEqual(e.exception.code, 0)
+        return seen[0], out.getvalue()
+
+    def test_gallery_and_review_help(self):
+        import gallery, review_ui
+        for module, prog in ((gallery, "media-intake gallery"), (review_ui, "media-intake review")):
+            with self.subTest(prog):
+                ap, out = self.parser_of(module)
+                self.assertTrue(out.startswith(f"usage: {prog} "), "names the command, not cli.py")
+                self.assertIn("\nTouches: ", out)
+                self.assertIn("\nDeletes: ", out)
+                self.assertIn("the backup drive", out, "--drive is the backup drive")
+                self.assertNotIn("passed to", out, "no internal wording")
+                self.assert_every_argument_has_help(ap)
+
+    def test_bad_port_is_a_usage_error(self):
+        import gallery, review_ui
+        for module in (gallery, review_ui):
+            for bad in ("99999", "-1", "x"):
+                with self.subTest(module=module.__name__, port=bad), mock.patch("sys.stderr", io.StringIO()) as err, \
+                        self.assertRaises(SystemExit) as e:
+                    module.main([f"--port={bad}"])
+                self.assertEqual(e.exception.code, 2)
+                self.assertIn("a port is 0-65535", err.getvalue())
 
 
 class VenvCommands(unittest.TestCase):

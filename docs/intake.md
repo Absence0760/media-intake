@@ -167,21 +167,21 @@ Sources (checked 2026-11-14):
 ## Commands
 
 ```
-media-intake stage SRC_ROOT --kind phone|gopro|drive|folder [--batch NAME] [--only LISTFILE]
+media-intake stage SOURCE --kind phone|gopro|drive|folder [--batch NAME] [--only LISTFILE]
 media-intake plan BATCH [--event [PROJECT/]SLUG@YYYY-MM-DD ...] [--clock-offset DEVICE=±Nh ...]
-media-intake scan BATCH                 # local detectors; labels only
+media-intake scan BATCH                 # local detectors; flags only
 media-intake apply BATCH                # moves files; prints a summary
 media-intake quarantine BATCH           # counts + the folder to open, and the erase line for its kind
 media-intake release BATCH FILE...      # false positive -> library
-media-intake erase BATCH [--phone ROOT [--keep-phone-thumbnails]] [--drive MOUNT [--no-wipe-free]] [--yes]
-media-intake forget LIBRARY_FILE... [--drive MOUNT] [--yes]   # asks (type ERASE) before anything moves
-media-intake verify-gone [BATCH] [--drive MOUNT]   # with BATCH, also its last erase coverage report
-media-intake wipe-free MOUNT
-media-intake offload BATCH --phone ROOT [--yes]   # asks (type DELETE); refused for a --kind folder batch
+media-intake erase BATCH [--phone PHONE [--keep-phone-thumbnails]] [--drive DRIVE [--no-wipe-free]] [--yes]
+media-intake forget FILE... [--drive DRIVE] [--yes]   # asks (type ERASE) before anything moves
+media-intake verify-gone [BATCH] [--drive DRIVE]   # with BATCH, also its last erase coverage report
+media-intake wipe-free DRIVE
+media-intake offload BATCH --phone SOURCE [--yes]   # asks (type DELETE); refused for a --kind folder batch
 media-intake purge-review BATCH [--yes]   # a batch name, never a path; a dry run without --yes
-media-intake trash [BATCH] FILE... [--phone ROOT] [--yes]   # a dry run without --yes
+media-intake trash [BATCH] FILE... [--phone PHONE] [--yes]   # a dry run without --yes
 media-intake trash --from-digikam [--yes]
-media-intake suggest-trash [--batch B] [--phone ROOT]
+media-intake suggest-trash [--batch BATCH] [--phone PHONE]
 media-intake not-trash FILE...
 media-intake migrate-tags [--dry-run]
 media-intake share-copy FILE... --out DIR     # alias: social-copy
@@ -189,13 +189,17 @@ media-intake tag BATCH [--no-labels]
 media-intake tag-files FILE... [--event SLUG] [--no-labels]
 media-intake mark-used FILE... --post SLUG
 media-intake find [--tag T] [--event E] [--place P] [--project P] [--unused-since 30d] [--never-used]
-media-intake gallery [--drive MOUNT] [--share-out DIR]
+media-intake gallery [--drive DRIVE] [--share-out DIR]
 media-intake prune-cache [--dry-run]          # gallery thumbnails and proxies nothing shows any more
 media-intake calibrate [--precision P] [--json]   # label thresholds vs your marks, report only (configuration.md)
 media-intake backup MOUNT [--verify] [--dry-run]   # library, videos, sidecars to a mounted drive (backup.md)
 ```
 
-`media-intake <command> --help` shows every option. The review page is
+`media-intake <command> --help` says what the command does, what it touches
+(`Touches:`) and whether it deletes (`Deletes:`), then every option. The
+placeholders mean: `SOURCE` the folder you import from, `PHONE` a phone's or
+camera's folder, `DRIVE` the folder the backup drive is mounted on, `BATCH` a
+batch name ([words.md](words.md)). The review page is
 `media-intake review BATCH` ([review-ui.md](review-ui.md)), the web gallery
 [gallery.md](gallery.md), the drive and laptop-folder queue [queue.md](queue.md),
 the backup to a mounted drive [backup.md](backup.md),
@@ -1018,7 +1022,7 @@ any plugin's `after_tag` hook ([plugins.md](plugins.md)).
   files still go by date. `tag-files` reads the project and event from
   `<project folder>/<date>-<slug>/`, or takes `--event`.
 - **Protected projects**: files tagged with a project's `Project|<name>`
-  (`protect = true`, the default) are never trash suggestions and never get a
+  (`protect = true`, the default) are never Suggested junk and never get a
   VLM trash verdict.
 - **Used**: `mark-used FILE... --post <slug>` adds `Used|<slug>`; the slug's
   leading date is the date of use, so `find --unused-since 30d` needs slugs
@@ -1160,7 +1164,7 @@ suggest-trash, vlm-trash, semantic `--clean`, the gallery and the review page.
   sidecar once (idempotent; `--dry-run` counts), and any re-tag of a file
   (`tag`, `tag-files`) or Keep rewrites it on the way. Reading it stays because
   a sidecar can come back unmigrated (a restored backup, a digiKam copy), and
-  dropping the read would turn a kept file into a trash suggestion.
+  dropping the read would turn a kept file into Suggested junk.
 - `dc:Subject` leaves go only with a removed tag, and never a leaf another
   kept tag or digiKam's `TagsList` still uses (your keyword "food" survives
   `Label|food` being replaced).

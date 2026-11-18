@@ -1,32 +1,17 @@
 #!/usr/bin/env python3
-"""Media intake: phone/GoPro -> organised library, junk and duplicates out,
-sensitive files quarantined for you to review, erased everywhere on confirm.
-Run as `media-intake <command>` (cli.py); `python3 -I media_intake/intake.py` works too.
+"""Media intake: copy photos and videos from a source (a phone, camera, drive or laptop folder) into
+one library, drop duplicates, set private-looking files aside in quarantine for you to decide on,
+and erase them everywhere when you say so.
 
-  media-intake stage   SRC_ROOT --kind phone|gopro|drive|folder [--batch NAME] [--only LISTFILE]  (default name: <device>-<date>)
-  media-intake plan    BATCH [--event [PROJECT/]SLUG@YYYY-MM-DD ...] [--clock-offset DEVICE=±Nh ...]
-  media-intake scan    BATCH                     (local detectors; labels only)
-  media-intake apply   BATCH                     (moves files; prints a summary)
-  media-intake quarantine BATCH                  (counts + the folder to open)
-  media-intake release BATCH FILE...             (false positive -> library)
-  media-intake erase   BATCH [--phone ROOT [--keep-phone-thumbnails]] [--drive MOUNT [--no-wipe-free]]
-  media-intake forget  LIBRARY_FILE... [--drive MOUNT] [--yes]  (later finds; asks before anything moves)
-  media-intake verify-gone [BATCH] [--drive MOUNT]  (read-only sweep; exit 1 if a copy remains)
-  media-intake wipe-free MOUNT                   (zero a backup drive's free space)
-  media-intake purge-review BATCH [--yes]        (empty the review folder; a dry run without --yes)
-  media-intake trash   [BATCH] FILE... [--phone ROOT] [--yes]   (plain delete of non-sensitive junk; never
-                                                 comes back; a dry run without --yes)
-  media-intake trash   --from-digikam [--yes]    (library files with digiKam's Rejected pick label)
-  media-intake suggest-trash [--batch B] [--phone ROOT]  (Review|maybe-trash files -> review page)
-  media-intake not-trash FILE...                 (keep a suggestion: Owner|keep + Owner|not-trash)
-  media-intake migrate-tags [--dry-run]          (legacy Review|not-trash -> Owner|not-trash, once)
-  media-intake offload BATCH --phone ROOT        (after a drive backup: free the phone; a drive batch: its source root;
-                                                  refused for a laptop folder batch: you delete the folder yourself)
-  media-intake share-copy FILE... --out DIR      (copy without GPS/metadata; alias social-copy)
-  media-intake tag     BATCH [--no-labels]       (after apply: XMP sidecar tags for filed files)
-  media-intake tag-files FILE... [--event SLUG] [--no-labels]   (re-tag library files)
-  media-intake mark-used FILE... --post SLUG     (adds Used|<post slug>)
-  media-intake find    [--tag T] [--event E] [--place P] [--project P] [--unused-since 30d]
+Run as `media-intake <command>` (cli.py); `python3 -I media_intake/intake.py` works too.
+`media-intake --help` lists every command by task, and `media-intake <command> --help` says what
+one does, what it touches and whether it deletes. The words used here (batch, source, backup
+drive, quarantine, review folder, Keep, Trash, Erase): docs/words.md.
+
+An import, in order:
+  media-intake stage SOURCE --kind phone|gopro|drive|folder [--batch NAME]
+  media-intake plan BATCH          then scan, apply, review and tag, each with the BATCH
+  media-intake backup DRIVE        then, for a phone or camera: media-intake offload BATCH --phone SOURCE
 
 Tags live in <file>.<ext>.xmp sidecars next to each file (digiKam's default
 naming); originals are never written (their sha256 drives dedupe and erase).
@@ -39,12 +24,10 @@ Layout (docs/intake.md; every path comes from config.toml, docs/configuration.md
   ~/Videos/personal/<YYYY>/<YYYY-MM>/                 videos (GoPro in <YYYY-MM>/<device id>/)
   <project folder>/<date>-<event>/{phone,gopro/<device id>}/   events routed to a configured project
   ~/.local/share/media-intake/  (0700, never synced or indexed)
-    batches/<batch>/raw/          staged copy, deleted once applied
-    batches/<batch>/review/       near-duplicates + junk for a glance
-    quarantine/<batch>/           sensitive files; no assistant or tool ever opens these
+    batches/<batch>/raw/          the batch's staged copy, deleted once applied
+    batches/<batch>/review/       the review folder: near-duplicates and junk, for a glance
+    quarantine/<batch>/           quarantine: flagged files; no assistant or tool ever opens these
     index.json                    sha256 + dHash (videos: vhash) of everything in the library
-
-Test: python3 -I -m unittest discover -s tests (synthetic media, throwaway HOME).
 
 An AI assistant may run these commands for you, but must never read, view,
 montage or describe a file under quarantine/ or a file scan.json flags.
@@ -2690,67 +2673,244 @@ def clock_offset_arg(v):
 
 
 def build_parser(prog=None):
+    """intake.py's commands. Every command's description says what it does, what it touches and whether it
+    deletes ("Touches:" and "Deletes:" lines, tests/test_cli.py checks), and every argument has help text,
+    in the words of docs/words.md. `media-intake --help` (cli.py) lists them by task."""
+    # The words (docs/words.md): batch, source, phone, backup drive, library, quarantine, review folder.
+    h_batch = "the batch name: the one `stage` printed (or you gave with --batch)"
+    h_files = "library files (paths)"
+    h_phone = "its folder, e.g. under /run/user/$UID/gvfs/ (connected and unlocked)"
+    h_drive = "the backup drive: the folder it is mounted on, e.g. /run/media/$USER/<label>"
+    h_yes = "don't ask: delete now (without it you are asked to type {word})"
     ap = argparse.ArgumentParser(prog=prog, description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
-    sp = ap.add_subparsers(dest="cmd", required=True)
-    s = sp.add_parser("stage"); s.add_argument("src"); s.add_argument("--kind", choices=["phone", "gopro", "drive", "folder"], required=True,
-                                                         help="folder = a folder on the laptop's own disk (under HOME)")
-    s.add_argument("--batch", help="batch name (default: <device id>-<YYYYMMDD> from the files' Make/Model/serial)")
-    s.add_argument("--only", metavar="LISTFILE", help="stage only these relative paths (one per line; drive_queue.py chunks)")
-    s.add_argument("--origin", help="device root the files really came from, if SRC is an earlier copy (for erase --phone)")
-    s = sp.add_parser("plan"); s.add_argument("batch")
+    sp = ap.add_subparsers(dest="cmd", required=True, metavar="<command>", title="commands")
+
+    def cmd(name, summary, what, touches, deletes):
+        """One subcommand: summary for the command list; its --help opens with what it does, then its
+        Touches: and Deletes: lines, each wrapped for an 80-column terminal."""
+        import textwrap
+        para = [textwrap.fill(" ".join(s.split()), 78, subsequent_indent="  " if i else "")
+                for i, s in enumerate((what, f"Touches: {touches}", f"Deletes: {deletes}"))]
+        desc = "\n".join([para[0], "", *para[1:]])
+        return sp.add_parser(name, help=summary, formatter_class=argparse.RawDescriptionHelpFormatter,
+                             description=desc)
+
+    s = cmd("stage", "copy a source (phone, camera, drive, folder) into a new batch",
+            "Copy the photos and videos from a source (a phone, a camera, a drive you import from, or a folder on\n"
+            "this laptop) into a new batch, checking each copy's size. The first step of an import.",
+            "reads the source; writes the batch in the state folder (by default ~/.local/share/media-intake).",
+            "no. The source is only read.")
+    s.add_argument("src", metavar="SOURCE", help="the source's folder: the phone's storage folder (the one holding "
+                   "DCIM), a camera's card, a drive's folder, or a laptop folder")
+    s.add_argument("--kind", choices=["phone", "gopro", "drive", "folder"], required=True,
+                   help="what the source is: phone, gopro (a GoPro or its card), drive (a drive you import from, "
+                        "not the backup drive) or folder (a folder on the laptop's own disk, under HOME)")
+    s.add_argument("--batch", help="batch name (default: <device id>-<YYYYMMDD> from the files' camera details)")
+    s.add_argument("--only", metavar="LISTFILE", help="stage only these paths, relative to SOURCE, one per line "
+                   "(the queue uses it for its chunks)")
+    s.add_argument("--origin", metavar="PHONE", help="the phone or camera the files really came from, when SOURCE "
+                   "is an earlier copy of it (so erase --phone can reach it)")
+
+    s = cmd("plan", "work out dates, library folders and duplicates; moves nothing",
+            "Work out each staged file's date and library folder, and find exact and near duplicates.\n"
+            "Nothing moves yet: apply does that.",
+            "reads the batch and the library's index; writes the batch's plan.",
+            "no.")
+    s.add_argument("batch", metavar="BATCH", help=h_batch)
     s.add_argument("--event", action="append", metavar="[PROJECT/]SLUG@YYYY-MM-DD",
                    help="an event on that day: Event|SLUG tags; with a PROJECT/ prefix, or a slug matching a "
                         "project's events patterns in config.toml, that day's camera files go to the project's folder")
     s.add_argument("--clock-offset", action="append", metavar="DEVICE=+-Nh", type=clock_offset_arg,
                    help="shift dates from a camera whose clock was wrong (DEVICE: its Make, Model, 'Make Model' or "
                         "all; e.g. 'HERO11 Black=+3h'); GPS dates are never shifted; sidecars only")
-    s = sp.add_parser("scan"); s.add_argument("batch")
-    s = sp.add_parser("apply"); s.add_argument("batch")
+
+    s = cmd("scan", "look for private files (IDs, cards, codes, nudity) with local detectors; flags only",
+            "Run the local detectors (nudity, text on IDs and cards, QR codes and barcodes) on the batch.\n"
+            "It only flags files; apply moves the flagged ones to quarantine. Needs the venv (bash setup.sh).",
+            "reads the batch; writes the batch's scan results.",
+            "no.")
+    s.add_argument("batch", metavar="BATCH", help=h_batch)
+
+    s = cmd("apply", "file the batch into the library; flagged files go to quarantine",
+            "Carry out the plan: file each clean file into the library, drop exact duplicates, set\n"
+            "near-duplicates and junk aside in the review folder, and move flagged files to quarantine.\n"
+            "Refuses until scan has run.",
+            "the batch, the library, the review folder and quarantine.",
+            "only the batch's staged copies: exact duplicates are dropped, and the staged folder goes once "
+            "everything has moved. The source and the library lose nothing.")
+    s.add_argument("batch", metavar="BATCH", help=h_batch)
     s.add_argument("--no-scan", action="store_true", help="file everything WITHOUT the sensitive-file check (IDs, "
                    "cards, nudity); only for photos you already know are safe")
     s.add_argument("--allow-missing-detectors", action="store_true", help="file even though the ID and card "
                    "detectors are not installed (those files will not be checked)")
-    s = sp.add_parser("quarantine"); s.add_argument("batch")
-    s = sp.add_parser("release"); s.add_argument("batch"); s.add_argument("files", nargs="+")
-    s = sp.add_parser("erase"); s.add_argument("batch"); s.add_argument("--phone"); s.add_argument("--drive"); s.add_argument("--yes", action="store_true")
-    s.add_argument("--keep-phone-thumbnails", action="store_true", help="don't remove DCIM/.thumbnails and Pictures/.thumbnails (removed by default with --phone)")
-    s.add_argument("--no-wipe-free", action="store_true", help="skip overwriting the drive's free space")
-    s = sp.add_parser("forget"); s.add_argument("files", nargs="+"); s.add_argument("--drive"); s.add_argument("--yes", action="store_true")
-    s.add_argument("--no-wipe-free", action="store_true")
-    s = sp.add_parser("verify-gone"); s.add_argument("batch", nargs="?", help="one batch (default: every erase-log entry)"); s.add_argument("--drive")
-    s = sp.add_parser("wipe-free"); s.add_argument("mount")
-    s = sp.add_parser("offload"); s.add_argument("batch"); s.add_argument("--phone", required=True); s.add_argument("--yes", action="store_true")
-    s = sp.add_parser("purge-review", help="DELETES a batch's reviewed near-duplicates/junk; a dry run without --yes",
-                      description="Delete the batch's review folder (near-duplicates and junk). Without --yes it "
-                                  "only says what would go; nothing is deleted.")
-    s.add_argument("batch"); s.add_argument("--yes", action="store_true", help="required to delete; without it, a dry run")
-    s = sp.add_parser("trash", help="DELETES unwanted, non-sensitive files (no sweep, no erase log); "
-                                    "a dry run without --yes",
-                      description="Plain delete of library or review files, their sidecars and thumbnails (and with "
-                                  "--phone their phone originals). Without --yes it only says what would go; "
-                                  "nothing is deleted.")
-    s.add_argument("args", nargs="*", metavar="[BATCH] FILE"); s.add_argument("--batch", help="batch the files came from (for --phone)")
-    s.add_argument("--phone", help="also delete the matching originals from this phone or camera (its folder)")
-    s.add_argument("--from-digikam", action="store_true", help="the library files marked Rejected in digiKam")
-    s.add_argument("--yes", action="store_true", help="required to delete; without it, a dry run")
-    s = sp.add_parser("not-trash", help="keep suggested files: Owner|keep + Owner|not-trash"); s.add_argument("files", nargs="+")
-    s = sp.add_parser("migrate-tags", help="one-shot, idempotent: legacy Review|not-trash -> Owner|not-trash")
+
+    s = cmd("quarantine", "how many of a batch's files are in quarantine, and why; changes nothing",
+            "Count a batch's quarantined files by reason and print the folder to open and the next commands.",
+            "reads quarantine.",
+            "no.")
+    s.add_argument("batch", metavar="BATCH", help=h_batch)
+
+    s = cmd("release", "a false positive: move files from quarantine into the library",
+            "Move quarantined files you checked and found fine into the library, where apply would have\n"
+            "filed them. Same as Keep on the review page's Quarantine tab.",
+            "quarantine and the library.",
+            "no.")
+    s.add_argument("batch", metavar="BATCH", help=h_batch)
+    s.add_argument("files", nargs="+", metavar="FILE", help="quarantined files, as paths or names inside the "
+                   "batch's quarantine folder")
+
+    s = cmd("erase", "DELETES a batch's quarantined files and every copy, everywhere it can reach",
+            "Erase a batch's quarantined files for good, with every identical copy the tool can reach: your\n"
+            "home folder (your own photo folders included), thumbnails and caches, and with --phone and\n"
+            "--drive the phone and the backup drive. Ends with a check and a report of what it could not\n"
+            "reach. Asks you to type ERASE unless --yes.",
+            "quarantine, the library, your home folder, and the phone and backup drive you name.",
+            "YES, for good, every copy it finds.")
+    s.add_argument("batch", metavar="BATCH", help=h_batch)
+    s.add_argument("--phone", metavar="PHONE", help="also delete the matching files on this phone or camera: "
+                   + h_phone)
+    s.add_argument("--drive", metavar="DRIVE", help="also delete the matching files on " + h_drive
+                   + ", then overwrite its free space")
+    s.add_argument("--yes", action="store_true", help=h_yes.format(word="ERASE"))
+    s.add_argument("--keep-phone-thumbnails", action="store_true", help="don't remove DCIM/.thumbnails and "
+                   "Pictures/.thumbnails on the phone (removed by default with --phone)")
+    s.add_argument("--no-wipe-free", action="store_true", help="skip overwriting the backup drive's free space")
+
+    s = cmd("forget", "DELETES library files and every copy, as erase does (a private file found later)",
+            "Erase library files for good, the same way erase does for a batch: every identical copy in your\n"
+            "home folder, thumbnails and caches, and with --drive on the backup drive. For a private photo\n"
+            "found after its import. Asks you to type ERASE unless --yes.",
+            "the library, your home folder, and the backup drive you name.",
+            "YES, for good, every copy it finds.")
+    s.add_argument("files", nargs="+", metavar="FILE", help=h_files)
+    s.add_argument("--drive", metavar="DRIVE", help="also delete the matching files on " + h_drive
+                   + ", then overwrite its free space")
+    s.add_argument("--yes", action="store_true", help=h_yes.format(word="ERASE"))
+    s.add_argument("--no-wipe-free", action="store_true", help="skip overwriting the backup drive's free space")
+
+    s = cmd("verify-gone", "check that erased files left no copy behind; changes nothing (exit 1 if one is left)",
+            "Search your home folder (and the backup drive with --drive) for any copy of what was erased, and\n"
+            "show the last erase's report. Exits 1 if a copy is still there.",
+            "reads your home folder, the erase log and the backup drive you name.",
+            "no.")
+    s.add_argument("batch", nargs="?", metavar="BATCH", help="one batch (default: everything ever erased)")
+    s.add_argument("--drive", metavar="DRIVE", help="also search " + h_drive)
+
+    s = cmd("wipe-free", "overwrite a backup drive's free space with zeros",
+            "Fill the backup drive's free space with zeros, so files deleted from it can't be recovered.\n"
+            "Refused on the laptop's own disk.",
+            "the backup drive's free space (a temporary file, removed at the end).",
+            "no file; it overwrites space that deleted files left.")
+    s.add_argument("mount", metavar="DRIVE", help=h_drive)
+
+    s = cmd("offload", "DELETES a batch's files from the phone, camera or source drive once they are in the library",
+            "Free space on the source: delete each file of the batch that has a checked copy in the library\n"
+            "(or was dropped as a duplicate). Run it after a backup. Refused for a laptop folder batch:\n"
+            "delete that folder yourself. Asks you to type DELETE unless --yes.",
+            "the phone, camera or source drive you name.",
+            "YES, from the source, only files with a checked copy in the library.")
+    s.add_argument("batch", metavar="BATCH", help=h_batch)
+    s.add_argument("--phone", required=True, metavar="SOURCE", help="the source the batch was staged from: the "
+                   "phone's or camera's folder, or the source drive's folder (not the backup drive)")
+    s.add_argument("--yes", action="store_true", help=h_yes.format(word="DELETE"))
+
+    s = cmd("purge-review", "DELETES a batch's review folder (near-duplicates and junk); a dry run without --yes",
+            "Delete the batch's review folder: the near-duplicates and junk apply set aside.\n"
+            "Without --yes it only says what would go.",
+            "the batch's review folder.",
+            "YES with --yes; without it, nothing.")
+    s.add_argument("batch", metavar="BATCH", help=h_batch)
+    s.add_argument("--yes", action="store_true", help="delete now; without it, a dry run")
+
+    s = cmd("trash", "DELETES junk files (not private ones) and skips them on later imports; a dry run without --yes",
+            "Trash library or review-folder files: delete them with their sidecars and thumbnails (with\n"
+            "--phone their originals on the phone too), and remember them so the same photo is skipped\n"
+            "if it is imported again. Not for quarantined files: erase those. Without --yes it only says\n"
+            "what would go.",
+            "the library, the review folder, and the phone you name.",
+            "YES with --yes; without it, nothing.")
+    s.add_argument("args", nargs="*", metavar="[BATCH] FILE", help="the files; a batch name first says which batch "
+                   "they came from (for --phone)")
+    s.add_argument("--batch", metavar="BATCH", help="the batch the files came from (for --phone)")
+    s.add_argument("--phone", metavar="PHONE", help="also delete their originals from this phone or camera: "
+                   + h_phone)
+    s.add_argument("--from-digikam", action="store_true", help="trash the library files marked Rejected in digiKam")
+    s.add_argument("--yes", action="store_true", help="delete now; without it, a dry run")
+
+    s = cmd("not-trash", "Keep a suggested file: it is never suggested as junk again",
+            "Mark library files as kept (the review page's and gallery's Keep), so they are never suggested\n"
+            "as junk again.",
+            "the files' sidecars (tags).",
+            "no.")
+    s.add_argument("files", nargs="+", metavar="FILE", help=h_files)
+
+    s = cmd("migrate-tags", "one-off: rename an older tool tag in your sidecars",
+            "One-off and safe to repeat: rewrite the older Review|not-trash tag as Owner|not-trash in every\n"
+            "library sidecar. Nothing else changes.",
+            "the library's sidecars (tags).",
+            "no.")
     s.add_argument("--dry-run", action="store_true", help="count the sidecars, write nothing")
-    s = sp.add_parser("suggest-trash"); s.add_argument("--batch"); s.add_argument("--phone")
-    s.add_argument("--no-serve", action="store_true", help="write maybe-trash.json and stop")
+
+    s = cmd("suggest-trash", "list library files that look like junk (Suggested junk) and open them on the review page",
+            "Find library files the tool thinks are junk (Suggested junk) and open them on the review page's\n"
+            "Maybe trash tab, where you Keep or Trash each. Never suggests one you kept.",
+            "reads the library's sidecars; writes the list to the state folder.",
+            "no (Trash on the review page does).")
+    s.add_argument("--batch", metavar="BATCH", help="only files this batch filed")
+    s.add_argument("--phone", metavar="PHONE", help="passed to the review page, so Trash there also deletes the "
+                   "originals from this phone or camera")
+    s.add_argument("--no-serve", action="store_true", help="write the list and stop (no review page)")
+
     for name in ("share-copy", "social-copy"):
-        s = sp.add_parser(name, help="copy without GPS or metadata" + (" (alias of share-copy)" if name != "share-copy" else ""))
-        s.add_argument("files", nargs="+"); s.add_argument("--out", required=True)
-    s = sp.add_parser("tag", help="after apply: sidecar tags for the batch's filed files (CPU-heavy: labels)"); s.add_argument("batch")
-    s.add_argument("--no-labels", action="store_true", help="project/source/event/place/date only, no SigLIP labels")
-    s = sp.add_parser("tag-files", help="(re)tag library files; project/source/event from the path"); s.add_argument("files", nargs="+")
-    s.add_argument("--event", help="event slug for all of them"); s.add_argument("--no-labels", action="store_true")
-    s = sp.add_parser("mark-used"); s.add_argument("files", nargs="+"); s.add_argument("--post", required=True, help="post slug, YYYY-MM-DD-...")
-    s = sp.add_parser("find", help="search sidecars; prints matching media paths")
-    s.add_argument("--tag", action="append", help="hierarchical tag, e.g. 'Label|runner' or 'Label' (any label); repeat = all of them")
-    s.add_argument("--event"); s.add_argument("--place", help="substring of city, state or country"); s.add_argument("--project")
+        s = cmd(name, "copy files without GPS or other metadata, for sharing"
+                + (" (older name of share-copy)" if name != "share-copy" else ""),
+                "Copy files into a folder with their GPS position and other metadata removed, for posting\n"
+                "or sending. The originals are not changed.",
+                "reads the files; writes copies to --out.",
+                "no.")
+        s.add_argument("files", nargs="+", metavar="FILE", help="the photos or videos to copy")
+        s.add_argument("--out", required=True, metavar="DIR", help="folder for the copies (not inside the library "
+                       "or the state folder)")
+
+    s = cmd("tag", "after apply: write tags (source, date, place, event, labels) for the batch's filed files",
+            "Write each filed file's tags (project, source, event, place, date and content labels) to its\n"
+            "sidecar (<file>.<ext>.xmp). Labels are CPU-heavy: --no-labels skips them.",
+            "the sidecars next to the batch's library files; never the photos themselves.",
+            "no.")
+    s.add_argument("batch", metavar="BATCH", help=h_batch)
+    s.add_argument("--no-labels", action="store_true", help="project, source, event, place and date only; "
+                   "no content labels")
+
+    s = cmd("tag-files", "write tags again for library files (project, source and event from their folder)",
+            "Write tags again for library files, as tag does for a batch; project, source and event come\n"
+            "from each file's folder.",
+            "the files' sidecars; never the photos themselves.",
+            "no.")
+    s.add_argument("files", nargs="+", metavar="FILE", help=h_files)
+    s.add_argument("--event", metavar="SLUG", help="event slug for all of them (lowercase letters, digits and dashes)")
+    s.add_argument("--no-labels", action="store_true", help="no content labels (faster)")
+
+    s = cmd("mark-used", "record that library files were used in a post (a Used|<post> tag)",
+            "Tag library files as used in a post, so find --unused-since and --never-used can skip them.",
+            "the files' sidecars.",
+            "no.")
+    s.add_argument("files", nargs="+", metavar="FILE", help=h_files)
+    s.add_argument("--post", required=True, metavar="SLUG", help="post slug, starting with its date: YYYY-MM-DD-...")
+
+    s = cmd("find", "search the tags; prints the matching files' paths",
+            "Search the library's sidecar tags and print each matching file's path (the count goes to\n"
+            "stderr). Every option given must match.",
+            "reads the library's sidecars.",
+            "no.")
+    s.add_argument("--tag", action="append", help="hierarchical tag, e.g. 'Label|runner' or 'Label' (any label); "
+                   "repeat = all of them")
+    s.add_argument("--event", metavar="SLUG", help="part of an event's name")
+    s.add_argument("--place", help="part of a city, state or country name")
+    s.add_argument("--project", help="a project's name, as in config.toml")
     s.add_argument("--unused-since", metavar="Nd", help="not used in a post in the last N days")
-    s.add_argument("--never-used", action="store_true"); s.add_argument("--root", action="append", help="search here instead of the library folders")
+    s.add_argument("--never-used", action="store_true", help="never used in a post")
+    s.add_argument("--root", action="append", metavar="DIR", help="search this folder instead of the library "
+                   "(repeat for more)")
     return ap
 
 

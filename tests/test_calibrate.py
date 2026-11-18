@@ -439,7 +439,7 @@ class Command(unittest.TestCase):
         self.assertIn("numpy", err.getvalue())
         self.assertIn("bash setup.sh", err.getvalue())
         self.assertIn("calibrate", cli.command_names())
-        self.assertIn("media-intake calibrate", cli.__doc__)
+        self.assertRegex(cli.__doc__, r"(?m)^  calibrate ")  # listed in media-intake --help
 
 
 if __name__ == "__main__":

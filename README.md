@@ -2,8 +2,8 @@
 
 Local-only intake for your photos and videos: copy them off a phone, camera or
 old drive into one organised library, drop exact and near duplicates, put
-anything sensitive (IDs, payment cards, 2FA codes, nudity) in a private
-quarantine for you to review, tag the rest, and search and browse it, all on
+anything sensitive (IDs, payment cards, 2FA codes, nudity) in quarantine
+for you to decide on, tag the rest, and search and browse it, all on
 your own machine. When you erase something, it is erased everywhere the tool
 can reach: the library, the phone, the backup drive, thumbnails and caches.
 
@@ -11,6 +11,8 @@ Fedora Linux first. Python, no service, no account.
 
 New here? [docs/getting-started.md](docs/getting-started.md) walks through a
 first run on a folder of test photos, from install to the gallery.
+[docs/words.md](docs/words.md) says what each word means (batch, source,
+backup drive, quarantine, review folder, Keep, Trash, Erase, ...).
 
 ## Privacy guarantees
 
@@ -123,35 +125,36 @@ A phone import, start to finish:
 media-intake stage /run/user/$UID/gvfs/mtp:host=.../Internal\ shared\ storage --kind phone --batch phone-1
                                    # --batch is optional; default <device id>-<YYYYMMDD>
 media-intake plan phone-1 [--event park-race@2026-05-01] [--clock-offset DEVICE=±Nh]
-media-intake scan phone-1          # local detectors; flags only
-media-intake apply phone-1         # file, dedupe, quarantine
-media-intake review phone-1        # local page: release false positives, erase the rest
+media-intake scan phone-1          # local detectors; flags private files
+media-intake apply phone-1         # file into the library; flagged files to quarantine
+media-intake review phone-1        # local page: Keep false positives, Erase the rest
 media-intake tag phone-1           # XMP tags: project, source, event, place, labels
-media-intake offload phone-1 --phone <device root> --yes   # after a backup: free the phone
+media-intake offload phone-1 --phone <phone folder> --yes   # after a backup: free the phone
 ```
 
 | Command | What |
 | --- | --- |
 | `stage`, `plan`, `scan`, `apply` | Copy in, plan (dates, dedupe, folders), detect, file |
-| `quarantine`, `release`, `review` | Review what the detectors flagged |
-| `erase`, `forget`, `verify-gone`, `wipe-free` | Erase everywhere, check, overwrite free space on a drive |
-| `trash`, `suggest-trash`, `not-trash`, `purge-review` | Plain deletes of junk, with suggestions (`trash` and `purge-review` delete only with `--yes`; without it, a dry run) |
+| `quarantine`, `release`, `review` | Decide on what the detectors flagged (quarantine) and the review folder |
+| `erase`, `forget`, `verify-gone`, `wipe-free` | Erase everywhere, check, overwrite the backup drive's free space |
+| `trash`, `suggest-trash`, `not-trash`, `purge-review` | Trash junk, find Suggested junk, Keep a suggestion, empty a review folder (`trash` and `purge-review` delete only with `--yes`; without it, a dry run) |
 | `tag`, `tag-files`, `mark-used`, `find` | Sidecar tags and searching them |
 | `migrate-tags` | One-shot: rewrite the legacy `Review\|not-trash` tag as `Owner\|not-trash` |
 | `index`, `search`, `similar` | Local semantic search (SigLIP) |
-| `vlm-trash` | Local vision-model second opinion on trash candidates |
+| `vlm-trash` | Local vision-model second opinion on Suggested junk |
 | `calibrate` | Report precision and recall of each label's threshold against your own marks; changes nothing |
-| `gallery` | Local web gallery: browse, keep, trash, erase, tag, rotate, events, bulk edits, share-safe copies |
+| `gallery` | Local web gallery: browse, Keep, Trash, Erase, tag, rotate, events, bulk edits, share-safe copies |
 | `prune-cache` | Delete gallery thumbnails and video proxies nothing in the library shows any more (`--dry-run` first) |
-| `backup` | Copy the library (photos, videos, sidecars) to a mounted drive: incremental, never deletes there |
-| `queue add/run/status/offload` | Process an old external drive or a laptop folder in resumable chunks |
+| `backup` | Copy the library (photos, videos, sidecars) to the backup drive: incremental, never deletes there |
+| `queue add/run/status/offload` | Import a source drive or a big laptop folder in resumable chunks |
 | `share-copy` | Copy files with GPS and metadata stripped, for posting |
 | `doctor` | Check the install |
 
-`media-intake <command> --help` for options; `media-intake` alone (or
-`--help`) lists the commands, and a mistyped command exits 2 with the nearest
-real one. Details:
-[getting started](docs/getting-started.md), [intake](docs/intake.md), [review page](docs/review-ui.md),
+`media-intake <command> --help` says what a command does, what it touches,
+whether it deletes, and its options; `media-intake` alone (or `--help`) lists
+the commands by task, and a mistyped command exits 2 with the nearest real
+one. Details:
+[getting started](docs/getting-started.md), [words used](docs/words.md), [intake](docs/intake.md), [review page](docs/review-ui.md),
 [gallery](docs/gallery.md), [search and VLM](docs/search.md),
 [drive and folder queue](docs/queue.md), [backup](docs/backup.md), [configuration](docs/configuration.md),
 [plugins](docs/plugins.md), [releases](docs/release.md).

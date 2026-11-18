@@ -1,12 +1,14 @@
 # Review page (local only)
 
 ```
-media-intake review BATCH [--phone ROOT] [--drive MOUNT] [--port 0]
-media-intake review [BATCH] --maybe-trash [--phone ROOT]
+media-intake review BATCH [--phone PHONE] [--drive DRIVE] [--port 0]
+media-intake review [BATCH] --maybe-trash [--phone PHONE]
 ```
 
 Pass-throughs to `erase`: `--keep-phone-thumbnails`, `--no-wipe-free`.
-`--port 0` (a random free port) is the default. It prints one `xdg-open
+`--phone` is the phone or camera the batch came from (its folder) and
+`--drive` the backup drive (the folder it is mounted on); the words are in
+[words.md](words.md). `--port 0` (a random free port) is the default. It prints one `xdg-open
 'http://127.0.0.1:<port>/?t=<token>'` line; open it in a private browser
 window to keep it out of your history. If the batch has no quarantined or
 review files it prints `nothing to review for BATCH` and exits 0.

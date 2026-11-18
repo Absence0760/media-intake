@@ -4,7 +4,7 @@
 that intake files: a day-to-day browser in place of digiKam.
 
 ```
-media-intake gallery [--drive MOUNT] [--port 0] [--share-out DIR]
+media-intake gallery [--drive DRIVE] [--port 0] [--share-out DIR]
 ```
 
 `python3 -I media_intake/gallery.py` takes the same flags. `--share-out` is
@@ -17,7 +17,7 @@ page out of your history. It runs until Ctrl-C or the page's **Stop server** but
 An assistant may start it and hand you the line; only you open the page and
 click.
 
-`--drive` is your backup drive's mount, passed to `forget` when you Erase, so
+`--drive` is your backup drive (the folder it is mounted on), passed to `forget` when you Erase, so
 copies there go too. The Erase dialog says whether it is included: "and on the
 backup drive (<mount>)", or "Not on a backup drive: the gallery was started
 without one" (`/api/facets` gives `drive`, the mount or null).
@@ -91,7 +91,7 @@ without one" (`/api/facets` gives `drive`, the mount or null).
 
   | Internal | Shown as |
   |---|---|
-  | `Review\|maybe-trash`, the Trash suggestions view | Suggested junk (view, Flags filter, tile flag) |
+  | `Review\|maybe-trash`, the old Trash suggestions view | Suggested junk (view, Flags filter, tile flag) |
   | `Review\|child-in-shot` | Possible child (quick view, Flags filter, tile flag) |
   | `Owner\|keep` (tile flag "kept") | Kept on the tile; "Marked Keep" in the large view's Details; the large view lists no `Owner\|` tag |
   | `Owner\|trash` on a copy (flag "trashed copy") | Copy of a trashed photo |
