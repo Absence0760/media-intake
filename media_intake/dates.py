@@ -8,7 +8,8 @@ source, tried in this order:
             CreateDate / ffprobe creation_time, which is UTC and is converted to local time
   gps       GPSDateTime (EXIF, or GoPro's GPMF track with exiftool -ee), else GPSDateStamp
   export    a cloud export's own record (exports.py: Google Takeout JSON photoTakenTime, iCloud
-            Photo Details CSV originalCreationDate), UTC; read_meta() rows carry it as ExportTime
+            Photo Details CSV originalCreationDate, Telegram Desktop result.json date_unixtime), UTC;
+            read_meta() rows carry it as ExportTime
   filename  a date in the file name (20261108_071502, 2026-11-08 07.15.02, 20261108)
   folder    an iPhone export's DCIM/YYYYMM__ folder: the first of that month
   mtime     the file's modification time, the last resort

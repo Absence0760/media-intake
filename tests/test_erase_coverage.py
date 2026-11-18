@@ -215,7 +215,8 @@ class EraseCoverage(unittest.TestCase):
         self.assertIn("backup drive unused space: not overwritten (--no-wipe-free)", cov["not_checked"])
         self.assertEqual(len(cov["cant_reach"]), 7)
         for want in ("cloud services", "chat apps", "app-private storage", "backup drives not named",
-                     "filesystem snapshots", "Google Takeout JSON or iCloud CSV row left beside an erased file"):
+                     "filesystem snapshots", "Google Takeout JSON or iCloud CSV row left beside an erased file",
+                     "Telegram export's result.json"):
             self.assertTrue(any(want in x for x in cov["cant_reach"]), want)
         log = read(os.path.join(self.state, "erase-log.txt"))
         for name in ("IMG-77", "clip.mp4", "Downloads", self.home):

@@ -65,8 +65,8 @@ first run on a folder of test photos, from install to the gallery.
   file name) of what it reached, including GNOME's per-file metadata and the
   desktop search index, and what nothing on the machine can reach (cloud
   services, chat apps and recipients, a device's app-private storage,
-  backups, and a cloud export's Takeout JSON or iCloud CSV row left beside an
-  erased file on its source drive). It is kept in the erase log;
+  backups, and a cloud export's Takeout JSON or iCloud CSV row (or a Telegram
+  export's `result.json`) left beside an erased file on its source drive). It is kept in the erase log;
   `verify-gone BATCH` shows it.
 
 ## Install (Fedora)
@@ -140,6 +140,7 @@ media-intake offload phone-1 --phone <device root> --yes   # after a backup: fre
 | `migrate-tags` | One-shot: rewrite the legacy `Review\|not-trash` tag as `Owner\|not-trash` |
 | `index`, `search`, `similar` | Local semantic search (SigLIP) |
 | `vlm-trash` | Local vision-model second opinion on trash candidates |
+| `calibrate` | Report precision and recall of each label's threshold against your own marks; changes nothing |
 | `gallery` | Local web gallery: browse, keep, trash, erase, tag, rotate, events, bulk edits, share-safe copies |
 | `prune-cache` | Delete gallery thumbnails and video proxies nothing in the library shows any more (`--dry-run` first) |
 | `backup` | Copy the library (photos, videos, sidecars) to a mounted drive: incremental, never deletes there |

@@ -124,22 +124,28 @@ The goal: someone else can install it on Fedora, import a phone, and trust it.
 
 ## Milestone 0.3: better classification
 
-- [ ] Calibrate SigLIP thresholds (maybe-trash, child-in-shot, labels) with an
-      sample you label yourself, computed locally: you mark a few hundred items in the
-      gallery, a script reports precision/recall. Nobody else looks at the photos.
+- [x] Calibrate SigLIP thresholds (maybe-trash, child-in-shot, labels) with a
+      sample you label yourself, computed locally: `media-intake calibrate` reports
+      precision/recall per label against your `Calibrate|<label>|yes/no` tags and Keep/Trash
+      decisions, from the stored index vectors; it changes nothing (docs/configuration.md,
+      "Calibrating label thresholds"). Nobody else looks at the photos.
 - [ ] Vision LLM: support newer local models when Ollama allows (e.g. a 4B Qwen3-VL needs
       a newer Ollama than 0.21); licence check (commercial use) before adopting any model.
 - [ ] Optional local face grouping (off by default): face data counts as personal data,
       so erase/verify-gone must cover it; never names faces automatically.
 - [x] Video near-duplicates (perceptual video hash) for re-encoded or trimmed copies
       (`videohash.py`; docs/intake.md, Duplicates).
-- [ ] Text search quality: prompt ensembles, per-label thresholds, search across video
-      frames.
+- [x] Text search quality: prompt ensembles for queries (`--no-ensemble` to compare) and
+      per-label thresholds (docs/search.md).
+- [ ] Search across video frames by the best-matching frame: the index keeps one averaged
+      vector per video today, so this needs a per-frame index.
 
 ## Milestone 0.4: more sources
 
-- [ ] HEIC/HEIF (pillow-heif), DNG/RAW previews, iPhone Live Photos (HEIC/JPG + MOV pairs),
-      Samsung motion photos (embedded video).
+- [ ] HEIC/HEIF (pillow-heif), DNG/RAW previews, iPhone Live Photos (HEIC/JPG + MOV pairs).
+- [x] Samsung and Google motion photos: the embedded video is scanned with the photo (one
+      it can't extract is "not checked", never clean) and dropped from share copies
+      (`motion.py`; docs/intake.md). Not yet checked on real phone files.
 - [x] Google Takeout and iCloud exports (JSON sidecars for dates/places), with dedupe
       against the library: `media_intake/exports.py`, the `export` date source
       (docs/intake.md, "Cloud exports"). Not yet checked on a real export.
@@ -150,10 +156,10 @@ The goal: someone else can install it on Fedora, import a phone, and trust it.
       `Movies/Signal` by config entry, Telegram Desktop exports (media folders only) and
       Signal's saved `signal-...` files from a drive or laptop folder; Signal's own chats
       and backups are encrypted and out of reach (docs/intake.md, "Messaging apps").
-- [ ] Telegram export `result.json` dates for files an export keeps under their own name
+- [x] Telegram export `result.json` dates for files an export keeps under their own name
       (its `photo_<n>@<date>` names are dated already), and `messaging:Telegram` for those
-      files when the staged folder is the export itself (the category sees only the path
-      under the source root today).
+      files when the staged folder is the export itself (docs/intake.md, "Cloud exports").
+      Not yet checked on a real export.
 
 ## Milestone 0.5: backups and erase everywhere
 

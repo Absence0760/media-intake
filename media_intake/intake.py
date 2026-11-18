@@ -1424,7 +1424,8 @@ CANT_REACH = (
     "filesystem snapshots (btrfs snapshots of /home) and blocks an SSD or flash drive keeps aside",
     "re-encoded or trimmed copies of a video (only exact copies are found)",
     "a cloud export's Google Takeout JSON or iCloud CSV row left beside an erased file on its source drive "
-    "(it can hold the date, place and description)",
+    "(it can hold the date, place and description), and a Telegram export's result.json (it holds the "
+    "chat's messages)",
 )
 COVERAGE_RX = re.compile(r"^(\S+ \S+) (\S+) coverage (\{.*\})$")
 

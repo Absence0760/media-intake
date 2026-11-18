@@ -304,6 +304,8 @@ against the local Ollama. The progress, summary and output-format cases in
 `test_semantic.py` (`Meter`, `Ui`) fake the encoders and need only numpy; they
 also check that the gallery still parses the machine form. The prompt-ensemble
 cases (`TextEnsemble`) use a fake tokenizer and text model, also numpy only.
+`-p test_calibrate.py` checks `media-intake calibrate`'s precision, recall and threshold
+sweep on fake scores ([configuration.md](configuration.md), "Calibrating label thresholds").
 
 ## Unverified
 

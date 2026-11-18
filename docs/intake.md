@@ -191,6 +191,7 @@ media-intake mark-used FILE... --post SLUG
 media-intake find [--tag T] [--event E] [--place P] [--project P] [--unused-since 30d] [--never-used]
 media-intake gallery [--drive MOUNT] [--share-out DIR]
 media-intake prune-cache [--dry-run]          # gallery thumbnails and proxies nothing shows any more
+media-intake calibrate [--precision P] [--json]   # label thresholds vs your marks, report only (configuration.md)
 media-intake backup MOUNT [--verify] [--dry-run]   # library, videos, sidecars to a mounted drive (backup.md)
 ```
 
@@ -334,7 +335,7 @@ order (`date_src` in `plan.json`; `plan` prints a count per source):
 | `exif` | `DateTimeOriginal`, else EXIF `CreateDate`, else `ModifyDate`; local time, with `OffsetTimeOriginal` (else `OffsetTime`) as its offset |
 | `video` | Apple's `Keys:CreationDate` (local time with its own offset), else QuickTime `CreateDate` / ffprobe `creation_time`, which is UTC: converted to local time with `OffsetTimeOriginal` when the file has one, else this machine's time zone for that date |
 | `gps` | `GPSDateTime` (EXIF, or a GoPro's GPMF track read with `exiftool -ee`; the start of the locked run, below), else `GPSDateStamp` alone (noon UTC of that day). UTC, converted like `video` |
-| `export` | a cloud export's own record of the date, from the file's Google Takeout JSON (`photoTakenTime`) or iCloud `Photo Details.csv` row (`originalCreationDate`): UTC, converted like `video` ("Cloud exports", below) |
+| `export` | a cloud export's own record of the date, from the file's Google Takeout JSON (`photoTakenTime`) or iCloud `Photo Details.csv` row (`originalCreationDate`), or a Telegram Desktop export's `result.json` message (`date_unixtime`): UTC, converted like `video` ("Cloud exports", below) |
 | `filename` | a date in the name (`20261108_071502`, `2026-11-08 07.15.02`, `20261108`; a Telegram export's day-first `@08-11-2026_07-15-02`) |
 | `folder` | an iPhone export's `DCIM/YYYYMM__/` folder: the 1st of that month (day unknown, so `--event` days don't match it) |
 | `mtime` | the file's modification time, last resort |
@@ -488,8 +489,9 @@ camera's clock).
 - **Offload** of a drive deletes only the media originals: the JSON and CSV
   files (and a Telegram export's `result.json`) stay on the drive; delete the export folder yourself once it is filed.
 - **Erase** doesn't reach them either: an erased file's Takeout JSON or iCloud
-  CSV row (which can hold its date, place and description) stays beside where
-  it was, and the coverage report lists it under `cant_reach`.
+  CSV row (which can hold its date, place and description), and a Telegram
+  export's `result.json` (which holds the chat's messages), stay beside where
+  they were, and the coverage report lists them under `cant_reach`.
 
 Telegram's format is read from tdesktop's
 [`export_output_json.cpp`](https://github.com/telegramdesktop/tdesktop/blob/dev/Telegram/SourceFiles/export/output/export_output_json.cpp)
@@ -749,8 +751,8 @@ quarantine. A file named twice is forgotten once.
     app-private storage on a phone or camera (a gallery app's own trash),
     other computers and backup drives not named with `--drive`, filesystem
     snapshots and the blocks an SSD keeps aside, re-encoded or trimmed video
-    copies, and a cloud export's Takeout JSON or iCloud CSV row left beside an
-    erased file on its source drive.
+    copies, and a cloud export's Takeout JSON or iCloud CSV row (or a Telegram
+    export's `result.json`) left beside an erased file on its source drive.
 
   `erase` prints a short form (places with a count, what was left, what was
   not checked, what it can't reach); `verify-gone BATCH` prints the full one.
@@ -1062,6 +1064,7 @@ own namespace; your tags win.
 | `Review\|child-in-shot` | SigLIP | added, never removed by a tool; only you clear it |
 | `AI\|vlm/<model>/...` (and the older `Review\|vlm-trash/*`, `Review\|vlm-keep`) | the VLM (`vlm_trash.py`) | its own; tagging never touches them |
 | `Used\|<slug>` | `mark-used` | never removed |
+| `Calibrate\|<label>\|yes`, `Calibrate\|<label>\|no` | you (the gallery's "+ tag") | never touched by a tool; only `calibrate` reads them ([configuration.md](configuration.md), "Calibrating label thresholds") |
 
 - `Review|maybe-trash` is never added to a file with `Owner|not-trash`,
   `Owner|keep`, `Owner|trash` (or the legacy `Review|not-trash`) or digiKam
@@ -1186,7 +1189,8 @@ Rejected:
 - Tesseract on embossed card numbers and cheque MICR lines.
 - `scan` time: about 1-2 s an image on CPU (OCR dominates), estimated.
 - Label accuracy on real photos, and the thresholds in `labels.yaml` (first
-  guesses; `label.py --all` prints every score for calibrating).
+  guesses; `media-intake calibrate` reports precision and recall against
+  your own marks: configuration.md, "Calibrating label thresholds").
 - How reliably `child-in-shot` catches children, especially small or in the
   background: treat a missing flag as "not checked", not "no child".
 - Label speed: measured on synthetic images only. Estimate 0.1-0.3 s an image
