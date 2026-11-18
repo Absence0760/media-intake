@@ -4,6 +4,7 @@ and browse, search and back up the library. Everything runs on this machine.
 
 usage: media-intake <command> [options]
        media-intake <command> --help    what it does, touches and deletes
+       media-intake --version           the installed version
 
 Commands that delete say DELETES. The words used (batch, source, backup drive,
 quarantine, review folder, Keep, Trash, Erase, ...): docs/words.md.
