@@ -148,7 +148,7 @@ drive sits at that path, or a folder source is refused now. `--inhibit` holds `s
 --what=sleep:idle` for the whole run. Each chunk ends with a counts-only
 summary.
 
-**It never makes your decisions**: quarantine review, trash suggestions and
+**It never makes your decisions**: quarantine review, Suggested junk and
 offload all wait. `status` says what waits for you and the command for each.
 
 To run it overnight in the background, on AC power:
@@ -194,12 +194,12 @@ next: fix broken (see above), then media-intake queue run --inhibit
 - **STATE**: `running` (a `queue run` holds `<state>/queue/run.lock` and is
   on this source), `failed` (a step failed; the reason and log are under
   Waiting for you), `needs your review` (a finished chunk has quarantine,
-  review-folder or trash-suggestion files), `waiting` (chunks left to run),
+  review-folder or Suggested junk files), `waiting` (chunks left to run),
   `done` (every chunk finished and reviewed).
 - **FILES** is the files queued; **QUAR** the files in every quarantine the
   chunks' review pages show (`quarantine/<batch>` and its near- and
   messaging cross-check levels); **REVIEW** the review-folder files plus the
-  trash suggestions; **CHANGED** the newest time the queue recorded for the
+  Suggested junk; **CHANGED** the newest time the queue recorded for the
   source (added, a step or chunk finished).
 - **Waiting for you** lists each finished chunk with decisions left (its
   counts and the commands to open them), each failed chunk (the reason, log

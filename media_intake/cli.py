@@ -1,22 +1,59 @@
-"""`media-intake`: one entry point for every tool in this package.
+"""`media-intake`: copy photos and videos off a phone, camera, drive or laptop
+folder into one library, set private-looking files aside for you to decide on,
+and browse, search and back up the library. Everything runs on this machine.
 
-  media-intake <intake command> ...      stage, plan, scan, apply, tag, erase, trash, ... (intake.py)
-  media-intake gallery [--drive MOUNT] [--port N] [--share-out DIR]   local web gallery of the library (gallery.py)
-  media-intake queue add|run|status|offload ...   external-drive process queue (drive_queue.py)
-  media-intake review BATCH ...          local review page for a batch (review_ui.py)
-  media-intake prune-cache [--dry-run]   delete gallery thumbnails and proxies nothing shows (cache_prune.py)
-  media-intake backup MOUNT [--verify] [--dry-run]   copy the library to a mounted drive (backup.py)
-  media-intake index                     build or update the semantic search index  (venv)
-  media-intake search "TEXT" ...         semantic search                             (venv)
-  media-intake similar FILE ...          nearest neighbours of a file                (venv)
-  media-intake vlm-trash ...             local vision-model second opinion on trash  (venv, Ollama)
-  media-intake doctor                    check system packages, venv, model checksums, Ollama digest, config
-  media-intake calibrate [--precision P] [--json] ...   label thresholds vs your marks, report only (calibrate.py)
+usage: media-intake <command> [options]
+       media-intake <command> --help    what it does, touches and deletes
+       media-intake --version           the installed version
 
-`media-intake` alone, `--help` or `-h` prints this; an unknown command prints
-the nearest real one and exits 2.
+Commands that delete say DELETES. The words used (batch, source, backup drive,
+quarantine, review folder, Keep, Trash, Erase, ...): docs/words.md.
 
-`media-intake <command> --help` shows each command's options. Commands marked
+Import, in this order
+  stage SOURCE --kind K     copy a phone, camera, drive or folder into a batch
+  plan BATCH                find dates, folders and duplicates; moves nothing
+  scan BATCH                flag private files (IDs, cards, nudity)
+  apply BATCH               file into the library; flagged files to quarantine
+  review BATCH              a page to Keep, Trash or Erase what was set aside
+  tag BATCH                 write tags (place, event, labels) to sidecar files
+  offload BATCH --phone P   DELETES the batch's files from the phone or camera
+  quarantine BATCH          count what is in quarantine; changes nothing
+  release BATCH FILE...     a false positive: quarantine -> library
+
+Big folders and drives
+  queue add|run|status|offload   import in resumable chunks, unattended
+
+Erase and trash
+  erase BATCH               DELETES quarantined files and all their copies
+  forget FILE...            DELETES library files the same way (found later)
+  verify-gone [BATCH]       check erased files left no copy; changes nothing
+  trash FILE...             DELETES junk (not private files), with --yes
+  purge-review BATCH        DELETES a batch's review folder, with --yes
+  suggest-trash             find Suggested junk; opens the review page
+  not-trash FILE...         Keep suggested files: never suggest them again
+  vlm-trash                 a vision model's opinion on junk (venv, Ollama)
+
+Library
+  gallery                   browse the library: Keep, Trash, Erase, tags
+  find                      search the tags (event, place, project, tag)
+  index                     build or update the search index (venv)
+  search "TEXT"             find photos by a description (venv)
+  similar FILE              find photos that look like this one (venv)
+  tag-files FILE...         write tags again for library files
+  mark-used FILE --post P   record that files were used in a post
+  share-copy FILE --out D   copy without GPS or metadata (or social-copy)
+  calibrate                 test content labels on your marks; changes nothing
+  migrate-tags              one-off: rename an older tool tag in your sidecars
+  prune-cache               DELETES gallery thumbnails nothing shows any more
+
+Backup drive
+  backup DRIVE              copy the library to the backup drive (no deletes)
+  wipe-free DRIVE           overwrite the backup drive's free space with zeros
+
+Setup
+  doctor                    check the install; changes nothing
+
+A mistyped command prints the nearest real one and exits 2. Commands marked
 (venv) run in the venv setup.sh builds; the rest need only the system Python.
 """
 import difflib, importlib, os, shutil, subprocess, sys
@@ -380,9 +417,7 @@ def no_venv(cmd, script, pre, rest, vp):
 def main(argv=None):
     argv = list(sys.argv[1:] if argv is None else argv)
     if not argv or argv[0] in HELP:
-        import intake
-        print(__doc__.strip() + "\n\nIntake commands:\n")
-        intake.build_parser("media-intake").print_help()
+        print(__doc__.strip())  # one list, by task; tests/test_cli.py checks it names every command
         return 0
     cmd, rest = argv[0], argv[1:]
     if cmd in ("--version", "-V", "version"):

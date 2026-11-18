@@ -863,14 +863,38 @@ def serve(app, port=0):
 
 
 def main(argv=None):
-    ap = argparse.ArgumentParser(description="Local-only review page for a batch's quarantine and review folder.")
-    ap.add_argument("batch", nargs="?")
-    ap.add_argument("--maybe-trash", action="store_true", help="add a tab of suggest-trash's library files")
-    ap.add_argument("--phone", help="phone root, passed to erase")
-    ap.add_argument("--drive", help="backup drive mount, passed to erase and verify-gone")
-    ap.add_argument("--keep-phone-thumbnails", action="store_true", help="passed to erase")
-    ap.add_argument("--no-wipe-free", action="store_true", help="passed to erase")
-    ap.add_argument("--port", type=int, default=0, help="0 = a random free port (default)")
+    def port(v):
+        if not v.isdigit() or int(v) > 65535:
+            raise argparse.ArgumentTypeError(f"{v}: a port is 0-65535 (0 picks a free one)")
+        return int(v)
+
+    ap = argparse.ArgumentParser(
+        prog="media-intake review", formatter_class=argparse.RawDescriptionHelpFormatter,
+        description="A local page (127.0.0.1 only: open the link it prints) to decide on what an\n"
+                    "import set aside:\n"
+                    "  Quarantine tab: flagged files. Keep or Erase.\n"
+                    "  Review tab: the review folder's near-duplicates and junk. Keep, Delete this\n"
+                    "    copy or Trash.\n"
+                    "  Maybe trash tab (with --maybe-trash): Suggested junk from the library. Keep\n"
+                    "    or Trash.\n"
+                    "Your choices are only marks until you apply them (Apply N decisions; you type\n"
+                    "ERASE when anything is removed).\n\n"
+                    "Touches: quarantine, the review folder, the library, and the phone and backup\n"
+                    "  drive you name.\n"
+                    "Deletes: only what you mark Erase, Delete this copy or Trash, once you apply.")
+    ap.add_argument("batch", nargs="?", metavar="BATCH", help="the batch name: the one `stage` printed (leave it "
+                    "out with --maybe-trash)")
+    ap.add_argument("--maybe-trash", action="store_true", help="add the Maybe trash tab: the Suggested junk "
+                    "that suggest-trash found in the library")
+    ap.add_argument("--phone", metavar="PHONE", help="the phone or camera the batch came from (its folder, e.g. "
+                    "under /run/user/$UID/gvfs/): Erase and Trash also delete the copies there")
+    ap.add_argument("--drive", metavar="DRIVE", help="the backup drive: the folder it is mounted on, e.g. "
+                    "/run/media/$USER/<label>. Erase also deletes the copies there")
+    ap.add_argument("--keep-phone-thumbnails", action="store_true", help="with --phone: leave the phone's "
+                    "DCIM/.thumbnails and Pictures/.thumbnails (Erase removes them by default)")
+    ap.add_argument("--no-wipe-free", action="store_true", help="with --drive: don't overwrite the backup "
+                    "drive's free space after an Erase")
+    ap.add_argument("--port", type=port, default=0, help="the page's port (default 0: a free one)")
     a = ap.parse_args(argv)
     if a.batch is None and not a.maybe_trash:
         sys.exit("give a BATCH, --maybe-trash, or both")
@@ -890,7 +914,10 @@ def main(argv=None):
     if not items and not app.submitted:  # a run still going is shown even when nothing is left to decide
         print(f"nothing to review for {a.batch or 'maybe-trash'}")
         return 0
-    httpd, url = serve(app, a.port)
+    try:
+        httpd, url = serve(app, a.port)
+    except OSError as e:  # the port is taken, or not ours to use
+        sys.exit(f"port {a.port} can't be used ({e.strerror or e}): pick another with --port, or leave it out")
     nq = sum(it["tab"] == "quarantine" for it in items)
     print(f"xdg-open '{url}'", flush=True)
     nm = sum(it["tab"] == "maybe" for it in items)

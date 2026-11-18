@@ -1766,11 +1766,24 @@ def serve(app, port=0):
 
 
 def main(argv=None):
-    ap = argparse.ArgumentParser(description="Local web gallery for the media library.")
-    ap.add_argument("--drive", help="backup drive mount, passed to forget (Erase)")
-    ap.add_argument("--port", type=int, default=0, help="0 = a random free port (default)")
-    ap.add_argument("--share-out", help=f"folder for share-safe copies, one dated subfolder per export "
-                                        f"(default {SHARE_OUT}); never inside the library")
+    def port(v):
+        if not v.isdigit() or int(v) > 65535:
+            raise argparse.ArgumentTypeError(f"{v}: a port is 0-65535 (0 picks a free one)")
+        return int(v)
+
+    ap = argparse.ArgumentParser(
+        prog="media-intake gallery", formatter_class=argparse.RawDescriptionHelpFormatter,
+        description="Browse the library in a local web page (127.0.0.1 only: open the link it\n"
+                    "prints). Keep, Trash, Erase, tag, rotate, set events and make share-safe copies,\n"
+                    "on one photo or a selection. Quarantined and flagged files are never shown.\n\n"
+                    "Touches: reads the library; Keep, tags, Rotate and events write sidecars (never\n"
+                    "  the photos); Share-safe copy writes to --share-out.\n"
+                    "Deletes: only what you Trash or Erase on the page, after you confirm.")
+    ap.add_argument("--drive", metavar="DRIVE", help="the backup drive: the folder it is mounted on, e.g. "
+                    "/run/media/$USER/<label>. Erase in the gallery then deletes the copies there too")
+    ap.add_argument("--port", type=port, default=0, help="the page's port (default 0: a free one)")
+    ap.add_argument("--share-out", metavar="DIR", help=f"folder for share-safe copies, one dated subfolder per "
+                                                       f"export (default {SHARE_OUT}); never inside the library")
     a = ap.parse_args(argv)
     if a.drive and not os.path.isdir(a.drive):
         sys.exit(f"--drive {a.drive}: not a directory")
@@ -1781,7 +1794,10 @@ def main(argv=None):
     app = App(items, os.path.abspath(a.drive) if a.drive else None, views, a.share_out)
     running = app.sync()  # a trash/erase started before a restart: its files stay busy until it ends
     threading.Thread(target=app.check_text, daemon=True).start()
-    httpd, url = serve(app, a.port)
+    try:
+        httpd, url = serve(app, a.port)
+    except OSError as e:  # the port is taken, or not ours to use
+        sys.exit(f"port {a.port} can't be used ({e.strerror or e}): pick another with --port, or leave it out")
     print(f"xdg-open '{url}'", flush=True)
     reg = f" Plugin tabs: {', '.join(v['title'] for v in views)}." if views else ""
     print(f"({len(items)} items in {time.monotonic() - t0:.1f} s, {skipped} flagged/erased left out.{reg} "
