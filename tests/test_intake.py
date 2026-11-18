@@ -183,7 +183,7 @@ class IntakeE2E(unittest.TestCase):
             json.dump(flags, f)
         # ---- apply
         out = self.run_intake("apply", batch, "--allow-missing-detectors").stdout
-        self.assertIn("'quarantined': 3", out)
+        self.assertIn("3 quarantined", out)
         self.assertFalse(os.path.exists(os.path.join(bd, "raw")), "raw must be removed once applied")
         shoot = os.path.join(self.footage, "originals", f"{DAY}-{EVENT}", "phone")
         self.assertEqual(sorted(os.listdir(shoot)),
@@ -363,13 +363,13 @@ class EraseEverywhere(unittest.TestCase):
         stem, ext = os.path.splitext(want)
         self.assertTrue(os.path.isfile(stem + "_1" + ext), out)
         self.assertFalse(os.path.exists(stem + "_1" + ext + ".xmp"))
-        self.assertIn("1 files went to a free name", out)
+        self.assertIn("1 file went to a free name", out)
         plan = {p["rel"]: p for p in jload(os.path.join(bd, "plan.json"))}
         self.assertEqual(plan["DCIM/Camera/20261024_100000.jpg"]["dst"], stem + "_1" + ext,
                          "tag and offload find it where it went")
         self.assertIn(stem + "_1" + ext, jload(os.path.join(self.state, "index.json")))
         self.assertEqual(self.sha(qtaken), qbefore, "a quarantined file is never replaced either")
-        self.assertIn("'left in raw (its quarantine place is taken)': 1", out)
+        self.assertIn("(1 because their quarantine place is taken)", out)
         self.assertTrue(os.path.isfile(os.path.join(bd, "raw", "DCIM/Camera/20261023_100000.jpg")))
 
     def sha(self, p):

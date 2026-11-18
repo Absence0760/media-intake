@@ -211,8 +211,8 @@ class Phone(Base):
             self.assertEqual(p[r]["action"], "file", r)
             self.assertIsNone(p[r]["dhash"], "videos get no dHash")
         out = self.apply(b)
-        self.assertIn("'filed': 9", out)
-        self.assertIn("'deleted (exact duplicate)': 2", out)
+        self.assertIn("9 files filed", out)
+        self.assertIn("2 exact duplicates dropped", out)
         want = {self.L("2026", "2026-10", "20261020_120000.jpg"), self.V("2026", "2026-10", "clip_utc.mp4"),
                 self.V("2025", "2025-06", "clip_nodate.mp4"),
                 self.L("Screenshots", "2026", "Screenshot_20261101-101010.png"),
@@ -264,7 +264,7 @@ class Phone(Base):
     def test_erase_a_quarantined_video_and_photo_from_phone_drive_home_and_thumbnails(self):
         b = "phone-erase"
         out = self.quarantined(b, [self.SENS_VID, self.SENS_VID_COPY, self.SENS_PHOTO])
-        self.assertIn("'quarantined': 2", out)
+        self.assertIn("2 quarantined", out)
         quar = os.path.join(self.state, "quarantine", b)
         self.assertEqual(sorted(jload(os.path.join(quar, "quarantine.json"))), [self.SENS_VID, self.SENS_PHOTO])
         self.assertFalse(os.path.exists(self.V("2026", "2026-10", "20261023_100000.mp4")), "a flagged video is not filed")

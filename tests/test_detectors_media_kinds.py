@@ -576,7 +576,7 @@ class ScanApplyTag(Base):
                 "DCIM/Camera/20261020_122000.gpr": ["unscanned-type"]}
         self.assertEqual(flags, want)
         out = self.intake("apply", batch, "--allow-missing-detectors")
-        self.assertIn("'quarantined': 2", out)
+        self.assertIn("2 quarantined", out)
         quar = os.path.join(self.state, "quarantine", batch)
         self.assertEqual(stat.S_IMODE(os.stat(quar).st_mode), 0o700)
         with open(os.path.join(quar, "quarantine.json")) as f:
@@ -615,7 +615,7 @@ class ScanApplyTag(Base):
                                  "DCIM/Camera/20261021_091000.mp4": ["nudity"],
                                  "DCIM/Camera/20261021_092000.mp4": ["unscanned-video"]})
         out = self.intake("apply", batch, "--allow-missing-detectors")
-        self.assertIn("'quarantined': 3", out)
+        self.assertIn("3 quarantined", out)
         quar = os.path.join(self.state, "quarantine", batch)
         with open(os.path.join(quar, "quarantine.json")) as f:
             q = json.load(f)

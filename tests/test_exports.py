@@ -485,7 +485,7 @@ class StagePlan(unittest.TestCase):
         out = self.intake("stage", src, "--kind", "folder", "--batch", "takeout-1")
         self.assertEqual(snapshot(src), before_snap, "stage leaves the source byte-identical, same mtimes, nothing new")
         self.assertIn("staged 5 media files", out)
-        self.assertIn("Google Takeout 4, iCloud 1, Telegram 0, with a place 1, ambiguous (ignored) 0", out)
+        self.assertIn("  dates from cloud export files: Google Takeout 4, iCloud 1 (1 with a place)\n", out)
         self.assertNotIn("could not be read", out)
         b = os.path.join(self.state, "batches", "takeout-1")
         with open(os.path.join(b, "manifest.json")) as f:
@@ -527,7 +527,7 @@ class StagePlan(unittest.TestCase):
         before = snapshot(src)
         out = self.intake("stage", src, "--kind", "folder", "--batch", "tg-1")
         self.assertIn("staged 2 media files", out)
-        self.assertIn("Google Takeout 0, iCloud 0, Telegram 1,", out)
+        self.assertIn("  dates from cloud export files: Telegram 1\n", out)
         self.assertNotIn("IMG_0801", out, "no file name in stage's output")
         with open(os.path.join(self.state, "batches", "tg-1", "manifest.json")) as f:
             man = json.load(f)["files"]
@@ -565,7 +565,7 @@ class StagePlan(unittest.TestCase):
         before = snapshot(src)
         out = self.intake("stage", src, "--kind", "folder", "--batch", "refused-1")
         self.assertIn("staged 4 media files", out)
-        self.assertIn("Google Takeout 1, iCloud 0", out, "the good sidecar still counts")
+        self.assertIn("  dates from cloud export files: Google Takeout 1\n", out, "the good sidecar still counts")
         for k in ("refused_link", "refused_size", "refused_encoding"):
             self.assertIn(f"skipped 1 {exports.REFUSED[k]}", out)
         self.assertNotIn(exports.REFUSED["refused_unreadable"], out)
@@ -582,7 +582,7 @@ class StagePlan(unittest.TestCase):
         self.assertEqual(skips(again), skips(out))
         self.assertEqual(len(skips(again)), 3)
         self.assertIn("staged 4 media files", again)
-        self.assertIn("Google Takeout 1, iCloud 0", again)
+        self.assertIn("  dates from cloud export files: Google Takeout 1\n", again)
         with open(os.path.join(self.state, "batches", "refused-1", "manifest.json")) as f:
             self.assertEqual(json.load(f)["files"], man)
         self.assertEqual(snapshot(raw), staged, "nothing staged is rewritten")

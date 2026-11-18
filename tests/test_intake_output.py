@@ -1,6 +1,8 @@
 #!/usr/bin/env python3
-"""What the main flow prints: counts-only progress on stage, plan, apply and tag, and the closing
-`next:` line (only at a terminal, or with MEDIA_INTAKE_NEXT_HINT=1).
+"""What the main flow prints: counts-only progress on stage, plan, apply and tag, the summary lines in
+words (no Python reprs), the closing `next:` line (only at a terminal, or with MEDIA_INTAKE_NEXT_HINT=1), and
+the guards: a wrong batch name, a missing or empty source, apply before scan or without detectors, and the
+quarantine hint by batch kind.
 
   python3 -I -m unittest discover -s tests -p test_intake_output.py
 
@@ -66,6 +68,21 @@ class IntakeOutput(unittest.TestCase):
         self.assertEqual(r.returncode, code, f"{args}\n{r.stdout}\n{r.stderr}")
         return r.stdout.splitlines()
 
+    def call(self, *args, script=INTAKE, **env):
+        return subprocess.run([PY, "-I", script, *args], env=dict(self.env, **env), capture_output=True, text=True,
+                              stdin=subprocess.DEVNULL)
+
+    def refused(self, *args, script=INTAKE, **env):
+        """args exit 1 with no traceback; returns stderr."""
+        r = self.call(*args, script=script, **env)
+        self.assertEqual(r.returncode, 1, f"{args}\n{r.stdout}\n{r.stderr}")
+        self.assertNotIn("Traceback", r.stderr)
+        return r.stderr
+
+    def batches(self):
+        d = os.path.join(self.state, "batches")
+        return sorted(os.listdir(d)) if os.path.isdir(d) else []
+
     def flow(self, batch, **env):
         """stage, plan, scan, apply: {step: stdout lines}."""
         out = {"stage": self.intake("stage", self.phone, "--kind", "phone", "--batch", batch, **env),
@@ -87,10 +104,10 @@ class IntakeOutput(unittest.TestCase):
                                             "stage: 5 of 12 files staged"], out["stage"])
         self.assertIn("stage: 10 of 12 files staged", out["stage"])
         self.assertTrue(out["stage"][-1].startswith("staged 12 media files into "), "the summary still closes stage")
-        self.assertEqual(out["plan"][0], "plan: reading dates, then hashing 12 files (sha256, dHash, video hash)")
-        self.assertEqual([ln for ln in out["plan"] if re.fullmatch(r"plan: \d+ of 12 files hashed", ln)],
-                         ["plan: 5 of 12 files hashed", "plan: 10 of 12 files hashed"])
-        self.assertIn("plan: comparing 12 photos for near-copies (the batch and 0 library entries)", out["plan"])
+        self.assertEqual(out["plan"][0], "plan: reading dates, then comparing files to find duplicates (12 files)")
+        self.assertEqual([ln for ln in out["plan"] if re.fullmatch(r"plan: \d+ of 12 files read", ln)],
+                         ["plan: 5 of 12 files read", "plan: 10 of 12 files read"])
+        self.assertIn("plan: looking for look-alike photos (12 in this batch, 0 already in the library)", out["plan"])
         self.assertIn("plan: 10 of 12 photos compared", out["plan"])
         self.assertEqual(out["apply"][0], "apply: moving 12 planned files (library, review folder, quarantine)")
         self.assertEqual([ln for ln in out["apply"] if ln.endswith("files done")],
@@ -179,7 +196,7 @@ class IntakeOutput(unittest.TestCase):
         batch = "2026-11-15-review"
         pattern(3, (64, 64)).save(os.path.join(self.phone, "DCIM/Camera/20261020_130000.png"))  # junk: review
         out = self.flow(batch, MEDIA_INTAKE_NEXT_HINT="1")
-        self.assertTrue(any("'to review': 1" in ln for ln in out["apply"]), out["apply"])
+        self.assertIn("apply: 12 files filed, 1 set aside for review", out["apply"])
         self.assertEqual(out["apply"][-1], f"next: media-intake review {batch}")
 
     def test_no_next_line_on_failure(self):
@@ -188,6 +205,155 @@ class IntakeOutput(unittest.TestCase):
         self.intake("plan", batch)
         out = self.intake("scan", batch, code=3, MEDIA_INTAKE_NEXT_HINT="1", FAKE_SCAN_FAIL="1")
         self.assertFalse([ln for ln in out if ln.startswith("next:")], out)
+
+    # ------------------------------------------------------------ summary lines in words
+    def test_plan_and_apply_print_counts_in_words(self):
+        batch = "2026-11-15-words"
+        pattern(3, (64, 64)).save(os.path.join(self.phone, "DCIM/Camera/sticker.png"))  # no date at all: mtime
+        out = self.flow(batch)
+        self.assertIn("plan: 13 files: 12 to file, 0 exact duplicates to drop, 1 to review. Nothing has moved yet.",
+                      out["plan"])
+        self.assertIn("dates: 12 from the camera, 1 from file times (no camera date found)", out["plan"])
+        i = out["plan"].index("will be filed in:")
+        self.assertEqual(out["plan"][i + 1], "  ~/Pictures/library/2026/2026-10  (12)")
+        self.assertIn("apply: 12 files filed, 1 set aside for review", out["apply"])
+        for step in ("plan", "apply"):
+            self.assertFalse([ln for ln in out[step] if "{" in ln or "}" in ln], out[step])
+
+    # ------------------------------------------------------------ a wrong batch name
+    def test_wrong_batch_name_on_each_command(self):
+        cmds = (["plan"], ["scan"], ["apply"], ["apply", "--no-scan"], ["quarantine"], ["release", "x.jpg"],
+                ["tag", "--no-labels"])
+        for c in cmds:  # nothing staged yet
+            err = self.refused(c[0], "nosuch", *c[1:])
+            self.assertEqual(err.strip(), "no batch named 'nosuch': nothing is staged yet. "
+                                          "Start with: media-intake stage SRC --kind phone|gopro|drive|folder", c)
+        self.intake("stage", self.phone, "--kind", "phone", "--batch", "b-one")
+        for c in cmds:
+            err = self.refused(c[0], "nosuch", *c[1:])
+            self.assertEqual(err.strip(), "no batch named 'nosuch'. Batches, newest first: b-one. "
+                                          "List them all with: ls ~/.local/share/media-intake/batches", c)
+        self.assertEqual(self.batches(), ["b-one"], "a wrong name creates nothing")
+        self.assertFalse(os.path.exists(os.path.join(self.state, "quarantine", "nosuch")))
+        self.assertIn("no batch named '../b-one'", self.refused("plan", "../b-one"), "a path is never a batch")
+        # A quarantine-only batch (near-<batch>): quarantine and release take it, plan and tag explain.
+        near = os.path.join(self.state, "quarantine", "near-b-one")
+        os.makedirs(near)
+        with open(os.path.join(near, "quarantine.json"), "w") as f:
+            f.write("{}")
+        self.assertEqual(self.intake("quarantine", "near-b-one"), ["nothing in quarantine for near-b-one."])
+        self.assertIn("'near-b-one' has no staged files, only quarantined ones", self.refused("plan", "near-b-one"))
+
+    def test_steps_out_of_order_name_the_step(self):
+        batch = "2026-11-15-order"
+        self.intake("stage", self.phone, "--kind", "phone", "--batch", batch)
+        self.assertEqual(self.refused("apply", batch).strip(),
+                         f"plan has not run for {batch}. Run: media-intake plan {batch}")
+        self.assertIn(f"plan and apply have not run for {batch}", self.refused("tag", batch, "--no-labels"))
+        self.intake("plan", batch)
+        err = self.refused("apply", batch)
+        self.assertEqual(err.strip(), f"scan has not run for {batch}. Run: media-intake scan {batch}")
+        self.assertNotIn("--no-scan", err, "the unsafe bypass is not offered in an error")
+        helps = " ".join(self.call("apply", "--help").stdout.split())  # unwrapped
+        self.assertIn("--no-scan file everything WITHOUT the sensitive-file check", helps)
+        self.assertIn("--allow-missing-detectors file even though the ID and card detectors are not installed", helps)
+
+    def test_event_values_are_checked_first(self):
+        self.intake("stage", self.phone, "--kind", "phone", "--batch", "b-event")
+        self.assertEqual(self.refused("plan", "b-event", "--event", "park@2026-13-01").strip(),
+                         "--event park@2026-13-01: 2026-13-01 is not a date")
+        self.assertIn("--event 'Bad': a slug is", self.refused("tag-files", self.phone, "--event", "Bad"))
+
+    def test_release_after_erase_is_a_sentence(self):
+        batch = "2026-11-15-erased"
+        self.flow(batch)
+        shutil.rmtree(os.path.join(self.state, "quarantine", batch))  # as erase leaves it
+        self.assertEqual(self.refused("release", batch, "DCIM/Camera/x.jpg").strip(),
+                         f"nothing in quarantine for {batch}: it is empty or already erased")
+        self.assertFalse(os.path.exists(os.path.join(self.state, "quarantine", batch)), "nothing is recreated")
+
+    def test_detectors_missing_names_only_what_is_missing(self):
+        batch = "2026-11-15-detect"
+        self.intake("stage", self.phone, "--kind", "phone", "--batch", batch)
+        self.intake("plan", batch)
+        self.intake("scan", batch)
+        for missing in (["tesseract", "python3-zxing-cpp"], ["python3-zxing-cpp"]):
+            launcher = os.path.join(self.tmp, "intake_missing.py")
+            with open(launcher, "w") as f:
+                f.write(f"import sys\nsys.path.insert(0, {os.path.dirname(INTAKE)!r})\nimport intake\n"
+                        f"intake.missing_detectors = lambda: {missing!r}\nintake.main()\n")
+            err = self.refused("apply", batch, script=launcher).strip().splitlines()
+            self.assertLessEqual(len(err), 4, err)
+            self.assertLessEqual(max(map(len, err)), 100, err)
+            self.assertIn("Install:  sudo dnf install -y " + " ".join(missing), err)
+            self.assertIn(f"Then run: media-intake scan {batch}", err)
+            self.assertTrue(any("media-intake doctor" in ln for ln in err), err)
+            text = "\n".join(err)
+            self.assertNotIn("perl-Image-ExifTool", text, "only what is missing")
+            self.assertNotIn("--allow-missing-detectors", text)
+            if "tesseract" not in missing:
+                self.assertNotIn("tesseract", text)
+        self.assertTrue(os.path.isdir(os.path.join(self.state, "batches", batch, "raw")), "nothing was filed")
+
+    # ------------------------------------------------------------ a missing or empty source
+    def test_missing_source_is_refused_before_any_batch(self):
+        for kind in ("phone", "gopro", "drive", "folder"):
+            err = self.refused("stage", os.path.join(self.tmp, "no-such-phone"), "--kind", kind)
+            self.assertIn("no-such-phone: no such folder.", err, kind)
+        self.assertIn("File transfer", self.refused("stage", os.path.join(self.tmp, "gone"), "--kind", "phone"))
+        self.assertEqual(self.batches(), [], "no batch folder is left behind")
+
+    def test_empty_source_says_so_and_leaves_no_batch(self):
+        empty = os.path.join(self.tmp, "locked-phone")  # what a locked or charge-only phone shows
+        os.makedirs(empty)
+        err = self.refused("stage", empty, "--kind", "phone")
+        self.assertIn("nothing to stage in", err)
+        self.assertIn("no photos or videos found for --kind phone", err)
+        self.assertIn("unlocked and set to File transfer", err)
+        self.assertIn("DCIM/", err)
+        folder = os.path.join(self.home, "Pictures", "empty-folder")
+        os.makedirs(folder)
+        err = self.refused("stage", folder, "--kind", "folder", "--batch", "empty-1")
+        self.assertIn("no photos or videos found for --kind folder", err)
+        self.assertNotIn("File transfer", err, "the phone tip only for a phone")
+        listfile = os.path.join(self.tmp, "chunk-1.txt")  # a queue chunk whose files are gone
+        with open(listfile, "w") as f:
+            f.write("DCIM/Camera/gone.jpg\n")
+        err = self.refused("stage", self.phone, "--kind", "phone", "--batch", "chunk-1", "--only", listfile)
+        self.assertIn("none of the 1 file in", err)
+        self.assertEqual(self.batches(), [], "no empty batch is created")
+
+    # ------------------------------------------------------------ quarantine's hint fits the batch kind
+    def flag_one(self, batch, rel):
+        with open(os.path.join(self.state, "batches", batch, "scan.json"), "w") as f:
+            json.dump({rel: ["nudity"]}, f)
+
+    def test_quarantine_hint_by_batch_kind(self):
+        batch = "2026-11-15-hint"
+        self.intake("stage", self.phone, "--kind", "phone", "--batch", batch)
+        self.intake("plan", batch)
+        self.flag_one(batch, "DCIM/Camera/" + self.names[0])
+        self.intake("apply", batch, "--allow-missing-detectors")
+        out = self.intake("quarantine", batch)
+        self.assertEqual(out[0], f"1 file in quarantine: {os.path.join(self.state, 'quarantine', batch)}")
+        self.assertIn(f"  media-intake erase {batch} --phone {shlex.quote(self.phone)}", out)
+        # Laptop folder batches: erase --phone is refused there, so the hint never offers it; an empty
+        # quarantine gets no advice at all.
+        pics = os.path.join(self.home, "Pictures")
+        save_jpg(pattern(40), os.path.join(pics, "test-photos", "a.jpg"), "2026:10:21 09:00:00")
+        save_jpg(pattern(41), os.path.join(pics, "more", "b.jpg"), "2026:10:21 10:00:00")
+        self.intake("stage", os.path.join(pics, "test-photos"), "--kind", "folder", "--batch", "first-test")
+        self.intake("plan", "first-test")
+        self.intake("apply", "first-test", "--no-scan")
+        self.assertEqual(self.intake("quarantine", "first-test"), ["nothing in quarantine for first-test."])
+        self.intake("stage", os.path.join(pics, "more"), "--kind", "folder", "--batch", "f2")
+        self.intake("plan", "f2")
+        self.flag_one("f2", "b.jpg")
+        self.intake("apply", "f2", "--allow-missing-detectors")
+        out = self.intake("quarantine", "f2")
+        self.assertEqual(out[0], f"1 file in quarantine: {os.path.join(self.state, 'quarantine', 'f2')}")
+        self.assertEqual(out[-1], "  media-intake erase f2")
+        self.assertFalse([ln for ln in out if "--phone" in ln], out)
 
     def run_on_tty(self, *args, **env):
         """intake.py with stdout on a pseudo-terminal (as a person runs it). Returns its output lines."""

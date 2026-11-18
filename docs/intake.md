@@ -171,7 +171,7 @@ media-intake stage SRC_ROOT --kind phone|gopro|drive|folder [--batch NAME] [--on
 media-intake plan BATCH [--event [PROJECT/]SLUG@YYYY-MM-DD ...] [--clock-offset DEVICE=±Nh ...]
 media-intake scan BATCH                 # local detectors; labels only
 media-intake apply BATCH                # moves files; prints a summary
-media-intake quarantine BATCH           # counts + the folder to open
+media-intake quarantine BATCH           # counts + the folder to open, and the erase line for its kind
 media-intake release BATCH FILE...      # false positive -> library
 media-intake erase BATCH [--phone ROOT [--keep-phone-thumbnails]] [--drive MOUNT [--no-wipe-free]] [--yes]
 media-intake forget LIBRARY_FILE... [--drive MOUNT] [--yes]   # asks (type ERASE) before anything moves
@@ -210,6 +210,60 @@ A typical phone batch: `stage` the phone's storage root, `plan` (add
 `--event` for a shoot), `scan`, `apply`, open the review page, `tag`, then,
 once the library is backed up, `offload` to free the phone.
 
+### Wrong names, empty sources and steps out of order
+
+Each of these stops with one plain message (exit 1, no traceback) and
+changes nothing:
+
+- **A batch name that doesn't exist** (`plan`, `scan`, `apply`,
+  `quarantine`, `release`, `tag`): `no batch named 'x'. Batches, newest
+  first: ... List them all with: ls ~/.local/share/media-intake/batches`
+  (or, before anything is staged, the `stage` line to start with). One
+  helper, `intake.need_batch()`, makes the check for every command.
+  `quarantine` and `release` also take a quarantine-only batch
+  (`near-<batch>`, `xcheck-<batch>`); `release` on a batch whose quarantine
+  was erased says so.
+- **A source folder that isn't there**: `stage` says `no such folder`
+  before any batch folder exists; for a phone, how to make it show up
+  (unlock it, choose File transfer, then `ls /run/user/$UID/gvfs/`).
+- **A source with no photos or videos**: `stage` says `nothing to stage`,
+  where it looked for that `--kind` (a phone: `DCIM/`, `Pictures/` and the
+  configured messaging folders), and for a phone the likely cause (locked,
+  or charge-only USB), and creates no batch.
+- **A step run too early**: `apply` before `plan` or `scan`, and `tag`
+  before `plan`, name the step to run, with its command line. `apply` with
+  a document detector missing names only the missing packages, the
+  `sudo dnf install -y` line for them, and `media-intake scan BATCH` to run
+  after. `--no-scan` and `--allow-missing-detectors` are described in
+  `apply --help` and are never offered in an error.
+
+`quarantine` prints nothing but `nothing in quarantine for BATCH.` when it
+is empty. Otherwise its closing erase line fits the batch: `erase BATCH
+--phone <the folder it was staged from>` for a phone or camera batch, plain
+`erase BATCH` for a laptop folder (where `--phone` is refused), a drive
+batch or a quarantine-only batch.
+
+### Summary lines
+
+`plan` and `apply` end with counts in words, never a Python dict:
+
+```
+plan: 7 files: 6 to file, 1 exact duplicate to drop, 0 to review. Nothing has moved yet.
+dates: 6 from the camera, 1 from file times (no camera date found)
+will be filed in:
+  ~/Pictures/library/2026/2026-11  (6)
+apply: 6 files filed, 1 exact duplicate dropped
+```
+
+The `dates:` line names where each date came from (the camera's EXIF, the
+video's own date, GPS time, a cloud export, the file or folder name,
+`--clock-offset`). `from file times (no camera date found)` is the one to
+check: those files had no date of their own, so they are filed by the
+file's modified time. `apply` names only the outcomes that happened, and,
+when files stay behind, how many are left in the batch folder and why.
+`stage` names only the cloud export kinds it found (`dates from cloud export
+files: Telegram 2`).
+
 ### Progress and the `next:` line
 
 The long steps print counts-only progress, so a big batch never sits
@@ -219,8 +273,9 @@ seconds, whichever comes first (`MEDIA_INTAKE_PROGRESS_EVERY` and
 near-duplicate search use the same lines):
 
 - `stage: 5,000 of 12,000 files staged` while it copies;
-- `plan: 5,000 of 12,000 files hashed` (sha256, dHash, video hash), then
-  `plan: ... photos compared` / `videos compared` in the near-copy search;
+- `plan: 5,000 of 12,000 files read` (dates, then sha256, dHash and video
+  hash to find duplicates), then `plan: ... photos compared` / `videos
+  compared` in the look-alike (near-copy) search;
 - `apply: 5,000 of 12,000 files done`;
 - `tag` (and `tag-files`): a line per phase (place names, content labels: one
   pass with no per-file lines), then `tag: 400 of 12,000 sidecars written`
@@ -235,7 +290,7 @@ At a terminal, each step of the flow ends with one line naming the command to
 run next, with the batch's real name:
 
 ```
-next: media-intake plan BATCH          # after stage (nothing staged: no line)
+next: media-intake plan BATCH          # after stage
 next: media-intake scan BATCH          # after plan
 next: media-intake apply BATCH         # after scan
 next: media-intake review BATCH        # after apply, while anything is in quarantine or the review folder
@@ -1224,7 +1279,7 @@ Rejected:
 
 `python3 -I -m unittest discover -s tests` (synthetic media, a throwaway HOME,
 a hermetic config), or one module: `python3 -I -m unittest discover -s tests -p test_intake.py`
-(also `test_intake_output`: the progress lines of stage, plan, apply and tag by count, none naming a file, and the `next:` line for a clean, quarantined and review batch, on a terminal and off it; `test_dates`, `test_devices`, `test_sources`, `test_exports` (Google Takeout and iCloud export metadata), `test_tagging`, `test_config`, and `test_device_case`: offload,
+(also `test_intake_output`: the progress lines of stage, plan, apply and tag by count, none naming a file, and the `next:` line for a clean, quarantined and review batch, on a terminal and off it, the plan and apply summary lines in words, a wrong batch name on each command, a missing or empty source, steps out of order, the missing-detector message, and the quarantine hint by batch kind; `test_dates`, `test_devices`, `test_sources`, `test_exports` (Google Takeout and iCloud export metadata), `test_tagging`, `test_config`, and `test_device_case`: offload,
 erase and trash on fake MTP, gphoto2 and drive trees with case-only collisions, in the manifests or only in the live listing, and a listing that fails; `test_device_ops_media_kinds`:
 stage, plan, apply, erase, offload and verify-gone with photos, videos and a mix from a phone, a GoPro card,
 a drive, a laptop folder and the drive queue, and erase's and offload's prompts (a wrong answer or closed
