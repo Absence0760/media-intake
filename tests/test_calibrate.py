@@ -280,6 +280,13 @@ class Library(unittest.TestCase):
         self.trashed[f"{999:064x}"] = 1  # trashed and re-indexed since: no vector
         self.save()
 
+    def test_no_network(self):
+        """calibrate reads stored numbers and tags only: any socket connect fails the test."""
+        self.build()
+        with mock.patch("socket.socket.connect", side_effect=AssertionError("calibrate opened a connection")), \
+                mock.patch("socket.create_connection", side_effect=AssertionError("calibrate opened a connection")):
+            json.loads(self.main("--json"))
+
     def test_report(self):
         self.build()
         before = tree(self.state, self.lib), fingerprint(LABELS_YAML), fingerprint(support.CONFIG)
@@ -361,6 +368,15 @@ class Command(unittest.TestCase):
         with mock.patch.object(calibrate, "main", return_value=0) as m:
             self.assertEqual(cli.main(["calibrate", "--json", "--precision", "0.9"]), 0)
         self.assertEqual(m.call_args[0][0], ["--json", "--precision", "0.9"])
+
+    def test_missing_package_says_run_setup(self):
+        import cli
+        err = io.StringIO()
+        with mock.patch.object(cli.importlib, "import_module", side_effect=ModuleNotFoundError("x", name="numpy")), \
+                contextlib.redirect_stderr(err):
+            self.assertEqual(cli.main(["calibrate"]), 1)
+        self.assertIn("numpy", err.getvalue())
+        self.assertIn("bash setup.sh", err.getvalue())
         self.assertIn("calibrate", cli.command_names())
         self.assertIn("media-intake calibrate", cli.__doc__)
 

@@ -305,7 +305,19 @@ def _prune_cache(rest):  # cli.py's too: it reads the library as the gallery doe
 COMMANDS = {"doctor": lambda rest: doctor(), "queue": _queue, "review": _review, "backup": _backup,
             "gallery": _gallery, "prune-cache": _prune_cache}
 HELP = ("-h", "--help", "help")
-COMMANDS["calibrate"] = lambda rest: importlib.import_module("calibrate").main(rest)  # system Python + numpy
+
+
+def _calibrate(rest):  # system Python: numpy and PyYAML, which setup.sh installs
+    try:
+        mod = importlib.import_module("calibrate")
+    except ModuleNotFoundError as e:
+        print(f"calibrate needs the Python package {e.name}: run bash setup.sh, then media-intake doctor",
+              file=sys.stderr)
+        return 1
+    return mod.main(rest)
+
+
+COMMANDS["calibrate"] = _calibrate
 
 
 def intake_commands():

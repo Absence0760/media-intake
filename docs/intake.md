@@ -314,7 +314,9 @@ are dropped too, so a copy holds only its video and audio streams. A motion
 photo's copy is the still alone: exiftool `-all=` drops a JPEG's trailer (its
 `Trailer` group, Samsung's and Google's video with it), and share-copy then
 cuts anything still appended off the copy (a JPEG after its end of image, a
-HEIC's trailing `mpvd`/`sefd` box); a copy that would still carry a video
+HEIC's trailing `mpvd`/`sefd` box). Everything after the first image goes,
+so an Ultra HDR photo's gain map goes too: the copy shows as a plain SDR
+photo. A copy that would still carry a video
 is removed and share-copy stops with an error (copies made before it stay). It checks
 everything before copying anything, and refuses (writing nothing) when `--out`
 is inside a library root or the state folder (the gallery's Share-safe copy

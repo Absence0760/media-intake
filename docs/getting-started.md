@@ -202,7 +202,7 @@ Use a LUKS-encrypted drive. [backup.md](backup.md).
 | `stage --kind folder` or `queue add` is refused | The folder breaks a source rule (outside HOME, hidden, a git tree, the library itself): [queue.md](queue.md), "Laptop folders". Under `/run/media` use `--kind drive`. |
 | `scan` says `no venv` | `bash setup.sh`. |
 | `apply` says `run scan first` or `document detectors missing` | Run `scan`, or install the packages it names and `scan` again. |
-| Videos are quarantined as `unscanned-video` | No video decoder could read them (most phone video is HEVC): install the GStreamer HEVC decoder `doctor` lists as optional before your next import. |
+| Videos are quarantined as `unscanned-video` | No video decoder could read them (most phone video is HEVC): install the GStreamer HEVC decoder `doctor` lists as optional before your next import. A *photo* with this flag is a motion photo whose short video couldn't be found or read ([intake.md](intake.md), "Principles"); open it yourself and release it if it's fine. |
 | `[gst] fallback skipped` on stderr | Your home folder's path has characters GStreamer can't take safely ([intake.md](intake.md), "Principles"). |
 | A command waits, then exits 75 | Another command or job holds the library lock; it names the holder. Try again when it ends, or set `MEDIA_INTAKE_LOCK_WAIT` ([intake.md](intake.md), "One writer at a time"). |
 | A review run shows `crashed` | Run `media-intake review <batch>` again; it shows what is left ([review-ui.md](review-ui.md), "The run is a detached job"). |

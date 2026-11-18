@@ -19,6 +19,7 @@ import unittest.mock as mock
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import support  # noqa: E402  (hermetic config; puts media_intake/ on sys.path)
+support.check_hermetic()
 
 from PIL import Image  # noqa: E402
 

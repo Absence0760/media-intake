@@ -12,7 +12,7 @@ exports (one chat, all data, renamed, staged as the source itself) with a result
 name and row is made up here from the rules in docs/intake.md ("Cloud exports"). stage is
 checked to leave the source tree byte-identical, with the same mtimes and no new entries.
 """
-import datetime, hashlib, json, os, shutil, subprocess, sys, tempfile, types, unittest
+import datetime, hashlib, json, os, shutil, subprocess, sys, tempfile, time, types, unittest
 from unittest import mock
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
@@ -241,7 +241,16 @@ class Scan(unittest.TestCase):
 
     def test_telegram_chat_export(self):
         """A one-chat export staged as the source root: files kept under their own name take their message's
-        date; photo_<n>@<date> names (a filename date already), unlisted files and contested paths don't."""
+        date; photo_<n>@<date> names (a filename date already), unlisted files and contested paths don't.
+        Run in a zone far from UTC, so the older export's local date must really be converted."""
+        with mock.patch.dict(os.environ, {"TZ": "Asia/Tokyo"}):
+            time.tzset()
+            try:
+                self._telegram_chat_export()
+            finally:
+                self.addCleanup(time.tzset)  # back to the process's own zone once the env is restored
+
+    def _telegram_chat_export(self):
         msgs = [tg_msg(1, "video_files/holiday.MOV", T2019, key="file"),
                 tg_msg(2, "files/IMG_0007.HEIC", None, local="2020-06-15T12:00:00"),  # an older export: no unixtime
                 tg_msg(3, "photos/photo_1@05-03-2019_14-22-01.jpg", T2020, key="photo"),

@@ -220,7 +220,9 @@ it; Space on a focused tile ticks it; **Select all** in the header, or Ctrl+A /
 Cmd+A, ticks every tile shown), then the bottom bar's buttons or keys:
 **K** Keep, **T** Trash, **E** Erase, **+ tag** / **− tag** (a field that
 suggests your tags as you type, from `/api/facets`' My tags, and refuses the
-tools' namespaces before anything is sent, as the server does), **Set event…**,
+tools' namespaces before anything is sent, as the server does; it is also how
+you add `Calibrate|<label>|yes` or `|no` marks for `media-intake calibrate`,
+[configuration.md](configuration.md), "Calibrating label thresholds"), **Set event…**,
 **Rotate ⟳**, **Share-safe copy**; Esc or **Clear selection** clears it. Each
 applies to every selected item through the same endpoint as one item, photos
 and videos alike (one unknown or removed id refuses the whole request, and so

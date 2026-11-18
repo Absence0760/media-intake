@@ -197,6 +197,10 @@ The goal: someone else can install it on Fedora, import a phone, and trust it.
 
 ## Known limitations (documented, not bugs)
 
+- Motion photos: only JPEG and HEIC ones are read. A Samsung PNG or AVIF motion photo is
+  scanned as a still, so its short video is not checked. HEIC stills need `pillow-heif`.
+  None of it is checked on real Samsung or Pixel files yet.
+
 - Android's media service holds many `DCIM/.thumbnails` files open; MTP can't delete them.
 - Without USB debugging, a phone's app-private storage (gallery trash, app caches) is out
   of reach; the tool doesn't ask for ADB.
