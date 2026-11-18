@@ -578,8 +578,10 @@ class Kinds(unittest.TestCase):
         for ext in intake.IMG:
             for e in (ext, ext.upper()):
                 k, mime = review_ui.kind_of(f"/x/a{e}")
-                # HEIC/HEIF and raw files get "no preview"; the rest are shown as images.
-                want = "none" if ext in (".heic", ".heif", ".dng", ".gpr") else "image"
+                # Raw files get "no preview", and so do HEIC/HEIF unless pillow-heif can convert them
+                # (review_ui.HEIF: the venv's python); the rest are shown as images.
+                none = (".dng", ".gpr") + (() if review_ui.HEIF else (".heic", ".heif"))
+                want = "none" if ext in none else "image"
                 self.assertEqual(k, want, e)
                 if k == "image":
                     self.assertTrue(mime.startswith("image/"), (e, mime))
