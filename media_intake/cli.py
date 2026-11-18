@@ -11,6 +11,7 @@
   media-intake similar FILE ...          nearest neighbours of a file                (venv)
   media-intake vlm-trash ...             local vision-model second opinion on trash  (venv, Ollama)
   media-intake doctor                    check system packages, venv, model checksums, Ollama digest, config
+  media-intake calibrate [--precision P] [--json] ...   label thresholds vs your marks, report only (calibrate.py)
 
 `media-intake` alone, `--help` or `-h` prints this; an unknown command prints
 the nearest real one and exits 2.
@@ -304,6 +305,7 @@ def _prune_cache(rest):  # cli.py's too: it reads the library as the gallery doe
 COMMANDS = {"doctor": lambda rest: doctor(), "queue": _queue, "review": _review, "backup": _backup,
             "gallery": _gallery, "prune-cache": _prune_cache}
 HELP = ("-h", "--help", "help")
+COMMANDS["calibrate"] = lambda rest: importlib.import_module("calibrate").main(rest)  # system Python + numpy
 
 
 def intake_commands():
