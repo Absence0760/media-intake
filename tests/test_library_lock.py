@@ -202,7 +202,10 @@ class LibraryLockTest(unittest.TestCase):
             until(lambda: self.held_by("intake.py erase"), "the CLI erase to hold the lock")
             code, j = s.post("/api/keep", {"ids": [ida]})
             self.assertEqual(code, 409, j)
-            self.assertIn(f"intake.py erase (PID {er.pid})", j["error"])
+            # the page names what holds it in plain words, never a PID or a lock path (gallery.busy_text)
+            self.assertIn("the media-intake erase command is still running", j["error"])
+            self.assertNotIn(str(er.pid), j["error"])
+            self.assertTrue(j.get("busy"), j)
             self.assertFalse(os.path.exists(a + ".xmp"))  # nothing written
             self.assertEqual(s.get("/api/list?limit=50")["total"], 1)  # reading is never locked
             er.stdin.write("no\n")
