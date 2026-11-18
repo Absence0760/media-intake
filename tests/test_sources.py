@@ -189,10 +189,12 @@ class Drive(unittest.TestCase):
         self.assertEqual(c("ChatExport_2026-11-14/video_files/holiday.MOV"), "messaging:Telegram")
         self.assertEqual(c("a/DataExport_2026-11-14 (2)/chats/chat_01/files/IMG_7.HEIC"), "messaging:Telegram")
         self.assertEqual(c("ChatExport_2026-11-14/x.jpg"), "photo")
-        # Only the path under the source root is seen: an export staged as the root itself files its
-        # own-named files as photos and videos (docs/intake.md, "Messaging apps"; ROADMAP follow-up).
+        # rel alone can't show an export staged as the root itself: stage records export_app()'s answer.
         self.assertEqual(c("photos/IMG_1.jpg"), "photo")
+        self.assertEqual(c("photos/IMG_1.jpg", "Telegram"), "messaging:Telegram")
+        self.assertEqual(c("video_files/clip.MOV", "Telegram"), "messaging:Telegram")
         self.assertEqual(c("photos/photo_4@14-11-2026_10-20-30.jpg"), "messaging:Telegram")
+        self.assertEqual(c("photos/IMG_1.jpg", None), "photo")
 
     def test_telegram_export_media_folders_only(self):
         """A Telegram Desktop export: photos/, video_files/ and files/ only, never its previews or own assets."""
@@ -230,12 +232,25 @@ class Drive(unittest.TestCase):
                       "result.json"]:
                 touch(root, x)
             self.assertEqual([p for p, _ in sources.walk(root, "drive")], [ok], name)
+        # export_app: what stage records so plan's category sees an export at (or above) rel's top.
+        for name in ("ChatExport_2026-11-14", "chat with a friend"):
+            root = os.path.join(self.mount, name)
+            touch(root, "video_files/holiday.MOV")
+            self.assertEqual(sources.export_app(root, "video_files/holiday.MOV"), "Telegram", name)
+            self.assertEqual(sources.drive_category("video_files/holiday.MOV",
+                                                    sources.export_app(root, "video_files/holiday.MOV")),
+                             "messaging:Telegram", name)
+        self.assertEqual(sources.export_app(r, f"{chat}/video_files/holiday.MOV"), "Telegram")
+        self.assertEqual(sources.export_app(r, "old chats/photos/photo_3@01-01-2025_09-00-00.jpg"), "Telegram")
+        self.assertIsNone(sources.export_app(r, "saved page/files/pic.png"), "a saved web page is not an export")
+        self.assertIsNone(sources.export_app(r, "2019/IMG_0001.JPG"))
         # A symlinked result.json marks nothing: the folder is walked as usual.
         link = os.path.join(self.mount, "linked")
         touch(link, "photos/a.jpg")
         touch(link, "stickers/s.webp")
         os.symlink(os.path.join(self.mount, "chat with a friend", "result.json"), os.path.join(link, "result.json"))
         self.assertEqual(sorted(rel for _, rel in sources.walk(link, "drive")), ["photos/a.jpg", "stickers/s.webp"])
+        self.assertIsNone(sources.export_app(link, "photos/a.jpg"))
 
     def test_backup_layout_refused_unless_marker(self):
         for folder in sources.BACKUP_LAYOUT:
