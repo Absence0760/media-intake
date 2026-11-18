@@ -2452,6 +2452,7 @@ def share_copy_refusal(files, out):
 
 
 def cmd_share_copy(a):
+    import motion  # sibling module (sys.path set above); here so only share-copy loads it
     if refusal := share_copy_refusal(a.files, a.out):
         sys.exit(refusal)
     os.makedirs(a.out, exist_ok=True)
@@ -2481,6 +2482,17 @@ def cmd_share_copy(a):
             if ext in (".jpg", ".jpeg"):
                 kw["quality"] = 95
             out.save(dst, **kw)
+        if ext not in VID:
+            # A motion photo's appended video (Samsung, Google) must not ride along with the still. exiftool
+            # -all= drops a JPEG's trailer (its Trailer group; tests/test_motion.py checks) but may keep a
+            # HEIC's top-level mpvd/sefd box, and Pillow writes a fresh file; strip cuts whatever is left off
+            # this copy, never the original, and a copy it can't make safe is removed.
+            try:
+                motion.strip(dst)
+            except (motion.MotionError, OSError) as e:
+                if os.path.lexists(dst):
+                    os.remove(dst)
+                sys.exit(f"not copying {f}: its embedded video could not be removed from the copy ({e})")
         left = has_gps(dst)
         print(f"{dst}  gps={'STILL PRESENT' if left else 'none'}")
 

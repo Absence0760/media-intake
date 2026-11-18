@@ -60,6 +60,26 @@ default; all of them come from `~/.config/media-intake/config.toml`
   ffmpeg and ffprobe get every path as `file:` plus the absolute path, so a
   name or relative source like `concat:...` or `http:...` is never followed as
   a protocol.
+- **A motion photo's video is scanned too.** Samsung motion photos and
+  Google's (Pixel Motion Photos, older MicroVideo) are a JPEG or
+  HEIC with a few seconds of MP4 appended. `scan` finds the video from the
+  file's bytes (`media_intake/motion.py`): the Google XMP
+  (`Camera:MotionPhoto`, the `Container:Directory` item with
+  `Item:Semantic="MotionPhoto"` and its `Item:Length`, or `MicroVideoOffset`),
+  Samsung's `MotionPhoto_Data` block in the `SEFT` trailer (a `sefd` box in a
+  HEIC), a HEIC's `mpvd` box, or an MP4 `ftyp` box after the JPEG's end. It
+  checks the still as an image, copies the video into its private work folder,
+  samples its frames like any video's, and adds those flags to the photo's
+  (`nudity`, `unscanned-nudity`); the copy is deleted at once and the original
+  only read. A file that claims a video `scan` can't locate or copy out (a
+  damaged trailer, a `MotionPhoto=1` with unexplained bytes after the image)
+  is `unscanned-video`, the same as an undecodable clip, never clean.
+  `scan_sensitive.py --videos-only` re-checks motion photos with the videos.
+  Sources (checked 2026-11-17): Google's
+  [Motion Photo format](https://developer.android.com/media/platform/motion-photo-format),
+  exiftool's [Samsung trailer tags](https://exiftool.org/TagNames/Samsung.html)
+  and its reader (`ProcessSamsung` in
+  [Samsung.pm](https://github.com/exiftool/exiftool/blob/master/lib/Image/ExifTool/Samsung.pm)).
 
 ## Messaging apps
 
@@ -283,7 +303,12 @@ exiftool `-all=` for images (orientation and ICC profile kept), an ffmpeg
 stream copy without data streams or metadata for videos. exiftool cannot write
 GoPro GPMF tags, so the GPS track is removed by dropping the stream; a video's
 attached picture (cover art, a JPEG with its own EXIF) and subtitle streams
-are dropped too, so a copy holds only its video and audio streams. It checks
+are dropped too, so a copy holds only its video and audio streams. A motion
+photo's copy is the still alone: exiftool `-all=` drops a JPEG's trailer (its
+`Trailer` group, Samsung's and Google's video with it), and share-copy then
+cuts anything still appended off the copy (a JPEG after its end of image, a
+HEIC's trailing `mpvd`/`sefd` box); a copy that would still carry a video
+is removed and share-copy stops with an error (copies made before it stay). It checks
 everything before copying anything, and refuses (writing nothing) when `--out`
 is inside a library root or the state folder (the gallery's Share-safe copy
 has the same rule: a copy there would be taken for a library file, and could
@@ -1151,6 +1176,12 @@ Rejected:
   check that crashes on one file `unscanned-error` (the rest of the batch is
   still scanned and `scan.json` still written). GoPro `.gpr` raw files are
   read through Pillow; one it can't open is `unreadable`.
+- Motion photos: built from Google's spec and exiftool's reading of Samsung's
+  trailer, tested on synthetic files only (a Pillow JPEG with an ffmpeg clip
+  appended, stand-in HEIC boxes), not on real Samsung or Pixel files. HEIC
+  motion photos' videos are found but their stills need `pillow-heif`; AVIF
+  and Samsung PNG trailers aren't read. An Ultra HDR photo whose video was
+  removed by an editor that kept `MotionPhoto=1` gets `unscanned-video`.
 - `backup` on real exFAT, ext4-on-LUKS and NTFS drives (fsync refusals, name
   rules, timestamps): tested on a folder standing in for the drive and a faked
   `findmnt` only ([backup.md](backup.md), "Not tested here").
@@ -1177,5 +1208,8 @@ dropping the rest (dry run, unreadable files, symlinked cache folders, the libra
 `forget` and `verify-gone` (an erase outside the backed-up folders, a shared sha256, a record it can't rewrite or read); `test_library_ops_media_kinds`: every
 library-side command on a photo, an mp4 and a .mov, alone and mixed; `test_detectors_media_kinds`: scan,
 vlm_trash, semantic, label and the plugin hook on photos, videos and mixed batches, broken videos that
-must be flagged "not checked", never clean, and the GStreamer fallback with a hostile file name and its one-line skip note for an unsafe work folder (fake tools); `test_offline_guard`). Run long jobs under your
+must be flagged "not checked", never clean, and the GStreamer fallback with a hostile file name and its one-line skip note for an unsafe work folder (fake tools); `test_motion`: motion photos (Google,
+Samsung and bare-`ftyp` styles, HEIC `mpvd`/`sefd` boxes) detected, their video extracted, scanned and its
+flags merged, an extraction failure flagged "not checked", and share-copy dropping the video (exiftool and
+Pillow paths); `test_offline_guard`). Run long jobs under your
 own memory cap if you like.

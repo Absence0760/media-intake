@@ -347,8 +347,9 @@ items and the folder, then runs `media-intake share-copy FILE... --out DIR`
 as a job (`POST /api/share`, `{"ids": [...]}`): every metadata field and the
 GPS stripped (exiftool `-all=` for images, keeping orientation and ICC; an
 ffmpeg stream copy without data streams for videos, which also drops a video's
-cover art, an attached JPEG with its own EXIF, and its subtitles;
-[intake.md](intake.md)). The stripping is share-copy's own; the gallery only
+cover art, an attached JPEG with its own EXIF, and its subtitles; a motion
+photo's copy is the still alone, its appended video cut off, and one that would
+still carry a video is removed and the job fails; [intake.md](intake.md)). The stripping is share-copy's own; the gallery only
 picks the files and the folder. share-copy also checks everything before it
 copies anything: it refuses, writing nothing, an `--out` where a copy would
 land on its source or inside a library root or the state folder, two files
