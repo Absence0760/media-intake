@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Local-only review page for a media-intake batch: quarantine + review folder.
 
-  python3 -I media_intake/review_ui.py BATCH [--phone ROOT] [--drive MOUNT] [--port 0]
+  python3 -I media_intake/review_ui.py BATCH [--phone ROOT] [--drive DRIVE] [--port 0]
   python3 -I media_intake/review_ui.py [BATCH] --maybe-trash [--phone ROOT]   (after media-intake suggest-trash)
 
 The quarantine can hold nudity and IDs, so this page never leaves the machine:
@@ -52,6 +52,7 @@ sys.path.insert(0, HERE)
 import bursts  # noqa: E402  (burst groups: pure functions over date, device, dHash)
 import config  # noqa: E402
 import jobs  # noqa: E402  (detached, re-attachable runs: <state>/jobs/)
+import library_lock  # noqa: E402  (plain_holder: who holds the library lock, in words)
 
 HOME = os.path.expanduser("~")
 STATE = config.get()["state"]
@@ -393,6 +394,15 @@ def attach_bursts(batch, items):
     return gid
 
 
+def busy_words(e):
+    """Plain words for a refused submit (jobs.Busy): what is in the way and what to do. The exception's own text
+    can name a PID and the lock file's path, so it never reaches the page (the gallery's busy_text does the same)."""
+    if isinstance(e, jobs.LibraryBusy):
+        who = library_lock.plain_holder(e.holder) or "an import, a gallery Trash or Erase, or another review"
+        return f"Another action is using the library ({who}). Wait for it to finish, then apply again."
+    return "A run of this review is still going. Wait for it to finish, then open the review again."
+
+
 def job_key(batch):
     """One job per batch (its quarantine, near- and xcheck- batches, review folder); one for maybe-trash alone."""
     return f"review-{batch}" if batch else "maybe-trash"
@@ -611,7 +621,7 @@ class App:
             try:
                 claim = jobs.claim(self.key)  # atomic: a second submit for this batch is refused here
             except jobs.Busy as e:  # this batch's own job, or the library lock held by another writer
-                return 409, str(e)
+                return 409, busy_words(e)
             with claim:
                 # Under the claim no run can start or end, so this is the last word on staleness.
                 st = jobs.status(self.key)

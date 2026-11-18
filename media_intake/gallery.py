@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Local web gallery for the media library (a day-to-day browser, in place of digiKam).
 
-  media-intake gallery [--drive MOUNT] [--port 0] [--share-out DIR]
+  media-intake gallery [--drive DRIVE] [--port 0] [--share-out DIR]
   python3 -I media_intake/gallery.py         (same flags)
 
 Shows everything under the library, videos and project folders (config.toml)
@@ -628,17 +628,8 @@ def busy_text(holder=None):
         job = WORDS["job"].get((st.get("spec") or {}).get("label"), "")
         what = (f"an {job}" if job[:1] in "AEIOU" else f"a {job}") if job else "a gallery action"
     else:
-        w = str((holder if holder is not None else library_lock.read_holder()).get("what") or "")
-        if w.startswith("job review-") or w == "job maybe-trash":
-            what = "a run from the review page"
-        elif w.startswith("job "):
-            what = "a Trash, Erase or Share-safe copy from another gallery"
-        elif w.startswith("gallery "):
-            what = "a change from another gallery page"
-        elif re.fullmatch(r"intake\.py [a-z-]{1,32}", w):
-            what = f"the media-intake {w.split()[1]} command"
-        else:
-            what = "another media-intake command"
+        h = holder if holder is not None else library_lock.read_holder()
+        what = library_lock.plain_holder(h) or "another media-intake command"
     return f"{what} is still running; wait for it to finish, then try again"
 
 

@@ -16,6 +16,7 @@ guards and the 409 while the library is locked with hand-written sidecars, so it
 """
 import errno, hashlib, http.client, io, json, os, re, shutil, signal, stat, subprocess, sys, tempfile, time
 import unittest, urllib.parse
+import unittest.mock as mock
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import support  # noqa: E402,F401  (hermetic config)
@@ -1217,7 +1218,6 @@ class SemanticArgvTest(unittest.TestCase):
 
     def test_search_and_similar_pass_format_machine(self):
         import gallery
-        from unittest import mock
         tmp = tempfile.mkdtemp(prefix="gallery-argv-test-")
         self.addCleanup(shutil.rmtree, tmp, True)
         p = os.path.join(tmp, "a.jpg")
@@ -1259,7 +1259,6 @@ class PlainWordsTest(unittest.TestCase):
 
     def busy(self, status, holder):
         import gallery
-        from unittest import mock
         with mock.patch.object(gallery.jobs, "status", lambda key: status):
             return gallery.busy_text(holder)
 

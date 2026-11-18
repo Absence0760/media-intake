@@ -311,7 +311,7 @@ next: media-intake scan BATCH          # after plan
 next: media-intake apply BATCH         # after scan
 next: media-intake review BATCH        # after apply, while anything is in quarantine or the review folder
 next: media-intake tag BATCH           # after apply, when nothing is
-next: media-intake backup <MOUNT>, then media-intake offload BATCH --phone ROOT   # after tag
+next: media-intake backup <DRIVE>, then media-intake offload BATCH --phone ROOT   # after tag
 next: media-intake gallery             # after tag, for a laptop folder batch (no offload)
 ```
 
@@ -344,8 +344,9 @@ They run every check (the folder-batch, letter-case and quarantine refusals
 included), print what would go as counts (`would trash 2 files; phone
 originals 2`, `would delete 5 reviewed near-duplicates/junk from batch B`),
 then `dry run: nothing deleted` and the exact command to run again with
-`--yes`. A dry run exits 0, or 1 when the real run would refuse a file. The
-review page and the gallery ask in the page first, then run them with `--yes`.
+`--yes`. A dry run exits 0, or 1 when the real run would refuse a file; then
+it prints no `--yes` command, only what to fix first (take the refused files
+off the command; erase or keep a quarantined one on the review page). The review page and the gallery ask in the page first, then run them with `--yes`.
 
 ### One writer at a time: the library lock
 
@@ -801,7 +802,9 @@ quarantine. A file named twice is forgotten once.
   left (including orphaned sidecars, gallery thumbnails and gallery video
   proxies). `erase` runs it
   last. Given a batch, it then prints that batch's last coverage report in
-  full (below), or says the batch was erased before reports were kept.
+  full (below), or says the batch was erased before reports were kept. A
+  batch with no erase-log entries yet exits 1 at once with `nothing erased yet
+  for BATCH: erase it first (media-intake erase BATCH)`, before any sweep.
 - **Coverage report.** Every `erase` (and so every `forget`) ends with a
   report of what it reached and what it can't, and appends it to
   `erase-log.txt` as one line, `<date> <time> <batch> coverage <json>`, beside

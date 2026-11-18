@@ -1983,8 +1983,14 @@ def cmd_offload(a):
           "erase or purge-review")
 
 
-def rerun_with_yes(argv):
-    """The dry-run footer of a delete command: nothing went, and the exact command that deletes."""
+def rerun_with_yes(argv, ok=True):
+    """The dry-run footer of a delete command: nothing went, and the exact command that deletes. ok=False (the
+    dry run would refuse a file): no command to copy, since it would refuse the same files; what to fix first."""
+    if not ok:
+        print("dry run: nothing deleted. Some files would be refused (see above). Fix that first: take them "
+              "off the command (erase or keep a quarantined one on the review page, never trash it); then run "
+              "it again with --yes")
+        return
     print("dry run: nothing deleted. To delete for good, run:")
     print("  " + shlex.join(["media-intake", *argv, "--yes"]))
 
@@ -2179,7 +2185,7 @@ def cmd_trash(a):
     ok = trash_files(args, batch, a.phone, dry=not a.yes)
     if not a.yes:
         rerun_with_yes(["trash", *(["--batch", batch] if batch else []), *args,
-                        *(["--phone", a.phone] if a.phone else [])])
+                        *(["--phone", a.phone] if a.phone else [])], ok)
     sys.exit(0 if ok else 1)
 
 
@@ -2584,7 +2590,7 @@ def cmd_tag(a):
     if man.get("kind") == "folder":  # offload is refused for a laptop folder: browse what was filed
         next_hint(["gallery"])
     else:  # the end of the flow: back the library up, then free the device
-        next_hint(["backup", "<MOUNT>"], ["offload", a.batch, "--phone", man.get("root") or "<ROOT>"])
+        next_hint(["backup", "<DRIVE>"], ["offload", a.batch, "--phone", man.get("root") or "<ROOT>"])
 
 
 def sidecar_dates(paths):

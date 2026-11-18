@@ -574,8 +574,8 @@ def render_status(m):
         if w["what"] == "review":
             out.append(wrap(f"{w['label']}, chunk {w['chunk']} ({w['batch']}): quarantine {w['quarantine']}, "
                             f"near and messaging copies {w['near_and_messaging']}, review folder "
-                            f"{w['review_folder']}, trash suggestions {w['trash_suggestions']}", "  "))
-            names = ["review page", "quarantine", "trash suggestions"]
+                            f"{w['review_folder']}, Suggested junk {w['trash_suggestions']}", "  "))
+            names = ["review page", "quarantine", "Suggested junk"]
             if not w["quarantine"]:
                 names.remove("quarantine")
             for name, c in zip(names, w["commands"]):

@@ -264,7 +264,7 @@ class Queue(unittest.TestCase):
         st = self.qrun("status")
         self.assertEqual(self.status_json()["sources"][0]["chunks_done"], 3)
         self.assertIn("needs your review", st)
-        self.assertIn("trash suggestions 1", st)
+        self.assertIn("Suggested junk 1", st)
         self.assertIn("media-intake review", st)
         n = len(self.calls)
         self.qrun("run")  # nothing left: no step runs again
@@ -485,7 +485,7 @@ class Queue(unittest.TestCase):
         self.assertIn("failed", lines[3])
         review = lines[4]
         self.assertEqual(review[cols[0]:].split()[:5], ["needs", "your", "review", "2", "4"])
-        self.assertEqual(review[cols[0]:].split()[5], "2")  # 2 trash suggestions, 0 in the review folder
+        self.assertEqual(review[cols[0]:].split()[5], "2")  # 2 Suggested junk, 0 in the review folder
         self.assertIn("\u2026", review, "a long path is shortened in the middle")
         self.assertIn("hotos 2009  ", review, "and keeps its end (the label column takes some of its room)")
         self.assertTrue(review[src:].startswith("/ru\u2026"), "a short start")
@@ -530,10 +530,12 @@ class Queue(unittest.TestCase):
         self.assertNotIn("running", table)
         waiting, nxt = rest.rstrip("\n").split("\n\n")
         self.assertIn("review, chunk 1 (b-review-1): quarantine 3, near and messaging copies 1, review folder 0, "
-                      "trash suggestions 2", " ".join(x.strip() for x in waiting.splitlines()))
+                      "Suggested junk 2", " ".join(x.strip() for x in waiting.splitlines()))
         self.assertIn("review page:        media-intake review b-review-1", waiting)
         self.assertIn(f"quarantine:         xdg-open {os.path.join(self.state, 'quarantine', 'b-review-1')}", waiting)
-        self.assertIn("media-intake suggest-trash --batch b-review-1", waiting)
+        self.assertIn("    Suggested junk:     media-intake gallery   (or media-intake suggest-trash --batch b-review-1)",
+                      waiting)
+        self.assertNotIn("trash suggestions", out)
         self.assertIn("broken, chunk 1 (b-broken-1) failed at scan: scan failed (exit 1); log "
                       "/state/queue/broken/b-broken-1.log", " ".join(x.strip() for x in waiting.splitlines()))
         self.assertIn("fix it, then retry: media-intake queue run --inhibit", waiting)
@@ -689,7 +691,7 @@ class Queue(unittest.TestCase):
         filed = [x for r, _, fs in os.walk(self.lib) for x in fs if x.endswith(".jpg")]
         self.assertEqual(sorted(filed), ["P_0001.jpg", "P_0002.jpg"])
         st = self.qrun("status")
-        self.assertIn("trash suggestions 1", st)
+        self.assertIn("Suggested junk 1", st)
         self.assertNotIn("delete the source folder", st, "not while you still have decisions")
         q = self.state_q()
         for ch in q["sources"]["old-folder"]["chunks"].values():

@@ -96,7 +96,12 @@ The goal: someone else can install it on Fedora, import a phone, and trust it.
 
 ## Milestone 0.2: the gallery as the everyday UI
 
-- [ ] Layout polish after real use (left panel, sticky actions, lightbox).
+- [ ] Layout polish after real use: the gallery's left panel and the lightbox, once they have
+      been used on a real device. (Done: the review page's sticky Submit, the gallery's phone
+      layout, 44 px touch targets and the grid's empty, loading and error states.)
+- [x] UX audit for a non-technical owner: `trash` and `purge-review` are dry runs without
+      `--yes`; plain words in the pages and help (no tool tag names, PIDs or lock paths); one
+      word list, docs/words.md.
 - [x] **HEVC in the browser:** Firefox/Chromium often can't play HEVC. Make an on-demand
       H.264 proxy (GStreamer GPU decode → x264), cached by sha256 in the private cache
       and cleaned by erase/trash/forget/verify-gone like thumbnails (gallery only; the

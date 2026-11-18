@@ -397,7 +397,8 @@ class LibraryLockTest(unittest.TestCase):
         p.wait()
 
     def test_review_submit_refused_while_another_writer_holds_the_lock(self):
-        """The review page never waits: Submit gets 409 naming the holder, and no run starts."""
+        """The review page never waits: Submit gets 409 naming the holder in plain words (no PID, no lock file's
+        path), and no run starts."""
         from test_review_ui import Server
         p = self.hold_in_child("intake.py apply")
         s = Server(self.env, batch="q1")
@@ -410,7 +411,10 @@ class LibraryLockTest(unittest.TestCase):
             dec = {str(i): pick[it["tab"]] for i, it in enumerate(items)}  # submit takes the list index
             r, b = s.req("POST", "/api/submit", headers={"X-CSRF": s.csrf()}, body={"decisions": dec, "confirm": "ERASE"})
             self.assertEqual(r.status, 409, b)
-            self.assertIn(f"intake.py apply (PID {p.pid})", json.loads(b)["error"])
+            err = json.loads(b)["error"]
+            self.assertEqual(err, "Another action is using the library (the media-intake apply command). "
+                                  "Wait for it to finish, then apply again.")
+            self.assertNotIn(str(p.pid), err)
             self.assertIsNone(jobs.status("review-q1"))
             self.assertTrue(os.path.exists(self.qfile) and os.path.isdir(self.review), "nothing was run")
         finally:

@@ -11,7 +11,8 @@ ffmpeg test patterns (ffmpeg is in the CI image); scan.json is written by hand, 
 MEDIA_INTAKE_TEST_MOUNT/UUID stand in for findmnt; MEDIA_INTAKE_WIPE_ANY_DEST lets wipe-free write
 to a temp folder, capped by MEDIA_INTAKE_WIPE_MAX_MB.
 """
-import hashlib, importlib.util, io, json, os, re, shlex, shutil, subprocess, sys, tempfile, unittest
+import argparse, hashlib, importlib.util, io, json, os, re, shlex, shutil, subprocess, sys, tempfile, unittest
+import unittest.mock as mock
 from contextlib import redirect_stdout
 from datetime import datetime
 from zoneinfo import ZoneInfo
@@ -363,25 +364,44 @@ class Phone(Base):
                            (["erase", b, "--phone", nophone], phone_line),
                            (["forget", filed, "--drive", nodrive], drive_line),
                            (["offload", b, "--phone", nophone], phone_line),
-                           (["verify-gone", b, "--drive", nodrive], drive_line)):
+                           (["verify-gone", b, "--drive", nodrive], drive_line),
+                           # --yes skips the prompt only, never the check on what it names
+                           (["erase", b, "--phone", nophone, "--yes"], phone_line),
+                           (["erase", b, "--drive", nodrive, "--yes"], drive_line),
+                           (["erase", b, "--phone", self.phone, "--drive", nodrive, "--yes"], drive_line),
+                           (["forget", filed, "--drive", nodrive, "--yes"], drive_line),
+                           (["offload", b, "--phone", nophone, "--yes"], phone_line)):
             out = self.intake(*args, code=1, answer="ERASE\n" if args[0] != "offload" else "DELETE\n")
             self.assertIn(line, out, args)
+            self.assertEqual(out.count("\n"), 1, f"{args}: one line\n{out}")
             self.assertNotIn("Type ", out, f"{args}: refused before the prompt")
             self.assertNotIn("Traceback", out, args)
-        self.assertEqual(files_under(self.phone), before, "nothing deleted from the phone")
-        self.assertEqual(sorted(jload(os.path.join(quar, "quarantine.json"))), [self.SENS_VID], "nothing erased")
-        self.assertTrue(os.path.isfile(filed), "nothing forgotten")
-        self.assertFalse(os.path.exists(os.path.join(self.state, "erase-log.txt")))
-        # A folder on the laptop's own disk, when its free space is to be wiped: refused up front too (wipe-free's
-        # own check), where it used to be found out after the erase ("drive free space NOT wiped").
+            self.assertEqual(files_under(self.phone), before, f"{args}: nothing deleted from the phone")
+            self.assertEqual(sorted(jload(os.path.join(quar, "quarantine.json"))), [self.SENS_VID],
+                             f"{args}: nothing erased")
+            self.assertTrue(os.path.isfile(filed), f"{args}: nothing forgotten")
+            self.assertFalse(os.path.exists(os.path.join(self.state, "erase-log.txt")), args)
+
+    def test_a_laptop_disk_drive_is_refused_before_any_prompt(self):
+        """A folder on the laptop's own disk, when its free space is to be wiped: refused up front (wipe-free's
+        own check), where it used to be found out after the erase ("drive free space NOT wiped"). Needs the real
+        findmnt; the patched cases are in NotADrive."""
+        if not shutil.which("findmnt"):
+            self.skipTest("no findmnt here: NotADrive covers this with a patched subprocess.run")
+        b = "phone-erase-laptop"
+        self.quarantined(b, [self.SENS_VID])
+        quar = os.path.join(self.state, "quarantine", b)
         mnt = subprocess.run(["findmnt", "-n", "-o", "TARGET", "-T", self.backup], capture_output=True,
-                             text=True).stdout.strip() if shutil.which("findmnt") else ""
-        if re.match(r"^(/|/home|/var|/tmp|/boot.*)$", mnt):
-            env = {k: v for k, v in self.env.items() if k != "MEDIA_INTAKE_WIPE_ANY_DEST"}
-            out = self.intake("erase", b, "--drive", self.backup, code=1, answer="ERASE\n", env=env)
+                             text=True).stdout.strip()
+        if not re.match(r"^(/|/home|/var|/tmp|/boot.*)$", mnt):
+            self.skipTest(f"the temp folder is on its own mount ({mnt}), not the laptop's disk")
+        env = {k: v for k, v in self.env.items() if k != "MEDIA_INTAKE_WIPE_ANY_DEST"}
+        for yes in ([], ["--yes"]):
+            out = self.intake("erase", b, "--drive", self.backup, *yes, code=1, answer="ERASE\n", env=env)
             self.assertIn(f"--drive {self.backup}: is on the laptop's own disk ({mnt}), not a backup drive. ", out)
             self.assertNotIn("Type ERASE", out)
-            self.assertTrue(os.path.isdir(quar), "nothing erased")
+            self.assertEqual(sorted(jload(os.path.join(quar, "quarantine.json"))), [self.SENS_VID], "nothing erased")
+            self.assertFalse(os.path.exists(os.path.join(self.state, "erase-log.txt")))
 
     def test_erase_a_video_already_in_the_library_from_an_earlier_batch(self):
         """The same video filed by an earlier batch is the same content: erase removes the library copy too."""
@@ -763,6 +783,39 @@ class PreviewNames(unittest.TestCase):
         self.assertEqual(todo, [ok])
         self.assertEqual(buf.getvalue().count("skip phone delete, denied"), 3, buf.getvalue())
         self.assertTrue(all(os.path.isfile(p) for p in bad))
+
+
+class NotADrive(unittest.TestCase):
+    """not_a_drive and need_device with findmnt patched: a laptop mount, or no findmnt at all (OSError), is not
+    a backup drive, so a --drive whose free space is to be wiped is refused before anything is asked."""
+
+    def setUp(self):
+        import intake
+        self.intake = intake
+        self.drive = tempfile.mkdtemp(prefix="not-a-drive-")
+        self.addCleanup(shutil.rmtree, self.drive, True)
+        saved = os.environ.pop("MEDIA_INTAKE_WIPE_ANY_DEST", None)
+        if saved is not None:
+            self.addCleanup(os.environ.__setitem__, "MEDIA_INTAKE_WIPE_ANY_DEST", saved)
+
+    def laptop(self, *a, **k):
+        return subprocess.CompletedProcess(a[0] if a else [], 0, stdout="/home\n", stderr="")
+
+    def no_findmnt(self, *a, **k):
+        raise FileNotFoundError(2, "No such file or directory: 'findmnt'")
+
+    def test_laptop_mount_or_no_findmnt_is_not_a_drive(self):
+        for name, run, where in (("laptop", self.laptop, "/home"), ("no findmnt", self.no_findmnt, "unknown")):
+            with mock.patch.object(self.intake.subprocess, "run", run):
+                self.assertEqual(self.intake.not_a_drive(self.drive),
+                                 f"is on the laptop's own disk ({where}), not a backup drive", name)
+                a = argparse.Namespace(phone=None, drive=self.drive, no_wipe_free=False)
+                with self.assertRaises(SystemExit, msg=name) as cm:
+                    self.intake.need_device(a)
+                self.assertEqual(str(cm.exception), f"--drive {self.drive}: is on the laptop's own disk ({where}), "
+                                                    f"not a backup drive. {self.intake.DRIVE_HINT}", name)
+                # --no-wipe-free: nothing is wiped, so any existing folder will do
+                self.intake.need_device(argparse.Namespace(phone=None, drive=self.drive, no_wipe_free=True))
 
 
 # ---------------------------------------------------------------- external drive (kind drive)

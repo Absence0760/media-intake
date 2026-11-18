@@ -688,7 +688,8 @@ class Trash(unittest.TestCase):
         # Without --yes: a dry run. Counts and the command to rerun; nothing deleted, not even from the phone.
         out = self.intake("trash", batch, junk, "--phone", self.phone)
         self.assertIn("would trash 1 files; phone originals 1", out)
-        self.assertIn("dry run: nothing deleted", out)
+        self.assertIn("dry run: nothing deleted. To delete for good, run:", out)  # nothing refused: the command
+        self.assertNotIn("Fix that first", out)
         self.assertIn(shlex.join(["media-intake", "trash", "--batch", batch, junk, "--phone", self.phone, "--yes"]), out)
         for p in (junk, side, thumb, P("DCIM/Camera/20261101_100000.jpg")):
             self.assertTrue(os.path.exists(p), p)
@@ -718,6 +719,10 @@ class Trash(unittest.TestCase):
         os.symlink(dl, link)
         out = self.intake("trash", dl, link, code=1)  # dry run: the same refusal, exit 1, nothing deleted
         self.assertIn("would trash 0 files; refused 2 (not a library or review file)", out)
+        # no --yes command to copy while a file would be refused: it says what to fix first
+        self.assertIn("dry run: nothing deleted. Some files would be refused", out)
+        self.assertIn("Fix that first", out)
+        self.assertNotIn("media-intake trash", out)
         self.assertTrue(os.path.isfile(dl) and os.path.islink(link))
         out = self.intake("trash", dl, link, "--yes", code=1)
         self.assertIn("refused 2", out)
@@ -733,6 +738,8 @@ class Trash(unittest.TestCase):
         save_jpg(pattern(16), ok)
         out = self.intake("trash", "xcheck-b", q, ok, code=1)  # dry run: the same refusal, nothing deleted
         self.assertIn("would trash 1 files; refused 1 quarantined", out)
+        self.assertIn("erase or keep a quarantined one", out)
+        self.assertNotIn("media-intake trash", out)
         self.assertTrue(os.path.isfile(q) and os.path.isfile(ok))
         out = self.intake("trash", "xcheck-b", q, ok, "--yes", code=1)
         self.assertIn("refused 1 quarantined", out)

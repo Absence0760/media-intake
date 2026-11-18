@@ -128,7 +128,7 @@ class IntakeOutput(unittest.TestCase):
         self.assert_no_names(out)
         self.assertFalse([ln for ln in out if ln.startswith("next:")])
         out = self.intake("tag", batch, "--no-labels", MEDIA_INTAKE_NEXT_HINT="1")
-        self.assertEqual(out[-1], f"next: media-intake backup <MOUNT>, then media-intake offload {batch} "
+        self.assertEqual(out[-1], f"next: media-intake backup <DRIVE>, then media-intake offload {batch} "
                                   f"--phone {shlex.quote(self.phone)}")
 
     @unittest.skipUnless(shutil.which("exiftool"), "exiftool not installed")

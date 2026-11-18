@@ -437,11 +437,16 @@ class ReviewUITest(unittest.TestCase):
         items = self.items(s)
         csrf = s.csrf()
         keep = {str(i["id"]): "keep" for i in items}
-        one_gone = dict(keep, **{str(items[0]["id"]): "erase" if items[0]["tab"] == "quarantine" else "trash"})
-        for body in ({"decisions": one_gone}, {"decisions": one_gone, "confirm": ""},
-                     {"decisions": one_gone, "confirm": "erase"}):
-            r, b = s.req("POST", "/api/submit", headers={"X-CSRF": csrf}, body=body)
-            self.assertEqual(r.status, 400, b)
+        quar = next(i for i in items if i["tab"] == "quarantine")
+        rev = next(i for i in items if i["tab"] == "review")
+        # each removal on its own: a quarantined erase, and the review tab's delete and trash
+        for it, d in ((quar, "erase"), (rev, "delete"), (rev, "trash")):
+            one_gone = dict(keep, **{str(it["id"]): d})
+            for body in ({"decisions": one_gone}, {"decisions": one_gone, "confirm": ""},
+                         {"decisions": one_gone, "confirm": "erase"}):
+                r, b = s.req("POST", "/api/submit", headers={"X-CSRF": csrf}, body=body)
+                self.assertEqual(r.status, 400, (d, b))
+                self.assertEqual(json.loads(b)["error"], "type ERASE to confirm", d)
         self.assertEqual(self.calls(), [])  # nothing ran
         self.assertFalse(os.path.exists(os.path.join(self.state, "batches", BATCH, "review-decisions.json")))
         r, b = s.req("POST", "/api/submit", headers={"X-CSRF": csrf}, body={"decisions": keep})
@@ -927,6 +932,29 @@ class ReviewUITest(unittest.TestCase):
         self.assertEqual(len(self.calls()), n)  # nothing ran
         self.assertEqual(self.job()["id"], j["job"]["id"])  # and no new job was started
 
+    def test_busy_library_refusal_has_no_pid_or_path(self):
+        """A submit refused because another writer holds the library lock says so in plain words: the lock's own
+        message names a PID and the lock file's path, and neither reaches the page."""
+        self.quarantine()
+        s = self.start()
+        dec = {str(i["id"]): "erase" for i in self.items(s)}
+        hold = ("import sys; sys.path.insert(0, sys.argv[1]); import library_lock as L; "
+                "L.acquire('intake.py apply'); print('held', flush=True); sys.stdin.read()")
+        holder = subprocess.Popen([PY, "-I", "-c", hold, HERE], env=self.env, stdin=subprocess.PIPE,
+                                  stdout=subprocess.PIPE, text=True)
+        self.addCleanup(holder.wait, 30)
+        self.addCleanup(holder.stdin.close)
+        self.addCleanup(holder.stdout.close)
+        self.assertEqual(holder.stdout.readline().strip(), "held")
+        r, b = s.req("POST", "/api/submit", headers={"X-CSRF": s.csrf()}, body={"decisions": dec, "confirm": "ERASE"})
+        self.assertEqual(r.status, 409, b)
+        err = json.loads(b)["error"]
+        self.assertEqual(err, "Another action is using the library (the media-intake apply command). "
+                              "Wait for it to finish, then apply again.")
+        self.assertNotRegex(err, r"PID|\d{2,}|\.lock|/|intake\.py")
+        self.assertNotIn(self.state, err)
+        self.assertEqual(self.calls(), [])  # nothing ran
+
     def test_crashed_run_is_reported(self):
         quar, _ = self.quarantine()
         g = self.gate()
@@ -958,6 +986,27 @@ class ReviewUITest(unittest.TestCase):
         self.assertEqual([c[0] for c in self.calls()], ["erase"])
         r, page = s2.req("GET", "/")
         self.assertIn(b"crashed", page)
+
+
+class BusyWords(unittest.TestCase):
+    """busy_words: a refused submit's 409 text, mapped on the server; never the exception's PID or lock path."""
+
+    def test_plain_words_for_each_busy(self):
+        sys.path.insert(0, HERE)
+        import jobs
+        import review_ui
+        msg = ("the library is busy: job gallery (PID 510) holds its lock (/tmp/x/locks/library-1.lock); "
+               "try again when it has finished")
+        lib = jobs.LibraryBusy(msg, {"what": "job gallery", "pid": 510})
+        unknown = jobs.LibraryBusy(msg)  # no note: the usual suspects, never "another media-intake command"
+        own = jobs.Busy("a job for review-2026-11-12 is still running")
+        self.assertEqual(review_ui.busy_words(lib), "Another action is using the library (a Trash, Erase or "
+                         "Share-safe copy from another gallery). Wait for it to finish, then apply again.")
+        self.assertEqual(review_ui.busy_words(unknown), "Another action is using the library (an import, a gallery "
+                         "Trash or Erase, or another review). Wait for it to finish, then apply again.")
+        self.assertTrue(review_ui.busy_words(own).startswith("A run of this review is still going"))
+        for e in (lib, unknown, own):
+            self.assertNotRegex(review_ui.busy_words(e), r"PID|\d|\.lock|/|review-")
 
 
 class BurstInputs(unittest.TestCase):

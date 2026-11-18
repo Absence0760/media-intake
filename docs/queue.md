@@ -176,10 +176,10 @@ Waiting for you:
     log:                <state>/queue/broken/2026-01-02-broken-1.log
     fix it, then retry: media-intake queue run --inhibit
   review, chunk 1 (2026-01-02-review-1): quarantine 3, near and messaging copies
-    1, review folder 0, trash suggestions 2
+    1, review folder 0, Suggested junk 2
     review page:        media-intake review 2026-01-02-review-1
     quarantine:         xdg-open <state>/quarantine/2026-01-02-review-1
-    trash suggestions:  media-intake gallery   (or media-intake suggest-trash --batch 2026-01-02-review-1)
+    Suggested junk:     media-intake gallery   (or media-intake suggest-trash --batch 2026-01-02-review-1)
   clean: every chunk is reviewed; OK to offload (delete the drive originals):
     media-intake queue offload clean --yes
 

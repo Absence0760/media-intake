@@ -15,7 +15,7 @@ intake.py in a throwaway HOME. A video's sidecar is <clip>.mp4.xmp, and its byte
 No test opens a quarantined or flagged file's content; quarantine checks are
 paths, counts and checksums.
 """
-import argparse, builtins, hashlib, io, json, os, shutil, stat, subprocess, sys, tempfile, unittest, urllib.parse
+import argparse, builtins, hashlib, io, json, os, shlex, shutil, stat, subprocess, sys, tempfile, unittest, urllib.parse
 import unittest.mock as mock
 from contextlib import redirect_stdout
 
@@ -293,6 +293,20 @@ class Trash(Base):
         self.assertTrue(os.path.isfile(ok) and os.path.isfile(ok + ".xmp"))
         self.assertEqual(len(jload(os.path.join(self.state, "trashed.json"))), 3)
 
+    def test_from_digikam_with_phone_dry_run_keeps_phone(self):
+        """trash --from-digikam --phone without --yes: a dry run whose --yes command keeps --phone; the library
+        file and its phone original stay."""
+        self.phone_batch("2026-11-13-digikam")
+        f = self.filed["jpg"]
+        self.xmp(f, extra=["-XMP-digiKam:PickLabel=1"])
+        out = self.out("trash", "--from-digikam", "--phone", self.phone)
+        self.assertIn("1 library files marked Rejected", out)
+        self.assertIn("dry run: nothing deleted. To delete for good, run:", out)
+        self.assertIn(shlex.join(["media-intake", "trash", "--from-digikam", "--phone", self.phone, "--yes"]), out)
+        self.assertTrue(os.path.isfile(f) and os.path.isfile(f + ".xmp"))
+        self.assertTrue(os.path.isfile(self.src["jpg"]), "the phone original stays")
+        self.assertFalse(os.path.exists(os.path.join(self.state, "trashed.json")))
+
 
 class Forget(Base):
     def test_forget_photo_and_videos_everywhere(self):
@@ -350,6 +364,34 @@ class Forget(Base):
         for x in (p, v, *sides):
             self.assertTrue(os.path.isfile(x), x)
         self.assertEqual(sorted(jload(os.path.join(self.state, "index.json"))), sorted([p, v]))
+        qd = os.path.join(self.state, "quarantine")
+        self.assertEqual([d for d in os.listdir(qd) if d.startswith("forget-")] if os.path.isdir(qd) else [], [])
+
+    def test_forget_drive_prompt_names_the_drive_and_declined_erases_nothing(self):
+        """forget FILE --drive D: the prompt says the drive's copies go too (and, unless --no-wipe-free, that its
+        free space is overwritten); forget never deletes from a phone, so there is no phone or camera line. A "no"
+        erases nothing."""
+        v = clip(os.path.join(self.vids, "2026/2026-11/v.mp4"), seed=7)
+        side = self.xmp(v, "Label|food")
+        self.index(v)
+        drive = os.path.join(self.tmp, "backup-drive")
+        os.makedirs(drive)
+        on_drive = os.path.join(drive, "old/v.mp4")
+        os.makedirs(os.path.dirname(on_drive))
+        shutil.copyfile(v, on_drive)
+        for extra, wipe in (([], True), (["--no-wipe-free"], False)):
+            r = self.intake("forget", v, "--drive", drive, *extra, code=1, stdin="no\n")
+            self.assertIn("nothing erased", r.stderr, extra)
+            self.assertIn("Erase 1 library file for good.\nThis also deletes:\n", r.stdout, extra)
+            line = f"  - every identical copy on the drive at {drive}"
+            self.assertIn(line + (", then its free space is overwritten\n" if wipe else "\n"), r.stdout, extra)
+            self.assertNotIn("phone or camera", r.stdout, extra)
+            self.assertIn("It cannot be undone. Type ERASE to go ahead: ", r.stdout, extra)
+            for x in (v, side, on_drive):
+                self.assertTrue(os.path.isfile(x), (extra, x))
+            self.assertEqual(list(jload(os.path.join(self.state, "index.json"))), [v], extra)
+            self.assertFalse(os.path.exists(os.path.join(self.state, "erase-log.txt")), extra)
+            self.assertEqual(os.listdir(drive), ["old"], f"{extra}: no wipe file written")
         qd = os.path.join(self.state, "quarantine")
         self.assertEqual([d for d in os.listdir(qd) if d.startswith("forget-")] if os.path.isdir(qd) else [], [])
 

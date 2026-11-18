@@ -84,8 +84,12 @@ review files it prints `nothing to review for BATCH` and exits 0.
     while it is open and at the top of the list, below the header, after
     Back; Apply stays available to retry. A busy library reads "Not
     applied: Another action is using the library (...). Wait for it to
-    finish, then apply again."; the page never shows a PID or a lock file's
-    path. The page opens no native `alert()`, `confirm()` or `prompt()`.
+    finish, then apply again.", the brackets naming what holds it in the
+    gallery's words ("the media-intake apply command", a run from the
+    review page, ...); a run of the same batch reads "A run of this review
+    is still going. ...". The server writes these words
+    (`review_ui.busy_words`, with `library_lock.plain_holder`), so neither
+    the 409 nor the page ever carries a PID or a lock file's path. The page opens no native `alert()`, `confirm()` or `prompt()`.
   - The Keys button stays usable while a run goes.
   - While a run goes, its step line is a polite live region and its output
     a `role="log"`, so new lines are announced as they arrive.
