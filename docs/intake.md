@@ -150,6 +150,7 @@ media-intake release BATCH FILE...      # false positive -> library
 media-intake erase BATCH [--phone ROOT [--keep-phone-thumbnails]] [--drive MOUNT [--no-wipe-free]] [--yes]
 media-intake forget LIBRARY_FILE... [--drive MOUNT] [--yes]   # asks (type ERASE) before anything moves
 media-intake verify-gone [BATCH] [--drive MOUNT]   # with BATCH, also its last erase coverage report
+media-intake sweep-erased [BATCH] [--drive MOUNT [--drive-only] [--no-wipe-free]] [--yes]   # copies erase missed; dry run without --yes
 media-intake wipe-free MOUNT
 media-intake offload BATCH --phone ROOT [--yes]   # asks (type DELETE); refused for a --kind folder batch
 media-intake purge-review BATCH        # a batch name, never a path
@@ -245,8 +246,8 @@ run and a CLI `apply` never interleave (`media_intake/library_lock.py`):
   locked. The file notes who holds it (a command or job key and a PID, never a
   file name).
 - **CLI:** `intake.py main()` takes it for every subcommand in
-  `intake.LOCKED` (stage, plan, scan, apply, release, erase, forget, offload,
-  purge-review, trash, not-trash, suggest-trash, tag, tag-files, mark-used,
+  `intake.LOCKED` (stage, plan, scan, apply, release, erase, forget,
+  sweep-erased, offload, purge-review, trash, not-trash, suggest-trash, tag, tag-files, mark-used,
   migrate-tags).
   The read-only ones in `intake.READ_ONLY` (quarantine, verify-gone, wipe-free,
   share-copy, find) never do; a new subcommand counts as locked until
@@ -634,7 +635,8 @@ quarantine. A file named twice is forgotten once.
 - **Every copy in HOME.** After erasing, `erase` sweeps all of `$HOME` (and
   the whole `--drive`) for files with an erased item's size and sha256 (only
   same-size files are hashed) and deletes them, Trash entries with their
-  `.trashinfo` too, printing a count per top-level folder. That covers copies
+  `.trashinfo` too (HOME's Trash, and on the drive `.Trash-<uid>`,
+  `.Trash/<uid>` and macOS `.Trashes`), printing a count per top-level folder. That covers copies
   made outside the tool (an old manual import, Downloads, Desktop, app caches,
   `~/.var/app`). Not swept, because they can't hold your media: toolchains and
   SDKs (`.cargo`, `.rustup`, `.nvm`, `.pyenv`, `.tfenv`, `development`,
@@ -658,6 +660,26 @@ quarantine. A file named twice is forgotten once.
   proxies). `erase` runs it
   last. Given a batch, it then prints that batch's last coverage report in
   full (below), or says the batch was erased before reports were kept.
+- **sweep-erased: a drive that was unplugged at erase time.** `erase` can
+  only reach the drive named with `--drive`, and refuses once the quarantine
+  is empty (it says to run this). `media-intake sweep-erased [BATCH] --drive
+  MOUNT` finds the copies left there, and any made in HOME since, by size and
+  sha256 from the erase log (one batch, or every entry), with erase's own
+  sweep: the same HOME skips (`SWEEP_SKIP`, `.git`, `node_modules`,
+  `__pycache__`), every folder on the drive including its Trash and the
+  `.trashinfo` beside a trashed copy (it names the original path), `.xmp`
+  sidecars and orphaned sidecars, and exact copies inside a git working tree
+  left alone. Without `--yes` it is a dry run: counts per top-level folder,
+  nothing deleted. With `--yes` it deletes, drops the paths from
+  `index.json`, the freedesktop and gallery thumbnails, recent files and app
+  traces (HOME only) and the backup records, zeroes the drive's free space if
+  it deleted anything there (`--no-wipe-free` skips), and ends with
+  `verify-gone` over the same places (exit 1 if anything is left).
+  `--drive-only` leaves HOME alone. It **never** touches content whose
+  checksum is in `index.json` now (released from quarantine, or filed since:
+  `forget` it if it should go), and it prints counts only, never a file name,
+  not even of a copy inside a git repo. It writes no erase-log or coverage
+  line. Test: `python3 -I -m unittest discover -s tests -p test_sweep_erased.py`.
 - **Coverage report.** Every `erase` (and so every `forget`) ends with a
   report of what it reached and what it can't, and appends it to
   `erase-log.txt` as one line, `<date> <time> <batch> coverage <json>`, beside
@@ -780,8 +802,9 @@ quarantine. A file named twice is forgotten once.
 - **The state folder.** Quarantine and staging live in
   `~/.local/share/media-intake/` (0700), not under `~/Pictures`, so desktop
   search and thumbnailers don't pick them up.
-- **Backup drive (exFAT).** `erase --drive` deletes matching files anywhere on
-  the drive by checksum, then `wipe-free` fills the free space with zeros
+- **Backup drive (exFAT).** `erase --drive` (and `sweep-erased --drive`, for a
+  drive that was unplugged at erase time) deletes matching files anywhere on
+  the drive by checksum, a Trash copy's `.trashinfo` with it, then `wipe-free` fills the free space with zeros
   (64 MiB writes to `.media-intake-wipe.N` until the drive is full, fsync,
   delete, sync), since exFAT deletes only free the clusters. It refuses any
   path whose mount (`findmnt -T`) is `/`, `/home`, `/var`, `/tmp` or `/boot*`
@@ -1174,7 +1197,9 @@ private record); `test_cache_prune`: `prune-cache` keeping the library's thumbna
 dropping the rest (dry run, unreadable files, symlinked cache folders, the library lock);
 `test_erase_coverage`: erase's coverage report, gvfs-metadata and localsearch against fake `gio` and
 `localsearch` (failed, hung, vanished and symlinked cases), and the backup records after `backup`, `erase --drive`,
-`forget` and `verify-gone` (an erase outside the backed-up folders, a shared sha256, a record it can't rewrite or read); `test_library_ops_media_kinds`: every
+`forget` and `verify-gone` (an erase outside the backed-up folders, a shared sha256, a record it can't rewrite or read); `test_sweep_erased`:
+`sweep-erased` on a fake drive (dry run, `--yes`, `--drive-only`, the drive's Trash and `.trashinfo`, the HOME skips
+and git repos, content in the library index left alone, counts only); `test_library_ops_media_kinds`: every
 library-side command on a photo, an mp4 and a .mov, alone and mixed; `test_detectors_media_kinds`: scan,
 vlm_trash, semantic, label and the plugin hook on photos, videos and mixed batches, broken videos that
 must be flagged "not checked", never clean, and the GStreamer fallback with a hostile file name and its one-line skip note for an unsafe work folder (fake tools); `test_offline_guard`). Run long jobs under your

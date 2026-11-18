@@ -12,6 +12,8 @@ Run as `media-intake <command>` (cli.py); `python3 -I media_intake/intake.py` wo
   media-intake erase   BATCH [--phone ROOT [--keep-phone-thumbnails]] [--drive MOUNT [--no-wipe-free]]
   media-intake forget  LIBRARY_FILE... [--drive MOUNT] [--yes]  (later finds; asks before anything moves)
   media-intake verify-gone [BATCH] [--drive MOUNT]  (read-only sweep; exit 1 if a copy remains)
+  media-intake sweep-erased [BATCH] [--drive MOUNT [--drive-only] [--no-wipe-free]] [--yes]
+                                                 (copies an erase missed: a drive unplugged then; dry run without --yes)
   media-intake wipe-free MOUNT                   (zero a backup drive's free space)
   media-intake purge-review BATCH                (empty the review folder)
   media-intake trash   [BATCH] FILE... [--phone ROOT]   (plain delete of non-sensitive junk; never comes back)
@@ -818,30 +820,58 @@ def next_hint(*cmds):
 def where(path, base):
     """Top-level location of path for a count line: 'Pictures', '.cache/some-app', 'Trash'."""
     rel = os.path.relpath(path, base).split(os.sep)
-    if rel[:3] == [".local", "share", "Trash"]:
-        return "Trash"
+    if rel[:3] == [".local", "share", "Trash"] or rel[0] in (".Trashes", ".Trash") or rel[0].startswith(".Trash-"):
+        return "Trash"  # HOME's freedesktop Trash, or a drive's (.Trash-<uid>, .Trash/<uid>, macOS .Trashes)
     if rel[0].startswith(".") and len(rel) > 2:
         return "/".join(rel[:2]) if rel[0] != ".local" else "/".join(rel[:3])
     return rel[0] if len(rel) > 1 else "(home)"
 
 
-def sweep(sig, delete=True, drive=None, label="home sweep", stats=None):
+def trash_info(p):
+    """The .trashinfo of a file in a freedesktop Trash, which holds the file's original path: HOME's
+    (~/.local/share/Trash/files) or a drive's (<mount>/.Trash-<uid>/files, <mount>/.Trash/<uid>/files).
+    None when p is not in one (macOS .Trashes keeps no such file)."""
+    d = os.path.dirname(p)
+    if os.path.basename(d) != "files":
+        return None
+    top = os.path.dirname(d)
+    if (top == os.path.join(HOME, ".local/share/Trash") or os.path.basename(top).startswith(".Trash-")
+            or os.path.basename(os.path.dirname(top)) == ".Trash"):
+        return os.path.join(top, "info", os.path.basename(p) + ".trashinfo")
+    return None
+
+
+def drop_trash_info(p):
+    """Delete p's .trashinfo (trash_info) if there is one, never through a symlink. Returns 1 or 0."""
+    info = trash_info(p)
+    if info and os.path.isfile(info) and not os.path.islink(info):
+        os.remove(info)
+        return 1
+    return 0
+
+
+def sweep(sig, delete=True, drive=None, label="home sweep", stats=None, home=True):
     """Find files anywhere in HOME (and on drive) with an erased item's size+sha256.
 
     sig is {sha: size}. Only same-size files are hashed. With delete, matches go
-    (a Trash match takes its .trashinfo, any match its .xmp sidecar), and so do
+    (a Trash match takes its .trashinfo, HOME's or the drive's, any match its .xmp sidecar), and so do
     orphaned sidecars (<file>.<ext>.xmp whose file is gone: they hold its place
     and labels). Matches inside a git working tree are never deleted (that leaves the
     repo dirty and git history keeps the content): they're returned in in_git.
     Prints a start line and counts-only progress (Progress) under label while it walks.
-    stats (a Counter, with delete): adds the sidecars, Trash entries and gvfs-metadata entries that went.
-    Returns (Counter by location, paths, Counter of orphan sidecars by location, in_git paths).
+    stats (a Counter, with delete): adds the sidecars, Trash entries (HOME's under "trash entries", the
+    drive's under "drive trash entries") and gvfs-metadata entries that went.
+    home=False walks only the drive (sweep-erased --drive-only). A drive mounted inside HOME is walked once,
+    as the drive. Returns (Counter by location, paths, Counter of orphan sidecars by location, in_git paths).
     """
     stats = collections.Counter() if stats is None else stats
     sizes = set(sig.values())
     found, paths, orphans, in_git = collections.Counter(), [], collections.Counter(), []
-    roots = [(HOME, SWEEP_SKIP)] + ([(os.path.abspath(drive), (WIPE_NAME,))] if drive else [])
-    prog = Progress(label, f"searching every file in HOME{' and on the drive' if drive else ''} for copies of "
+    dpath = os.path.abspath(drive) if drive else None
+    home_skip = SWEEP_SKIP + ((os.path.relpath(dpath, HOME),) if dpath and dpath.startswith(HOME + os.sep) else ())
+    roots = ([(HOME, home_skip)] if home else []) + ([(dpath, (WIPE_NAME,))] if drive else [])
+    where_ = " and ".join((["HOME"] if home else []) + (["on the drive"] if drive else []))
+    prog = Progress(label, f"searching every file {'in ' if home else ''}{where_} for copies of "
                            f"{len(sig)} erased items (same size, then sha256)")
     for root, skip in roots:
         for p, git in walk_files(root, skip, git=True):
@@ -869,12 +899,7 @@ def sweep(sig, delete=True, drive=None, label="home sweep", stats=None):
                 gvfs_meta_forget(p, stats)  # before the delete: gio can only clear an existing file's entry
                 os.remove(p)
                 stats["sidecars"] += drop_sidecar(p)
-                trash = os.path.join(HOME, ".local/share/Trash/files")
-                if os.path.dirname(p) == trash:
-                    info = os.path.join(HOME, ".local/share/Trash/info", os.path.basename(p) + ".trashinfo")
-                    if os.path.exists(info):
-                        os.remove(info)
-                        stats["trash entries"] += 1
+                stats["trash entries" if root == HOME else "drive trash entries"] += drop_trash_info(p)
     return found, paths, orphans, in_git
 
 
@@ -893,6 +918,7 @@ def drive_purge(mount, shas, stats=None):
                 gvfs_meta_forget(p, stats)
                 os.remove(p)
                 stats["sidecars"] += drop_sidecar(p)
+                stats["drive trash entries"] += drop_trash_info(p)  # it names the file's original path
                 n += 1
         except OSError:
             pass  # vanished or unreadable since listing: not counted, left alone
@@ -1352,10 +1378,11 @@ def erase_log_sigs(batch=None):
     return sig, nosize
 
 
-def verify_gone(sig, drive=None, left=None):
-    """Sweep read-only for anything of sig left; print it. left (a Counter) gets what was found."""
-    found, _, orphans, in_git = sweep(sig, delete=False, drive=drive, label="verify-gone")
-    cached = [p for s in sig for p in gallery_cache_paths(s) if os.path.lexists(p)]
+def verify_gone(sig, drive=None, left=None, home=True, names=True):
+    """Sweep read-only for anything of sig left; print it. left (a Counter) gets what was found.
+    home=False checks only the drive. names=False prints a count of the copies inside git repos, not their paths."""
+    found, _, orphans, in_git = sweep(sig, delete=False, drive=drive, label="verify-gone", home=home)
+    cached = [p for s in sig for p in gallery_cache_paths(s) if os.path.lexists(p)] if home else []
     gthumbs = sum(p.endswith(".jpg") for p in cached)
     if gthumbs:
         found["gallery thumbnails (~/.cache/media-intake/thumbs)"] += gthumbs
@@ -1363,11 +1390,12 @@ def verify_gone(sig, drive=None, left=None):
     if gproxies:
         found["gallery video proxies (~/.cache/media-intake/proxies)"] += gproxies
     if in_git:
-        print(f"{len(in_git)} exact copies inside git repos (erase leaves them): " + ", ".join(in_git))
+        print(f"{len(in_git)} exact copies inside git repos (erase leaves them)" + (": " + ", ".join(in_git) if names else ""))
     if found:
         print(f"STILL PRESENT: {sum(found.values())} copies: " + ", ".join(f"{k} {v}" for k, v in sorted(found.items())))
     else:
-        print(f"verify-gone: no copy of {len(sig)} erased items in HOME" + (" or on the drive" if drive else ""))
+        print(f"verify-gone: no copy of {len(sig)} erased items "
+              + " or ".join((["in HOME"] if home else []) + (["on the drive"] if drive else [])))
     if orphans:
         print(f"ORPHAN SIDECARS: {sum(orphans.values())} .xmp files whose photo/video is gone (erase removes them): "
               + ", ".join(f"{k} {v}" for k, v in sorted(orphans.items())))
@@ -1392,6 +1420,78 @@ def cmd_verify_gone(a):
         else:
             print(f"no erase coverage report for {a.batch} (erased before reports were kept)")
     sys.exit(0 if ok else 1)
+
+
+def cmd_sweep_erased(a):
+    """Delete the copies of erased items an erase could not reach: on a backup drive that was unplugged at erase
+    time, or made in HOME since. Same size + sha256 match, skips and Trash handling as erase's sweep (sweep()).
+    Never content whose checksum is in the library index now (released from quarantine, or filed since: that
+    is yours to forget). Without --yes a dry run prints counts per folder and deletes nothing; with it, it
+    deletes, zeroes the drive's free space if it deleted anything there, and ends with verify-gone.
+    Output is counts only, never a file name."""
+    if a.drive_only and not a.drive:
+        sys.exit("sweep-erased: --drive-only needs --drive MOUNT")
+    if a.drive and not os.path.isdir(a.drive):
+        sys.exit(f"sweep-erased: --drive {a.drive}: not a directory (is the drive plugged in?)")
+    sig, nosize = erase_log_sigs(a.batch)
+    if nosize:
+        print(f"{nosize} older erase-log entries have no size and can't be swept")
+    index = load(os.path.join(STATE, "index.json"), {}) or {}
+    in_index = {v.get("sha") for v in index.values() if isinstance(v, dict)}
+    spared = in_index & set(sig)
+    if spared:
+        print(f"{len(spared)} erased checksums are in the library index now (released, or filed since): never swept")
+    sig = {s: n for s, n in sig.items() if s not in spared}
+    if not sig:
+        print(f"nothing to sweep: no erase-log entries with sizes{' for ' + a.batch if a.batch else ''}")
+        return
+    home = not a.drive_only
+    where_ = " and ".join((["HOME"] if home else []) + (["the drive"] if a.drive else []))
+    stats = collections.Counter()
+    found, paths, orphans, in_git = sweep(sig, delete=a.yes, drive=a.drive, label="sweep-erased", stats=stats,
+                                          home=home)
+    counts = "".join(f"\n  {k:28} {v}" for k, v in sorted(found.items()))
+    if not a.yes:
+        print(f"dry run: {sum(found.values())} copies of {len(sig)} erased items in {where_}" + counts
+              + (f"\n  orphan sidecars {sum(orphans.values())}" if orphans else "")
+              + "\nnothing deleted (--yes deletes them)")
+        if in_git:
+            print(f"{len(in_git)} exact copies inside git repos (left as they are)")
+        return
+    thumbs = gthumbs = 0
+    for p in paths:
+        thumbs += thumb_forget(p)
+        index.pop(p, None)
+    if home:
+        for s in sig:
+            gthumbs += gallery_thumb_forget(s)
+    save(os.path.join(STATE, "index.json"), index)
+    uris = {u for p in paths for u in file_uris(p)}
+    recent = prune_recent(uris, []) if home else 0
+    traces = prune_app_traces(uris, []) if home else collections.Counter()
+    backups, _, _ = prune_backup_records(paths, set(sig))
+    on_drive = sum(v for k, v in found.items() if k.startswith("drive:"))
+    print(f"sweep-erased: {sum(found.values())} copies deleted in {where_}" + counts
+          + (f"\n  sidecars (.xmp)              {stats['sidecars'] + sum(orphans.values())}"
+             if stats["sidecars"] or orphans else "")
+          + (f"\n  Trash entries                {stats['trash entries'] + stats['drive trash entries']}"
+             if stats["trash entries"] or stats["drive trash entries"] else "")
+          + (f"\n  thumbnails                   {thumbs + gthumbs}" if thumbs + gthumbs else "")
+          + (f"\n  recent files entries         {recent}" if recent else "")
+          + (f"\n  app traces                   {sum(traces.values())}" if sum(traces.values()) else "")
+          + (f"\n  backup record entries        {backups}" if backups else ""))
+    if home:
+        print("  (not swept: toolchains, package/build caches, container storage, .git, node_modules)")
+    if in_git:
+        print(f"{len(in_git)} exact copies inside git repos, not deleted")
+    if a.drive and on_drive and not a.no_wipe_free:
+        try:
+            mb, secs, note = wipe_free(a.drive)
+            print(f"drive free space wiped: {mb} MB of zeros in {secs:.0f} s" + (f"\n  {note}" if note else ""))
+        except SystemExit as e:
+            print(f"drive free space NOT wiped: {e}")
+    if not verify_gone(sig, a.drive, home=home, names=False):
+        sys.exit(1)
 
 
 # What no erase can reach: nothing on this machine can see or delete these, so every coverage report lists them.
@@ -1476,7 +1576,8 @@ def cmd_erase(a):
     if a.phone and (refusal := folder_refusal(man)):
         sys.exit(refusal + " (run erase without --phone)")
     if not q:
-        sys.exit("quarantine is empty")
+        sys.exit("quarantine is empty (copies left on a drive that was unplugged at erase time: "
+                 f"media-intake sweep-erased {a.batch} --drive MOUNT)")
     if not a.yes:
         if ask(f"Erase {len(q)} quarantined files for good{' and from the phone' if a.phone else ''}"
                f"{' and the drive' if a.drive else ''}? Type ERASE: ") != "ERASE":
@@ -1670,6 +1771,7 @@ def cmd_erase(a):
         not_checked.append("phone or camera: no --phone")
     if a.drive:
         reached["backup drive copies"] = drive
+        reached["backup drive Trash entries (.Trash-<uid>/info)"] = stats["drive trash entries"]
         if wiped is not None:
             reached["backup drive unused space overwritten (wipe-free, MB)"] = wiped
         else:
@@ -2521,6 +2623,13 @@ def build_parser(prog=None):
     s = sp.add_parser("forget"); s.add_argument("files", nargs="+"); s.add_argument("--drive"); s.add_argument("--yes", action="store_true")
     s.add_argument("--no-wipe-free", action="store_true")
     s = sp.add_parser("verify-gone"); s.add_argument("batch", nargs="?", help="one batch (default: every erase-log entry)"); s.add_argument("--drive")
+    s = sp.add_parser("sweep-erased", help="delete copies of erased items an erase missed (a drive unplugged then); "
+                                           "dry run without --yes")
+    s.add_argument("batch", nargs="?", help="one batch (default: every erase-log entry)")
+    s.add_argument("--drive", metavar="MOUNT", help="also sweep this drive, every folder (its Trash too)")
+    s.add_argument("--drive-only", action="store_true", help="sweep only the drive, not HOME")
+    s.add_argument("--no-wipe-free", action="store_true", help="skip overwriting the drive's free space")
+    s.add_argument("--yes", action="store_true", help="delete (without it: counts only, nothing deleted)")
     s = sp.add_parser("wipe-free"); s.add_argument("mount")
     s = sp.add_parser("offload"); s.add_argument("batch"); s.add_argument("--phone", required=True); s.add_argument("--yes", action="store_true")
     s = sp.add_parser("purge-review"); s.add_argument("batch")
@@ -2550,8 +2659,8 @@ def build_parser(prog=None):
 
 # The library lock (library_lock.py; docs/intake.md, "One writer at a time"): every subcommand is in exactly one
 # of these (tests/test_library_lock.py checks), and main() is the only place that takes it for the CLI.
-LOCKED = {"stage", "plan", "scan", "apply", "release", "erase", "forget", "offload", "purge-review", "trash",
-          "not-trash", "suggest-trash", "tag", "tag-files", "mark-used", "migrate-tags"}
+LOCKED = {"stage", "plan", "scan", "apply", "release", "erase", "forget", "sweep-erased", "offload", "purge-review",
+          "trash", "not-trash", "suggest-trash", "tag", "tag-files", "mark-used", "migrate-tags"}
 READ_ONLY = {"quarantine", "verify-gone", "wipe-free", "share-copy", "social-copy", "find"}
 
 

@@ -134,7 +134,7 @@ media-intake offload phone-1 --phone <device root> --yes   # after a backup: fre
 | --- | --- |
 | `stage`, `plan`, `scan`, `apply` | Copy in, plan (dates, dedupe, folders), detect, file |
 | `quarantine`, `release`, `review` | Review what the detectors flagged |
-| `erase`, `forget`, `verify-gone`, `wipe-free` | Erase everywhere, check, overwrite free space on a drive |
+| `erase`, `forget`, `verify-gone`, `sweep-erased`, `wipe-free` | Erase everywhere, check, catch copies on a drive that was unplugged, overwrite free space on a drive |
 | `trash`, `suggest-trash`, `not-trash`, `purge-review` | Plain deletes of junk, with suggestions |
 | `tag`, `tag-files`, `mark-used`, `find` | Sidecar tags and searching them |
 | `migrate-tags` | One-shot: rewrite the legacy `Review\|not-trash` tag as `Owner\|not-trash` |
