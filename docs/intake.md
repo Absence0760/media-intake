@@ -581,7 +581,7 @@ cameras of one model share a folder, as above.
     clips 15 or more), not on real phone video: see Unverified.
 - Images under 200 px and empty files go to review as junk.
 - `index.json` in the state folder keeps sha256 and dHash of everything in
-  the library (and each filed video's frame hashes, `vhash`), so later
+  the library (and each filed or released video's frame hashes, `vhash`), so later
   batches are checked against it.
 - **A move never replaces a file** (`intake.free_path`). `release` puts a
   file back at its old place only while that place and its sidecar are free.

@@ -41,7 +41,7 @@ Layout (docs/intake.md; every path comes from config.toml, docs/configuration.md
     batches/<batch>/raw/          staged copy, deleted once applied
     batches/<batch>/review/       near-duplicates + junk for a glance
     quarantine/<batch>/           sensitive files; no assistant or tool ever opens these
-    index.json                    sha256 + dHash of everything in the library
+    index.json                    sha256 + dHash (videos: vhash) of everything in the library
 
 Test: python3 -I -m unittest discover -s tests (synthetic media, throwaway HOME).
 
@@ -525,6 +525,20 @@ def cmd_scan(a):
     next_hint(["apply", a.batch])  # flagged files go to quarantine there; the review page comes after
 
 
+def index_entry(sha, size, dh, vh=None, vnote=None, **extra):
+    """One index.json entry, built the same way by apply and release: sha256, size and dHash (None for a
+    video), and for a video its videohash frame dHashes (vhash) as plan stores them. A video that couldn't
+    be hashed keeps vhash [] and its vhash_note (why), so it is never read as "no near-copy". Readers
+    take an entry with no vhash key (an image, or an index written before videohash) as not a video."""
+    e = dict(sha=sha, size=size, dhash=dh)
+    if vh is not None:
+        e["vhash"] = vh
+        if vnote:
+            e["vhash_note"] = vnote
+    e.update(extra)
+    return e
+
+
 # ---------------------------------------------------------------- apply
 def cmd_apply(a):
     b = bdir(a.batch)
@@ -578,8 +592,7 @@ def cmd_apply(a):
             os.makedirs(os.path.dirname(p["dst"]), exist_ok=True)
             shutil.move(src, p["dst"])
             if p["action"] == "file":
-                index[p["dst"]] = dict(sha=p["sha"], size=p["size"], dhash=p["dhash"],
-                                       **({"vhash": p["vhash"]} if p.get("vhash") else {}))
+                index[p["dst"]] = index_entry(p["sha"], p["size"], p["dhash"], p.get("vhash"), p.get("vhash_note"))
                 c["filed"] += 1
             else:
                 c["to review"] += 1
@@ -640,8 +653,11 @@ def cmd_release(a):
         os.chmod(dst, 0o666 & ~_umask())
         if os.path.isfile(sidecar(os.path.join(quar, rel))):  # a near-duplicate's own tags; none are created
             shutil.move(sidecar(os.path.join(quar, rel)), sidecar(dst))
-        dh = dhash(dst)[0] if os.path.splitext(dst)[1].lower() in IMG else None
-        index[dst] = dict(sha=q[rel]["sha"], size=q[rel]["size"], dhash=dh, released=True)
+        # Hashed from the released file, as plan hashes a staged one: quarantine.json keeps no hashes.
+        ext = os.path.splitext(dst)[1].lower()
+        dh = dhash(dst)[0] if ext in IMG else None
+        vh, vnote = videohash.video_hash(dst) if ext in VID else (None, None)
+        index[dst] = index_entry(q[rel]["sha"], q[rel]["size"], dh, vh, vnote, released=True)
         thumb_forget(os.path.join(quar, rel))
         del q[rel]
         print(f"released -> {dst}" + (f"   ({os.path.basename(want)} is taken there: kept both)" if dst != want else ""))
