@@ -924,10 +924,16 @@ PAGE = r"""<!doctype html>
 @media (prefers-color-scheme: dark){:root{--bg:#121212;--fg:#eee;--mut:#aaa;--line:#444;--card:#1e1e1e;--keep:#4cc26a;--erase:#ff6b5e;--trash:#e0a030;--focus:#7aa7ff;--on:#111}}
 *{box-sizing:border-box}
 body{margin:0;background:var(--bg);color:var(--fg);font:18px/1.4 system-ui,sans-serif}
-header{position:sticky;top:0;z-index:5;background:var(--bg);border-bottom:1px solid var(--line);padding:10px 16px;display:flex;flex-wrap:wrap;gap:10px;align-items:center}
-.tab{font:inherit;padding:10px 16px;border:2px solid var(--line);border-radius:8px;background:var(--card);color:var(--fg);cursor:pointer}
+/* The header: the batch name, the tabs, then one bar (the one counter, which also says why Submit is locked,
+   Keys and Submit). On a phone only that bar stays pinned: placeHeader() sets a negative top so the rows above
+   it scroll away. */
+header{position:sticky;top:0;z-index:5;background:var(--bg);border-bottom:1px solid var(--line);padding:8px 16px;display:flex;flex-wrap:wrap;gap:8px 10px;align-items:center}
+header h1{flex:1 0 100%;margin:0;font-size:18px;overflow-wrap:anywhere}
+.tab{font:inherit;padding:10px 16px;border:2px solid var(--line);border-radius:8px;background:var(--card);color:var(--fg);cursor:pointer;white-space:nowrap}
 .tab[aria-selected=true]{border-color:var(--focus)}
-#count{font-weight:700;margin-left:auto}
+#bar{display:flex;gap:10px;align-items:center;margin-left:auto}
+#done{font-weight:700}
+button,#typed{min-height:44px;min-width:44px}
 #submit{font:inherit;font-weight:700;padding:10px 18px;border-radius:8px;border:2px solid var(--erase);background:var(--erase);color:var(--on);cursor:pointer}
 #submit:disabled{opacity:.4;cursor:not-allowed}
 main{padding:16px;max-width:1100px;margin:0 auto}
@@ -943,10 +949,12 @@ main{padding:16px;max-width:1100px;margin:0 auto}
 .pair{display:grid;grid-template-columns:1fr 1fr;gap:10px}
 .pair .media img,.pair .media video{max-height:60vh}
 .side h3{margin:0 0 6px;font-size:16px}
-.meta{color:var(--mut);font-size:15px;margin-top:4px;word-break:break-all}
+.meta{color:var(--mut);font-size:15px;margin-top:4px;overflow-wrap:anywhere}
 .note{background:var(--bg);border:1px dashed var(--line);border-radius:6px;padding:10px;margin-bottom:8px}
 @media (max-width:640px){.pair{grid-template-columns:1fr}}
-.name{font-weight:600;word-break:break-all;margin:8px 0 4px}
+.name{font-weight:600;overflow-wrap:anywhere;margin:8px 0 4px}
+.verdict{font-weight:700;margin:8px 0 0}
+.verdict[hidden]{display:none}
 .labels span{display:inline-block;background:var(--bg);border:1px solid var(--line);border-radius:999px;padding:2px 10px;margin:2px 4px 2px 0;font-size:15px}
 .why{color:var(--mut)}
 .notrash{flex:1;align-self:center;text-align:center;color:var(--mut);font-size:15px}
@@ -975,7 +983,8 @@ pre{white-space:pre-wrap;word-break:break-all;font-size:15px;background:var(--bg
 .card:focus-visible{outline-offset:3px}
 .card:focus:not(:focus-visible){outline:none}
 #tabs{display:flex;flex-wrap:wrap;gap:10px}
-#done{color:var(--mut)}
+#summary ul{margin:0 0 8px;padding-left:1.2em}
+#summary p{margin:0 0 8px}
 #keysb{font:inherit;padding:10px 14px;border-radius:8px;border:2px solid var(--line);background:var(--card);color:var(--fg);cursor:pointer}
 .modal{position:fixed;inset:0;z-index:20;background:rgba(0,0,0,.6);display:none;align-items:center;justify-content:center;padding:16px}
 .modal.on{display:flex}
@@ -989,17 +998,33 @@ kbd{font:inherit;font-weight:700;border:1px solid var(--line);border-radius:4px;
 .banner[hidden]{display:none}
 .banner span{flex:1;overflow-wrap:anywhere}
 .banner button{font:inherit;font-weight:700;padding:6px 12px;border-radius:8px;border:2px solid var(--line);background:var(--bg);color:var(--fg);cursor:pointer;margin:0}
+#err{scroll-margin-top:calc(var(--pin,0px) + 8px)}
+.card{scroll-margin-top:calc(var(--pin,0px) + 8px)}
+/* Phone: a compact header (only its bar stays pinned), tabs on one scrolling row. */
+@media (max-width:640px){
+ header{padding:8px 12px}
+ header h1{font-size:16px}
+ #tabs{flex-wrap:nowrap;overflow-x:auto;width:100%}
+ .tab{font-size:16px;padding:8px 12px}
+ #bar{width:100%;margin:0}
+ #done{flex:1;font-size:15px}
+ main{padding:12px}
+}
+/* No keyboard: the key hints and the Keys button go. */
+@media (hover:none) and (pointer:coarse){.kb,#keysb{display:none}}
 </style></head><body>
 <header>
+ <h1 id="title">Review</h1>
  <div id="tabs" role="tablist" aria-label="Lists">
   <button type="button" class="tab" role="tab" id="tq" aria-selected="true" aria-controls="lists">Quarantine</button>
   <button type="button" class="tab" role="tab" id="tr" aria-selected="false" aria-controls="lists" tabindex="-1">Review</button>
   <button type="button" class="tab" role="tab" id="tm" aria-selected="false" aria-controls="lists" tabindex="-1" hidden>Maybe trash</button>
  </div>
- <span id="count"></span>
- <span id="done" role="status"></span>
- <button type="button" id="keysb" aria-haspopup="dialog">Keys (?)</button>
- <button type="button" id="submit" disabled>Submit</button>
+ <div id="bar">
+  <span id="done" role="status"></span>
+  <button type="button" id="keysb" aria-haspopup="dialog">Keys (?)</button>
+  <button type="button" id="submit" aria-describedby="done" disabled>Submit</button>
+ </div>
 </header>
 <main>
  <div id="err" class="banner" role="alert" hidden><span id="errmsg"></span><button type="button" id="errx">Dismiss</button></div>
@@ -1007,35 +1032,37 @@ kbd{font:inherit;font-weight:700;border:1px solid var(--line);border-radius:4px;
   <pre id="out" role="log" aria-live="polite" aria-label="Run output" tabindex="0"></pre></section>
  <div id="lists" role="tabpanel" aria-labelledby="tq">
   <p class="note" id="last" hidden></p>
-  <p class="help" id="helpq">K = keep (back to the library), E = erase everywhere. No Trash here: these are flagged sensitive, and only Erase removes their copies too. ← → or ↑ ↓ move between items.</p>
-  <p class="help" id="helpb" hidden>A stack is a burst (shots from one camera a moment apart): X opens or closes it, and "Keep this one" on a shot decides the whole stack: the rest are erased everywhere in Quarantine, trashed elsewhere. Nothing is deleted until you submit and type ERASE.</p>
-  <p class="help" id="helpr" hidden>K = keep, E or D = delete (near-duplicates and junk), T = trash (delete, and never take it in again). ← → or ↑ ↓ move between items.</p>
-  <p class="help" id="helpm" hidden>Suggested junk from your library. K = keep (never suggested again), T = trash. Nothing is deleted until you submit. ← → or ↑ ↓ move between items.</p>
+  <p class="help" id="helpq">These were flagged as possibly private. Keep puts one back in your library; Erase removes every copy. No Trash here: only Erase removes the copies too. <span class="kb">Keys: K keep, E erase, ← → or ↑ ↓ move.</span></p>
+  <p class="help" id="helpb" hidden>A stack is a burst (shots from one camera a moment apart). "Show all" opens it<span class="kb"> (or X)</span>, and "Keep this one" on a shot decides the whole stack: the rest are erased in Quarantine, trashed elsewhere.</p>
+  <p class="help" id="helpr" hidden>Near-duplicates and junk set aside at import. Keep leaves it in the review folder for now. Delete this copy removes only this file. Trash removes it and skips the same photo if it is imported again. <span class="kb">Keys: K keep, D delete this copy, T trash, ← → or ↑ ↓ move.</span></p>
+  <p class="help" id="helpm" hidden>Suggested junk from your library. Keep leaves it in the library and stops suggesting it. Trash removes it and skips the same photo if it is imported again. <span class="kb">Keys: K keep, T trash, ← → or ↑ ↓ move.</span></p>
+  <p class="help" id="helpall">Your choices are only marks: nothing changes until you submit. Press a pressed button again to clear it.</p>
   <div id="list"></div>
  </div>
 </main>
 <div id="confirm" class="modal" role="dialog" aria-modal="true" aria-labelledby="confirmh" aria-describedby="summary">
  <section class="panel box">
-  <h2 id="confirmh">Confirm</h2><p id="summary"></p>
-  <p>Type <b>ERASE</b> to run it. This cannot be undone.</p>
+  <h2 id="confirmh">Apply your decisions?</h2><div id="summary"></div>
+  <p>Type <b>ERASE</b> to apply them.</p>
   <input id="typed" autocomplete="off" spellcheck="false" aria-label="Type ERASE">
-  <div><button type="button" id="go" disabled>Run</button><button type="button" id="back">Back</button></div>
+  <div><button type="button" id="go" disabled>Apply</button><button type="button" id="back">Back</button></div>
  </section>
 </div>
 <div id="keys" class="modal" role="dialog" aria-modal="true" aria-labelledby="keysh">
  <section class="box">
   <h2 id="keysh">Keys</h2>
   <table class="keys"><thead><tr><th scope="col">Key</th><th scope="col">What it does</th><th scope="col">Where</th></tr></thead><tbody>
-   <tr data-key="k"><td><kbd>K</kbd></td><td>Keep the outlined item</td><td>Every tab</td></tr>
-   <tr data-key="e"><td><kbd>E</kbd> or <kbd>D</kbd></td><td>Erase everywhere (Quarantine); delete (Review)</td><td>Quarantine and Review; nothing in Maybe trash</td></tr>
-   <tr data-key="t"><td><kbd>T</kbd></td><td>Trash (delete, never taken in again)</td><td>Review and Maybe trash; nothing in Quarantine (flagged items are erased or kept)</td></tr>
+   <tr data-key="k"><td><kbd>K</kbd></td><td>Keep the outlined item (press again to clear it, like every mark)</td><td>Every tab</td></tr>
+   <tr data-key="e"><td><kbd>E</kbd></td><td>Erase every copy</td><td>Quarantine only</td></tr>
+   <tr data-key="d"><td><kbd>D</kbd></td><td>Delete this copy (only this file)</td><td>Review only</td></tr>
+   <tr data-key="t"><td><kbd>T</kbd></td><td>Trash (removed, and skipped if imported again)</td><td>Review and Maybe trash; nothing in Quarantine (flagged items are erased or kept)</td></tr>
    <tr data-key="x"><td><kbd>X</kbd></td><td>Open or close the burst stack</td><td>Every tab, on a stack</td></tr>
    <tr data-key="next"><td><kbd>→</kbd> <kbd>↓</kbd> or <kbd>J</kbd></td><td>Next item</td><td>Every tab</td></tr>
    <tr data-key="prev"><td><kbd>←</kbd> <kbd>↑</kbd></td><td>Previous item</td><td>Every tab</td></tr>
    <tr data-key="tabs"><td><kbd>←</kbd> <kbd>→</kbd> <kbd>Home</kbd> <kbd>End</kbd></td><td>Switch list</td><td>On a tab (Quarantine, Review, Maybe trash)</td></tr>
    <tr data-key="tab"><td><kbd>Tab</kbd> <kbd>Shift</kbd>+<kbd>Tab</kbd></td><td>Move between the buttons; stays inside an open dialog</td><td>Everywhere</td></tr>
    <tr data-key="?"><td><kbd>?</kbd></td><td>This list</td><td>Everywhere except while typing</td></tr>
-   <tr data-key="escape"><td><kbd>Esc</kbd></td><td>Close this list, or go back from the ERASE confirm</td><td>In a dialog</td></tr>
+   <tr data-key="escape"><td><kbd>Esc</kbd></td><td>Close this list, or go back from the Apply dialog</td><td>In a dialog</td></tr>
   </tbody></table>
   <p class="help">Letter keys do nothing while you type in a box.</p>
   <button type="button" id="keysx">Close (Esc)</button>
@@ -1072,18 +1099,43 @@ function mediaEl(kind,src,alt){const m=el("div","media");
  else if(kind==="video"){const v=el("video");v.controls=true;v.preload="metadata";const bad=()=>cantShow(m,"This browser can't play this video (HEVC, most likely).");
   v.onerror=bad;v.onloadedmetadata=()=>{if(!v.videoWidth)bad()};v.src=src;m.append(v)}
  else m.append(el("div","nopreview","No preview in the browser for this format"));return m}
-function metaEl(x){return el("div","meta",`${x.res} · ${x.size} · ${x.date} · ${x.folder}`)}
-function side(title,m,x){const s=el("div","side");s.append(el("h3",null,title),m,metaEl(x));return s}
+/* The folder is shown only for a library original: a quarantined or review file (and a batch's raw/ or
+   review/ copy) sits in the tool's own state folder, which tells you nothing. */
+function internal(f){return !f||/(^|[/])(quarantine|batches)[/]/.test(f)}
+function metaEl(x,folder){const p=[x.res,x.size,x.date];if(folder&&!internal(x.folder))p.push(x.folder);return el("div","meta",p.join(" · "))}
+function side(title,m,x,folder){const s=el("div","side");s.append(el("h3",null,title),m,metaEl(x,folder));return s}
+/* The second button: Erase (every copy) in Quarantine, Delete this copy (this file only) in Review. */
 function second(it){return it.tab==="quarantine"?"erase":it.tab==="review"?"delete":null}
 /* Quarantine is Erase-only: plain trash would leave a flagged file's copies behind (the server refuses it too). */
 function canTrash(it){return it.tab!=="quarantine"}
 const TABS=["quarantine","review","maybe"],TID={quarantine:"#tq",review:"#tr",maybe:"#tm"},TNAME={quarantine:"Quarantine",review:"Review",maybe:"Maybe trash"};
+/* One set of words for the decisions (the gallery's Keep / Trash / Erase mean the same), and their keys. */
+const VERB={keep:"Keep",erase:"Erase",delete:"Delete this copy",trash:"Trash"},KEY={keep:"K",erase:"E",delete:"D",trash:"T"};
+/* What a decision will do, shown on the card once it is marked (and as the button's tooltip). */
+function verdict(it,d){
+ if(d==="keep")return it.tab==="quarantine"?(it.releasable?"it goes back into your library":"it stays in quarantine (its library place is unknown)")
+  :it.tab==="review"?"it stays in the review folder for now":"it stays in your library and is not suggested again";
+ return d==="erase"?"every copy is removed":d==="delete"?"only this file is removed":"it is removed, and skipped if imported again"}
+/* Plain names for the labels: a scanner's flags and the tags' internal groups (Review|, Label|, ...). An unknown
+   one keeps its words without the group's punctuation. */
+const FLAG={"nudity":"Possible nudity","unscanned-nudity":"Not checked for nudity","unscanned-video":"Video not checked",
+ "unscanned-barcode":"Barcodes not checked","unscanned-type":"File type not checked","unreadable":"Couldn't be read",
+ "passport-mrz":"Looks like a passport","payment-card":"Looks like a payment card","id-barcode":"Looks like an ID card",
+ "2fa-qr":"Two-factor code","wallet-qr":"Wallet code","near-duplicate":"Near-copy",
+ "Review|maybe-trash":"Suggested junk","Review|child-in-shot":"Possible child","Review|vlm-trash":"Suggested junk",
+ "Review|vlm-keep":"Looked fine","Review|not-trash":"Marked Keep","Owner|keep":"Marked Keep","Owner|not-trash":"Marked Keep",
+ "Owner|trash":"Marked Trash"};
+const GROUP={nudity:"Possible nudity",document:"Looks like a document",text:"Private text","secret-words":"Private text",Label:"Looks like",Review:"Flag"};
+function plain(r){if(FLAG[r])return FLAG[r];const m=/^([^|:]+)[|:](.+)$/.exec(r);if(!m)return r.replace(/-/g," ");
+ const g=GROUP[m[1]]||m[1],v=m[2].replace(/\|/g," / ").replace(/-/g," ");return m[1]==="nudity"?g:`${g}: ${v}`}
+function whyText(w){if(w==="junk: tiny or empty")return "Tiny or empty image";
+ return w.replace(/^near-duplicate of library /,"Near-copy of ").replace(/^near-duplicate of /,"Near-copy of ")}
 function render(){
  const L=$("#list");L.replaceChildren();
  TABS.forEach(t=>{const b=$(TID[t]);b.setAttribute("aria-selected",tab===t);b.tabIndex=tab===t?0:-1});$("#lists").setAttribute("aria-labelledby",TID[tab].slice(1));
  $("#helpq").hidden=tab!=="quarantine";$("#helpr").hidden=tab!=="review";$("#helpm").hidden=tab!=="maybe";
- const its=visibleOf(tab);$("#helpb").hidden=!its.some(i=>i.burst!=null);
- if(!its.length)L.append(el("p","help","Nothing here."));
+ const its=visibleOf(tab);$("#helpb").hidden=!its.some(i=>i.burst!=null);$("#helpall").hidden=!its.length;
+ if(!its.length)L.append(el("p","help","Nothing to decide here."));
  its.forEach((it,n)=>{
   const c=el("div","card");c.id="c"+it.id;c.dataset.n=n;c.dataset.item=it.rel;c.tabIndex=-1;c.setAttribute("role","group");
   if(it.burst!=null){const ms=members(it),bx=el("div","burst"),bd=el("span","badge");c.dataset.burst=it.burst;bd.dataset.count=ms.length;
@@ -1093,20 +1145,21 @@ function render(){
   const m=mediaEl(it.kind,"/m/"+it.id,it.rel),o=it.orig;
   if(o&&o.label)c.append(el("div","note",o.label));
   if(o&&o.meta){const p=el("div","pair");
-   p.append(side("Original (kept)",mediaEl(o.kind,"/o/"+o.id,"original"),o.meta),side("This copy",m,it.meta));c.append(p)}
+   p.append(side("Original (kept)",mediaEl(o.kind,"/o/"+o.id,"original"),o.meta,true),side("This copy",m,it.meta,false));c.append(p)}
   else{if(o&&o.erased)c.append(el("div","note","Near-copy of a photo you erased"+(o.date?" on "+o.date:"")));
    else if(o&&o.missing)c.append(el("div","note","Original not shown: "+o.missing));
-   c.append(m);if(it.meta)c.append(metaEl(it.meta))}
+   c.append(m);if(it.meta)c.append(metaEl(it.meta,false))}
   c.append(el("div","name",nameOf(it)));
-  if(it.reasons.length){const lb=el("div","labels");it.reasons.forEach(r=>lb.append(el("span",null,r)));c.append(lb)}
-  if(it.why)c.append(el("div","why",it.why));
-  if(it.tab==="quarantine"&&!it.releasable)c.append(el("div","why","No library place: Keep leaves it in quarantine and skips this batch's erase."));
-  const b=el("div","btns"),k=el("button","k","Keep (K)");
-  k.onclick=()=>{decide(it,"keep",n,false)};b.append(k);
-  if(second(it)){const e=el("button","e",(it.tab==="quarantine"?"Erase":"Delete")+" (E)");e.onclick=()=>{decide(it,second(it),n,false)};b.append(e)}
-  if(canTrash(it)){const t=el("button","t","Trash (T)");t.onclick=()=>{decide(it,"trash",n,false)};b.append(t)}
+  if(it.reasons.length){const lb=el("div","labels");[...new Set(it.reasons.map(plain))].forEach(r=>lb.append(el("span",null,r)));c.append(lb)}
+  if(it.why)c.append(el("div","why",whyText(it.why)));
+  if(it.tab==="quarantine"&&!it.releasable)c.append(el("div","why","Can't go back into the library (its original place is unknown). Keep leaves it in quarantine, and then nothing in this batch is erased."));
+  const b=el("div","btns"),btn=(cls,d)=>{const x=el("button",cls,VERB[d]);x.append(el("span","kb",` (${KEY[d]})`));x.title=`${VERB[d]}: ${verdict(it,d)}`;
+   x.onclick=()=>{decide(it,d,n,false)};b.append(x)};
+  btn("k","keep");
+  if(second(it))btn("e",second(it));
+  if(canTrash(it))btn("t","trash");
   else b.append(el("span","notrash","Sensitive: erase or keep"));
-  c.append(b);
+  c.append(b,el("p","verdict"));
   if(it.burst!=null&&open[it.burst]){const o1=el("button","one",oneLabel(it));o1.onclick=()=>{keepOne(it)};c.append(o1)}
   c.onclick=ev=>{if(ev.target.tagName!=="BUTTON"&&ev.target.tagName!=="VIDEO"){cur[tab]=n;paint(false)}};
   c.addEventListener("focusin",()=>{if(cur[tab]!==n){cur[tab]=n;paint(false)}});  /* Tab onto a card or its buttons outlines it: K acts there */
@@ -1114,25 +1167,34 @@ function render(){
  });
  paint(false);
 }
-function nameOf(it){return (it.batch!==data.batch?it.batch+" / ":"")+it.rel}
+function nameOf(it){return it.rel}
 function paint(scroll){
  const vis=visibleOf(tab);
  vis.forEach((it,n)=>{const c=$("#c"+it.id);if(!c)return;
   const d=dec[it.id],e=c.querySelector(".e");
   c.tabIndex=n===cur[tab]?0:-1;c.setAttribute("aria-label",`${nameOf(it)}, item ${n+1} of ${vis.length}: `+(d?"decided "+d:"undecided"));
+  const v=c.querySelector(".verdict");v.hidden=!d;const w=d?verdict(it,d):"";setText(v,d?`Decided: ${VERB[d]}. ${w[0].toUpperCase()+w.slice(1)}.`:"");
   c.classList.toggle("focus",n===cur[tab]);c.setAttribute("aria-current",n===cur[tab]);c.classList.toggle("keep",d==="keep");c.classList.toggle("erase",d==="erase"||d==="delete");c.classList.toggle("trash",d==="trash");
   c.querySelector(".k").setAttribute("aria-pressed",d==="keep");if(e)e.setAttribute("aria-pressed",d==="erase"||d==="delete");const t=c.querySelector(".t");if(t)t.setAttribute("aria-pressed",d==="trash");
   const bd=c.querySelector(".badge");if(bd){const ms=members(it),u=ms.filter(m=>!dec[m.id]).length;
    bd.textContent=`Burst: ${ms.length} shots`+(u?`, ${u} undecided`:", all decided")}
   if(scroll&&n===cur[tab])c.scrollIntoView({block:"center",behavior:"smooth"});});
  const left=data.items.filter(i=>!dec[i.id]).length,und=t=>itemsOf(t).filter(i=>!dec[i.id]).length;
- $("#count").textContent=left?`${left} undecided (`+TABS.filter(t=>itemsOf(t).length).map(t=>TNAME[t].toLowerCase()+" "+und(t)).join(", ")+")":"All decided";
  TABS.forEach(t=>{$(TID[t]).textContent=`${TNAME[t]} (${itemsOf(t).length})`});$("#tm").hidden=!itemsOf("maybe").length;
- setText($("#done"),`${data.items.length-left} of ${data.items.length} decided`);
+ /* One counter, which is also the reason Submit is locked; it names the tabs still to do unless that is only this one. */
+ const todo=TABS.filter(t=>und(t));
+ setText($("#done"),left?`Decide ${left} more to submit`+(todo.length>1||todo[0]!==tab?" ("+todo.map(t=>`${und(t)} in ${TNAME[t]}`).join(", ")+")":"")
+  :`All decided: ${data.items.length} of ${data.items.length}. Ready to submit.`);
  $("#submit").disabled=left>0;
 }
+/* Phone: pin only the header's bar (the counter and Submit); the title and tabs above it scroll away. */
+function placeHeader(){const h=$("header"),b=$("#bar"),phone=matchMedia("(max-width:640px)").matches,top=phone?b.offsetTop-8:0;
+ h.style.top=-top+"px";document.documentElement.style.setProperty("--pin",(h.offsetHeight-top)+"px")}
 function setText(e,s){if(e.textContent!==s)e.textContent=s}
-function decide(it,d,n,adv){const f=inList();dec[it.id]=d;cur[tab]=n;if(adv)cur[tab]=Math.min(n+1,visibleOf(tab).length-1);paint(adv);if(adv&&f)focusCur()}
+/* A second press of the same decision clears it (and stays on the card); anything else sets it. */
+function decide(it,d,n,adv){const f=inList();cur[tab]=n;
+ if(dec[it.id]===d){delete dec[it.id];adv=false}else dec[it.id]=d;
+ if(adv)cur[tab]=Math.min(n+1,visibleOf(tab).length-1);paint(adv);if(adv&&f)focusCur()}
 function move(d){const its=visibleOf(tab);if(!its.length)return;const f=inList();cur[tab]=Math.max(0,Math.min(its.length-1,cur[tab]+d));paint(true);if(f)focusCur()}
 function setTab(t){tab=t;render();window.scrollTo(0,0)}
 TABS.forEach(t=>{$(TID[t]).onclick=()=>setTab(t)});
@@ -1152,9 +1214,16 @@ function closeKeys(){modal($("#keys"),false);const f=lastFocus;lastFocus=null;
  if(f&&f.isConnected&&f!==document.body&&!f.disabled)f.focus({preventScroll:true});else focusCur()}
 $("#keysb").onclick=openKeys;$("#keysx").onclick=closeKeys;
 $("#keys").onclick=ev=>{if(ev.target.id==="keys")closeKeys()};
-/* Errors show in a banner (role=alert), never a native dialog: in the confirm while it is open, else above the list. */
-function placeErr(){const b=$("#err");($("#confirm").classList.contains("on")?$("#confirm .box"):$("main")).prepend(b)}
-function showErr(msg){$("#err").hidden=false;$("#errmsg").replaceChildren(document.createTextNode(msg))}
+/* Errors show in a banner (role=alert), never a native dialog: under the Apply dialog's title while it is open,
+   else at the top of the list, below the header (scrolled into view, never over the header). */
+function placeErr(){const b=$("#err");if($("#confirm").classList.contains("on"))$("#confirmh").after(b);else $("main").prepend(b)}
+/* The server's refusals in plain words: never a PID or a lock file's path. */
+function plainErr(m){m=String(m);
+ if(/library is busy/.test(m))return "Another action is using the library (an import, a gallery Trash or Erase, or another review). Wait for it to finish, then apply again.";
+ if(/is still running/.test(m))return "A run of this review is still going. Wait for it to finish, then open the review again.";
+ return m.replace(/\s*\(PID \d+\)/g,"").replace(/\s*\([^()]*\.lock\)/g,"")}
+function showErr(msg){$("#err").hidden=false;$("#errmsg").replaceChildren(document.createTextNode(msg));
+ if(!$("#confirm").classList.contains("on"))$("#err").scrollIntoView({block:"nearest"})}
 function hideErr(){$("#err").hidden=true;$("#errmsg").replaceChildren()}
 $("#errx").onclick=()=>{hideErr();const t=$("#confirm").classList.contains("on")?$("#typed"):$("#submit");if(!t.disabled)t.focus();else focusCur()};
 document.addEventListener("keydown",ev=>{
@@ -1165,37 +1234,43 @@ document.addEventListener("keydown",ev=>{
  if(ev.target.getAttribute&&ev.target.getAttribute("role")==="tab"&&["ArrowLeft","ArrowRight","Home","End"].includes(ev.key)){tabKey(ev.target,ev.key);ev.preventDefault();return}
  const its=visibleOf(tab),it=its[cur[tab]];const k=ev.key.toLowerCase();
  if(k==="k"&&it){decide(it,"keep",cur[tab],true);ev.preventDefault()}
- else if((k==="e"||k==="d")&&it&&second(it)){decide(it,second(it),cur[tab],true);ev.preventDefault()}
+ else if(it&&second(it)&&k===KEY[second(it)].toLowerCase()){decide(it,second(it),cur[tab],true);ev.preventDefault()}
  else if(k==="t"&&it&&canTrash(it)){decide(it,"trash",cur[tab],true);ev.preventDefault()}
  else if(k==="x"&&it&&it.burst!=null){toggleStack(it);ev.preventDefault()}
  else if(k==="arrowright"||k==="arrowdown"||k==="j"){move(1);ev.preventDefault()}
  else if(k==="arrowleft"||k==="arrowup"){move(-1);ev.preventDefault()}
 });
+/* The Apply dialog: titled and labelled with the action, one line of counts per tab, then what goes where. No
+   device path: "your phone" and "the backup drive" are the ones this review was started with. */
+const ALLOW={quarantine:["keep","erase"],review:["keep","delete","trash"],maybe:["keep","trash"]};
 $("#submit").onclick=()=>{
- const n=(t,d)=>itemsOf(t).filter(i=>dec[i.id]===d).length;
- const dv=[];if(data.devices.phone)dv.push("phone ("+data.devices.phone+")");if(data.devices.drive)dv.push("backup drive ("+data.devices.drive+")");
- const parts=[];
- if(itemsOf("quarantine").length)parts.push(`Quarantine: ${n("quarantine","keep")} keep / ${n("quarantine","erase")} erase; erased from this computer`+(dv.length?" and "+dv.join(" and "):" only (no phone or drive passed)"));
- if(itemsOf("review").length)parts.push(`Review: ${n("review","keep")} keep / ${n("review","delete")} delete / ${n("review","trash")} trash`);
- if(itemsOf("maybe").length)parts.push(`Maybe trash: ${n("maybe","keep")} keep / ${n("maybe","trash")} trash`);
- $("#summary").textContent=parts.join(". ")+(data.devices.phone?". Trashed items are also deleted from the phone (not xcheck copies).":".");
+ const n=(t,d)=>itemsOf(t).filter(i=>dec[i.id]===d).length,N=data.items.length,s=x=>x===1?"":"s",ph=data.devices.phone,dr=data.devices.drive;
+ const ul=el("ul"),notes=[];
+ TABS.filter(t=>itemsOf(t).length).forEach(t=>ul.append(el("li",null,`${TNAME[t]}: `+ALLOW[t].map(d=>`${VERB[d].toLowerCase()} ${n(t,d)}`).join(", "))));
+ const er=n("quarantine","erase"),tr=n("review","trash")+n("maybe","trash"),gone=er+tr+n("review","delete");
+ if(er)notes.push(`Erase removes every copy: on this computer`+(ph&&dr?", your phone and the backup drive":ph?" and your phone":dr?" and the backup drive":" (no phone or drive was connected for this review)")+".");
+ if(tr&&ph)notes.push("Trashed files are also deleted from your phone.");
+ if(n("review","keep"))notes.push("Kept Review items stay in the review folder.");
+ notes.push(gone?`${gone} file${s(gone)} will be removed for good. This can't be undone.`:"Nothing will be deleted.");
+ $("#summary").replaceChildren(ul,...notes.map(x=>el("p",null,x)));
+ setText($("#confirmh"),`Apply ${N} decision${s(N)}?`);setText($("#go"),`Apply ${N} decision${s(N)}`);
  $("#submit").disabled=true;$("#typed").value="";$("#go").disabled=true;modal($("#confirm"),true);$("#typed").focus();
 };
-function back(){modal($("#confirm"),false);paint(false);$("#submit").focus()}
+function back(){modal($("#confirm"),false);paint(false);$("#submit").focus();if(!$("#err").hidden)$("#err").scrollIntoView({block:"nearest"})}
 $("#back").onclick=back;
 $("#typed").oninput=()=>{$("#go").disabled=$("#typed").value!=="ERASE"};
 $("#go").onclick=async()=>{
  $("#go").disabled=true;const d={};data.items.forEach(i=>d[i.id]=dec[i.id]);let r;
  try{r=await fetch("/api/submit",{method:"POST",credentials:"same-origin",headers:{"Content-Type":"application/json","X-CSRF":CSRF},body:JSON.stringify({decisions:d,confirm:$("#typed").value})})}
  catch(e){showErr("No answer from the page server: run the same review command again to see whether the run started.");$("#go").disabled=false;$("#go").focus();return}
- if(r.status!==202){const j=await r.json().catch(()=>({}));if(j.watching){attach();return}showErr("Refused: "+(j.error||r.status));$("#go").disabled=false;$("#go").focus();return}
+ if(r.status!==202){const j=await r.json().catch(()=>({}));if(j.watching){attach();return}showErr("Not applied: "+plainErr(j.error||r.status));$("#go").disabled=false;$("#go").focus();return}
  attach();
 };
 /* The run is a detached job (jobs.py): closing this tab or stopping the server never stops it, and any
    page of this batch (a reload, a second tab, a restarted server) shows it from the status file. */
 let attached=false;
 function attach(){if(attached)return;attached=true;hideErr();modal($("#confirm"),false);modal($("#keys"),false);$("#lists").hidden=true;$("#run").style.display="block";
- document.querySelectorAll("header button").forEach(b=>b.disabled=true);$("#list").replaceChildren();$("#out").textContent="";$("#runh").focus({preventScroll:true});poll(0)}
+ document.querySelectorAll("header button:not(#keysb)").forEach(b=>b.disabled=true);setText($("#done"),"Applying your decisions");$("#list").replaceChildren();$("#out").textContent="";$("#runh").focus({preventScroll:true});poll(0)}
 function stepText(jb){return jb&&jb.step?`Step ${jb.step}${jb.total?" of "+jb.total:""}: ${jb.label}`:""}
 async function poll(since){
  let j;try{j=await (await fetch("/api/progress?since="+since,{credentials:"same-origin"})).json()}
@@ -1212,7 +1287,9 @@ async function poll(since){
 }
 function lastRun(jb){if(!jb||!jb.done)return;const L=$("#last");L.hidden=false;
  L.textContent=`Last run of this batch (started ${jb.started}): `+(jb.state==="crashed"?`crashed at ${stepText(jb)||"start-up"}`+(jb.step_running?"; the step it started is still running, so submit is refused until it ends.":"."):jb.ok?"finished OK.":"finished with problems.")}
+addEventListener("resize",placeHeader);if(window.ResizeObserver)new ResizeObserver(placeHeader).observe($("header"));
 fetch("/api/items",{credentials:"same-origin"}).then(r=>r.json()).then(j=>{data=j;
+ document.title=$("#title").textContent=j.batch?`Review ${j.batch}`:"Review suggested junk";
  j.items.forEach(i=>{if(i.burst!=null)(BM[i.burst]=BM[i.burst]||[]).push(i)});tab=TABS.find(t=>itemsOf(t).length)||"quarantine";
  if(j.watching){attach();document.body.dataset.ready="1";return}render();lastRun(j.job);document.body.dataset.ready="1";
  /* a run started from another page or server of this batch: show it instead of stale items */

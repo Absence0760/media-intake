@@ -77,9 +77,10 @@ class ReviewMediaKindsBrowserTest(B.BrowserCase):
         return page.locator(f'[data-item="{rel}"]')
 
     def pressed(self, page, rel, which):
-        """Expect exactly the decision button `which` (Keep / Erase / Delete / Trash) pressed on the card."""
+        """Expect exactly the decision button `which` (Keep / Erase / Delete this copy / Trash) pressed on the
+        card."""
         c = self.card(page, rel)
-        for name in ("Keep", "Erase", "Delete", "Trash"):
+        for name in ("Keep", "Erase", "Delete this copy", "Trash"):
             btn = c.get_by_role("button", name=re.compile(rf"^{name} \("))
             if btn.count():
                 B.expect(btn).to_have_attribute("aria-pressed", "true" if name == which else "false")
@@ -173,13 +174,13 @@ class ReviewMediaKindsBrowserTest(B.BrowserCase):
         self.assert_plays_picture(page, "DCIM/Camera/VID_1001.mp4")
         self.focus(page, "DCIM/Camera/VID_1001.mp4")
         page.keyboard.press("d")
-        self.pressed(page, "DCIM/Camera/VID_1001.mp4", "Delete")
+        self.pressed(page, "DCIM/Camera/VID_1001.mp4", "Delete this copy")
         B.expect(submit).to_be_enabled()
         submit.click()
-        B.expect(page.locator("#summary")).to_contain_text("Quarantine: 2 keep / 2 erase;")
-        B.expect(page.locator("#summary")).to_contain_text("Review: 1 keep / 1 delete / 1 trash")
+        B.expect(page.locator("#summary")).to_contain_text("Quarantine: keep 2, erase 2")
+        B.expect(page.locator("#summary")).to_contain_text("Review: keep 1, delete this copy 1, trash 1")
         page.get_by_role("textbox", name="Type ERASE").fill("ERASE")
-        page.get_by_role("button", name="Run").click()
+        page.get_by_role("button", name=re.compile(r"^Apply \d+ decisions$")).click()
         B.expect(page.locator("#run")).to_have_attribute("data-job", "done")
         self.assertEqual(self.calls(), [
             ["trash", "--batch", BATCH, os.path.join(rv, "DCIM/Camera/IMG_1001.jpg"), "--yes"],
@@ -316,8 +317,8 @@ class ReviewMediaKindsBrowserTest(B.BrowserCase):
             self.assertIsNone(media[n].get_attribute("data-cant"), n)
         # A card that gave up on its preview is still decided like any other.
         c = self.card(page, "DCIM/Camera/b-broken.mp4")
-        c.get_by_role("button", name="Delete (E)").click()
-        self.pressed(page, "DCIM/Camera/b-broken.mp4", "Delete")
+        c.get_by_role("button", name="Delete this copy (D)").click()
+        self.pressed(page, "DCIM/Camera/b-broken.mp4", "Delete this copy")
 
     def test_messaging_copy_of_a_video_beside_its_original(self):
         orig = self.video(os.path.join(self.home, "personal_footage/2026/2026-10/VID_orig.mp4"))
