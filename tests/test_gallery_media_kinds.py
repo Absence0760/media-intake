@@ -178,8 +178,7 @@ class MediaKindsTest(unittest.TestCase):
         # one photo
         code, j = s.post("/api/keep", {"ids": [ids[self.p1]]})
         self.assertEqual(code, 200, j)
-        self.assertEqual(j["result"],
-                         "kept 1: Owner|keep + Owner|not-trash, Review|maybe-trash and Owner|trash removed")
+        self.assertEqual(j["result"], "Kept 1. It won't be suggested as junk again.")
         self.assertIn("Label|food", self.assert_kept(self.p1))
         self.assertEqual([(x["id"], x["f"]) for x in j["items"]], [(ids[self.p1], ["kept"])])
         # one video
@@ -197,7 +196,7 @@ class MediaKindsTest(unittest.TestCase):
             self.assertFalse(os.path.exists(p + ".xmp"))
         code, j = s.post("/api/keep", {"ids": [ids[self.p2], ids[self.v2], ids[self.v1], ids[self.v2]]})
         self.assertEqual(code, 200, j)
-        self.assertTrue(j["result"].startswith("kept 3:"), j)  # a repeated id counts once
+        self.assertTrue(j["result"].startswith("Kept 3. They "), j)  # a repeated id counts once
         for p in (self.p2, self.v2):
             self.assertTrue(os.path.isfile(p + ".xmp"), p)  # <file>.<ext>.xmp, the extension's case kept
             self.assertEqual(sorted(G.tags_of(p)[0]), ["Owner|keep", "Owner|not-trash"], p)
@@ -389,8 +388,7 @@ class MediaKindsTest(unittest.TestCase):
         ids = self.ids(s)
         code, j = s.post("/api/decide", {"keep": [ids[self.v1]], "trash": [ids[self.p1]], "confirm": True})
         self.assertEqual(code, 200, j)
-        self.assertEqual(j["result"], "kept 1: Owner|keep + Owner|not-trash, Review|maybe-trash and Owner|trash "
-                                      "removed; trashing 1")
+        self.assertEqual(j["result"], "Kept 1. It won't be suggested as junk again. Trashing 1.")
         self.assert_kept(self.v1)  # written at once, before the job
         j = self.wait_job(s)
         self.assertTrue(j["ok"], j["lines"])

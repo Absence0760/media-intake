@@ -142,7 +142,7 @@ media-intake gallery
 ```
 
 It prints one `xdg-open 'http://127.0.0.1:<port>/?t=<token>'` line; open it in
-a private browser window. It runs until Ctrl-C or the page's **Close**
+a private browser window. It runs until Ctrl-C or the page's **Stop server**
 button. Flagged and quarantined files are never shown there.
 [gallery.md](gallery.md).
 
