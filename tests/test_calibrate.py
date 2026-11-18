@@ -246,11 +246,13 @@ class Library(unittest.TestCase):
         with open(os.path.join(self.state, "trashed.json"), "w") as f:
             json.dump(self.trashed, f)
 
-    def main(self, *argv):
-        out = io.StringIO()
+    def main(self, *argv, code=0):
+        out, err = io.StringIO(), io.StringIO()
         with mock.patch.dict(os.environ, {"MEDIA_INTAKE_STATE": self.state}), \
-                mock.patch.object(label, "LABELS_NPZ", self.npz), contextlib.redirect_stdout(out):
-            self.assertEqual(calibrate.main(list(argv)), 0)
+                mock.patch.object(label, "LABELS_NPZ", self.npz), contextlib.redirect_stdout(out), \
+                contextlib.redirect_stderr(err):
+            self.assertEqual(calibrate.main(list(argv)), code)
+        self.err = err.getvalue()
         return out.getvalue()
 
     def build(self):
@@ -335,22 +337,81 @@ class Library(unittest.TestCase):
         out = self.main()
         self.assertNotIn("item-", out)
         self.assertNotIn(self.d, out)
-        self.assertIn("calibrate: 50 items with stored scores (photos), 49 with a mark", out)
+        self.assertIn("calibrate: 50 photos have a stored score; you marked 49 of them", out)
         for line in ("videos left out: 1 (--with-videos counts them)", "trashed items no longer in the index: 1",
                      "marks in conflict (yes and no), not counted: 1",
                      "Calibrate| tags naming no label or no yes/no, ignored: 2", "flagged items, never counted: 1",
-                     "suggested threshold: best F1; only with at least 20 positive and 20 negative marks"):
+                     "suggested cut-off: the best balance of precision and recall (best F1)\n"
+                     "  (only for a label with at least 20 yes and 20 no marks)"):
             self.assertIn(line, out)
         dog = next(ln for ln in out.splitlines() if ln.startswith("dog "))
         self.assertRegex(dog, r"^dog +20 +22 +0\.0500 0\.909  1\.000 0\.952  \|  0\.[34]\d{3} 1\.000  1\.000 1\.000$")
         mt = next(ln for ln in out.splitlines() if ln.startswith("maybe-trash "))
         self.assertTrue(mt.endswith("too few marked items: 3 positive, 3 negative; need at least 20 of each"), mt)
-        self.assertIn(f"labels with no marks yet (Calibrate|<label>|yes or |no): {len(self.names) - 2}", out)
+        self.assertIn(f"labels with no marks yet: {len(self.names) - 2} (in the gallery, \"+ tag\" "
+                      "Calibrate|<label>|yes or |no)", out)
+
+    def test_plain_words_beside_the_numbers(self):
+        """Under the table, each column in plain words; the numbers stay as they are."""
+        self.build()
+        out = self.main()
+        lines = out.splitlines()
+        head = next(i for i, ln in enumerate(lines) if ln.startswith("label "))
+        self.assertIn("thresh  prec recall    F1  | suggest  prec recall    F1", lines[head])
+        legend = lines.index("what the columns mean:")
+        self.assertGreater(legend, head)
+        text = "\n".join(lines[legend:])
+        for words in ("precision: of the items it flagged, how many you agree with",
+                      "of the items you marked yes, how many it flagged", "the cut-off in labels.yaml now",
+                      "items you marked yes / no", "this command changes nothing"):
+            self.assertIn(words, text)
+        self.assertNotIn(calibrate.NO_MARKS, out)
+
+    def test_precision_goal_in_plain_words(self):
+        self.build()
+        out = self.main("--precision", "0.9")
+        self.assertIn("suggested cut-off: the one that flags the most of your yes items while precision stays at "
+                      "least 0.9", out)
 
     def test_no_index(self):
-        out = json.loads(self.main("--json"))
-        self.assertEqual(out["counts"]["scored"], 0)
-        self.assertTrue(all(r["positive"] == r["negative"] == 0 for r in out["labels"].values()))
+        """No embeddings.npz: one line saying to build the index first, exit 1, for text and --json alike."""
+        for argv in ((), ("--json",)):
+            with self.subTest(argv=argv):
+                self.assertEqual(self.main(*argv, code=1), "")
+                self.assertEqual(self.err.strip(), "calibrate: no search index yet. Build it first: media-intake index")
+
+    def test_empty_index(self):
+        """An index file that holds no items is the same as none."""
+        with open(os.path.join(self.state, "embeddings.npz"), "wb") as f:
+            np.savez(f, sha=np.array([], dtype="U64"), emb=np.zeros((0, self.dim), np.float16),
+                     files=np.array("{}"))
+        self.assertEqual(self.main(code=1), "")
+        self.assertIn("media-intake index", self.err)
+
+    def test_no_marks_says_how_to_add_them(self):
+        self.item({"dog": 0.5})
+        self.item({"dog": 0.1})
+        self.save()
+        out = self.main()
+        self.assertIn("calibrate: 2 photos have a stored score; you marked 0 of them", out)
+        self.assertIn('No marks yet. In the gallery, select a few dozen photos that show (or don\'t show) a label and '
+                      'use "+ tag": Calibrate|dog|yes or Calibrate|dog|no. See docs/configuration.md, '
+                      '"Calibrating label thresholds".', out)
+        self.assertNotIn("what the columns mean:", out)
+        self.assertNotIn("labels with no marks yet", out)
+        self.assertEqual(json.loads(self.main("--json"))["counts"]["marked"], 0)
+
+    def test_help_is_plain(self):
+        out = io.StringIO()
+        with contextlib.redirect_stdout(out), self.assertRaises(SystemExit) as e:
+            calibrate.main(["--help"])
+        self.assertEqual(e.exception.code, 0)
+        h = " ".join(out.getvalue().split())
+        self.assertIn("usage: media-intake calibrate", h)
+        self.assertIn("Check how well each automatic content label (dog, beach, ...) matches your own yes/no marks", h)
+        self.assertIn("Read-only: changes nothing.", h)
+        self.assertIn("media-intake index", h)
+        self.assertNotIn("SigLIP", h)
 
     def test_bad_options(self):
         for argv in (["--precision", "0"], ["--precision", "1.5"], ["--min", "0"]):

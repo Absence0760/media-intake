@@ -9,7 +9,8 @@ precision, recall and F1 at its current threshold, and a suggested threshold: th
 --precision P the one with the most recall whose precision is at least P. Under --min (default 20) positives
 or negatives it says so instead of suggesting a threshold. Never writes labels.yaml, the config, a sidecar
 or anything else; output is counts and numbers, never a file name. docs/configuration.md, "Calibrating
-label thresholds".
+label thresholds". With no search index yet it says to run `media-intake index` first and exits 1; with
+no marks yet it says how to add them.
 
 Scores: tag stores only the labels over each threshold, so the scores are worked out again here from the
 search index (<state>/embeddings.npz, `media-intake index`) and labels.npz, with label.py's formula
@@ -145,6 +146,26 @@ def report_label(pos, neg, thr, min_each=MIN_EACH, precision=None):
 
 
 # ---------------------------------------------------------------- the library
+class NoIndex(Exception):
+    """The search index (<state>/embeddings.npz) is missing or holds nothing: there are no scores to check."""
+
+
+NO_INDEX = "calibrate: no search index yet. Build it first: media-intake index"
+NO_MARKS = ('No marks yet. In the gallery, select a few dozen photos that show (or don\'t show) a label and use '
+            '"+ tag": Calibrate|dog|yes or Calibrate|dog|no. See docs/configuration.md, '
+            '"Calibrating label thresholds".')
+LEGEND = (
+    "what the columns mean:",
+    "  pos / neg  items you marked yes / no for that label",
+    "  thresh     the cut-off in labels.yaml now: a score at or above it adds the label",
+    "  prec       precision: of the items it flagged, how many you agree with",
+    "  recall     of the items you marked yes, how many it flagged",
+    "  F1         one number for both (1.000 is perfect, higher is better)",
+    "  suggest    a better cut-off, with the prec, recall and F1 it would give",
+    "this command changes nothing: to use a suggestion, edit the threshold in labels.yaml yourself",
+)
+
+
 def load_store(np, path):
     """(shas, emb float32, files {path: [size, mtime_ns, sha]}) of semantic.py's index, or empty."""
     try:
@@ -163,9 +184,11 @@ def read_tags(path):
 
 def collect(np, state, npz=None, with_videos=False):
     """(names, thresholds, {label: (positive scores, negative scores)}, counts) for this library."""
+    shas, emb, files = load_store(np, os.path.join(state, "embeddings.npz"))
+    if not shas:  # before labels.npz: name the first fix first
+        raise NoIndex()
     names, prompts, prompt_owner, thr, _ = label.label_config()
     txt = label.text_embeddings(prompts, np, npz or label.LABELS_NPZ)
-    shas, emb, files = load_store(np, os.path.join(state, "embeddings.npz"))
     flagged = label.flagged(state)
     trashed = label._load(os.path.join(state, "trashed.json"), {}) or {}
     paths = {}
@@ -217,8 +240,8 @@ def _f(v, d=3):
 
 def text(res, with_videos=False):
     c = res["counts"]
-    lines = [f"calibrate: {c['scored']:,} items with stored scores ({'photos and videos' if with_videos else 'photos'}),"
-             f" {c['marked']:,} with a mark"]
+    kind = "photos and videos" if with_videos else "photos"
+    lines = [f"calibrate: {c['scored']:,} {kind} have a stored score; you marked {c['marked']:,} of them"]
     notes = []
     if c["videos_left_out"]:
         notes.append(f"videos left out: {c['videos_left_out']:,} (--with-videos counts them)")
@@ -231,10 +254,14 @@ def text(res, with_videos=False):
     if c["flagged_left_out"]:
         notes.append(f"flagged items, never counted: {c['flagged_left_out']:,}")
     lines += [f"  {n}" for n in notes]
-    goal = (f"most recall at precision >= {res['target_precision']:g}" if res["target_precision"] is not None
-            else "best F1")
-    lines.append(f"suggested threshold: {goal}; only with at least {res['min_each']} positive and "
-                 f"{res['min_each']} negative marks")
+    if not c["marked"]:
+        lines.append(NO_MARKS)
+        return "\n".join(lines)
+    goal = (f"the one that flags the most of your yes items while precision stays at least "
+            f"{res['target_precision']:g}" if res["target_precision"] is not None
+            else "the best balance of precision and recall (best F1)")
+    lines.append(f"suggested cut-off: {goal}")
+    lines.append(f"  (only for a label with at least {res['min_each']} yes and {res['min_each']} no marks)")
     marked = {n: r for n, r in res["labels"].items() if r["positive"] or r["negative"]}
     if marked:
         w = max(len(n) for n in marked)
@@ -248,9 +275,10 @@ def text(res, with_videos=False):
             row += (f"{s['threshold']:>7.4f} {_f(s['precision']):>5} {_f(s['recall']):>6} {_f(s['f1']):>5}" if s
                     else r["why_not"])
             lines.append(row)
+        lines += LEGEND
     rest = len(res["labels"]) - len(marked)
     if rest:
-        lines.append(f"labels with no marks yet (Calibrate|<label>|yes or |no): {rest}")
+        lines.append(f"labels with no marks yet: {rest} (in the gallery, \"+ tag\" Calibrate|<label>|yes or |no)")
     return "\n".join(lines)
 
 
@@ -268,15 +296,20 @@ def _round(res):
 
 
 def main(argv=None, prog="media-intake calibrate"):
-    ap = argparse.ArgumentParser(prog=prog, description="Precision, recall and F1 of each SigLIP label at its "
-                                 "threshold against your own Calibrate|<label>|yes / |no tags and trash decisions, "
-                                 "and a suggested threshold. Reports only (docs/configuration.md).")
+    ap = argparse.ArgumentParser(
+        prog=prog,
+        description="Check how well each automatic content label (dog, beach, ...) matches your own yes/no marks "
+                    "and suggest a better threshold (the score cut-off that adds the label). Read-only: changes "
+                    "nothing. Needs the search index (media-intake index) and marks you add in the gallery with "
+                    "\"+ tag\": Calibrate|<label>|yes or Calibrate|<label>|no. "
+                    "Guide: docs/configuration.md, \"Calibrating label thresholds\".")
     ap.add_argument("--precision", type=float, metavar="P",
-                    help="suggest the threshold with the most recall at precision >= P (0..1) instead of the best F1")
+                    help="suggest the cut-off that flags the most of your yes items while at least this share of "
+                         "what it flags is a yes (0..1, e.g. 0.9), instead of the best balance of both")
     ap.add_argument("--min", type=int, default=MIN_EACH, metavar="N",
-                    help=f"positive and negative marks a label needs before a suggestion (default {MIN_EACH})")
+                    help=f"yes and no marks a label needs before it gets a suggestion (default {MIN_EACH})")
     ap.add_argument("--with-videos", action="store_true",
-                    help="count videos too (their index vector is a mean of frames: an approximation)")
+                    help="count videos too (their score is an average over a few frames, so only a rough guide)")
     ap.add_argument("--json", action="store_true", help="one JSON object on stdout, for scripts")
     a = ap.parse_args(argv)
     if a.precision is not None and not 0 < a.precision <= 1:
@@ -284,7 +317,11 @@ def main(argv=None, prog="media-intake calibrate"):
     if a.min < 1:
         ap.error("--min is at least 1")
     import numpy as np
-    res = run(np, config.get()["state"], with_videos=a.with_videos, min_each=a.min, precision=a.precision)
+    try:
+        res = run(np, config.get()["state"], with_videos=a.with_videos, min_each=a.min, precision=a.precision)
+    except NoIndex:
+        print(NO_INDEX, file=sys.stderr)
+        return 1
     print(json.dumps(_round(res)) if a.json else text(res, a.with_videos))
     return 0
 
