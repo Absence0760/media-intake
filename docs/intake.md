@@ -216,13 +216,23 @@ Each of these stops with one plain message (exit 1, no traceback) and
 changes nothing:
 
 - **A batch name that doesn't exist** (`plan`, `scan`, `apply`,
-  `quarantine`, `release`, `tag`): `no batch named 'x'. Batches, newest
+  `quarantine`, `release`, `tag`, `erase`, `offload`, `verify-gone`): `no batch named 'x'. Batches, newest
   first: ... List them all with: ls ~/.local/share/media-intake/batches`
   (or, before anything is staged, the `stage` line to start with). One
   helper, `intake.need_batch()`, makes the check for every command.
   `quarantine` and `release` also take a quarantine-only batch
   (`near-<batch>`, `xcheck-<batch>`); `release` on a batch whose quarantine
-  was erased says so.
+  was erased says so. `erase` and `verify-gone` take a quarantine-only
+  batch too; `verify-gone` on a real batch with nothing erased says
+  `nothing erased yet`, and `offload` before `plan` names the steps to run.
+- **A `--phone` or `--drive` that isn't there** (`erase`, `forget`,
+  `offload`, `verify-gone`): refused in one line (`--drive X: no such
+  folder, so not a mounted drive. Mount the drive and pass its folder, e.g.
+  /run/media/$USER/<label>.`) before any prompt and before anything is
+  deleted (`intake.need_device()`). When the drive's free space will be
+  wiped (`erase`/`forget --drive` without `--no-wipe-free`), the folder must
+  also pass `wipe-free`'s check (not on the laptop's own disk), up front
+  rather than after the erase.
 - **A source folder that isn't there**: `stage` says `no such folder`
   before any batch folder exists; for a phone, how to make it show up
   (unlock it, choose File transfer, then `ls /run/user/$UID/gvfs/`).
@@ -239,9 +249,11 @@ changes nothing:
 
 `quarantine` prints nothing but `nothing in quarantine for BATCH.` when it
 is empty. Otherwise its closing erase line fits the batch: `erase BATCH
---phone <the folder it was staged from>` for a phone or camera batch, plain
-`erase BATCH` for a laptop folder (where `--phone` is refused), a drive
-batch or a quarantine-only batch.
+--phone <the folder it was staged from>` for a phone or camera batch,
+`erase BATCH --drive <the folder it was staged from>` for a drive batch
+(`--drive` deletes identical copies anywhere under that folder, then
+overwrites the drive's free space), and plain `erase BATCH` for a laptop
+folder (where `--phone` is refused) or a quarantine-only batch.
 
 ### Summary lines
 
@@ -308,7 +320,15 @@ is no `next:` line at all, so `scan`'s last line stays its JSON summary;
 ### Confirmation prompts
 
 Without `--yes`, `erase` and `forget` ask you to type `ERASE`, and `offload`
-to type `DELETE`, before anything is deleted. Any other answer, or none at
+to type `DELETE`, before anything is deleted. Before the prompt, `erase` and
+`forget` say what goes, with counts: the quarantined (or library) files, the
+identical copies already in the library, every identical copy anywhere in
+your home folder (your photo folders and the folder you imported from
+included), with `--phone` the matching files on the phone or camera (and its
+thumbnail folders), with `--drive` every identical copy on that drive (and
+its free space overwritten), and what no erase can reach. `offload` names how
+many files it would delete and from where (the phone, or the drive for a
+drive batch), and with nothing to delete says so and asks nothing (exit 0). Any other answer, or none at
 all, deletes nothing: with no terminal (a cron job, the folder queue, stdin
 closed) or Ctrl-C at the prompt, the command prints `nothing erased` /
 `nothing deleted` and exits 1, with no traceback. Every such prompt goes
@@ -819,8 +839,13 @@ quarantine. A file named twice is forgotten once.
     copies, and a cloud export's Takeout JSON or iCloud CSV row (or a Telegram
     export's `result.json`) left beside an erased file on its source drive.
 
-  `erase` prints a short form (places with a count, what was left, what was
-  not checked, what it can't reach); `verify-gone BATCH` prints the full one.
+  `erase` ends with one summary line (`erased N files: Q quarantined, L in
+  your library, H in your home folder, P on the phone or camera, D on the
+  drive`, then the home-folder count per top-level folder), and a short form
+  (what was left, what was not checked, and what it can't reach in a few
+  words: `CANT_REACH_SHORT`), plus the command for the full report:
+  `verify-gone BATCH` prints the full one. `forget` says `F from your
+  library, L more in your library` in place of the first two counts.
 - **Progress while it searches.** The HOME sweep, the drive sweep, the
   near-duplicate search and verify-gone can take minutes on a big HOME, so
   each prints a start line (what it searches, how many erased items), then a

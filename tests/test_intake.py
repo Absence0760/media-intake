@@ -237,7 +237,8 @@ class IntakeE2E(unittest.TestCase):
         open(kept_thumb, "wb").close()
         out = self.run_intake("erase", batch, "--phone", self.phone, "--drive", self.drive, "--yes",
                               "--keep-phone-thumbnails").stdout
-        self.assertIn("erased 2 files; library copies 0; phone 3; drive 1", out)
+        self.assertRegex(out, r"erased \d+ files: 2 quarantined, 0 in your library, \d+ in your home folder, "
+                              r"3 on the phone or camera, 1 on the drive\n")
         self.assertTrue(os.path.exists(kept_thumb), "--keep-phone-thumbnails keeps them")
         shutil.rmtree(os.path.dirname(kept_thumb))
         self.assertFalse(os.path.exists(quar))
@@ -271,7 +272,8 @@ class IntakeE2E(unittest.TestCase):
         os.makedirs(os.path.dirname(dcopy))
         shutil.copyfile(f1, dcopy)
         out = self.run_intake("forget", f1, f2, "--drive", self.drive, "--yes").stdout
-        self.assertIn("erased 2 files; library copies 0; phone 0; drive 1", out)
+        self.assertRegex(out, r"erased \d+ files: 2 from your library, 0 more in your library, \d+ in your home folder, "
+                              r"1 on the drive\n")
         self.assertFalse(os.path.exists(f1) or os.path.exists(f2) or os.path.exists(dcopy))
         self.assertEqual([d for d in os.listdir(os.path.join(self.state, "quarantine")) if d.startswith("forget-")], [])
         # ---- share-copy strips GPS (image) and metadata/data streams (video)
@@ -391,7 +393,7 @@ class EraseEverywhere(unittest.TestCase):
         start = out.index("home sweep: searching every file in HOME for copies of 1 erased items "
                           "(same size, then sha256)")
         ticks = [i for i, ln in enumerate(out) if re.fullmatch(r"home sweep: [\d,]+ files checked, \d+ copies so far", ln)]
-        summary = next(i for i, ln in enumerate(out) if re.fullmatch(r"home sweep: \d+ more copies deleted", ln))
+        summary = next(i for i, ln in enumerate(out) if re.fullmatch(r"erased \d+ files?: 1 quarantined, .*", ln))
         self.assertGreaterEqual(len(ticks), 2, out)
         self.assertTrue(start < ticks[0] and ticks[-1] < summary, out)
         self.assertEqual([out[i].split(":")[1].split()[0] for i in ticks[:2]], ["5", "10"], "a line every 5 files")
@@ -460,12 +462,11 @@ class EraseEverywhere(unittest.TestCase):
         out = self.intake("erase", batch, "--phone", self.phone, "--drive", self.drive, "--yes")
         for c in copies + [dcopy, tinfo, qpath, self.sens, err]:
             self.assertFalse(os.path.exists(c), c)
-        self.assertIn("home sweep: 4 more copies deleted", out)
-        for loc in ("Pictures", "Downloads", ".cache/some-app", "Trash"):
-            self.assertRegex(out, rf"\n  {re.escape(loc)} +1\n")
+        self.assertIn(", 4 in your home folder, ", out)
+        self.assertIn("\n  in your home folder: .cache/some-app 1, Downloads 1, Pictures 1, Trash 1\n", out)
         self.assertTrue(os.path.exists(other_trash))
         self.assertTrue(os.path.exists(skipped), "skipped trees are not swept")
-        self.assertIn("drive 1", out)
+        self.assertIn(", 1 on the drive\n", out)
         self.assertIn("drive free space wiped: 3 MB", out)
         self.assertFalse([f for f in os.listdir(self.drive) if f.startswith(".media-intake-wipe")])
         # near-duplicate moved to near-<batch>, not deleted; the unrelated image stays

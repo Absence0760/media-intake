@@ -181,7 +181,7 @@ class DeviceCase(unittest.TestCase):
         self.assert_refused(out, self.mtp, t_upper, t_lower)
         self.assert_on_device(self.m_plain, t_upper, t_lower)
         out = self.intake("erase", "2026-11-13-mtp", "--phone", self.mtp, "--yes", "--keep-phone-thumbnails")
-        self.assertIn("phone 1;", out)
+        self.assertIn(", 1 on the phone or camera\n", out)
         self.assertFalse(os.path.exists(self.m_plain))
         self.assert_on_device(self.m_upper, t_upper, t_lower)
 

@@ -212,7 +212,7 @@ class Sidecars(Base):
         orphan = os.path.join(self.home, "Pictures", "gone.jpg.xmp")  # its photo was deleted by hand
         shutil.copyfile(self.far + ".xmp", orphan)
         out = self.intake("forget", self.jpg, "--yes")
-        self.assertIn("home sweep: 1 more copies deleted", out)
+        self.assertIn(", 1 in your home folder", out)
         self.assertIn("orphan sidecars deleted", out)
         for p in (self.jpg, self.jpg + ".xmp", copy, copy + ".xmp", orphan):
             self.assertFalse(os.path.exists(p), p)
