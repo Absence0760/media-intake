@@ -30,10 +30,14 @@ without one" (`/api/facets` gives `drive`, the mount or null).
   plugin tab; quick views Recently added = filed in the last 30 days, by the
   file's inode change time, Possible child = `Review|child-in-shot`,
   Untagged; then **Events** with counts, the eight largest and "All N events";
-  then **Keyboard shortcuts**, the `?` list below), the search box (a one-line hint when semantic search is off, the
+  then **Keyboard shortcuts**, the `?` list below, left out on a touch screen
+  with no keyboard), the search box (a one-line hint when semantic search is off, the
   full reason under "why"), then the filters as collapsible sections with
   counts (open / closed remembered per section) and "Clear filters (N)".
   Counts are for the whole library, not narrowed by the other filters.
+  Collapsed to the rail, each icon has a short word under it (Library, Junk,
+  Recent, Child, No tags, Search, Filters); the full name stays its tooltip
+  and the name a screen reader reads.
 - **Main area**: a slim header (view, item count, **Select all**,
   thumbnail-size slider, **Stop server**, and while a Trash, Erase or
   Share-safe copy runs with its dialog hidden, a "Trash running… Show" button
@@ -52,8 +56,30 @@ without one" (`/api/facets` gives `drive`, the mount or null).
   readers) and an open stack's other shots show their badge as "×N"; on a
   wider tile the full labels stay, shortening with an ellipsis rather than
   covering the checkbox. At phone width the burst help above the grid is one
-  line ("Bursts are stacked; X opens one.") with a **more** link for the whole
+  line ("Burst stacks: tap ×N to open one." on a touch screen, "Bursts are
+  stacked; X opens one." with a keyboard) with a **more** link for the whole
   text (open / closed remembered per browser).
+- **The grid's own states** (in place of the tiles, `role=status`):
+  "Loading your library…" (with `aria-busy` on the grid) until the first page
+  arrives; an empty library: "Your library is empty." with the commands that
+  fill it (`media-intake stage <folder> --kind folder --batch first`, then
+  `plan`, `scan` and `apply`) and a pointer to Getting started; no results:
+  "Nothing matches this search." / "these filters." with a **Clear search** /
+  **Clear filters** button, or "Nothing in Untagged right now." with **Show
+  the whole library** for an empty quick view or event; Find similar without
+  the search index: "Find similar needs the search index: run media-intake
+  index in a terminal, then try again." with **Back to the library**. A load
+  error is an alert in the grid ("Couldn't load the library", the reason, and
+  "restart media-intake gallery" if Try again keeps failing) with **Try
+  again**; a later page failing says so in the error message, with Try again,
+  and the grid stops asking until then. Opening an item that is gone since
+  the list loaded says "That file is no longer in the library. The list will
+  refresh." and reloads the list.
+- **Touch targets**: at phone width or on a touch screen every control the
+  grid shows takes a 44 x 44 px tap: buttons, the rail's icons, the filter
+  rows, the size slider, a chip's ×, the tile checkbox (a 22 px box in a 44 px
+  hit area), the ×N button and text links (a larger hit area around them).
+  The selection bar's **Erase** sits apart from Keep and Trash.
 - **Colours** follow the system's light or dark scheme. Every label meets
   WCAG 2's 4.5:1 contrast in both: text on the accent colour (burst badges,
   ×N, the rail's filter count, primary buttons) is white in light and near
@@ -119,8 +145,8 @@ closes it, and no other key acts while it is open.
 - **Bursts**: X opens or closes the focused tile's stack.
 - **Large view**: ← / → previous / next, Space plays / pauses, K / T / E,
   R / Shift+R rotate, Esc closes.
-- **Suggested junk**: arrows (and J) move the outline, K / T mark it,
-  Enter opens it.
+- **Suggested junk**: arrows (and J) move the outline, K / T mark it (as its
+  Keep and Trash buttons do), Enter opens it.
 - **Dialogs**: Esc cancels, Enter in the text field confirms, Tab stays inside.
 
 `tests/browser/test_browser_gallery_dialogs.py` reads the key names from the
@@ -145,8 +171,13 @@ page's own handlers and fails when the list leaves one out.
   elsewhere, flag "Copy of a trashed photo"); never a file with `Owner|not-trash` (or the legacy
   `Review|not-trash`), `Owner|keep`, digiKam Accepted,
   `Used|*` or a protected project's `Project|<name>`. Most confident first,
-  big tiles. K / T mark the outlined tile, arrows move, Enter opens it;
-  nothing changes until **Apply**, which shows the counts (and the thumbnails
+  big tiles, with a line under the title saying what the view is and that
+  nothing changes until Apply. Every tile has **Keep** and **Trash** buttons
+  (pressed when marked; a second tap unmarks), and a marked tile says
+  "Keep" or "Trash" in its corner, not by its outline's colour alone. A tap
+  or click on the photo opens it. There are no checkboxes or selection bar
+  here: the marks are the only choice. With a keyboard, K / T mark the
+  outlined tile, arrows move, Enter opens it. Nothing changes until **Apply**, which shows the counts (and the thumbnails
   and names of what it trashes) and needs a confirm ("Apply", or "Apply and
   trash N files").
 - **Events**: every event in the library, from the sidecars' `Event|<slug>`
@@ -182,10 +213,12 @@ Shots of one burst (one camera, a moment apart) show as one stack, the same
 look and keys as the review page ([review-ui.md](review-ui.md)): the cover
 (the burst's first shot) with a stacked edge, a count badge ("Burst: 4
 shots") and a **Show all 4 (X)** button. **X** or `x` on a focused shot, or
-the button, opens the stack (every shot follows the cover, each with the
-badge) or closes it, and focus goes back to the cover either way. A line
+the button, opens the stack (every shot follows the cover, each with a badge
+giving its place, "Burst: shot 2 of 3", and the shots sharing a coloured ring)
+or closes it, and focus goes back to the cover either way. A line
 above the grid says what a stack is and how actions behave. At phone width
-the cover shows a compact **×N** button instead, and the line is shortened
+the cover shows a compact **×N** button instead ("Close" while the stack is
+open, and the other shots "2/3", "3/3"), and the line is shortened
 with a **more** link ("Layout" above).
 
 - **A closed stack acts on its cover only.** Selecting (Space, a click, a
@@ -618,6 +651,16 @@ cover, badge and X, `x` and `X` with focus back on the cover, a near-copy
 never stacked, a closed stack's range selection and Keep reaching only the
 cover, closing a stack unselecting its hidden shots, and the large view's
 arrows over a closed and an open stack.
+`tests/browser/test_browser_gallery_grid.py`: Suggested junk by tap on a
+390 px touch phone (Keep and Trash pressed and unpressed, the mark in words,
+a tap on the photo opening it, no checkboxes or selection bar, the view's
+note, Apply keeping what was marked) and by mouse and keys; every grid control
+on the phone taking a 44 x 44 px tap (probed with `elementFromPoint` 21 px
+from its centre); the loading state (the list request held by the test), an
+empty library naming the commands, no results for a search, a filter and an
+empty quick view, Find similar without the index, an item gone since the list
+loaded, a load error with Try again; and the rail's words, with no Keyboard
+shortcuts item on a touch screen.
 `tests/browser/test_browser_gallery_layout.py` checks the layout at 390 px
 (phone) and 800 px (just above the phone breakpoint): no sideways page
 scroll, the header's title shown and its controls inside the header, a burst

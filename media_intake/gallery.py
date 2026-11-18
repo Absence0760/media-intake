@@ -931,17 +931,18 @@ class App:
             except ValueError:
                 si = -1
             if not self.live(si):
-                return dict(total=0, items=[], note="that item is gone", ranked=True)
+                return dict(total=0, items=[], note="That photo is no longer in the library.", ranked=True)
             self.text_checked.wait(timeout=30)
             key = ("similar", si)
             if key not in self.search_cache:
                 if not os.path.exists(intake.VENV_PY) or not os.path.exists(os.path.join(STATE, "embeddings.npz")):
                     return dict(total=0, items=[], ranked=True,
-                                note="Similar needs the semantic index (semantic.py index); not available here")
+                                note="Find similar needs the search index: run media-intake index in a terminal, "
+                                     "then try again.")
                 try:
                     self.search_cache[key] = self.semantic(["similar", self.items[si]["path"], "-n", "300", "--format", "machine"])
                 except (RuntimeError, OSError, subprocess.TimeoutExpired) as e:
-                    return dict(total=0, items=[], ranked=True, note=f"Similar failed: {e}")
+                    return dict(total=0, items=[], ranked=True, note=f"Find similar didn't work: {e}")
             ids, ranked = [i for _, i in self.search_cache[key]], True
             note = f"Similar to {os.path.basename(self.items[si]['path'])}"
         elif q:
@@ -1858,6 +1859,16 @@ kbd{font:600 11px/1 ui-monospace,monospace;border:1px solid currentColor;border-
 .warn{color:var(--erase)}
 .empty{color:var(--mut);font-size:13px;padding:4px 8px}
 .empty.big{font-size:15px;padding:48px 0;text-align:center}
+/* the grid's own states (listState): loading, an empty library, no results, a load error; each says what to do */
+.state{max-width:560px;margin:40px auto;padding:0 8px;text-align:center;color:var(--mut);font-size:15px}
+.state h2{margin:0 0 8px;font-size:17px;color:var(--fg)}
+.state p{margin:6px 0}
+.state pre{text-align:left;font-size:13px;background:var(--card);color:var(--fg);padding:10px 12px;border-radius:8px;white-space:pre-wrap;overflow-wrap:anywhere;margin:10px 0}
+.state .btn{margin-top:10px}
+.state.err h2{color:var(--erase)}
+.spin{display:inline-block;width:18px;height:18px;margin-right:8px;vertical-align:-3px;border:2px solid var(--line);border-top-color:var(--acc);border-radius:50%;animation:spin .8s linear infinite}
+@keyframes spin{to{transform:rotate(360deg)}}
+@media (prefers-reduced-motion:reduce){.spin{animation:none}}
 
 /* ---------------------------------------------------------------- sidebar */
 #sidebar{position:fixed;top:0;left:0;bottom:0;width:var(--sbw);background:var(--panel);border-right:1px solid var(--line);overflow-y:auto;overflow-x:hidden;z-index:15;display:flex;flex-direction:column;overscroll-behavior:contain}
@@ -1873,6 +1884,7 @@ kbd{font:600 11px/1 ui-monospace,monospace;border:1px solid currentColor;border-
 .ct{color:var(--mut);font-size:12px;font-variant-numeric:tabular-nums;font-weight:400}
 .nv[aria-current=page] .ct{color:var(--acc)}
 .railonly{display:none}
+.rl{display:none}
 #evlist{display:flex;flex-direction:column;gap:2px}
 .evmore{align-self:flex-start;margin:2px 10px}
 #evbar{display:flex;flex-wrap:wrap;align-items:center;gap:8px;padding:12px 24px 0}
@@ -1932,6 +1944,10 @@ output{font-variant-numeric:tabular-nums;color:var(--fg);font-weight:600}
 .collapsed .sb-search,.collapsed #filters,.collapsed #evsec{display:none}
 .collapsed #views{padding:4px 8px}
 .collapsed .nv{justify-content:center;padding:0;height:40px}
+/* the rail names each icon in a word under it (the full name stays the button's title and accessible name) */
+.collapsed .nv:has(.rl){flex-direction:column;gap:1px;height:50px}
+.collapsed .rl{display:block;max-width:100%;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;font-size:10px;line-height:1.1;color:var(--mut)}
+.collapsed .nv[aria-current=page] .rl{color:var(--acc)}
 .collapsed .railonly{display:flex}
 .badge-n{position:absolute;top:3px;right:3px;min-width:16px;height:16px;border-radius:8px;background:var(--acc);color:var(--on-acc);font-size:10px;line-height:16px;text-align:center;padding:0 4px}
 .overlay{--ml:60px;--sbw:min(304px,86vw)}
@@ -1967,12 +1983,24 @@ h2.month{position:sticky;top:var(--hh);z-index:2;margin:0;padding:16px 0 8px;fon
 .tile.sel::after{content:"";position:absolute;inset:0;background:var(--acc-soft);pointer-events:none}
 .tile.cur{box-shadow:inset 0 0 0 3px var(--fg)}
 .tile.dk{outline-color:var(--keep)}.tile.dt{outline-color:var(--trash)}
-.tile .ck{position:absolute;top:6px;left:6px;z-index:2;width:22px;height:22px;margin:0;accent-color:var(--acc);cursor:pointer}
-@media (hover:hover){.tile .ck{opacity:0;transition:opacity .1s}.tile:hover .ck,.tile:focus-within .ck,.selecting .tile .ck{opacity:1}}
+/* the tile's checkbox: a 22 px box in a larger hit area (.ckw: 34 px, 44 px on a touch screen or a phone) */
+.tile .ckw{position:absolute;top:0;left:0;z-index:2;width:34px;height:34px;display:flex;align-items:center;justify-content:center;cursor:pointer}
+.tile .ck{width:22px;height:22px;margin:0;accent-color:var(--acc);cursor:pointer}
+@media (hover:hover){.tile .ckw{opacity:0;transition:opacity .1s}.tile:hover .ckw,.tile:focus-within .ckw,.selecting .tile .ckw{opacity:1}}
+/* Suggested junk: Keep and Trash on every tile (aria-pressed), the mark in words too, never by colour alone */
+.tile .dec{position:absolute;left:0;right:0;bottom:0;z-index:2;display:flex;gap:6px;padding:6px;background:linear-gradient(transparent,rgba(0,0,0,.45))}
+.tile .dec .btn{flex:1;justify-content:center;height:40px}
+.tile .dec .btn[aria-pressed=true]{font-weight:700;box-shadow:inset 0 0 0 2px currentColor}
+.tile .dec .btn.keep[aria-pressed=true]{background:var(--keep);border-color:var(--keep);color:var(--on-acc)}
+.tile .dec .btn.trash[aria-pressed=true]{background:var(--trash);border-color:var(--trash);color:var(--on-acc)}
+[data-view=sug] .tile .flag{bottom:58px}
+.tile .mark{position:absolute;left:6px;top:6px;z-index:2;font-size:12px;font-weight:700;letter-spacing:.04em;border-radius:4px;padding:2px 8px;color:var(--on-acc)}
+.tile .mark.keep{background:var(--keep)}.tile .mark.trash{background:var(--trash)}
 .play{position:absolute;right:6px;top:6px;width:24px;height:24px;border-radius:50%;background:rgba(0,0,0,.55);color:#fff;font-size:10px;display:flex;align-items:center;justify-content:center;padding-left:2px}
 /* Burst stacks: the review page's look (a stacked card, a count badge, an X button) on a tile */
 .tile.stack{box-shadow:4px 4px 0 -1px var(--bg),4px 4px 0 0 var(--mut),8px 8px 0 -1px var(--bg),8px 8px 0 0 var(--mut)}
 .tile.stack.cur{box-shadow:inset 0 0 0 3px var(--fg),4px 4px 0 -1px var(--bg),4px 4px 0 0 var(--mut),8px 8px 0 -1px var(--bg),8px 8px 0 0 var(--mut)}
+.tile.inb{box-shadow:0 0 0 2px var(--acc)}  /* the shots of an open stack: one ring colour, one group */
 .tile .badge{position:absolute;right:6px;top:6px;z-index:2;background:var(--acc);color:var(--on-acc);font-size:11px;font-weight:700;border-radius:999px;padding:1px 8px;white-space:nowrap}
 .tile .x{position:absolute;right:6px;top:28px;z-index:2;font-size:11px;padding:2px 8px;border-radius:6px;border:1px solid var(--line);background:var(--panel);color:var(--fg);cursor:pointer;white-space:nowrap}
 /* on a small tile they shorten (ellipsis) rather than run over the checkbox or out of the tile */
@@ -1986,6 +2014,8 @@ h2.month{position:sticky;top:var(--hh);z-index:2;margin:0;padding:16px 0 8px;fon
  .tile .bx~.badge,.tile .bx~.x{display:none}
  .tile .badge{font-size:0;padding:2px 7px}
  .tile .badge::before{content:"×" attr(data-count);font-size:12px}
+ .tile .badge[data-pos]::before{content:attr(data-pos) "/" attr(data-count)}
+ .tile .bx.open{background:var(--panel);color:var(--fg);border:1px solid var(--acc)}
 }
 .flag{position:absolute;left:6px;bottom:6px;width:max-content;max-width:calc(100% - 12px);background:rgba(0,0,0,.62);color:#fff;font-size:11px;border-radius:4px;padding:1px 6px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
 #sentinel{height:40px}
@@ -2093,6 +2123,34 @@ dl.dt dd{margin:0;word-break:break-word}
  #actionbar kbd,#actionbar .sep{display:none}
  #seln{white-space:normal;min-width:0}
 }
+/* ---------------------------------------------------------------- touch targets: 44 px on a phone or a touch screen */
+@media (max-width:760px),(pointer:coarse){
+ .btn,#info .btn{height:44px;min-width:44px;justify-content:center}
+ .icon,#rail{width:44px;height:44px;flex:none}
+ .collapsed .sb-top{padding:6px 7px;justify-content:center}
+ .collapsed #views{padding:4px 6px}
+ .nv,.collapsed .nv{min-height:44px}
+ .fs-h,.opt,.yr .caret{min-height:44px}
+ .caret{width:44px}
+ #tsize{height:44px}
+ .chip{height:44px}.chip .x{width:44px;height:44px}
+ .tile .ckw{width:44px;height:44px}
+ .tile .bx{top:8px;right:8px}
+ .tile .bx::after{content:"";position:absolute;inset:-8px}
+ .link::after{content:"";position:absolute;inset:-11px -8px}
+ .link{position:relative;z-index:3}  /* its hit area over the month heading below */
+ #helpb{margin-top:12px}  /* room for "more"'s hit area under the header */
+ .tile .dec .btn{height:44px}
+ .arrow{width:44px}
+ /* Erase sits apart from Keep and Trash, so a slip of the thumb doesn't land on it */
+ #berase{margin-left:14px}
+}
+/* no keyboard: the shortcut list and key hints go; the burst help says "tap" */
+@media (hover:none){
+ #bkeys,.kbonly{display:none!important}
+ #helpb .hshort .kb{display:none}
+}
+@media (hover:hover){#helpb .hshort .tch{display:none}}
 </style></head><body data-view="lib">
 <svg width="0" height="0" style="position:absolute" aria-hidden="true" focusable="false">
  <symbol id="i-menu" viewBox="0 0 24 24"><path d="M4 6h16M4 12h16M4 18h16"/></symbol>
@@ -2117,17 +2175,17 @@ dl.dt dd{margin:0;word-break:break-word}
   <span class="brand">Media gallery</span>
  </div>
  <nav id="views" aria-label="Views">
-  <button type="button" class="nv" data-v="lib" title="Library"><svg class="ic"><use href="#i-lib"/></svg><span class="lbl">Library</span><span class="ct" id="c-lib"></span></button>
-  <button type="button" class="nv" data-v="sug" title="Suggested junk"><svg class="ic"><use href="#i-trash"/></svg><span class="lbl">Suggested junk</span><span class="ct" id="c-sug"></span></button>
+  <button type="button" class="nv" data-v="lib" title="Library"><svg class="ic"><use href="#i-lib"/></svg><span class="lbl">Library</span><span class="rl" aria-hidden="true">Library</span><span class="ct" id="c-lib"></span></button>
+  <button type="button" class="nv" data-v="sug" title="Suggested junk"><svg class="ic"><use href="#i-trash"/></svg><span class="lbl">Suggested junk</span><span class="rl" aria-hidden="true">Junk</span><span class="ct" id="c-sug"></span></button>
   <div id="ptabs"></div>
   <div class="nvhead">Quick views</div>
-  <button type="button" class="nv" data-v="recent" title="Recently added"><svg class="ic"><use href="#i-clock"/></svg><span class="lbl">Recently added</span><span class="ct" id="c-recent"></span></button>
-  <button type="button" class="nv" data-v="child" title="Possible child"><svg class="ic"><use href="#i-child"/></svg><span class="lbl">Possible child</span><span class="ct" id="c-child"></span></button>
-  <button type="button" class="nv" data-v="untagged" title="Untagged"><svg class="ic"><use href="#i-tag"/></svg><span class="lbl">Untagged</span><span class="ct" id="c-untagged"></span></button>
+  <button type="button" class="nv" data-v="recent" title="Recently added"><svg class="ic"><use href="#i-clock"/></svg><span class="lbl">Recently added</span><span class="rl" aria-hidden="true">Recent</span><span class="ct" id="c-recent"></span></button>
+  <button type="button" class="nv" data-v="child" title="Possible child"><svg class="ic"><use href="#i-child"/></svg><span class="lbl">Possible child</span><span class="rl" aria-hidden="true">Child</span><span class="ct" id="c-child"></span></button>
+  <button type="button" class="nv" data-v="untagged" title="Untagged"><svg class="ic"><use href="#i-tag"/></svg><span class="lbl">Untagged</span><span class="rl" aria-hidden="true">No tags</span><span class="ct" id="c-untagged"></span></button>
   <div id="evsec"><div class="nvhead">Events</div><div id="evlist"></div></div>
   <button type="button" class="nv" id="bkeys" title="Keyboard shortcuts (?)" aria-keyshortcuts="?" aria-haspopup="dialog"><svg class="ic"><use href="#i-keys"/></svg><span class="lbl">Keyboard shortcuts</span><span class="ct"><kbd>?</kbd></span></button>
-  <button type="button" class="nv railonly" id="rsearch" title="Search (/)"><svg class="ic"><use href="#i-search"/></svg><span class="vh">Search</span></button>
-  <button type="button" class="nv railonly icon" id="rfilter" title="Filters" style="width:100%"><svg class="ic"><use href="#i-filter"/></svg><span class="vh">Filters</span><span class="badge-n" id="rbadge" hidden></span></button>
+  <button type="button" class="nv railonly" id="rsearch" title="Search (/)"><svg class="ic"><use href="#i-search"/></svg><span class="vh">Search</span><span class="rl" aria-hidden="true">Search</span></button>
+  <button type="button" class="nv railonly icon" id="rfilter" title="Filters" style="width:100%"><svg class="ic"><use href="#i-filter"/></svg><span class="vh">Filters</span><span class="rl" aria-hidden="true">Filters</span><span class="badge-n" id="rbadge" hidden></span></button>
  </nav>
  <div class="sb-search">
   <div class="field"><svg class="ic"><use href="#i-search"/></svg><input id="q" type="search" placeholder="Search photos and videos" aria-label="Search" autocomplete="off"></div>
@@ -2150,15 +2208,15 @@ dl.dt dd{margin:0;word-break:break-word}
  <div id="chips" aria-label="Active filters" hidden></div>
  <div id="evbar" role="toolbar" aria-label="Event" hidden><span class="evt" id="evname"></span><button type="button" class="btn" id="evren">Rename…</button><button type="button" class="btn" id="evmerge">Merge into…</button></div>
  <p id="note" class="note" hidden></p>
- <p id="helpb" class="note" hidden><span class="hshort">Bursts are stacked; X opens one.</span><span class="hfull">A stack is a burst (shots from one camera a moment apart): X opens or closes it. On a closed stack, selecting and every action (Keep, Trash, Erase, tags, Rotate, Set event, Share-safe copy) act on the cover shot only; open the stack to act on the others.</span><button type="button" class="link" id="hmore" aria-controls="helpb" aria-expanded="false">more</button></p>
- <main id="main"><div id="list"></div><div id="sentinel"></div><div id="plugin" hidden></div></main>
+ <p id="helpb" class="note" hidden><span class="hshort"><span class="kb">Bursts are stacked; X opens one.</span><span class="tch">Burst stacks: tap ×N to open one.</span></span><span class="hfull">A stack is a burst (shots from one camera a moment apart): its Show all button (×N on a small tile) or the X key opens or closes it; the shots of an open stack share a coloured ring. On a closed stack, selecting and every action (Keep, Trash, Erase, tags, Rotate, Set event, Share-safe copy) act on the cover shot only; open the stack to act on the others.</span><button type="button" class="link" id="hmore" aria-controls="helpb" aria-expanded="false">more</button></p>
+ <main id="main" aria-busy="true"><div id="list"><div class="state" role="status"><p><span class="spin" aria-hidden="true"></span>Loading your library…</p></div></div><div id="sentinel"></div><div id="plugin" hidden></div></main>
  <div id="actionbar" hidden>
   <div class="grp" id="selgrp" role="toolbar" aria-label="Selection actions" hidden><span id="seln"></span>
    <button type="button" class="btn keep" id="bkeep">Keep <kbd>K</kbd></button><button type="button" class="btn trash" id="btrash">Trash <kbd>T</kbd></button><button type="button" class="btn erase" id="berase">Erase <kbd>E</kbd></button>
    <span class="sep"></span>
    <button type="button" class="btn" id="btag">+ tag</button><button type="button" class="btn" id="buntag">− tag</button><button type="button" class="btn" id="bevent">Set event…</button><button type="button" class="btn" id="brot">Rotate ⟳</button><button type="button" class="btn" id="bshare">Share-safe copy</button><button type="button" class="btn" id="bnone">Clear selection <kbd>Esc</kbd></button>
   </div>
-  <div class="grp" id="suggrp" role="group" aria-label="Decisions" hidden><span id="sugn"></span><span class="note" style="margin:0">K / T on the outlined tile, arrows move, Enter opens</span><button type="button" class="btn primary" id="sugapply">Apply…</button></div>
+  <div class="grp" id="suggrp" role="group" aria-label="Decisions" hidden><span id="sugn"></span><span class="note" style="margin:0">Mark Keep or Trash on each, then Apply<span class="kbonly"> (keys: K, T, arrows)</span></span><button type="button" class="btn primary" id="sugapply">Apply…</button></div>
  </div>
 </div>
 <div id="toast" role="status" aria-live="polite"></div>
@@ -2198,8 +2256,8 @@ dl.dt dd{margin:0;word-break:break-word}
  </dl>
  <h4>Suggested junk</h4><dl>
   <dt><kbd>←</kbd> <kbd>↑</kbd> / <kbd>→</kbd> <kbd>↓</kbd> <kbd>J</kbd></dt><dd>Move the outline</dd>
-  <dt><kbd>K</kbd> <kbd>T</kbd></dt><dd>Mark the outlined tile keep / trash (nothing changes until Apply)</dd>
-  <dt><kbd>Enter</kbd></dt><dd>Open the outlined tile</dd>
+  <dt><kbd>K</kbd> <kbd>T</kbd></dt><dd>Mark the outlined tile Keep / Trash, like its Keep and Trash buttons (nothing changes until Apply)</dd>
+  <dt><kbd>Enter</kbd></dt><dd>Open the outlined tile (a click on the photo does too)</dd>
  </dl>
  <h4>Dialogs</h4><dl>
   <dt><kbd>Esc</kbd></dt><dd>Cancel and close (a running Trash, Erase or Share-safe copy keeps going)</dd>
@@ -2237,7 +2295,7 @@ const activeKeys=()=>ACTIVE.filter(k=>F[k]);
 const plugView=()=>view.startsWith("p-");
 async function api(path,body){const o={credentials:"same-origin"};if(body!==undefined){o.method="POST";o.headers={"Content-Type":"application/json","X-CSRF":CSRF};o.body=JSON.stringify(body)}
  const r=await fetch(path,o);let j={};try{j=await r.json()}catch(e){}
- if(!r.ok){const er=new Error(j.error||("HTTP "+r.status));er.busy=!!j.busy;throw er}return j}
+ if(!r.ok){const er=new Error(j.error||("HTTP "+r.status));er.busy=!!j.busy;er.status=r.status;throw er}return j}
 function filt(){const f={};for(const k of ACTIVE.concat(["aimin","days"]))if(F[k])f[k]=F[k];
  if(f.ai!=="trash")delete f.aimin;if(f.used!=="unused")delete f.days;const q=$("#q").value.trim();if(q)f.q=q;if(simId!==null){f.similar=simId;delete f.q}
  if(view==="sug")f.view="suggest";return f}
@@ -2347,15 +2405,44 @@ function syncUI(){$$("button[data-k]").forEach(b=>b.setAttribute("aria-pressed",
  $("#vtitle").textContent=na==="ev"?F.event:TITLES[na]||""}
 $("#clear").onclick=clearAll;
 // ---------------------------------------------------------------- listing
-function setNote(n){n=n||"";if(/^Semantic search unavailable/.test(n))n="Semantic search is off: showing tag and file-name matches.";$("#note").textContent=n;$("#note").hidden=!n}
-function reset(){gen++;items=[];total=0;done=false;cur=-1;last=null;openB={};$("#list").replaceChildren();sel.clear();dec={};paintSel();more()}
-async function more(){if(loading||done||plugView())return;loading=true;const g=gen;let stale=false;
+// the view's note above the grid; Suggested junk always says what the view is and that nothing changes until Apply
+const SUGNOTE="Photos the tools suggest as junk, most likely first. Mark each Keep or Trash, then Apply. Nothing changes until you Apply.";
+function plainNote(n){n=n||"";return /^Semantic search unavailable/.test(n)?"Semantic search is off: showing tag and file-name matches.":n}
+function setNote(n){n=plainNote(n);$("#note").textContent=n;$("#note").hidden=!n}
+/* The grid's own states, in #list: loading, an empty library, no results, a load error. Each says what is going on
+   and what to do next (role=status; a load error role=alert). o: {lines, cmd (a terminal command), after, act} */
+function listState(kind,head,o){o=o||{};const d=el("div","state"+(kind==="error"?" err":""));d.dataset.state=kind;d.setAttribute("role",kind==="error"?"alert":"status");
+ if(head)d.append(el("h2",null,head));(o.lines||[]).forEach(l=>d.append(el("p",null,l)));if(o.cmd)d.append(el("pre",null,o.cmd));(o.after||[]).forEach(l=>d.append(el("p",null,l)));
+ if(o.act){const b=el("button","btn",o.act.label);b.type="button";b.onclick=o.act.fn;d.append(b)}$("#list").replaceChildren(d);return d}
+function loadingState(){const d=listState("loading"),p=el("p"),sp=el("span","spin");sp.setAttribute("aria-hidden","true");p.append(sp,"Loading your library…");d.append(p);
+ $("#main").setAttribute("aria-busy","true")}
+const QUICK=["recent","child","untagged","ev"];
+function emptyState(note){const q=$("#q").value.trim(),nf=activeKeys().length,na=navActive();
+ if(simId!==null)return listState("none",note||"No photos look like this one.",{act:{label:"Back to the "+TITLES.lib.toLowerCase(),fn:()=>{simId=null;syncUI();reset()}}});
+ if(facets&&facets.total===0)return listState("none","Your library is empty.",{lines:["To add photos and videos, run these in a terminal, with the folder they are in:"],
+  cmd:"media-intake stage <folder> --kind folder --batch first\nmedia-intake plan first\nmedia-intake scan first\nmedia-intake apply first",
+  after:["Then reload this page. Getting started (docs/getting-started.md) explains each step."]});
+ if(view==="lib"&&QUICK.includes(na))return listState("none","Nothing in "+(na==="ev"?F.event:TITLES[na])+" right now.",{act:{label:"Show the whole "+TITLES.lib.toLowerCase(),fn:clearAll}});
+ if(q||nf)return listState("none","Nothing matches "+(q&&nf?"this search and these filters":q?"this search":"these filters")+".",
+  {act:{label:q&&nf?"Clear search and filters":q?"Clear search":"Clear filters",fn:clearAll}});
+ if(view==="sug")return listState("none","No "+WORDS.view.sug.toLowerCase()+" right now.",{lines:["When the tools flag a photo as possible junk, it shows up here for you to mark Keep or Trash."]});
+ return listState("none","Nothing to show here.")}
+function retryLoad(){loadingState();loadFacets().then(()=>reset()).catch(loadError)}
+function loadError(e){$("#main").removeAttribute("aria-busy");const why=e.message||"no answer from the gallery server";
+ if(items.length){errorToast("Couldn't load more of the library: "+why+".",{label:"Try again",fn:()=>{failed=false;more()}});return}
+ $("#count").textContent="";
+ listState("error","Couldn't load the library",{lines:[why+".","Try again. If it keeps failing, restart media-intake gallery in the terminal and open the new link it prints."],act:{label:"Try again",fn:retryLoad}})}
+let failed=false;  // the last page failed to load: no retry by itself (scrolling would loop), Try again does
+function reset(){gen++;items=[];total=0;done=false;failed=false;cur=-1;last=null;openB={};loadingState();sel.clear();dec={};paintSel();more()}
+async function more(){if(loading||done||failed||plugView())return;loading=true;const g=gen;let stale=false;
  try{const j=await api("/api/list?"+qs(Object.assign(filt(),{offset:items.length,limit:240})));
-  if(g!==gen)stale=true;else{total=j.total;ranked=j.ranked;setNote(j.note);const start=items.length;items=items.concat(j.items);done=items.length>=total;render(start);
+  if(g!==gen)stale=true;else{total=j.total;ranked=j.ranked;const start=items.length;items=items.concat(j.items);done=items.length>=total;
+   if(!start)$("#list").replaceChildren();render(start);$("#main").removeAttribute("aria-busy");
+   const n=plainNote(j.note);setNote(view==="sug"?SUGNOTE+(n?" "+n:""):n);
    $("#count").textContent=fmt(total)+(total===1?" item":" items")+(view==="sug"?" suggested":"");
-   if(!items.length)$("#list").replaceChildren(el("p","empty big",view==="sug"?"No trash suggestions here.":"Nothing matches."));
+   if(!items.length){if(simId!==null)setNote("");emptyState(n)}
    document.body.dataset.ready="1"}}
- catch(e){if(g===gen)setNote("Error: "+e.message)}finally{loading=false}
+ catch(e){if(g===gen){failed=true;loadError(e)}}finally{loading=false}
  if(stale){more();return}
  if(!done&&$("#sentinel").getBoundingClientRect().top<innerHeight+600)more()}
 function groupKey(it){return ranked?(view==="sug"?"Most likely junk first":"Best matches first"):it.mo}
@@ -2369,34 +2456,50 @@ function hiddenAt(n){const it=items[n];return !!it&&it.b!=null&&!it.bc&&!openB[i
 function stepVis(n,d){n+=d;while(n>=0&&n<items.length&&hiddenAt(n))n+=d;return n}
 function stackLabel(it){return openB[it.b]?"Close stack (X)":`Show all ${it.bn} (X)`}
 function bxLabel(it){return `Burst: ${it.bn} shots, ${openB[it.b]?"close":"open"} stack`}
+// the compact cover button: "×N" on a closed stack, "Close" on an open one
+function paintBx(bx,it){const o=!!openB[it.b];bx.textContent=o?"Close":"×"+it.bn;bx.classList.toggle("open",o);bx.setAttribute("aria-label",bxLabel(it))}
 function toggleStack(n){const it=items[n];if(!it||it.b==null)return;const b=it.b;allSel=null;openB[b]=!openB[b];let c=-1,dropped=0;
- items.forEach((m,i)=>{if(m.b!==b)return;if(m.bc)c=i;const t=$("#t"+m.id);if(t)t.hidden=hiddenAt(i);if(hiddenAt(i)&&sel.has(m.id)){sel.delete(m.id);dropped++}});
+ items.forEach((m,i)=>{if(m.b!==b)return;if(m.bc)c=i;const t=$("#t"+m.id);if(t){t.hidden=hiddenAt(i);t.classList.toggle("inb",!!openB[b])}if(hiddenAt(i)&&sel.has(m.id)){sel.delete(m.id);dropped++}});
  if(last!==null&&hiddenAt(last))last=null;if(cur>=0&&hiddenAt(cur))cur=c;
- const ct=c>=0?$("#t"+items[c].id):null;if(ct){ct.classList.toggle("stack",!openB[b]);const x=ct.querySelector(".x");if(x)x.textContent=stackLabel(items[c]);const bx=ct.querySelector(".bx");if(bx)bx.setAttribute("aria-label",bxLabel(items[c]));ct.focus({preventScroll:false})}
+ const ct=c>=0?$("#t"+items[c].id):null;if(ct){ct.classList.toggle("stack",!openB[b]);const x=ct.querySelector(".x");if(x)x.textContent=stackLabel(items[c]);const bx=ct.querySelector(".bx");if(bx)paintBx(bx,items[c]);ct.focus({preventScroll:false})}
  if(dropped)toast(`Stack closed: ${dropped} hidden shot${dropped>1?"s":""} unselected (actions act on the cover only).`);paintSel()}
-function tile(it,n){const t=el("div","tile");t.id="t"+it.id;t.dataset.n=n;t.dataset.item=it.n;t.tabIndex=0;t.title=it.n;
+function tile(it,n){const t=el("div","tile"),sug=view==="sug";t.id="t"+it.id;t.dataset.n=n;t.dataset.item=it.n;t.tabIndex=0;t.title=it.n;
  const im=el("img");im.loading="lazy";im.decoding="async";im.alt=it.n;im.src="/t/"+it.id;im.onerror=()=>{im.replaceWith(el("div","ph",(it.m==="video"?"video: ":"")+it.n))};t.append(im);
- const cb=el("input","ck");cb.type="checkbox";cb.tabIndex=-1;cb.setAttribute("aria-label","select "+it.n);cb.onclick=ev=>{ev.stopPropagation();pick(n,ev.shiftKey)};t.append(cb);
+ // the checkbox in a larger hit area (a tap beside the 22 px box still ticks it); none in Suggested junk, whose Keep / Trash marks are the only choice there
+ if(!sug){const w=el("span","ckw"),cb=el("input","ck");cb.type="checkbox";cb.tabIndex=-1;cb.setAttribute("aria-label","select "+it.n);
+  cb.onclick=ev=>{ev.stopPropagation();pick(n,ev.shiftKey)};w.onclick=ev=>{ev.stopPropagation();if(ev.target===w)pick(n,ev.shiftKey)};w.append(cb);t.append(w)}
  if(it.m==="video")t.append(el("span","play","▶"));
- if(it.b!=null){t.dataset.burst=it.b;const bd=el("span","badge",`Burst: ${it.bn} shots`);bd.dataset.count=it.bn;t.append(bd);
-  if(it.bc){const bx=el("button","bx","×"+it.bn);bx.type="button";bx.tabIndex=-1;bx.setAttribute("aria-label",bxLabel(it));bx.onclick=ev=>{ev.stopPropagation();toggleStack(n)};bd.before(bx);
+ if(it.b!=null){t.dataset.burst=it.b;if(openB[it.b])t.classList.add("inb");
+  let pos=1;for(let i=n-1;i>=0&&items[i].b===it.b;i--)pos++;
+  const bd=el("span","badge",it.bc?`Burst: ${it.bn} shots`:`Burst: shot ${pos} of ${it.bn}`);bd.dataset.count=it.bn;if(!it.bc)bd.dataset.pos=pos;t.append(bd);
+  if(it.bc){const bx=el("button","bx");bx.type="button";bx.tabIndex=-1;paintBx(bx,it);bx.onclick=ev=>{ev.stopPropagation();toggleStack(n)};bd.before(bx);
    const x=el("button","x",stackLabel(it));x.type="button";x.tabIndex=-1;x.onclick=ev=>{ev.stopPropagation();toggleStack(n)};t.append(x);if(!openB[it.b])t.classList.add("stack")}
   else t.hidden=hiddenAt(n)}
  const fl=flagsOf(it);if(fl)t.append(el("span","flag",fl));
- t.onclick=ev=>{if(ev.shiftKey||ev.ctrlKey||ev.metaKey){pick(n,ev.shiftKey);return}if(view==="sug"){cur=n;paintSel();return}openViewer(n)};
+ // Suggested junk: Keep and Trash on the tile (a tap marks it, a second tap unmarks; nothing changes until Apply)
+ if(sug){const d=el("div","dec");d.setAttribute("role","group");d.setAttribute("aria-label","Mark "+it.n);
+  [["keep","Keep"],["trash","Trash"]].forEach(([k,l])=>{const b=el("button","btn "+k,l);b.type="button";b.dataset.dec=k;b.setAttribute("aria-pressed","false");
+   b.onclick=ev=>{ev.stopPropagation();mark(n,k)};d.append(b)});t.append(d)}
+ // a click or tap opens the large view (Shift / Ctrl / Cmd+click selects, not in Suggested junk)
+ t.onclick=ev=>{if(!sug&&(ev.shiftKey||ev.ctrlKey||ev.metaKey)){pick(n,ev.shiftKey);return}openViewer(n)};
+ t.onfocus=()=>{if(view==="sug"&&cur!==n){cur=n;paintSel()}};
  // Enter opens, Space selects (on the focused tile, never while the large view is open: Space plays / pauses there)
- t.onkeydown=ev=>{if(vi>=0||ev.target!==t)return;if(ev.key==="Enter"&&view!=="sug"){ev.preventDefault();ev.stopPropagation();openViewer(n)}else if(ev.key===" "){ev.preventDefault();ev.stopPropagation();pick(n,ev.shiftKey)}
+ t.onkeydown=ev=>{if(vi>=0||ev.target!==t)return;if(ev.key==="Enter"){ev.preventDefault();ev.stopPropagation();openViewer(n)}else if(ev.key===" "&&!sug){ev.preventDefault();ev.stopPropagation();pick(n,ev.shiftKey)}
   else if((ev.key==="x"||ev.key==="X")&&it.b!=null&&!ev.ctrlKey&&!ev.metaKey&&!ev.altKey){ev.preventDefault();ev.stopPropagation();toggleStack(n)}};return t}
+function mark(n,k){const id=items[n].id;if(dec[id]===k)delete dec[id];else dec[id]=k;cur=n;paintSel()}
 function flagsOf(it){const fl=[];if(it.c!=null)fl.push(WORDS.score+" "+it.c.toFixed(1));fl.push(...it.f.map(f=>WORDS.flag[f]||f));return fl.join(" · ")}
 // after an edit: the reply's summaries replace those items and their tiles' flags (kept, ...);
 // the tile, its focus and the selection stay
 function patchTiles(fresh){(fresh||[]).forEach(s=>{const n=items.findIndex(i=>i.id===s.id);if(n<0)return;const o=items[n];items[n]=o.b!=null?Object.assign(s,{b:o.b,bn:o.bn,bc:o.bc,mo:o.mo}):s;const t=$("#t"+s.id);if(!t)return;
   const old=t.querySelector(".flag"),fl=flagsOf(s);if(old)old.remove();if(fl)t.append(el("span","flag",fl))})}
-function pick(n,range){allSel=null;if(range&&last!==null){const [a,b]=[Math.min(last,n),Math.max(last,n)];for(let i=a;i<=b;i++)if(!hiddenAt(i))sel.add(items[i].id)}
+function pick(n,range){if(view==="sug")return;allSel=null;if(range&&last!==null){const [a,b]=[Math.min(last,n),Math.max(last,n)];for(let i=a;i<=b;i++)if(!hiddenAt(i))sel.add(items[i].id)}
  else{const id=items[n].id;sel.has(id)?sel.delete(id):sel.add(id)}last=n;paintSel()}
-function paintSel(){$$(".tile").forEach(t=>{const id=+t.id.slice(1),n=+t.dataset.n;t.classList.toggle("sel",sel.has(id));t.querySelector("input").checked=sel.has(id);
-  t.classList.toggle("cur",n===cur);t.classList.toggle("dk",dec[id]==="keep");t.classList.toggle("dt",dec[id]==="trash")});
- const selOn=sel.size>0&&!plugView(),sugOn=view==="sug";$("#selgrp").hidden=!selOn;$("#suggrp").hidden=!sugOn;$("#actionbar").hidden=!(selOn||sugOn);
+function paintSel(){$$(".tile").forEach(t=>{const id=+t.id.slice(1),n=+t.dataset.n,d=dec[id];t.classList.toggle("sel",sel.has(id));const cb=t.querySelector("input.ck");if(cb)cb.checked=sel.has(id);
+  t.classList.toggle("cur",n===cur);t.classList.toggle("dk",d==="keep");t.classList.toggle("dt",d==="trash");
+  // a mark in words too (top left), not by the outline's colour alone
+  t.querySelectorAll("[data-dec]").forEach(b=>b.setAttribute("aria-pressed",String(b.dataset.dec===d)));
+  let m=t.querySelector(".mark");if(d){if(!m){m=el("span");t.append(m)}m.className="mark "+d;m.textContent=d==="keep"?"Keep":"Trash"}else if(m)m.remove()});
+ const selOn=sel.size>0&&!plugView()&&view!=="sug",sugOn=view==="sug";$("#selgrp").hidden=!selOn;$("#suggrp").hidden=!sugOn;$("#actionbar").hidden=!(selOn||sugOn);
  document.body.classList.toggle("selecting",sel.size>0);
  $("#seln").textContent=allSel&&allSel.n===sel.size?allSel.text:fmt(sel.size)+" selected";$("#ball").hidden=!canSelectAll();
  const nk=Object.values(dec).filter(d=>d==="keep").length,nt=Object.values(dec).filter(d=>d==="trash").length;
@@ -2577,7 +2680,9 @@ async function openViewer(n,opt){opt=opt||{};if(n<0||n>=items.length)return;if(v
  if(items[n].m==="video"){const v=el("video");v.controls=true;v.preload="auto";v.playsInline=true;v.autoplay=true;v.poster="/t/"+items[n].id;v.dataset.id=items[n].id;
   v.src="/m/"+items[n].id;M.replaceChildren(v);fitMedia();startVideo(v);if(tKeep)v.currentTime=tKeep}
  else M.replaceChildren();
- let d;try{d=await pend}catch(e){toast("gone");return}if(vi!==n)return;
+ let d;try{d=await pend}catch(e){if(vi!==n)return;closeViewer();
+  if(e.status===404){toast("That file is no longer in the library. The list will refresh.");loadFacets().catch(()=>{});reset()}else errorToast("Couldn't open it: "+e.message);return}
+ if(vi!==n)return;
  const v=curVideo();
  if(d.video&&d.src&&v){v.dataset.rot=d.rot;fitMedia();
   const bad=()=>{if(curVideo()===v)cantPlay(d,"This browser can't play this video (HEVC, most likely).")};
@@ -2645,19 +2750,19 @@ document.addEventListener("keydown",ev=>{const tg=ev.target,modal=isOn("#modal")
   else if(k==="k"||k==="K")doKeep([id]);else if(k==="t"||k==="T")askTrash([id]);else if(k==="e"||k==="E")askErase([id]);
   else if(k==="r")rot([id],"cw");else if(k==="R")rot([id],"ccw");else return;ev.preventDefault();return}
  if(k==="/"){ev.preventDefault();expandSidebar();$("#q").focus();return}
- if(view==="sug"){if(k==="ArrowRight"||k==="ArrowDown"||k==="j"){cur=Math.min(items.length-1,cur+1)}else if(k==="ArrowLeft"||k==="ArrowUp"){cur=Math.max(0,cur-1)}
+ if(view==="sug"){if((k==="Enter"||k===" ")&&tg.tagName==="BUTTON")return;if(k==="ArrowRight"||k==="ArrowDown"||k==="j"){cur=Math.min(items.length-1,cur+1)}else if(k==="ArrowLeft"||k==="ArrowUp"){cur=Math.max(0,cur-1)}
   else if((k==="k"||k==="K"||k==="t"||k==="T")&&cur>=0){dec[items[cur].id]=k.toLowerCase()==="k"?"keep":"trash";cur=Math.min(items.length-1,cur+1)}
   else if(k==="Enter"&&cur>=0){openViewer(cur)}else return;ev.preventDefault();paintSel();const t=$("#t"+(items[cur]||{}).id);if(t)t.scrollIntoView({block:"nearest"});if(cur>=items.length-10)more();return}
  if(k==="Escape"&&drawer){drawer=false;layout();return}
  if(!sel.size)return;if(k==="k"||k==="K")doKeep(selIds());else if(k==="t"||k==="T")askTrash(selIds());else if(k==="e"||k==="E")askErase(selIds());else if(k==="Escape"){sel.clear();paintSel()}else return;ev.preventDefault()});
 // ---------------------------------------------------------------- views (plugin tabs go in the sidebar, after the built-in ones)
-VIEWS.forEach(v=>{const b=el("button","nv");b.type="button";b.dataset.v="p-"+v.id;b.title=v.title;b.insertAdjacentHTML("beforeend",'<svg class="ic"><use href="#i-plug"/></svg>');b.append(el("span","lbl",v.title));$("#ptabs").append(b)});
+VIEWS.forEach(v=>{const b=el("button","nv");b.type="button";b.dataset.v="p-"+v.id;b.title=v.title;b.insertAdjacentHTML("beforeend",'<svg class="ic"><use href="#i-plug"/></svg>');const rl=el("span","rl",v.title);rl.setAttribute("aria-hidden","true");b.append(el("span","lbl",v.title),rl);$("#ptabs").append(b)});
 function setView(v){view=v;simId=null;document.body.dataset.view=v;const plug=plugView();
  $("#list").hidden=plug;$("#sentinel").hidden=plug;$("#plugin").hidden=!plug;$("#filters").hidden=plug;$(".sb-search").hidden=plug;$("#tsizew").hidden=plug;
  if(plug){sel.clear();dec={};paintSel();$("#count").textContent="";setNote("");$("#helpb").hidden=true;syncUI();const id=v.slice(2),P=$("#plugin"),pv=window.mediaIntakeViews[id];P.replaceChildren();
   if(!pv||typeof pv.render!=="function"){P.append(el("p","warn","Plugin view "+id+" has no render()"));return}
   pv.render(P,{el,api:(p,b)=>api("/plugin/"+id+"/"+p,b),media:p=>"/plugin/"+id+"/media/"+p})}
- else{if(v==="sug")setNote("K = keep, T = trash on the outlined tile; nothing changes until Apply.");syncUI();reset()}}
+ else{syncUI();reset()}}
 $$(".nv[data-v]").forEach(b=>b.onclick=()=>{const v=b.dataset.v;
  if(v==="lib"){if(["recent","child","untagged","ev"].includes(navActive()))F={aimin:F.aimin};setView("lib")}
  else if(v==="sug"||v.startsWith("p-"))setView(v);
@@ -2672,7 +2777,7 @@ let ts=+LS.get("tile",mqPhone.matches?"92":"168");if(!(ts>=80&&ts<=320))ts=168;$
 $("#tsize").oninput=()=>{document.documentElement.style.setProperty("--tile",$("#tsize").value+"px");LS.set("tile",$("#tsize").value)};
 // ---------------------------------------------------------------- start
 layout();buildSections();syncUI();
-loadFacets().then(()=>reset()).then(attachJob).catch(e=>setNote("Error: "+e.message));
+loadFacets().then(()=>reset()).then(attachJob).catch(loadError);
 </script></body></html>
 """
 

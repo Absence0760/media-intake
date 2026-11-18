@@ -94,8 +94,8 @@ class GalleryBurstsBrowserTest(B.BrowserCase):
         page.keyboard.press("x")
         self.assert_open(page)
         B.expect(self.tile(page, COVER)).to_be_focused()
-        for n in REST:  # each shot of an open stack carries the badge, only the cover the X
-            B.expect(self.tile(page, n).locator(".badge")).to_have_text("Burst: 3 shots")
+        for k, n in enumerate(REST, 2):  # each shot of an open stack carries the badge with its place, only the cover the X
+            B.expect(self.tile(page, n).locator(".badge")).to_have_text(f"Burst: shot {k} of 3")
             B.expect(self.tile(page, n).locator(".x")).to_have_count(0)
         # X (upper case) on another shot closes it, and focus goes back to the cover
         self.tile(page, REST[1]).focus()
