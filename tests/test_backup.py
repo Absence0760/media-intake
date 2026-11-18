@@ -216,8 +216,29 @@ class Backup(unittest.TestCase):
         lines = []
         with mock.patch.object(backup.shutil, "disk_usage", return_value=mock.Mock(free=10)):
             self.assertEqual(backup.backup(self.mount, out=lines.append), 1)
-        self.assertTrue(any(ln.startswith("backup: refused:") and "MB free" in ln for ln in lines), lines)
+        self.assertTrue(any(ln.startswith("backup: refused:") and "MB free" in ln and "--skip PART" in ln for ln in lines), lines)
         self.assertEqual(os.listdir(self.mount), [])  # no marker, no backup folder
+
+    def test_skip_leaves_a_root_out_and_its_drive_copy_alone(self):
+        # An earlier run's copy of videos/ (and its manifest entry) must survive a run that skips videos.
+        self.assertEqual(self.run_cli(self.mount).returncode, 0)
+        old = os.path.join(self.dest, "videos/2024/2024-05/VID_0001.mp4")
+        put(self.vids, "2024/2024-05/VID_0002.mp4", b"a new video")  # not copied while videos is skipped
+        r = self.run_cli(self.mount, "--skip", "videos", "--verify")
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+        self.assertIn("backup: videos: skipped this run (--skip)", r.stdout)
+        self.assertIn("5 already on the drive, 0 to copy", r.stdout)
+        self.assertNotIn("no longer in the library", r.stdout, "a skipped root's copies are not counted as extra")
+        self.assertIn("verify: 5 copies match", r.stdout)
+        self.assertTrue(os.path.isfile(old))
+        self.assertFalse(os.path.exists(os.path.join(self.dest, "videos/2024/2024-05/VID_0002.mp4")))
+        self.assertIn("videos/2024/2024-05/VID_0001.mp4", self.manifest(), "a skipped root keeps its entries")
+        r = self.run_cli(self.mount, "--skip", "projects/demo", "--skip", "library")
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+        self.assertEqual(tree(os.path.join(self.dest, "videos")), {"2024/2024-05/VID_0001.mp4", "2024/2024-05/VID_0002.mp4"})
+        r = self.run_cli(self.mount, "--skip", "photos")
+        self.assertEqual(r.returncode, 2, r.stdout + r.stderr)
+        self.assertIn("--skip photos: not a library root (one of: library, videos, projects/demo)", r.stdout)
 
     def test_originals_unchanged(self):
         def snap():
