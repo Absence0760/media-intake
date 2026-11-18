@@ -49,7 +49,8 @@ if cmd == "release":
             print(f"released {p} -> library")  # names the file, as real output can: scrubbed at the end
     json.dump(q, open(man, "w"))
 elif cmd == "erase":
-    print(f"erased {len(json.load(open(man)))} files; library copies 0; phone 0; drive 0")
+    n = len(json.load(open(man)))
+    print(f"erased {n} files: {n} quarantined, 0 in your library, 0 in your home folder")
     shutil.rmtree(quar)
 elif cmd == "verify-gone":
     print("verify-gone: no copies remain")

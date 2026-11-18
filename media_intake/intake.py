@@ -757,10 +757,16 @@ def cmd_quarantine(a):
         # batch is refused there (folder_refusal), erase's device checks are the phone layout's (not a source
         # drive's), and a quarantine-only batch has no source: plain erase for those.
         erase += ["--phone", man["root"]]
+    elif man.get("kind") == "drive" and man.get("root"):
+        # The originals are on the drive the batch was staged from: erase --drive deletes identical copies anywhere
+        # under that folder (checked to be a mounted drive before anything is asked or deleted).
+        erase += ["--drive", man["root"]]
     print(f"Open it yourself:\n  xdg-open {shlex.quote(os.path.abspath(quar))}\nFor any false positive, run\n"
           f"  media-intake release {shlex.quote(a.batch)} <file>...\n"
           f"then erase the rest with\n  {' '.join(shlex.quote(x) for x in erase)}"
-          + ("\n  (--phone also deletes them from the phone or camera)" if "--phone" in erase else ""))
+          + ("\n  (--phone also deletes them from the phone or camera)" if "--phone" in erase else "")
+          + ("\n  (--drive also deletes them from the drive they came from, then overwrites its free space)"
+             if "--drive" in erase else ""))
 
 
 def cmd_release(a):
@@ -1413,6 +1419,40 @@ def phone_thumbnails(targets):
     return len(files.intersection(done)), len(targets) - len(done)
 
 
+DRIVE_HINT = "Mount the drive and pass its folder, e.g. /run/media/$USER/<label>."
+
+
+def not_a_drive(mount):
+    """Why mount is not a backup drive's folder (on the laptop's own disk, or findmnt can't tell), or None."""
+    try:
+        target = subprocess.run(["findmnt", "-n", "-o", "TARGET", "-T", mount], capture_output=True,
+                                text=True).stdout.strip()
+    except OSError:  # no findmnt: can't tell, so not a drive
+        target = ""
+    if not target or LAPTOP_MOUNTS.match(target):
+        return f"is on the laptop's own disk ({target or 'unknown'}), not a backup drive"
+    return None
+
+
+def need_device(a):
+    """Exit with one plain line unless --phone and --drive name what they should. Called before any prompt or
+    delete, so a typo'd path is refused up front instead of found out after the erase: --phone an existing
+    folder; --drive an existing folder and, when its free space will be wiped, a mounted drive (wipe_free's
+    own check)."""
+    phone = getattr(a, "phone", None)
+    if phone and not os.path.isdir(phone):
+        sys.exit(f"--phone {phone}: no such folder. Plug the phone in, unlock it, set USB to File transfer, "
+                 "and pass the folder it shows (e.g. .../Internal storage).")
+    drive = getattr(a, "drive", None)
+    if not drive:
+        return
+    if not os.path.isdir(drive):
+        sys.exit(f"--drive {drive}: no such folder, so not a mounted drive. {DRIVE_HINT}")
+    if (not getattr(a, "no_wipe_free", True) and os.environ.get("MEDIA_INTAKE_WIPE_ANY_DEST") != "1"
+            and (why := not_a_drive(os.path.abspath(drive)))):
+        sys.exit(f"--drive {drive}: {why}. {DRIVE_HINT}")
+
+
 def wipe_free(mount):
     """Overwrite a backup drive's free space with zeros (exFAT deletes only free clusters).
 
@@ -1421,11 +1461,10 @@ def wipe_free(mount):
     import errno, time
     mount = os.path.abspath(mount)
     if not os.path.isdir(mount):
-        sys.exit(f"no such directory: {mount}")
-    target = subprocess.run(["findmnt", "-n", "-o", "TARGET", "-T", mount], capture_output=True, text=True).stdout.strip()
+        sys.exit(f"no such folder: {mount}. {DRIVE_HINT}")
     override = os.environ.get("MEDIA_INTAKE_WIPE_ANY_DEST") == "1"  # tests only
-    if not override and (not target or LAPTOP_MOUNTS.match(target)):
-        sys.exit(f"{mount} is on the laptop's own disk ({target or 'unknown'}), not a backup drive: not wiping")
+    if not override and (why := not_a_drive(mount)):
+        sys.exit(f"{mount} {why}: not wiping. {DRIVE_HINT}")
     cap = int(os.environ.get("MEDIA_INTAKE_WIPE_MAX_MB", "0")) << 20
     chunk = bytes(64 << 20)
     t0, total, files, i = time.monotonic(), 0, [], 0
@@ -1527,7 +1566,11 @@ def verify_gone(sig, drive=None, left=None):
 
 
 def cmd_verify_gone(a):
+    need_device(a)
     sig, nosize = erase_log_sigs(a.batch)
+    if a.batch and not sig and not nosize and not erase_log_coverage(a.batch):
+        need_batch(a.batch, staged=False)  # an erased batch keeps no folder (forget-*): the log says it's real
+        sys.exit(f"nothing erased yet for {a.batch}: erase it first (media-intake erase {a.batch})")
     if nosize:
         print(f"{nosize} older erase-log entries have no size and can't be swept")
     if not sig:
@@ -1555,6 +1598,9 @@ CANT_REACH = (
     "(it can hold the date, place and description), and a Telegram export's result.json (it holds the "
     "chat's messages)",
 )
+# CANT_REACH in a few words, for erase's own short report (verify-gone BATCH prints the full list).
+CANT_REACH_SHORT = ("cloud and sync, chat apps and email, apps' own storage on a phone, other devices and drives, "
+                    "snapshots and SSD spare blocks, re-encoded videos, cloud-export notes on a source drive")
 COVERAGE_RX = re.compile(r"^(\S+ \S+) (\S+) coverage (\{.*\})$")
 
 
@@ -1591,7 +1637,8 @@ def erase_log_coverage(batch):
 
 
 def print_coverage(cov, full=False):
-    """A coverage record: erase prints the short form (places with a count), verify-gone the full one."""
+    """A coverage record: erase prints the short form (what was left, not checked, and CANT_REACH in a few words:
+    its own summary line has the counts), verify-gone the full one."""
     reached, left = cov.get("reached", {}), cov.get("left", {})
     if full:
         print("  reached:" + "".join(f"\n    {k:62} {v}" for k, v in reached.items()))
@@ -1600,11 +1647,10 @@ def print_coverage(cov, full=False):
             print("  not checked:" + "".join(f"\n    {x}" for x in cov["not_checked"]))
         print("  can't reach (nothing on this machine can):" + "".join(f"\n    {x}" for x in cov.get("cant_reach", [])))
         return
-    print("  reached: " + (", ".join(f"{k} {v}" for k, v in reached.items() if v) or "nothing"))
     print("  left: " + (", ".join(f"{k} {v}" for k, v in left.items()) or "nothing"))
     if cov.get("not_checked"):
         print("  not checked: " + "; ".join(cov["not_checked"]))
-    print("  can't reach: " + "; ".join(cov.get("cant_reach", [])))
+    print("  can't reach: " + CANT_REACH_SHORT)
 
 
 def ask(prompt):
@@ -1618,7 +1664,25 @@ def ask(prompt):
         return ""
 
 
+def erase_warning(first, a, lib=0, phone=0):
+    """What an erase deletes, said before its ERASE prompt (erase, forget): first is the line naming what was
+    asked for; then every place it also deletes from, with counts where known, and what it can't reach."""
+    also = [f"  - {plural(lib, 'identical copy', 'identical copies')} in your library"] if lib else []
+    also.append("  - every identical copy anywhere in your home folder (your photo folders and any folder you "
+                "imported from included)")
+    if a.phone:
+        also.append(f"  - {plural(phone, 'matching file')} on the phone or camera at {a.phone}"
+                    + ("" if getattr(a, "keep_phone_thumbnails", False) else ", and its thumbnail folders"))
+    if a.drive:
+        also.append(f"  - every identical copy on the drive at {a.drive}"
+                    + ("" if a.no_wipe_free else ", then its free space is overwritten"))
+    print(f"{first}\nThis also deletes:\n" + "\n".join(also) + "\n"
+          "It can't reach copies in the cloud, in chat apps or email, on other devices, or on a drive not named "
+          "with --drive.")
+
+
 def cmd_erase(a):
+    need_batch(a.batch, staged=False)
     quar = os.path.join(STATE, "quarantine", a.batch)
     q = load(os.path.join(quar, "quarantine.json"), {})
     man = load(os.path.join(bdir(a.batch), "manifest.json"), {"files": {}})
@@ -1627,9 +1691,16 @@ def cmd_erase(a):
         sys.exit(refusal + " (run erase without --phone)")
     if not q:
         sys.exit("quarantine is empty")
+    need_device(a)
     if not a.yes:
-        if ask(f"Erase {len(q)} quarantined files for good{' and from the phone' if a.phone else ''}"
-               f"{' and the drive' if a.drive else ''}? Type ERASE: ") != "ERASE":
+        index = load(os.path.join(STATE, "index.json"), {}) or {}
+        erased = {v["sha"] for v in q.values()} - {v["sha"] for v in index.values() if v.get("released")}
+        rels = [r for r in q if q[r]["sha"] in erased] + [p["rel"] for p in plan if p["sha"] in erased
+                                                          and p["rel"] not in q]
+        erase_warning(f"Erase {plural(len(q), 'quarantined file')} for good.", a,
+                      lib=sum(v["sha"] in erased for v in index.values()),
+                      phone=sum(bool(man["files"].get(r, {}).get("src")) for r in rels))
+        if ask("It cannot be undone. Type ERASE to go ahead: ") != "ERASE":
             sys.exit("nothing erased")
     # A checksum that is also in the library belongs to a released (or library)
     # copy: erase the quarantined file here, but never that content elsewhere.
@@ -1739,10 +1810,13 @@ def cmd_erase(a):
         thumbs += sum(len(fs) for _, _, fs in os.walk(tdir))
         shutil.rmtree(tdir)
     subprocess.run(["sync"])
-    print(f"erased {len(q)} files; library copies {lib}; phone {phone}; drive {drive}; "
-          f"thumbnail cache cleared ({thumbs + gthumbs} files)")
-    print(f"home sweep: {sum(found.values())} more copies deleted"
-          + "".join(f"\n  {k:28} {v}" for k, v in sorted(found.items())))
+    home, forgot = sum(found.values()), bool(getattr(a, "forget_paths", None))
+    print(f"erased {plural(len(q) + lib + home + phone + drive, 'file')}: {len(q)} "
+          + (f"from your library, {lib} more in your library" if forgot else f"quarantined, {lib} in your library")
+          + f", {home} in your home folder"
+          + (f", {phone} on the phone or camera" if root else "") + (f", {drive} on the drive" if a.drive else ""))
+    if found:
+        print("  in your home folder: " + ", ".join(f"{k} {v}" for k, v in sorted(found.items())))
     print("  (not swept: toolchains, package/build caches, container storage, .git, node_modules)")
     if in_git:
         print(f"{len(in_git)} exact copies inside git repos, not deleted: " + ", ".join(in_git))
@@ -1753,7 +1827,6 @@ def cmd_erase(a):
     if do_pthumbs:
         print(f"phone thumbnail folders removed ({pthumbs} files; Android rebuilds them)"
               + (f"; {prefused} the phone refused to delete (held open by Android's media service)" if prefused else ""))
-    print(f"recent files: {recent} entries removed; " + (", ".join(f"{k} {v}" for k, v in sorted(traces.items())) or "no app traces"))
     if near:
         rb = near_level(near_batch)[1]
         rb = rb[len("xcheck-"):] if rb.startswith("xcheck-") else rb
@@ -1765,7 +1838,6 @@ def cmd_erase(a):
         why = (f"near-duplicate chains stop at depth {NEAR_DEPTH}" if near_level(near_batch)[0] > NEAR_DEPTH
                else "a file already quarantined holds the same place")
         print(f"{near_left} near-duplicates of erased photos left where they are, not moved ({why})")
-    print("videos: only exact copies are found; re-encoded or trimmed copies are not matched")
     wiped = None
     if a.drive and not a.no_wipe_free:
         try:
@@ -1829,7 +1901,7 @@ def cmd_erase(a):
         not_checked.append("backup drive: no --drive")
     cov = erase_coverage(reached, left, not_checked)
     write_coverage(a.batch, cov)
-    print(f"coverage report (saved in the erase log; media-intake verify-gone {a.batch} shows it):")
+    print(f"coverage report saved (the full report: media-intake verify-gone {a.batch}):")
     print_coverage(cov)
     if not ok:
         sys.exit(1)
@@ -1844,9 +1916,11 @@ def cmd_forget(a):
     bad = [f for f in files if os.path.islink(f) or not os.path.isfile(f)]
     if bad:
         sys.exit(f"not forgetting anything: {len(bad)} of {len(files)} are missing or not regular files")
+    a.phone = None  # forget never deletes from a phone: erase_warning and need_device read it
+    need_device(a)
     if not a.yes:
-        if ask(f"Erase {len(files)} files everywhere for good{' and from the drive' if a.drive else ''}? "
-               "Type ERASE: ") != "ERASE":
+        erase_warning(f"Erase {plural(len(files), 'library file')} for good.", a)
+        if ask("It cannot be undone. Type ERASE to go ahead: ") != "ERASE":
             sys.exit("nothing erased")
         a.yes = True
     batch = datetime.datetime.now().strftime("forget-%Y%m%d-%H%M%S")
@@ -1882,11 +1956,17 @@ def cmd_offload(a):
     the staged copy and sits inside the allowlist; never deletes a folder. Refused
     for a laptop folder batch (kind folder): you delete that folder yourself.
     """
+    need_batch(a.batch)
     b = bdir(a.batch)
     man = load(os.path.join(b, "manifest.json"))
     if refusal := folder_refusal(man):
         sys.exit(refusal)
-    plan = {p["rel"]: p for p in load(os.path.join(b, "plan.json"))}
+    need_device(a)
+    rows = load(os.path.join(b, "plan.json"))
+    if rows is None:
+        sys.exit(f"nothing filed yet for {a.batch}, so nothing to delete: run media-intake plan {a.batch}, "
+                 f"then media-intake apply {a.batch}")
+    plan = {p["rel"]: p for p in rows}
     root = os.path.abspath(a.phone)
     check = sources.check
     if man.get("kind") == "drive":  # same drive (filesystem UUID) and never the backup drive
@@ -1906,12 +1986,18 @@ def cmd_offload(a):
         if ok and m["src"].startswith(root + os.sep):
             items.append((m["src"], m.get("size")))
     todo = device_targets(root, items, [m["src"] for m in man["files"].values()], check, skip_denied=False)
-    print(f"{len(todo)} of {len(man['files'])} phone files have a verified copy here")
+    dev = "drive" if man.get("kind") == "drive" else "phone"
+    if not todo:
+        print(f"nothing to delete from the {dev}: no file of {a.batch} left there has a checked copy in your library.")
+        return
+    print(f"{len(todo)} of {plural(len(man['files']), dev + ' file')} have a checked copy in your library")
     if not a.yes:
-        if ask("Delete them from the phone? Type DELETE: ") != "DELETE":
+        if ask(f"Delete {plural(len(todo), 'file')} from the {dev} for good? Back the library up to a drive "
+               "first (media-intake backup). Type DELETE to go ahead: ") != "DELETE":
             sys.exit("nothing deleted")
     done = device_remove(todo)
-    print(f"deleted {len(done)} files from the phone; quarantined and review files stay until erase/purge")
+    print(f"deleted {plural(len(done), 'file')} from the {dev}; quarantined and review files stay until "
+          "erase or purge-review")
 
 
 def rerun_with_yes(argv):

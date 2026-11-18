@@ -222,10 +222,11 @@ class EraseCoverage(unittest.TestCase):
         for name in ("IMG-77", "clip.mp4", "Downloads", self.home):
             self.assertNotIn(name, log, "the erase log keeps no names")
         # the short summary
-        self.assertIn(f"coverage report (saved in the erase log; media-intake verify-gone {batch} shows it):", out)
-        self.assertIn("  reached: quarantined files (state folder, quarantine/) 1, ", out)
+        self.assertIn(f"coverage report saved (the full report: media-intake verify-gone {batch}):", out)
         self.assertIn("  left: nothing", out)
-        self.assertIn("  can't reach: cloud services and sync", out)
+        self.assertIn("  can't reach: cloud and sync, chat apps and email, ", out)
+        self.assertLess(len(next(ln for ln in out.splitlines() if ln.startswith("  can't reach: "))), 200,
+                        "a few words here; verify-gone BATCH has the full list")
         for todo in ("Gallery", "Google Photos", "OneDrive", "WhatsApp"):
             self.assertNotIn(todo, out, "no product names, no manual steps")
 

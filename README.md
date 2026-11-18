@@ -127,7 +127,7 @@ media-intake scan phone-1          # local detectors; flags only
 media-intake apply phone-1         # file, dedupe, quarantine
 media-intake review phone-1        # local page: release false positives, erase the rest
 media-intake tag phone-1           # XMP tags: project, source, event, place, labels
-media-intake offload phone-1 --phone <device root> --yes   # after a backup: free the phone
+media-intake offload phone-1 --phone <device root>   # after a backup: free the phone (asks you to type DELETE)
 ```
 
 | Command | What |

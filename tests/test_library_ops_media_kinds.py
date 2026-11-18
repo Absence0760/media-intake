@@ -308,7 +308,7 @@ class Forget(Base):
         sums = [sha(x) for x in (p, v, m)]
         self.index(p, v, m, keeper)
         out = self.out("forget", p, v, m, "--yes")
-        self.assertIn("erased 3 files", out)
+        self.assertIn(": 3 from your library, 0 more in your library, 1 in your home folder", out)
         for x in (p, v, m, p + ".xmp", v + ".xmp", m + ".xmp", stray, *gt, *fdt):
             self.assertFalse(os.path.lexists(x), x)
         self.assertEqual(list(jload(os.path.join(self.state, "index.json"))), [keeper])
@@ -342,6 +342,11 @@ class Forget(Base):
             r = self.intake("forget", p, v, code=1, stdin=answer)
             self.assertIn("nothing erased", r.stderr, repr(answer))
             self.assertNotIn("Traceback", r.stdout + r.stderr, repr(answer))
+            # The prompt says what goes: the two files, and every identical copy in HOME.
+            self.assertIn("Erase 2 library files for good.\nThis also deletes:\n  - every identical copy anywhere "
+                          "in your home folder (your photo folders and any folder you imported from included)\n",
+                          r.stdout, repr(answer))
+            self.assertIn("It cannot be undone. Type ERASE to go ahead: ", r.stdout, repr(answer))
         for x in (p, v, *sides):
             self.assertTrue(os.path.isfile(x), x)
         self.assertEqual(sorted(jload(os.path.join(self.state, "index.json"))), sorted([p, v]))
@@ -352,13 +357,13 @@ class Forget(Base):
         v = clip(os.path.join(self.vids, "2026/2026-11/v.mov"), seed=5)
         self.xmp(v, "Label|food")
         out = self.out("forget", v, stdin="ERASE\n")
-        self.assertIn("erased 1 files", out)
+        self.assertIn("erased 1 file: 1 from your library, 0 more in your library, 0 in your home folder", out)
         self.assertFalse(os.path.exists(v) or os.path.exists(v + ".xmp"))
 
     def test_forget_the_same_video_twice_on_the_line(self):
         v = clip(os.path.join(self.vids, "2026/2026-11/v.mp4"), seed=6)
         out = self.out("forget", v, os.path.join(self.vids, "2026/2026-11/../2026-11/v.mp4"), "--yes")
-        self.assertIn("erased 1 files", out)
+        self.assertIn("erased 1 file: 1 from your library, 0 more in your library, 0 in your home folder", out)
         self.assertFalse(os.path.exists(v))
 
 

@@ -244,6 +244,29 @@ class IntakeOutput(unittest.TestCase):
         self.assertEqual(self.intake("quarantine", "near-b-one"), ["nothing in quarantine for near-b-one."])
         self.assertIn("'near-b-one' has no staged files, only quarantined ones", self.refused("plan", "near-b-one"))
 
+    def test_wrong_batch_name_on_each_delete_command(self):
+        """erase, offload and verify-gone (forget takes files, not a batch) refuse a wrong batch name with the same
+        sentence, before any prompt: erase used to say "quarantine is empty", offload raised a TypeError and
+        verify-gone said "no erase-log entries"."""
+        cmds = (["erase"], ["erase", "--phone", self.phone], ["offload", "--phone", self.phone], ["verify-gone"])
+        for c in cmds:
+            err = self.refused(c[0], "nosuch", *c[1:])
+            self.assertEqual(err.strip(), "no batch named 'nosuch': nothing is staged yet. "
+                                          "Start with: media-intake stage SRC --kind phone|gopro|drive|folder", c)
+        self.intake("stage", self.phone, "--kind", "phone", "--batch", "b-one")
+        for c in cmds:
+            err = self.refused(c[0], "nosuch", *c[1:])
+            self.assertEqual(err.strip(), "no batch named 'nosuch'. Batches, newest first: b-one. "
+                                          "List them all with: ls ~/.local/share/media-intake/batches", c)
+        # A real batch: verify-gone says nothing was erased yet; offload before plan says what to run.
+        self.assertEqual(self.refused("verify-gone", "b-one").strip(),
+                         "nothing erased yet for b-one: erase it first (media-intake erase b-one)")
+        self.assertEqual(self.refused("offload", "b-one", "--phone", self.phone).strip(),
+                         "nothing filed yet for b-one, so nothing to delete: run media-intake plan b-one, "
+                         "then media-intake apply b-one")
+        self.assertEqual(len(os.listdir(os.path.join(self.phone, "DCIM/Camera"))), self.N, "the phone is untouched")
+        self.assertEqual(self.batches(), ["b-one"], "a wrong name creates nothing")
+
     def test_steps_out_of_order_name_the_step(self):
         batch = "2026-11-15-order"
         self.intake("stage", self.phone, "--kind", "phone", "--batch", batch)

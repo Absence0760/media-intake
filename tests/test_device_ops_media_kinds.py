@@ -11,7 +11,7 @@ ffmpeg test patterns (ffmpeg is in the CI image); scan.json is written by hand, 
 MEDIA_INTAKE_TEST_MOUNT/UUID stand in for findmnt; MEDIA_INTAKE_WIPE_ANY_DEST lets wipe-free write
 to a temp folder, capped by MEDIA_INTAKE_WIPE_MAX_MB.
 """
-import hashlib, importlib.util, io, json, os, shutil, subprocess, sys, tempfile, unittest
+import hashlib, importlib.util, io, json, os, re, shlex, shutil, subprocess, sys, tempfile, unittest
 from contextlib import redirect_stdout
 from datetime import datetime
 from zoneinfo import ZoneInfo
@@ -276,7 +276,8 @@ class Phone(Base):
         drive_pic = copy(self.P(self.SENS_PHOTO), os.path.join(self.backup, "photos", "b.jpg"))
         kept_on_drive = copy(self.P(self.VID_UTC), os.path.join(self.backup, "videos", "2026", "kept.mp4"))
         out = self.intake("erase", b, "--phone", self.phone, "--drive", self.backup, "--yes")
-        self.assertIn("erased 2 files; library copies 0; phone 3; drive 2", out)
+        self.assertIn("2 quarantined, 0 in your library, 2 in your home folder, 3 on the phone or camera, 2 on the drive\n",
+                      out)
         for gone in (self.SENS_VID, self.SENS_VID_COPY, self.SENS_PHOTO, "DCIM/.thumbnails", "Pictures/.thumbnails"):
             self.assertFalse(os.path.exists(self.P(gone)), gone)
         for keep in (self.PHOTO, self.VID_UTC, self.WA_VIDEO, self.SCREENREC):
@@ -284,9 +285,8 @@ class Phone(Base):
         for gone in (home_copy, trash_copy, drive_vid, drive_pic, quar):
             self.assertFalse(os.path.exists(gone), gone)
         self.assertTrue(os.path.isfile(kept_on_drive))
-        self.assertIn("home sweep: 2 more copies deleted", out)
         self.assertIn("drive free space wiped: 2 MB", out)
-        self.assertIn("videos: only exact copies are found", out)
+        self.assertRegex(out, r"\n  can't reach: .*re-encoded videos", "only exact video copies are found")
         self.assertNotIn("near-duplicates (resized", out, "an erased video moves no image")
         with open(os.path.join(self.state, "erase-log.txt")) as f:
             self.assertIn(f"sha256:{vsha} size:{vsize}\n", f.read())
@@ -308,13 +308,80 @@ class Phone(Base):
         dcopy = copy(self.P(self.SENS_VID), os.path.join(self.backup, "v.mp4"))
         out = self.intake("erase", b, "--phone", self.phone, "--keep-phone-thumbnails",
                           "--drive", self.backup, "--no-wipe-free", "--yes")
-        self.assertIn("erased 1 files; library copies 0; phone 2; drive 1", out)
+        self.assertIn("1 quarantined, 0 in your library, 0 in your home folder, 2 on the phone or camera, 1 on the drive",
+                      out)
         self.assertFalse(os.path.exists(dcopy))
         self.assertTrue(os.path.isfile(self.P("DCIM/.thumbnails/1.jpg")))
         self.assertTrue(os.path.isfile(self.P("Pictures/.thumbnails/2.jpg")))
         self.assertNotIn("phone thumbnail folders removed", out)
         self.assertNotIn("free space", out)
         self.assertEqual(os.listdir(self.backup), [], "nothing written to the drive without the wipe")
+
+    def test_erase_prompt_names_every_place_it_deletes_from(self):
+        """Before ERASE is typed, erase says what goes, with counts: the quarantined files, every identical copy
+        in HOME (the folder imported from included), the phone's matching files, the drive's copies and its
+        free space, and what it can't reach. A "no" deletes nothing."""
+        b = "phone-erase-prompt"
+        self.quarantined(b, [self.SENS_VID, self.SENS_VID_COPY, self.SENS_PHOTO])
+        before, quar = files_under(self.phone), os.path.join(self.state, "quarantine", b)
+        out = self.intake("erase", b, "--phone", self.phone, "--drive", self.backup, code=1, answer="no\n")
+        for want in ("Erase 2 quarantined files for good.\nThis also deletes:\n",
+                     "\n  - every identical copy anywhere in your home folder (your photo folders and any folder "
+                     "you imported from included)\n",
+                     f"\n  - 3 matching files on the phone or camera at {self.phone}, and its thumbnail folders\n",
+                     f"\n  - every identical copy on the drive at {self.backup}, then its free space is overwritten\n",
+                     "\nIt can't reach copies in the cloud, in chat apps or email, on other devices, or on a drive "
+                     "not named with --drive.\n",
+                     "It cannot be undone. Type ERASE to go ahead: ", "nothing erased"):
+            self.assertIn(want, out)
+        self.assertNotIn("in your library", out, "no library copy: no line for it")
+        self.assertEqual(files_under(self.phone), before)
+        self.assertEqual(sorted(jload(os.path.join(quar, "quarantine.json"))), [self.SENS_VID, self.SENS_PHOTO])
+        # Without --phone and --drive (and with --keep-phone-thumbnails, --no-wipe-free) those lines go or shrink.
+        out = self.intake("erase", b, code=1, answer="no\n")
+        self.assertNotIn("phone or camera at", out)
+        self.assertNotIn("on the drive at", out)
+        out = self.intake("erase", b, "--phone", self.phone, "--keep-phone-thumbnails", "--drive", self.backup,
+                          "--no-wipe-free", code=1, answer="no\n")
+        self.assertIn(f"  - 3 matching files on the phone or camera at {self.phone}\n", out)
+        self.assertIn(f"  - every identical copy on the drive at {self.backup}\n", out)
+
+    def test_a_missing_drive_or_phone_is_refused_before_any_prompt(self):
+        """A typo'd --drive or --phone is refused in one line before erase, forget, offload or verify-gone asks
+        or deletes anything; before, erase asked, erased, and only then said the drive was missing."""
+        b = "phone-erase-typo"
+        self.quarantined(b, [self.SENS_VID])
+        before, quar = files_under(self.phone), os.path.join(self.state, "quarantine", b)
+        filed = self.V("2026", "2026-10", "clip_utc.mp4")
+        nodrive, nophone = os.path.join(self.tmp, "no-such-drive"), os.path.join(self.tmp, "no-such-phone")
+        drive_line = (f"--drive {nodrive}: no such folder, so not a mounted drive. "
+                      "Mount the drive and pass its folder, e.g. /run/media/$USER/<label>.")
+        phone_line = f"--phone {nophone}: no such folder. Plug the phone in"
+        for args, line in ((["erase", b, "--drive", nodrive], drive_line),
+                           (["erase", b, "--drive", nodrive, "--no-wipe-free"], drive_line),
+                           (["erase", b, "--phone", self.phone, "--drive", nodrive], drive_line),
+                           (["erase", b, "--phone", nophone], phone_line),
+                           (["forget", filed, "--drive", nodrive], drive_line),
+                           (["offload", b, "--phone", nophone], phone_line),
+                           (["verify-gone", b, "--drive", nodrive], drive_line)):
+            out = self.intake(*args, code=1, answer="ERASE\n" if args[0] != "offload" else "DELETE\n")
+            self.assertIn(line, out, args)
+            self.assertNotIn("Type ", out, f"{args}: refused before the prompt")
+            self.assertNotIn("Traceback", out, args)
+        self.assertEqual(files_under(self.phone), before, "nothing deleted from the phone")
+        self.assertEqual(sorted(jload(os.path.join(quar, "quarantine.json"))), [self.SENS_VID], "nothing erased")
+        self.assertTrue(os.path.isfile(filed), "nothing forgotten")
+        self.assertFalse(os.path.exists(os.path.join(self.state, "erase-log.txt")))
+        # A folder on the laptop's own disk, when its free space is to be wiped: refused up front too (wipe-free's
+        # own check), where it used to be found out after the erase ("drive free space NOT wiped").
+        mnt = subprocess.run(["findmnt", "-n", "-o", "TARGET", "-T", self.backup], capture_output=True,
+                             text=True).stdout.strip() if shutil.which("findmnt") else ""
+        if re.match(r"^(/|/home|/var|/tmp|/boot.*)$", mnt):
+            env = {k: v for k, v in self.env.items() if k != "MEDIA_INTAKE_WIPE_ANY_DEST"}
+            out = self.intake("erase", b, "--drive", self.backup, code=1, answer="ERASE\n", env=env)
+            self.assertIn(f"--drive {self.backup}: is on the laptop's own disk ({mnt}), not a backup drive. ", out)
+            self.assertNotIn("Type ERASE", out)
+            self.assertTrue(os.path.isdir(quar), "nothing erased")
 
     def test_erase_a_video_already_in_the_library_from_an_earlier_batch(self):
         """The same video filed by an earlier batch is the same content: erase removes the library copy too."""
@@ -333,8 +400,10 @@ class Phone(Base):
         qf = copy(filed, os.path.join(q, "DCIM/Camera/clip_utc.mp4"))
         jsave(os.path.join(q, "quarantine.json"), {"DCIM/Camera/clip_utc.mp4": dict(
             reasons=["nudity"], sha=sha(qf), size=os.path.getsize(qf), dst=None)})
+        out = self.intake("erase", "phone-second", code=1, answer="no\n")
+        self.assertIn("\n  - 1 identical copy in your library\n", out, "the prompt counts the library copy")
         out = self.intake("erase", "phone-second", "--phone", other, "--yes", "--keep-phone-thumbnails")
-        self.assertIn("erased 1 files; library copies 1; phone 1", out)
+        self.assertIn("1 quarantined, 1 in your library, 1 in your home folder, 1 on the phone or camera\n", out)
         self.assertFalse(os.path.exists(filed) or os.path.exists(filed + ".xmp"))
         self.assertNotIn(filed, jload(os.path.join(self.state, "index.json")))
         self.assertFalse(os.path.exists(os.path.join(other, "DCIM/Camera/clip_utc.mp4")))
@@ -343,7 +412,7 @@ class Phone(Base):
         b = "phone-offload"
         self.quarantined(b, [self.SENS_VID, self.SENS_VID_COPY])
         out = self.intake("offload", b, "--phone", self.phone, code=1)  # no --yes, no answer: nothing deleted
-        self.assertIn("10 of 11 phone files have a verified copy here", out)
+        self.assertIn("10 of 11 phone files have a checked copy in your library", out)
         self.assertEqual(len([r for r in self.all if os.path.exists(self.P(r))]), len(self.all), "nothing without a yes")
         out = self.intake("offload", b, "--phone", self.phone, "--yes")
         # Filed photos and videos (camera, screenshot, screen recording, WhatsApp) and the exact duplicates go;
@@ -352,6 +421,10 @@ class Phone(Base):
         left = [r for r in self.all if os.path.exists(self.P(r))]
         self.assertEqual(left, [self.SENS_VID])
         self.assertTrue(os.path.isfile(self.P("DCIM/.thumbnails/1.jpg")), "offload never touches thumbnails")
+        # Again, without --yes: nothing is left to delete, so it says so and asks nothing (exit 0).
+        out = self.intake("offload", b, "--phone", self.phone)
+        self.assertEqual(out, f"nothing to delete from the phone: no file of {b} left there has a checked copy "
+                              "in your library.\n")
 
     def test_offload_without_yes_deletes_only_on_DELETE(self):
         """Without --yes offload asks; any answer but DELETE, or none at all (stdin closed, as under cron or the
@@ -363,6 +436,8 @@ class Phone(Base):
             self.assertIn("nothing deleted", out, repr(answer))
             self.assertNotIn("Traceback", out, repr(answer))
             self.assertEqual([r for r in self.all if not os.path.exists(self.P(r))], [], repr(answer))
+        self.assertIn("Delete 10 files from the phone for good? Back the library up to a drive first "
+                      "(media-intake backup). Type DELETE to go ahead: ", out)
         out = self.intake("offload", b, "--phone", self.phone, answer="DELETE\n")
         self.assertIn("deleted 10 files from the phone", out)
         self.assertEqual([r for r in self.all if os.path.exists(self.P(r))], [self.SENS_VID])
@@ -480,7 +555,7 @@ class GoPro(Base):
         self.staged(b)
         self.apply(b, [self.G + "GX010042.MP4"])
         out = self.intake("erase", b, "--phone", self.card, "--yes")
-        self.assertIn("erased 1 files; library copies 0; phone 1;", out)
+        self.assertIn("1 quarantined, 0 in your library, 0 in your home folder, 1 on the phone or camera\n", out)
         self.assertIn("camera previews removed: 2", out)
         left = files_under(self.card)
         for n in ("GX010042.MP4", "GL010042.LRV", "GX010042.THM"):
@@ -496,7 +571,7 @@ class GoPro(Base):
         with open(self.C(self.G + "GX010042.MP4"), "ab") as f:
             f.write(b"\0")  # re-recorded or edited on the card since stage
         out = self.intake("erase", b, "--phone", self.card, "--yes")
-        self.assertIn("phone 0;", out)
+        self.assertIn(", 0 on the phone or camera\n", out)
         self.assertNotIn("camera previews removed", out)
         for n in ("GX010042.MP4", "GL010042.LRV", "GX010042.THM"):
             self.assertTrue(os.path.isfile(self.C(self.G + n)), n)
@@ -586,7 +661,7 @@ class GoPro(Base):
         self.assertIn("gio remove failed", out)
         self.assertTrue(os.path.isfile(self.C(self.G + "GX010042.MP4")), "the chapter waits for its previews")
         out = self.intake("erase", b, "--phone", self.card, "--yes")
-        self.assertIn("phone 1;", out)
+        self.assertIn(", 1 on the phone or camera\n", out)
         self.assertIn("camera previews removed: 2", out)
         left = files_under(self.card)
         for n in ("GX010042.MP4", "GL010042.LRV", "GX010042.THM"):
@@ -610,7 +685,7 @@ class GoPro(Base):
         before = files_under(self.card)
         out = self.intake("erase", b, "--phone", self.card, "--yes")
         self.assertIn("skip phone delete, denied folder: " + hidden + "GX010042.MP4", out)
-        self.assertIn("phone 0;", out)
+        self.assertIn(", 0 on the phone or camera\n", out)
         self.assertNotIn("camera previews removed", out)
         self.assertEqual(files_under(self.card), before)
 
@@ -723,16 +798,22 @@ class Drive(Base):
         self.assertEqual(p["WhatsApp/VID-20190706-WA0001.mp4"]["dst"],
                          self.L("Messaging", "WhatsApp", "2019", "VID-20190706-WA0001.mp4"))
         self.apply(b, ["2019/VID_0002.mp4"])
+        # quarantine's hint for a drive batch names --drive (the drive it came from), never --phone.
+        out = self.intake("quarantine", b)
+        self.assertIn(f"  media-intake erase {b} --drive {shlex.quote(self.root)}\n", out)
+        self.assertIn("(--drive also deletes them from the drive they came from, then overwrites its free space)", out)
+        self.assertNotIn("--phone", out)
         bcopy = copy(self.R("2019/VID_0002.mp4"), os.path.join(self.backup, "x", "VID_0002.mp4"))
         out = self.intake("erase", b, "--phone", self.root, "--drive", self.backup, "--no-wipe-free", "--yes")
-        self.assertIn("erased 1 files; library copies 0; phone 1; drive 1", out)
+        self.assertIn("1 quarantined, 0 in your library, 0 in your home folder, 1 on the phone or camera, 1 on the drive",
+                      out)
         self.assertFalse(os.path.exists(self.R("2019/VID_0002.mp4")) or os.path.exists(bcopy))
         # offload: the same drive (UUID) only, then every filed original goes, photo and video alike.
         self.env["MEDIA_INTAKE_TEST_UUID"] = "OTHER-0000"
         self.assertIn("UUID", self.intake("offload", b, "--phone", self.root, "--yes", code=1))
         self.env["MEDIA_INTAKE_TEST_UUID"] = "1234-ABCD"
         out = self.intake("offload", b, "--phone", self.root, "--yes")
-        self.assertIn("deleted 3 files from the phone", out)
+        self.assertIn("deleted 3 files from the drive", out)
         self.assertEqual(files_under(self.root), ["$RECYCLE.BIN/VID_9.mp4"])
 
 
@@ -757,8 +838,8 @@ class Folder(Base):
             self.assertIn("never deletes", self.intake(*args, code=1), args)
         self.assertEqual(sorted(os.listdir(f)), ["IMG_0001.jpg", "MVI_0001.mp4", "MVI_0002.mp4"])
         out = self.intake("erase", b, "--yes")
-        self.assertIn("home sweep: 1 more copies deleted", out)
-        self.assertRegex(out, r"\n  Camera import +1\n")
+        self.assertIn(", 1 in your home folder", out)
+        self.assertIn("\n  in your home folder: Camera import 1\n", out)
         self.assertEqual(sorted(os.listdir(f)), ["IMG_0001.jpg", "MVI_0001.mp4"])
 
     def test_telegram_export_and_signal_saves_are_messaging_copies(self):
