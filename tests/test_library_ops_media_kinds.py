@@ -183,7 +183,7 @@ class Trash(Base):
         sums = {sha(x): os.path.getsize(x) for x in (p, v, m)}
         keeper = clip(os.path.join(self.vids, "2026/2026-11/keep.mp4"), seed=9)
         self.index(p, v, m, keeper)
-        out = self.out("trash", p, v, m)
+        out = self.out("trash", p, v, m, "--yes")
         self.assertIn("trashed 3 files; sidecars 3; thumbnails 6; phone 0", out)
         for x in (p, v, m, *side, *fdt, *gt):
             self.assertFalse(os.path.lexists(x), x)
@@ -199,7 +199,14 @@ class Trash(Base):
         for k in ("jpg", "mp4", "mov"):
             self.assertTrue(os.path.isfile(f[k]), k)
             self.xmp(f[k], "Label|food")
+        # Without --yes: a dry run; every file, sidecar and phone original stays.
         out = self.out("trash", batch, f["mp4"], f["mov"], f["jpg"], "--phone", self.phone)
+        self.assertIn("would trash 3 files; phone originals 3", out)
+        self.assertIn("dry run: nothing deleted", out)
+        for k in ("jpg", "mp4", "mov"):
+            self.assertTrue(os.path.isfile(f[k]) and os.path.isfile(f[k] + ".xmp") and os.path.isfile(self.src[k]), k)
+        self.assertFalse(os.path.exists(os.path.join(self.state, "trashed.json")))
+        out = self.out("trash", batch, f["mp4"], f["mov"], f["jpg"], "--phone", self.phone, "--yes")
         self.assertIn("trashed 3 files; sidecars 3;", out)
         self.assertIn("phone 3", out)
         for k in ("jpg", "mp4", "mov"):
@@ -215,7 +222,7 @@ class Trash(Base):
         for x in (v, m):
             shutil.copyfile(x, os.path.join(backup, os.path.basename(x)))
         self.index(v, m)
-        self.out("trash", v, m)
+        self.out("trash", v, m, "--yes")
         self.out("stage", os.path.dirname(os.path.dirname(backup)), "--kind", "phone", "--batch", "back")
         self.out("plan", "back")
         plan = jload(os.path.join(self.state, "batches/back/plan.json"))
@@ -232,7 +239,7 @@ class Trash(Base):
                        "DCIM/Camera/q.jpg": dict(reasons=["x"], sha=sha(qp), size=os.path.getsize(qp), dst=None)}, f)
         rv = clip(os.path.join(self.state, "batches/b1/review/DCIM/Camera/r.mov"), seed=8)
         before = jload(os.path.join(quar, "quarantine.json"))
-        out = self.out("trash", "b1", qv, rv, code=1)
+        out = self.out("trash", "b1", qv, rv, "--yes", code=1)
         self.assertIn("refused 1 quarantined", out)
         self.assertTrue(os.path.isfile(qv), "a quarantined video is erased or kept, never trashed")
         self.assertFalse(os.path.exists(rv))
@@ -242,7 +249,7 @@ class Trash(Base):
         dl = clip(os.path.join(self.home, "Downloads/x.mp4"), seed=1)
         v = clip(os.path.join(self.vids, "2026/2026-11/v.mp4"), seed=2)
         side = self.xmp(v, "Label|food")
-        out = self.out("trash", dl, side, v, code=1)
+        out = self.out("trash", dl, side, v, "--yes", code=1)
         self.assertIn("trashed 1 files", out)
         self.assertIn("refused 2", out)
         self.assertTrue(os.path.isfile(dl))
@@ -258,7 +265,7 @@ class Trash(Base):
         self.xmp(kept, "Owner|keep")
         s = sha(v)
         self.index(v, copy, kept)
-        out = self.out("trash", v)
+        out = self.out("trash", v, "--yes")
         self.assertIn("copies left on disk marked Owner|trash 1", out)
         self.assertIn("copies you kept left alone 1", out)
         self.assertEqual(self.tags(copy), ["Owner|trash"])
@@ -529,7 +536,10 @@ class Quarantine(Base):
                  clip(os.path.join(rv, "DCIM/Camera/b.mp4"), seed=21),
                  clip(os.path.join(rv, "DCIM/Camera/c.mov"), seed=22)]
         fdt = [fd_thumb(self.home, x) for x in files]
-        out = self.out("purge-review", "b2")
+        out = self.out("purge-review", "b2")  # without --yes: a dry run
+        self.assertIn("would delete 3 reviewed near-duplicates/junk from batch b2", out)
+        self.assertTrue(all(os.path.isfile(x) for x in files + fdt))
+        out = self.out("purge-review", "b2", "--yes")
         self.assertIn("deleted 3 reviewed", out)
         self.assertFalse(os.path.exists(rv))
         for t in fdt:
@@ -541,7 +551,8 @@ class Quarantine(Base):
         outside = os.path.join(os.path.dirname(self.state), "review")
         v = clip(os.path.join(outside, "mine.mp4"), seed=23)
         for bad in ("../..", "../../../../Videos", "b2/../.."):
-            r = self.intake("purge-review", bad, code=1)
+            self.intake("purge-review", bad, code=1)  # the name check comes before the dry run too
+            r = self.intake("purge-review", bad, "--yes", code=1)
             self.assertIn("not a batch name", r.stderr)
         self.assertTrue(os.path.isfile(v))
 

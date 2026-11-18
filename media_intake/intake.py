@@ -13,8 +13,9 @@ Run as `media-intake <command>` (cli.py); `python3 -I media_intake/intake.py` wo
   media-intake forget  LIBRARY_FILE... [--drive MOUNT] [--yes]  (later finds; asks before anything moves)
   media-intake verify-gone [BATCH] [--drive MOUNT]  (read-only sweep; exit 1 if a copy remains)
   media-intake wipe-free MOUNT                   (zero a backup drive's free space)
-  media-intake purge-review BATCH                (empty the review folder)
-  media-intake trash   [BATCH] FILE... [--phone ROOT]   (plain delete of non-sensitive junk; never comes back)
+  media-intake purge-review BATCH [--yes]        (empty the review folder; a dry run without --yes)
+  media-intake trash   [BATCH] FILE... [--phone ROOT] [--yes]   (plain delete of non-sensitive junk; never
+                                                 comes back; a dry run without --yes)
   media-intake trash   --from-digikam [--yes]    (library files with digiKam's Rejected pick label)
   media-intake suggest-trash [--batch B] [--phone ROOT]  (Review|maybe-trash files -> review page)
   media-intake not-trash FILE...                 (keep a suggestion: Owner|keep + Owner|not-trash)
@@ -1786,11 +1787,21 @@ def cmd_offload(a):
     print(f"deleted {len(done)} files from the phone; quarantined and review files stay until erase/purge")
 
 
+def rerun_with_yes(argv):
+    """The dry-run footer of a delete command: nothing went, and the exact command that deletes."""
+    print("dry run: nothing deleted. To delete for good, run:")
+    print("  " + shlex.join(["media-intake", *argv, "--yes"]))
+
+
 def cmd_purge_review(a):
     if not BATCH_NAME.match(a.batch):  # a batch name, never a path: rmtree stays under batches/<batch>/review
         sys.exit(f"purge-review {a.batch!r}: not a batch name (letters, digits, '.', '_' and '-' only)")
     rv = os.path.join(bdir(a.batch), "review")
     n = sum(len(fs) for _, _, fs in os.walk(rv))
+    if not a.yes:  # a delete needs an explicit --yes; without it, say what would go
+        print(f"would delete {n} reviewed near-duplicates/junk from batch {a.batch}")
+        rerun_with_yes(["purge-review", a.batch])
+        return
     for r, _, fs in os.walk(rv):
         for f in fs:
             thumb_forget(os.path.join(r, f))
@@ -1861,10 +1872,18 @@ def mark_trashed_copies(shas, index):
     return len(todo), len(copies) - len(todo), None
 
 
-def trash_files(files, batch=None, phone=None):
+def trash_refusals(refused, quarantined):
+    return ((f"; refused {len(refused)} (not a library or review file)" if refused else "")
+            + (f"; refused {len(quarantined)} quarantined (sensitive: erase or keep them, never trash)"
+               if quarantined else ""))
+
+
+def trash_files(files, batch=None, phone=None, dry=False):
     """Delete each file, its sidecar, thumbnails, index entry and (with phone) its phone original.
     The sha256 goes in trashed.json first: the durable Owner|trash (never taken in again); library
-    copies of it left on disk get Owner|trash in their sidecar (mark_trashed_copies)."""
+    copies of it left on disk get Owner|trash in their sidecar (mark_trashed_copies).
+    dry: every check runs (folder, case and quarantine refusals included), then only the counts of
+    what would go are printed and nothing is written or deleted."""
     private_dir(STATE)
     index = load(os.path.join(STATE, "index.json"), {})
     trashed = load(TRASHED, {})
@@ -1892,6 +1911,10 @@ def trash_files(files, batch=None, phone=None):
         todo.append((p, srcs))
     known = [m["src"] for man in mans.values() for m in man["files"].values() if m.get("src")]
     phone_ok = set(device_targets(root, [x for _, srcs in todo for x in srcs], known)) if root else set()
+    if dry:
+        print(f"would trash {len(todo)} files" + (f"; phone originals {len(phone_ok)}" if root else "")
+              + trash_refusals(refused, quarantined))
+        return not refused and not quarantined
     n = sc = th = ph = 0
     gone = set()
     for p, srcs in todo:
@@ -1914,9 +1937,7 @@ def trash_files(files, batch=None, phone=None):
     print(f"trashed {n} files; sidecars {sc}; thumbnails {th}; phone {ph}"
           + (f"; copies left on disk marked Owner|trash {marked}" if marked else "")
           + (f"; copies you kept left alone {spared}" if spared else "")
-          + (f"; refused {len(refused)} (not a library or review file)" if refused else "")
-          + (f"; refused {len(quarantined)} quarantined (sensitive: erase or keep them, never trash)"
-             if quarantined else ""))
+          + trash_refusals(refused, quarantined))
     if err:
         print(err)
     return not refused and not quarantined and not err
@@ -1947,7 +1968,7 @@ def cmd_trash(a):
         for h in hits:
             print("  " + os.path.relpath(h, HOME))
         if not a.yes:
-            print("dry run: nothing deleted (--yes to trash them)")
+            rerun_with_yes(["trash", "--from-digikam", *(["--phone", a.phone] if a.phone else [])])
             return
         sys.exit(0 if trash_files(hits, phone=a.phone) else 1)
     args = list(a.args)
@@ -1957,7 +1978,13 @@ def cmd_trash(a):
         batch = args.pop(0)
     if not args:
         sys.exit("trash wants FILE... (or --from-digikam)")
-    sys.exit(0 if trash_files(args, batch, a.phone) else 1)
+    # A delete (and a phone delete above all) needs an explicit --yes; without it, a dry run that says what
+    # would go. It exits 1, as the real run would, when a file would be refused.
+    ok = trash_files(args, batch, a.phone, dry=not a.yes)
+    if not a.yes:
+        rerun_with_yes(["trash", *(["--batch", batch] if batch else []), *args,
+                        *(["--phone", a.phone] if a.phone else [])])
+    sys.exit(0 if ok else 1)
 
 
 def keep_args(tags, owner_leaves=()):
@@ -2557,10 +2584,19 @@ def build_parser(prog=None):
     s = sp.add_parser("verify-gone"); s.add_argument("batch", nargs="?", help="one batch (default: every erase-log entry)"); s.add_argument("--drive")
     s = sp.add_parser("wipe-free"); s.add_argument("mount")
     s = sp.add_parser("offload"); s.add_argument("batch"); s.add_argument("--phone", required=True); s.add_argument("--yes", action="store_true")
-    s = sp.add_parser("purge-review"); s.add_argument("batch")
-    s = sp.add_parser("trash", help="plain delete of unwanted, non-sensitive files (no sweep, no erase log)")
+    s = sp.add_parser("purge-review", help="DELETES a batch's reviewed near-duplicates/junk; a dry run without --yes",
+                      description="Delete the batch's review folder (near-duplicates and junk). Without --yes it "
+                                  "only says what would go; nothing is deleted.")
+    s.add_argument("batch"); s.add_argument("--yes", action="store_true", help="required to delete; without it, a dry run")
+    s = sp.add_parser("trash", help="DELETES unwanted, non-sensitive files (no sweep, no erase log); "
+                                    "a dry run without --yes",
+                      description="Plain delete of library or review files, their sidecars and thumbnails (and with "
+                                  "--phone their phone originals). Without --yes it only says what would go; "
+                                  "nothing is deleted.")
     s.add_argument("args", nargs="*", metavar="[BATCH] FILE"); s.add_argument("--batch", help="batch the files came from (for --phone)")
-    s.add_argument("--phone"); s.add_argument("--from-digikam", action="store_true"); s.add_argument("--yes", action="store_true")
+    s.add_argument("--phone", help="also delete the matching originals from this phone or camera (its folder)")
+    s.add_argument("--from-digikam", action="store_true", help="the library files marked Rejected in digiKam")
+    s.add_argument("--yes", action="store_true", help="required to delete; without it, a dry run")
     s = sp.add_parser("not-trash", help="keep suggested files: Owner|keep + Owner|not-trash"); s.add_argument("files", nargs="+")
     s = sp.add_parser("migrate-tags", help="one-shot, idempotent: legacy Review|not-trash -> Owner|not-trash")
     s.add_argument("--dry-run", action="store_true", help="count the sidecars, write nothing")

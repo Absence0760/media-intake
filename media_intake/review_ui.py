@@ -452,18 +452,18 @@ class Runner:
         if keep:
             ok &= self.run(["not-trash"] + keep, "not-trash") == 0
         if trash:
-            ok &= self.run(["trash"] + trash + self.phone_args(), "trash") == 0
+            ok &= self.run(["trash"] + trash + self.phone_args() + ["--yes"], "trash") == 0
         rv_items = [(i, it) for i, it in enumerate(self.items) if it["tab"] == "review"]
         trash = [it["path"] for i, it in rv_items if dec[i] == "trash"]
         if trash:
-            ok &= self.run(["trash", "--batch", self.batch] + trash + self.phone_args(), "trash review") == 0
+            ok &= self.run(["trash", "--batch", self.batch] + trash + self.phone_args() + ["--yes"], "trash review") == 0
             rv_items = [(i, it) for i, it in rv_items if dec[i] != "trash"]
         # 1. Review folder first: erase's near-duplicate search may move review files.
         if rv_items:
             kept = [it for i, it in rv_items if dec[i] == "keep"]
             gone = [it for i, it in rv_items if dec[i] == "delete"]
             if gone and not kept:
-                ok &= self.run(["purge-review", self.batch], "purge-review") == 0
+                ok &= self.run(["purge-review", self.batch, "--yes"], "purge-review") == 0
             elif gone:
                 n = t = 0
                 for it in gone:

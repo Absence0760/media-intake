@@ -182,7 +182,7 @@ class ReviewMediaKindsBrowserTest(B.BrowserCase):
         page.get_by_role("button", name="Run").click()
         B.expect(page.locator("#run")).to_have_attribute("data-job", "done")
         self.assertEqual(self.calls(), [
-            ["trash", "--batch", BATCH, os.path.join(rv, "DCIM/Camera/IMG_1001.jpg")],
+            ["trash", "--batch", BATCH, os.path.join(rv, "DCIM/Camera/IMG_1001.jpg"), "--yes"],
             ["release", BATCH, os.path.join(self.quar, "DCIM/Camera/IMG_0002.jpg"), qv],
             ["erase", BATCH, "--yes"],
             ["verify-gone", BATCH]])

@@ -270,7 +270,7 @@ class ReviewBrowserTest(ReviewCase):
         self.assertIn(["erase", BATCH, "--yes"], calls)
         self.assertEqual([c for c in calls if c[0] == "trash"],
                          [["trash", "--batch", BATCH,
-                           os.path.join(self.state, "batches", BATCH, "review", r[0])]], "only the review item")
+                           os.path.join(self.state, "batches", BATCH, "review", r[0]), "--yes"]], "only the review item")
         self.assertFalse(os.path.exists(os.path.join(self.state, "quarantine", BATCH)))
 
     # ------------------------------------------------------------ video: Range while loading and seeking

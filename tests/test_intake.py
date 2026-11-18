@@ -11,7 +11,7 @@ ffmpeg test patterns: no real photos are read. scan.json is written by hand
 NudeNet venv exists, and the OCR/barcode cases only when those tools are
 installed.
 """
-import json, os, re, shutil, stat, subprocess, sys, tempfile, unittest
+import json, os, re, shlex, shutil, stat, subprocess, sys, tempfile, unittest
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import support  # noqa: E402,F401  (hermetic config)
@@ -216,8 +216,12 @@ class IntakeE2E(unittest.TestCase):
         self.assertEqual(stat.S_IMODE(os.stat(released).st_mode), 0o666 & ~um)
         index = jload(os.path.join(self.state, "index.json"))
         self.assertIsNotNone(index[released]["dhash"])
-        # ---- purge-review
-        self.assertIn("deleted 2", self.run_intake("purge-review", batch).stdout)
+        # ---- purge-review: a dry run without --yes, then the delete
+        out = self.run_intake("purge-review", batch).stdout
+        self.assertIn(f"would delete 2 reviewed near-duplicates/junk from batch {batch}", out)
+        self.assertIn(f"media-intake purge-review {batch} --yes", out)
+        self.assertTrue(os.path.isdir(os.path.join(bd, "review")))
+        self.assertIn("deleted 2", self.run_intake("purge-review", batch, "--yes").stdout)
         self.assertFalse(os.path.exists(os.path.join(bd, "review")))
         # ---- erase, with a backup drive and a thumbnail cache
         sens = os.path.join(self.drive, "photos", "2026", "2026-10", "20261023_100000.jpg")
@@ -680,7 +684,16 @@ class Trash(unittest.TestCase):
         os.makedirs(os.path.dirname(thumb))
         open(thumb, "w").close()
         sha, size = self.sha(junk), os.path.getsize(junk)
+        # Without --yes: a dry run. Counts and the command to rerun; nothing deleted, not even from the phone.
         out = self.intake("trash", batch, junk, "--phone", self.phone)
+        self.assertIn("would trash 1 files; phone originals 1", out)
+        self.assertIn("dry run: nothing deleted", out)
+        self.assertIn(shlex.join(["media-intake", "trash", "--batch", batch, junk, "--phone", self.phone, "--yes"]), out)
+        for p in (junk, side, thumb, P("DCIM/Camera/20261101_100000.jpg")):
+            self.assertTrue(os.path.exists(p), p)
+        self.assertIn(junk, jload(os.path.join(self.state, "index.json")))
+        self.assertFalse(os.path.exists(os.path.join(self.state, "trashed.json")))
+        out = self.intake("trash", batch, junk, "--phone", self.phone, "--yes")
         self.assertIn("trashed 1 files; sidecars 1; thumbnails 1; phone 1", out)
         for p in (junk, side, thumb, P("DCIM/Camera/20261101_100000.jpg")):
             self.assertFalse(os.path.exists(p), p)
@@ -702,7 +715,10 @@ class Trash(unittest.TestCase):
         link = os.path.join(self.lib, "link.jpg")
         os.makedirs(self.lib)
         os.symlink(dl, link)
-        out = self.intake("trash", dl, link, code=1)
+        out = self.intake("trash", dl, link, code=1)  # dry run: the same refusal, exit 1, nothing deleted
+        self.assertIn("would trash 0 files; refused 2 (not a library or review file)", out)
+        self.assertTrue(os.path.isfile(dl) and os.path.islink(link))
+        out = self.intake("trash", dl, link, "--yes", code=1)
         self.assertIn("refused 2", out)
         self.assertTrue(os.path.isfile(dl))
         quar = os.path.join(self.state, "quarantine", "xcheck-b")
@@ -714,7 +730,10 @@ class Trash(unittest.TestCase):
         before = jload(os.path.join(quar, "quarantine.json"))
         ok = os.path.join(self.lib, "2026/2026-11/junk.jpg")  # named with it: still trashed
         save_jpg(pattern(16), ok)
-        out = self.intake("trash", "xcheck-b", q, ok, code=1)
+        out = self.intake("trash", "xcheck-b", q, ok, code=1)  # dry run: the same refusal, nothing deleted
+        self.assertIn("would trash 1 files; refused 1 quarantined", out)
+        self.assertTrue(os.path.isfile(q) and os.path.isfile(ok))
+        out = self.intake("trash", "xcheck-b", q, ok, "--yes", code=1)
         self.assertIn("refused 1 quarantined", out)
         self.assertIn("trashed 1 files", out)
         self.assertTrue(os.path.isfile(q), "a quarantined file is erased or kept, never trashed")
@@ -806,7 +825,8 @@ class Trash(unittest.TestCase):
             self.xmp(p, f"-XMP-digiKam:PickLabel={v}")
         out = self.intake("trash", "--from-digikam")
         self.assertIn("1 library files marked Rejected", out)
-        self.assertIn("dry run", out)
+        self.assertIn("dry run: nothing deleted", out)
+        self.assertIn("media-intake trash --from-digikam --yes", out)
         self.assertTrue(os.path.isfile(rej))
         self.intake("trash", "--from-digikam", "--yes")
         self.assertFalse(os.path.exists(rej) or os.path.exists(rej + ".xmp"))
