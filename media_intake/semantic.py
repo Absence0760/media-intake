@@ -242,16 +242,32 @@ def cmd_index(a, np, ort):
     cur = {p: v for p, v in cur.items() if v[2] in rows}
     order = sorted(rows)
     save_store(np, order, np.stack([rows[s] for s in order]) if order else np.zeros((0, 768), np.float32), cur)
-    print(json.dumps({"files": len(cur), "vectors": len(order), "new_images": n_img, "new_videos": n_vid,
-                      "undecodable": failed, "refused": len(bad), "dropped": dropped,
-                      "s_per_image": round(t_img / n_img, 3) if n_img else None,
-                      "s_per_video": round(t_vid / n_vid, 3) if n_vid else None,
-                      "seconds": round(time.monotonic() - t0, 1)}))
+    counts = {"files": len(cur), "vectors": len(order), "new_images": n_img, "new_videos": n_vid,
+              "undecodable": failed, "refused": len(bad), "dropped": dropped,
+              "s_per_image": round(t_img / n_img, 3) if n_img else None,
+              "s_per_video": round(t_vid / n_vid, 3) if n_vid else None,
+              "seconds": round(time.monotonic() - t0, 1)}
+    person = on_terminal()
+    if not person:  # the queue's step log and scripts read this one JSON line
+        print(json.dumps(counts))
     copies = sum(1 for p in new if p in cur) - (n_img + n_vid)  # same sha as a file embedded this run
     m.say(f"index: indexed {n_img + n_vid:,} new ({n_img:,} photos, {n_vid:,} videos), "
           f"{unchanged:,} unchanged, {failed:,} failed (undecodable)"
           + (f", {copies:,} copies of new files" if copies else "")
           + f"; {len(bad):,} refused, {dropped:,} dropped; took {meter.duration(time.monotonic() - t0)}")
+    if person:
+        print(INDEX_NEXT)
+
+
+INDEX_NEXT = 'next: media-intake search "a photo of a dog" -n 20'
+
+
+def on_terminal():
+    """True when stdout is a terminal (a person), False when piped or captured (the queue, the gallery)."""
+    try:
+        return sys.stdout.isatty()
+    except (AttributeError, ValueError):
+        return False
 
 
 # ---------------------------------------------------------------- query
@@ -331,10 +347,7 @@ def rank(np, q, a, exclude=None, store=None):
 def human(a):
     """--format human, or auto on a terminal. Piped or captured output (the gallery) stays machine."""
     if a.format == "auto":
-        try:
-            return sys.stdout.isatty()
-        except (AttributeError, ValueError):
-            return False
+        return on_terminal()
     return a.format == "human"
 
 
@@ -394,20 +407,39 @@ def cmd_similar(a, np, ort):
     rank(np, v / np.linalg.norm(v), a, exclude=s, store=store)
 
 
-def main(argv=None):
-    ap = argparse.ArgumentParser(description=__doc__.split("\n")[0])
-    sub = ap.add_subparsers(dest="cmd", required=True)
-    sub.add_parser("index")
+def main(argv=None, prog="media-intake"):
+    ap = argparse.ArgumentParser(
+        prog=prog, description="Search your library by what is in the pictures, offline on this laptop. Needs the "
+                               "venv and model that bash setup.sh installs (docs/search.md).")
+    sub = ap.add_subparsers(dest="cmd", required=True, metavar="index|search|similar")
+    sub.add_parser("index", help="build or update the search index",
+                   description="Build or update the search index: reads every photo and video in the library "
+                               "once (later runs only new ones) and stores a short summary of each in the "
+                               "media-intake state folder. Changes no photo, video or tag. Run it before search, "
+                               "similar or calibrate.")
+    filters = ("Filters: --photos or --videos, --project NAME, --unused-since Nd, --clean. Output on a terminal is a "
+               "numbered list, best match first; piped, it is `score  path` lines.")
     for name in ("search", "similar"):
-        s = sub.add_parser(name)
-        s.add_argument("query" if name == "search" else "file")
-        s.add_argument("-n", type=int, default=20)
+        what = ("Find photos and videos that match a description, e.g. \"dog on a beach\"." if name == "search"
+                else "Find photos and videos that look like FILE.")
+        s = sub.add_parser(name, help="find files matching a description" if name == "search"
+                           else "find files that look like a given one",
+                           description=f"{what} Read-only: changes nothing. Needs the search index "
+                                       f"(media-intake index). {filters}")
+        if name == "search":
+            s.add_argument("query", help="what to look for, in quotes, e.g. \"dog on a beach\"")
+        else:
+            s.add_argument("file", help="a photo or video; its look-alikes are listed")
+        s.add_argument("-n", type=int, default=20, metavar="N", help="how many results to show (default 20)")
         g = s.add_mutually_exclusive_group()
-        g.add_argument("--videos", action="store_true")
-        g.add_argument("--photos", action="store_true")
-        s.add_argument("--project")
-        s.add_argument("--unused-since", metavar="Nd")
-        s.add_argument("--clean", action="store_true", help="drop child-in-shot and trash-flagged files")
+        g.add_argument("--videos", action="store_true", help="videos only")
+        g.add_argument("--photos", action="store_true", help="photos only")
+        s.add_argument("--project", metavar="NAME", help="only files tagged with this project (Project|NAME)")
+        s.add_argument("--unused-since", metavar="Nd",
+                       help="only files not used in a post in the last N days, e.g. 30d")
+        s.add_argument("--clean", action="store_true",
+                       help="leave out files with a child in shot, and ones marked or suggested as trash "
+                            "(unless you kept them)")
         s.add_argument("--format", choices=("auto", "human", "machine"), default="auto",
                        help="human: numbered list with dates; machine: `score  path` lines (what the gallery "
                             "reads); auto (default): human on a terminal, machine otherwise")

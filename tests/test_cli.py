@@ -374,6 +374,54 @@ class Commands(unittest.TestCase):
         m.assert_called_once_with(["find", "--event", "x"], prog="media-intake")
 
 
+class VenvCommands(unittest.TestCase):
+    """index, search, similar (and vlm-trash) run in the venv; before setup.sh built it, --help still prints the
+    command's options with the system Python, plus one line saying the venv is needed."""
+
+    def run_main(self, argv):
+        out, err = io.StringIO(), io.StringIO()
+        missing = os.path.join(tempfile.mkdtemp(prefix="cli-novenv-"), "venv", "bin", "python")
+        self.addCleanup(shutil.rmtree, os.path.dirname(os.path.dirname(os.path.dirname(missing))), True)
+        with mock.patch.object(cli, "venv_python", return_value=missing), mock.patch.object(cli.os, "execv") as ex, \
+                mock.patch("sys.stdout", out), mock.patch("sys.stderr", err):
+            code = cli.main(argv)
+        ex.assert_not_called()
+        return code, out.getvalue(), err.getvalue()
+
+    def test_help_without_the_venv(self):
+        for cmd in ("index", "search", "similar"):
+            for flag in ("--help", "-h"):
+                with self.subTest(cmd=cmd, flag=flag):
+                    code, out, err = self.run_main([cmd, flag])
+                    self.assertEqual((code, err), (0, ""))
+                    self.assertIn(f"usage: media-intake {cmd} ", out)
+                    last = out.rstrip("\n").splitlines()[-1]
+                    self.assertTrue(last.startswith(f"note: media-intake {cmd} needs the venv"), last)
+                    self.assertTrue(last.endswith("run bash setup.sh first"), last)
+        code, out, _ = self.run_main(["search", "dog", "--clean", "--help"])
+        self.assertEqual(code, 0)
+        self.assertIn("--unused-since Nd", out)
+
+    def test_running_without_the_venv_says_run_setup(self):
+        for argv in (["index"], ["search", "dog"], ["similar", "x.jpg", "-n", "3"]):
+            with self.subTest(argv=argv):
+                code, out, err = self.run_main(argv)
+                self.assertEqual((code, out), (1, ""))
+                self.assertEqual(len(err.splitlines()), 1)
+                self.assertIn(f"media-intake {argv[0]} needs the venv", err)
+                self.assertIn("run bash setup.sh first", err)
+
+    def test_with_the_venv_help_goes_to_the_venv(self):
+        d = tempfile.mkdtemp(prefix="cli-venv-")
+        self.addCleanup(shutil.rmtree, d, True)
+        vp = os.path.join(d, "python")
+        open(vp, "w").close()
+        with mock.patch.object(cli, "venv_python", return_value=vp), mock.patch.object(cli.os, "execv") as ex, \
+                mock.patch("sys.stdout", io.StringIO()), mock.patch("sys.stderr", io.StringIO()):
+            cli.main(["search", "--help"])  # execv never returns; the mock does, so the rest is ignored
+        ex.assert_called_once_with(vp, [vp, "-I", os.path.join(cli.HERE, "semantic.py"), "search", "--help"])
+
+
 class Pins(unittest.TestCase):
     """media_intake/pins.json is the only place a model pin is written down."""
 
