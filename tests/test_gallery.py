@@ -337,7 +337,7 @@ class GalleryTest(unittest.TestCase):
         # Similar without an index says so
         j = s.get(f"/api/list?similar={self.id_of(s, 'b.jpg')}")
         self.assertEqual(j["total"], 0)
-        self.assertIn("semantic index", j["note"])
+        self.assertIn("run media-intake index", j["note"])
         # Trash suggestions: maybe-trash or AI >= 0.7, never kept / used / Demo; by confidence
         names, j = self.names(s, view="suggest")
         self.assertEqual(names, ["a.jpg"])

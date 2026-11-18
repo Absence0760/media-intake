@@ -150,7 +150,7 @@ class GalleryMediaKindsBrowserTest(B.BrowserCase):
         B.expect(bar).to_contain_text("4 selected")
         # nothing is suggested for the trash any more
         page.get_by_role("navigation", name="Views").get_by_role("button", name="Suggested junk").click()
-        B.expect(page.get_by_text("No trash suggestions here.")).to_be_visible()
+        B.expect(page.get_by_role("status").filter(has_text="No suggested junk right now.")).to_be_visible()
         self.assert_originals()
 
     def test_shift_click_after_the_grid_reloads(self):
