@@ -25,15 +25,34 @@ Install the Fedora packages and run `setup.sh` as in the
 [README, "Install (Fedora)"](../README.md#install-fedora). `setup.sh` builds a
 venv, downloads the pinned SigLIP model and GeoNames data, and writes the
 `media-intake` launcher to `~/.local/bin`. It is safe to re-run. It prints a
-`==> [n/N]` heading per step, ends with a summary of what it installed or found
-already present and `next: media-intake doctor`; if a step fails it prints
-`==> FAILED at step [n/N] ...` with the likely fix (section 5).
+`==> [n/N]` heading per step and runs `media-intake doctor` as its last step.
+It ends with a summary of what it installed or found already present, how to
+find a phone (section 3), and one `next:` line: the first import when doctor
+found nothing missing, otherwise `fix what doctor listed above, then run:
+media-intake doctor`. If a step fails it prints `==> FAILED at step [n/N] ...`
+with the likely fix (section 5).
 
-Then check the install:
+**If your shell can't find `media-intake`.** The launcher lives in
+`~/.local/bin`. When that folder isn't on your `PATH`, `setup.sh` says so and
+prints the line to add to your shell's profile (`~/.bashrc` for bash,
+`~/.zshrc` for zsh):
+
+```sh
+export PATH="$HOME/.local/bin:$PATH"
+```
+
+Open a new terminal afterwards. The launcher runs the copy of the repo you ran
+`setup.sh` from: if you move or delete that folder, remove
+`~/.local/bin/media-intake` and run `setup.sh` again from the new place.
+
+`media-intake --version` prints the installed version. To check the install
+again at any time:
 
 ```sh
 media-intake doctor
 ```
+
+(`media-intake doctor --help` says what it checks; it changes nothing.)
 
 Its checks are grouped under headings, and its `== Summary ==` opens with a
 count line, `N problems, M optional items not available` (`no problems` when
@@ -42,7 +61,7 @@ there are none). Each check line starts with a status:
 | Status | Meaning |
 | --- | --- |
 | `ok` | Present (and, for a model file, its sha256 matches the pin). |
-| `MISSING` | Required and not there. Doctor's `== Summary ==` ends with `Install the required packages:` and, on its own line, the `sudo dnf install -y ...` to copy; for the venv, models or GeoNames it says `(bash setup.sh)`. |
+| `MISSING` | Required and not there. Doctor's `== Summary ==` ends with `Install the required packages:` and, on its own line, the `sudo dnf install -y ...` to copy; for the venv, models or GeoNames it says `(bash setup.sh)`, and the summary adds `Then run: bash setup.sh` (or `Run: ...` when no package is missing). |
 | `optional` | Not needed for a first run: the GStreamer HEVC decoder (most phone video), an H.264 encoder (the gallery's HEVC playback), the gvfs MTP backend (Android phones), `xdg-open`, the SigLIP text model (`bash setup.sh --build-labels`, for text search) and Ollama (`vlm-trash` only). The summary lists them under `Optional packages:` with their own `sudo dnf install -y ...` line. |
 | `absent` | A configured folder (library, videos, state, a project) doesn't exist yet. Normal before the first import. |
 | `BAD` | A config error, or a file whose sha256 differs from its pin. Fix it before going on. |
@@ -129,6 +148,21 @@ Things worth knowing from the test run:
 - The tool never offloads a folder source. Once you're happy with the result,
   delete `~/Pictures/test-photos` yourself.
 
+**Finding a phone.** Plug it in by USB and unlock it. Pull down the
+notification about the USB connection and choose **File transfer** (a phone
+left on "Charging only", or locked, looks empty). Then list what's mounted:
+
+```sh
+ls /run/user/$UID/gvfs/
+```
+
+The phone shows up as a folder starting `mtp:host=`. Its source path is that
+folder plus `/Internal shared storage`, quoted because of the spaces:
+
+```sh
+media-intake stage "/run/user/$UID/gvfs/mtp:host=<your phone>/Internal shared storage" --kind phone
+```
+
 The same steps for a phone or GoPro (with `--kind phone` / `--kind gopro`,
 `--event` for a shoot day, and `offload` to free the device after a backup):
 [README, "Commands"](../README.md#commands) and [intake.md](intake.md).
@@ -195,8 +229,9 @@ Use a LUKS-encrypted drive. [backup.md](backup.md).
 | Situation | What to run or read |
 | --- | --- |
 | `setup.sh` stops with `==> FAILED at step [n/N]` | Read the hint under it (a `sudo dnf install -y ...` line, no network, or a checksum mismatch), fix that, and re-run `bash setup.sh`. Never skip a checksum: a file that fails its sha256 is deleted, not used. |
-| A mistyped command | `media-intake` exits 2 naming the unknown command, with a `did you mean` suggestion when one is close. |
-| `doctor` shows `MISSING` | Run the `sudo dnf install ...` line it prints, or `bash setup.sh` where it says so; then `media-intake doctor` again. |
+| A mistyped command | `media-intake` exits 2 naming the unknown command, with a `did you mean` suggestion when one is close. An unknown option on its own (`media-intake --foo`) gets no guess: on its own `media-intake` takes only `--help` and `--version`. |
+| `media-intake: command not found` after `setup.sh` | `~/.local/bin` isn't on your `PATH`: add the line `setup.sh` printed (section 1) and open a new terminal. |
+| `doctor` shows `MISSING` | Run the `sudo dnf install ...` line it prints, then `bash setup.sh` if its summary says so; then `media-intake doctor` again. |
 | `doctor` shows `BAD` for a model file | `bash setup.sh` deletes the wrong file; run it again to fetch the pinned one. |
 | Every command stops with a config error | Fix or remove the key it names ([configuration.md](configuration.md)). |
 | `stage --kind folder` or `queue add` is refused | The folder breaks a source rule (outside HOME, hidden, a git tree, the library itself): [queue.md](queue.md), "Laptop folders". Under `/run/media` use `--kind drive`. |
