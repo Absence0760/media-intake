@@ -13,7 +13,8 @@ import fnmatch, os, re, tomllib
 HOME = os.path.expanduser("~")
 SLUG = re.compile(r"^[a-z0-9][a-z0-9-]{0,63}$")
 NAME = re.compile(r"^[A-Za-z0-9][A-Za-z0-9 ._-]{0,63}$")
-TOP_KEYS = {"library", "videos", "state", "phone", "drive", "queue", "projects", "plugins"}
+TOP_KEYS = {"library", "videos", "state", "phone", "drive", "queue", "projects", "plugins", "recognition"}
+RECOGNITION_KEYS = {"dir"}
 
 
 class ConfigError(Exception):
@@ -89,6 +90,12 @@ def load(path=None):
         c["projects"][key] = dict(key=key, name=name, folder=_path(p["folder"], f"projects.{key}.folder"),
                                   events=_strs(p.get("events", []), f"projects.{key}.events"),
                                   protect=bool(p.get("protect", True)))
+
+    rec = raw.get("recognition", {})
+    if not isinstance(rec, dict) or set(rec) - RECOGNITION_KEYS:
+        raise ConfigError(f"recognition: a table with only {', '.join(sorted(RECOGNITION_KEYS))}")
+    # People and pets recognition data (biometric: laptop only). recog.py refuses a folder inside the library.
+    c["recognition_dir"] = _path(rec.get("dir", os.path.join(c["state"], "recognition")), "recognition.dir")
 
     plugins = raw.get("plugins", {})
     c["plugin_paths"] = [_path(x, "plugins.paths") for x in _strs(plugins.get("paths", []), "plugins.paths")]

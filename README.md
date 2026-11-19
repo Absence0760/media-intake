@@ -18,14 +18,16 @@ backup drive, quarantine, review folder, Keep, Trash, Erase, ...).
 
 - **Everything runs locally.** No cloud API, no telemetry, no remote model.
   The only network traffic is `setup.sh` downloading pinned files once
-  (Python wheels, the SigLIP model, GeoNames), each checked by sha256, and
+  (Python wheels, the SigLIP model, GeoNames, and with `--recognition` the
+  YuNet and SFace face models), each checked by sha256, and
   Ollama on `127.0.0.1`: the optional vision-model check and `media-intake
   doctor`'s digest check. `scripts/update-pins.py` is a maintainer tool, not
   part of the tool you run: it reads metadata (never model weights) from
   PyPI, Hugging Face and the Ollama registry to bump the pins.
 - **Every detector is local**: NudeNet (nudity), Tesseract (text on IDs and
   cards), zxing-cpp (QR and barcodes), SigLIP (labels and search), an optional
-  Qwen3-VL model through your own Ollama (trash second opinion).
+  Qwen3-VL model through your own Ollama (trash second opinion), and, off
+  until you install them, YuNet and SFace (finding and grouping faces).
 - **No AI service sees your images.** If you drive the tool with a coding
   assistant, it runs the commands and sees counts and paths; the tool never
   prints image content, and the docs and `CLAUDE.md` forbid an assistant from
@@ -48,6 +50,10 @@ backup drive, quarantine, review folder, Keep, Trash, Erase, ...).
   and `locks/`, whose files are `0600`; the lock's holder note names the
   command and its PID, never a file name. `device-salt` is `0600`, and so is
   `event-names.json` (the gallery's event display names, never in a sidecar).
+  Face detections, vectors, names and crops (biometric) live in
+  `recognition.dir` (default `<state>/recognition`, `0700`, files `0600`),
+  are never backed up, and go with every `erase`, `forget`, `trash` and
+  `sweep-erased` ([docs/recognition.md](docs/recognition.md)).
 - **Raw camera serial numbers are never written anywhere** (folder names,
   tags, plans, logs). A device id is a salted HMAC pseudonym of make, model
   and serial, keyed by `device-salt`.
@@ -108,7 +114,8 @@ terminal, and never with `NO_COLOR` set.
 It is safe to re-run (it only re-verifies checksums). Options:
 `--build-labels` (text model for semantic search, and to rebuild
 `labels.npz` after editing `labels.yaml` or moving the SigLIP pin), `--refresh-geo` (accept a new
-GeoNames snapshot), `--no-launcher`. For HEVC video (most phones) Fedora's
+GeoNames snapshot), `--no-launcher`, `--recognition` (the face models for
+`media-intake people`, off without it: [docs/recognition.md](docs/recognition.md)). For HEVC video (most phones) Fedora's
 `ffmpeg-free` has no decoder; the tool uses GStreamer's VA-API (`vah265dec`)
 or Vulkan decoder when one is installed, also to make the H.264 copy the
 gallery plays HEVC from (with an H.264 encoder: `vah264enc` on the GPU, else
@@ -150,6 +157,7 @@ media-intake offload phone-1 --phone <phone folder>   # after a backup: free the
 | `migrate-tags` | One-shot: rewrite the legacy `Review\|not-trash` tag as `Owner\|not-trash` |
 | `index`, `search`, `similar` | Local semantic search (SigLIP) |
 | `vlm-trash` | Local vision-model second opinion on Suggested junk |
+| `people` | Recognise people in photos, offline: you name them, it suggests and tags `People\|<Name>` once you confirm (off until `setup.sh --recognition`; [docs/recognition.md](docs/recognition.md)) |
 | `calibrate` | Report precision and recall of each label's threshold against your own marks; changes nothing |
 | `gallery` | Local web gallery: browse, Keep, Favorite, Trash, Erase, tag, rotate, events, bulk edits, share-safe copies |
 | `proxies` | Make the gallery's H.264 copies of HEVC videos now, so they play at once (`--dry-run`, `--inhibit`) |
@@ -164,7 +172,7 @@ whether it deletes, and its options; `media-intake` alone (or `--help`) lists
 the commands by task, and a mistyped command exits 2 with the nearest real
 one. Details:
 [getting started](docs/getting-started.md), [words used](docs/words.md), [intake](docs/intake.md), [review page](docs/review-ui.md),
-[gallery](docs/gallery.md), [search and VLM](docs/search.md),
+[gallery](docs/gallery.md), [search and VLM](docs/search.md), [recognition](docs/recognition.md),
 [drive and folder queue](docs/queue.md), [backup](docs/backup.md), [configuration](docs/configuration.md),
 [plugins](docs/plugins.md), [releases](docs/release.md).
 

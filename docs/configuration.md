@@ -20,6 +20,7 @@ Paths take `~` and `$VARS`.
 | `queue.wrapper_lock` | none | That wrapper's lock file, so `queue run` can say when it will wait. |
 | `projects.<key>` | none | See below. |
 | `plugins.paths`, `plugins.modules` | none | Plugin modules and where to import them from: [plugins.md](plugins.md). |
+| `recognition.dir` | `<state>/recognition` | People and pets recognition data (detections, vectors, names, crops; biometric). Kept `0700`, its files `0600`; refused inside the library, videos or a project folder, never backed up: [recognition.md](recognition.md). |
 
 `state`, `library`, `videos` and every project's `folder` (as resolved, env
 vars included) are never accepted as a laptop folder source, nor any folder
@@ -88,6 +89,8 @@ The thresholds in [`media_intake/labels.yaml`](../media_intake/labels.yaml)
 machine: it reads stored numbers and sidecar tags only, opens no photo or
 video, and writes nothing (not `labels.yaml`, not this config, not a sidecar).
 Changing a threshold stays your edit to `labels.yaml`.
+`Calibrate|people|<Name>` tags are not labels: `media-intake people eval`
+reads them ([recognition.md](recognition.md)) and `calibrate` ignores them.
 
 1. **Build or update the search index**: `media-intake index`. Without it,
    calibrate stops with `calibrate: no search index yet. Build it first:

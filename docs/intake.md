@@ -816,6 +816,10 @@ quarantine. A file named twice is forgotten once.
   (`~/.cache/media-intake/proxies/<sha256>.mp4`) are not exact copies, so the
   sweep can't find them: `erase`, `forget` and `trash` delete them by the
   erased item's sha256 (every rotation), and `verify-gone` reports any left.
+  The same goes for people and pets recognition data (detections, vectors,
+  file rows and crops in `recognition.dir`, [recognition.md](recognition.md)):
+  `erase`, `forget`, `trash` and `sweep-erased --yes` delete them by sha256,
+  the coverage report counts them, and `verify-gone` fails while any is left.
 - **verify-gone.** The erase log keeps checksum and size, no names, so
   `verify-gone [BATCH]` repeats the sweep read-only and exits 1 if anything is
   left (including orphaned sidecars, gallery thumbnails and gallery video
@@ -835,7 +839,7 @@ quarantine. A file named twice is forgotten once.
   sidecars and orphaned sidecars, and exact copies inside a git working tree
   left alone. Without `--yes` it is a dry run: counts per top-level folder,
   nothing deleted. With `--yes` it deletes, drops the paths from
-  `index.json`, the freedesktop and gallery thumbnails, recent files and app
+  `index.json`, the freedesktop and gallery thumbnails, recognition data, recent files and app
   traces (HOME only) and the backup records, zeroes the drive's free space if
   it deleted anything there (`--no-wipe-free` skips), and ends with
   `verify-gone` over the same places (exit 1 if anything is left).
@@ -1201,6 +1205,7 @@ own namespace; your tags win.
 | `Review\|child-in-shot` | SigLIP | added, never removed by a tool; only you clear it |
 | `AI\|vlm/<model>/...` (and the older `Review\|vlm-trash/*`, `Review\|vlm-keep`) | the VLM (`vlm_trash.py`) | its own; tagging never touches them |
 | `Used\|<slug>` | `mark-used` | never removed |
+| `People\|<Name>`, `Pets\|<Name>` | `people tag` (and `pets tag`, planned; [recognition.md](recognition.md)), only for names you gave or confirmed | removes only tags it wrote that no longer apply; never re-adds one you removed from the sidecar; your own `People\|` tags are never touched |
 | `Calibrate\|<label>\|yes`, `Calibrate\|<label>\|no` | you (the gallery's "+ tag") | never touched by a tool; only `calibrate` reads them ([configuration.md](configuration.md), "Calibrating label thresholds") |
 
 - `Review|maybe-trash` is never added to a file with `Owner|not-trash`,

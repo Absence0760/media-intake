@@ -152,6 +152,42 @@ class Run(unittest.TestCase):
         self.assertIn("==> [5/5] media-intake doctor", r.stdout)
         self.assertNotIn("Launcher", r.stdout)
 
+    def with_zoo_pins(self, sface=None):
+        with open(self.pins) as f:
+            pins = json.load(f)
+        pins["opencv_zoo"] = {"repo": "example/zoo", "commit": "fedcba9876543210", "files": {
+            "models/face_detection_yunet/face_detection_yunet_2023mar.onnx":
+                {"sha256": stub_sha("face_detection_yunet_2023mar.onnx"), "size": 1},
+            "models/face_recognition_sface/face_recognition_sface_2021dec.onnx":
+                {"sha256": sface or stub_sha("face_recognition_sface_2021dec.onnx"), "size": 1}}}
+        with open(self.pins, "w") as f:
+            json.dump(pins, f)
+        return os.path.join(self.state, "models", "opencv-zoo-fedcba9")
+
+    def test_recognition_models_only_with_the_flag(self):
+        models = self.with_zoo_pins()
+        r = self.run_setup("--no-launcher")
+        self.assertEqual(r.returncode, 0, r.stderr)
+        self.assertNotIn("Recognition models", r.stdout)
+        self.assertFalse(os.path.exists(models), "nothing fetched without --recognition")
+        r = self.run_setup("--no-launcher", "--recognition")
+        self.assertEqual(r.returncode, 0, r.stderr)
+        self.assertIn("==> [5/6] Recognition models (people)", r.stdout)
+        self.assertEqual(sorted(os.listdir(models)),
+                         ["face_detection_yunet_2023mar.onnx", "face_recognition_sface_2021dec.onnx"])
+        self.assertRegex(r.stdout.split("==> Summary", 1)[1], r"recognition models\s+downloaded")
+        again = self.run_setup("--no-launcher", "--recognition", STUB_CURL="offline")
+        self.assertEqual(again.returncode, 0, again.stderr)
+        self.assertRegex(again.stdout.split("==> Summary", 1)[1], r"recognition models\s+already present")
+
+    def test_recognition_model_checksum_mismatch_installs_nothing(self):
+        models = self.with_zoo_pins(sface="0" * 64)
+        r = self.run_setup("--no-launcher", "--recognition")
+        self.assertNotEqual(r.returncode, 0)
+        self.assertIn("FAILED at step [5/6] Recognition models (people)", r.stderr)
+        self.assertIn("didn't match its sha256 pin", r.stderr)
+        self.assertFalse(os.path.exists(os.path.join(models, "face_recognition_sface_2021dec.onnx")))
+
     def test_doctor_gaps_change_the_next_line(self):
         r = self.run_setup(STUB_DOCTOR="fail")
         self.assertEqual(r.returncode, 0, r.stderr)

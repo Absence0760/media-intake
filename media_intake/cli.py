@@ -45,6 +45,7 @@ Library
   mark-used FILE --post P   record that files were used in a post
   share-copy FILE --out D   copy without GPS or metadata (or social-copy)
   calibrate                 test content labels on your marks; changes nothing
+  people                    name the people in photos (venv; off by default)
   migrate-tags              one-off: rename an older tool tag in your sidecars
   proxies                   make the gallery's video copies now, so they play
   prune-cache               DELETES gallery thumbnails nothing shows any more
@@ -68,7 +69,10 @@ if HERE not in sys.path:
 import config  # noqa: E402
 
 VENV_SCRIPTS = {"index": ("semantic.py", ["index"]), "search": ("semantic.py", ["search"]),
-                "similar": ("semantic.py", ["similar"]), "vlm-trash": ("vlm_trash.py", [])}
+                "similar": ("semantic.py", ["similar"]), "vlm-trash": ("vlm_trash.py", []),
+                "people": ("people.py", [])}
+# Recognition kinds (recog.py's core): module -> what doctor calls it. Optional: off until setup.sh --recognition.
+RECOGNITION = {"people": "people recognition"}
 # Each thing doctor checks, with the Fedora package that provides it: the one source for the
 # `sudo dnf install ...` lines doctor prints. Required unless listed in OPTIONAL.
 SYSTEM_TOOLS = {"exiftool": "perl-Image-ExifTool", "tesseract": "tesseract", "ffmpeg": "ffmpeg-free",
@@ -258,6 +262,7 @@ def doctor(probe=None, out=print, colour=None):
     report("ok" if have else "MISSING", f"venv {vp}" + ("" if have else " (bash setup.sh)"))
     ok &= have
     ok &= _check_models(probe, report)
+    ok &= _check_recognition(probe, report)
     geo = os.path.join(cfg["state"], "geo", "cities1000.zip")
     have = probe.exists(geo)
     report("ok" if have else "MISSING", "GeoNames data" + ("" if have else " (bash setup.sh)"))
@@ -293,6 +298,33 @@ def _check_models(probe, report):
             ok = False
             report("BAD", f"{name} {path}: sha256 {_short(got)}, pinned {_short(pinned)} "
                           "(bash setup.sh deletes it; run it again to fetch the pinned file)")
+    return ok
+
+
+def _check_recognition(probe, report):
+    """Each recognition kind's models (people.py: YuNet + SFace) against media_intake/pins.json. Optional:
+    absent models only mean the command is off; a present file with the wrong sha256 fails."""
+    ok = True
+    for mod, what in RECOGNITION.items():
+        if not os.path.isfile(os.path.join(HERE, mod + ".py")):
+            continue
+        files = importlib.import_module(mod).model_files(config.get()["state"])
+        have = [f for f in files if probe.exists(f[1])]
+        if not have:
+            report("optional", f"{what} off: models not installed (bash setup.sh --recognition; docs/recognition.md)")
+            continue
+        for name, path, pinned in files:
+            if not probe.exists(path):
+                ok = False
+                report("MISSING", f"{name} ({what}; bash setup.sh --recognition)")
+                continue
+            got = probe.sha256(path)
+            if got == pinned:
+                report("ok", f"{name} sha256:{_short(pinned)}")
+            else:
+                ok = False
+                report("BAD", f"{name} {path}: sha256 {_short(got)}, pinned {_short(pinned)} "
+                              "(bash setup.sh --recognition deletes it; run it again to fetch the pinned file)")
     return ok
 
 
