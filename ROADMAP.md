@@ -120,6 +120,19 @@ The goal: someone else can install it on Fedora, import a phone, and trust it.
       `XMP-GCamera:BurstID`; docs/intake.md, "Burst id").
 - [ ] Map view without leaking locations: offline vector tiles (or none); never fetch
       tiles for private photos from a third-party server.
+- [ ] Best shot per burst and near-duplicate set: pick the sharpest, best-exposed frame
+      (eyes open where faces are found) as the cover, and offer the rest to Suggested junk
+      with the reason "Not the best shot"; never trash on its own.
+- [ ] "On this day": a sidebar view of photos and videos taken on today's date in past
+      years, grouped by year; hides flagged, trashed and erased items like every view.
+- [ ] Albums: hand-picked collections that cross dates and events (stored in sidecars like
+      `Event|`, or a private state file), with rename and merge; **Share album** makes one
+      stripped share-safe folder.
+- [ ] Free up space: a read-only report of what takes room (largest videos, duplicate sets,
+      Suggested junk, cached proxies) with the space each would free, and links into the
+      gallery to act on it. Changes nothing itself.
+- [ ] Backup health in the gallery: when the last `backup` ran, to which drive, and how many
+      library files are not on it yet; a link to the command to run. Read-only.
 - [x] Bulk edits on a selection: add/remove tags, set event, rotate.
 - [x] Select all in the gallery (header button, Ctrl+A / Cmd+A): every tile shown, a closed
       stack's cover only, the pages loaded so far (docs/gallery.md, "Actions").
@@ -143,12 +156,23 @@ The goal: someone else can install it on Fedora, import a phone, and trust it.
       a newer Ollama than 0.21); licence check (commercial use) before adopting any model.
 - [ ] Optional local face grouping (off by default): face data counts as personal data,
       so erase/verify-gone must cover it; never names faces automatically.
+      In progress with pets and named places (`feat/recognition`, research in
+      docs/research-pets.md): `media-intake people` / `pets`, suggestions until confirmed.
+- [ ] Search the text in photos: keep the OCR text the sensitive-content scan already reads
+      (screenshots, receipts, signs) in a private local index and let `search` and the
+      gallery find files by what they say; flagged and erased files never indexed, erase
+      and verify-gone cover the index.
+- [ ] Local captions: a short description of each photo from the local vision model
+      (Ollama, already used by `vlm-trash`), kept in the sidecar as the tool's own field and
+      searchable; off by default, resumable overnight like `vlm-trash --all`.
 - [x] Video near-duplicates (perceptual video hash) for re-encoded or trimmed copies
       (`videohash.py`; docs/intake.md, Duplicates).
 - [x] Text search quality: prompt ensembles for queries (`--no-ensemble` to compare) and
       per-label thresholds (docs/search.md).
 - [ ] Search across video frames by the best-matching frame: the index keeps one averaged
       vector per video today, so this needs a per-frame index.
+      The frame sampler built for people and pets in videos (scene-change frames, GPU
+      decode) is the first half of it.
 
 ## Milestone 0.4: more sources
 
