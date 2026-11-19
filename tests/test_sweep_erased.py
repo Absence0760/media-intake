@@ -8,7 +8,8 @@ Synthetic only: random bytes stand in for media, in a throwaway HOME and a plain
 localsearch are off (tests/support.py). --no-wipe-free everywhere a drive copy is deleted: wipe-free needs
 findmnt (Linux) and has its own tests.
 """
-import hashlib, json, os, shutil, subprocess, sys, tempfile, unittest
+import collections, contextlib, hashlib, io, json, os, shutil, subprocess, sys, tempfile, unittest
+from unittest import mock
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import support  # noqa: E402  (hermetic config)
@@ -210,6 +211,32 @@ class SweepErased(unittest.TestCase):
         reached = json.loads(cov[-1].split(" coverage ", 1)[1])["reached"]
         self.assertEqual(reached["backup drive Trash entries (.Trash-<uid>/info)"], 1)
         self.assertEqual(reached["backup drive copies"], 1)
+
+    def test_a_matched_files_sidecar_counts_once_in_either_listing_order(self):
+        """sweep() deletes a match's .xmp with it; when os.walk listed the .xmp after the match, the stale entry
+        is not counted again as an orphan. Directory order is the filesystem's (ext4 hashes names with a
+        per-filesystem seed), so both orders are forced here; an orphan .xmp still counts once."""
+        real_walk = os.walk
+        for xmp_first in (False, True):
+            with self.subTest(xmp_first=xmp_first):
+                drive = os.path.join(self.tmp, f"drive-{xmp_first}")
+                clip = write(os.path.join(drive, "b/clip.mp4"), self.data)
+                write(clip + ".xmp", b"<x/>")
+                orphan = write(os.path.join(drive, "b/gone.mp4.xmp"), b"<x/>")
+
+                def walk(root, **kw):
+                    for r, d, fs in real_walk(root, **kw):
+                        fs.sort(key=lambda f: (not f.endswith(".xmp")) if xmp_first else f.endswith(".xmp"))
+                        yield r, d, fs
+                stats = collections.Counter()
+                with mock.patch.object(intake.os, "walk", walk), contextlib.redirect_stdout(io.StringIO()):
+                    found, _, orphans, _ = intake.sweep({self.sha: len(self.data)}, drive=drive, stats=stats,
+                                                        home=False)
+                self.assertEqual(sum(found.values()), 1)
+                self.assertEqual(stats["sidecars"], 1, "the match's own sidecar")
+                self.assertEqual(dict(orphans), {"drive:b": 1}, "only the real orphan, never the match's sidecar")
+                self.assertEqual(os.listdir(os.path.dirname(clip)), [])
+                self.assertFalse(os.path.lexists(orphan))
 
     def test_is_a_library_writer(self):
         self.assertIn("sweep-erased", intake.LOCKED)
