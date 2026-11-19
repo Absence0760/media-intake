@@ -1019,9 +1019,14 @@ def sweep(sig, delete=True, drive=None, label="home sweep", stats=None, home=Tru
                         in_git.append(p)
                     continue
                 if p.endswith((".xmp", ".XMP")) and orphan_sidecar(p):
-                    orphans[("drive:" if root != HOME else "") + where(p, root)] += 1
+                    # os.walk listed this folder before its media file matched below and took the sidecar
+                    # with it (stats["sidecars"]): the listing still names the .xmp, which is gone now. Count
+                    # an orphan only once it is really there to delete, so readdir order never counts it twice.
                     if delete:
-                        os.remove(p)
+                        os.remove(p)  # already gone: FileNotFoundError, skipped below, not counted
+                    elif not os.path.lexists(p):
+                        continue
+                    orphans[("drive:" if root != HOME else "") + where(p, root)] += 1
                     continue
                 st = os.lstat(p)
                 if not stat.S_ISREG(st.st_mode) or st.st_size not in sizes or sig.get(sha256(p)) != st.st_size:
