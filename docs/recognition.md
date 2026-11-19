@@ -126,6 +126,16 @@ A file with a person or pet you named (`People|<Name>`, `Pets|<Name>`) is
 never suggested as junk and never judged by the vision check
 ([intake.md](intake.md), "Owner decisions").
 
+## In the gallery
+
+`media-intake gallery` shows **People & Pets** in its sidebar once the store
+exists: the names you gave with their item counts (a click shows their
+items), and **Name new faces/pets**, a naming view in the gallery page that
+does what the commands above do (name, merge, ignore, unname, take out,
+confirm and reject suggestions) and writes the tags at once, so `tag` is not
+needed after it. The large view lists the names in a photo and, for a video,
+when each appears. Details: [gallery.md](gallery.md), "People and pets".
+
 ## Checking how well it works
 
 `media-intake people eval` reads only: tag some photos `Calibrate|people|<Name>`
@@ -185,7 +195,9 @@ eval's truth), and frame sources for videos
 (`frames.sample(path) -> iterator of (t_seconds, RGB array)`). The gallery
 calls `clusters`, `suggestions`, `cluster_hints`, `confirm`, `reject`,
 `name_cluster`, `merge_clusters`, `name_cluster(..., recog.IGNORED)`,
-`take_out` and `crop_bytes` on a `recog.connect(threads=True)` connection.
+`take_out`, `put_back`, `unname_cluster` and `crop_bytes` on a
+`recog.connect(threads=True)` connection, and `write_tags(..., only=paths)`
+after each action (only the files that action touched).
 
 ## Videos
 

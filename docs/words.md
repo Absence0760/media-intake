@@ -79,7 +79,10 @@ Off until `bash setup.sh --recognition`; [recognition.md](recognition.md).
 | **suggestion** | A name the tool proposes for a face or pet that joined a cluster you named. Never a tag, and never counted by `find`, until you confirm it. | A name you gave. |
 | **confirm**, **reject** | Your answer to a suggestion: confirm makes it your name (written as a tag by `tag`); reject drops it, and that name is never suggested for that face or pet again. | Take out (a name you gave, undone for one face or pet). |
 | **take out** | "Not this one": one face or pet leaves its cluster's name for good (until **put back**). Removing a `People\|` or `Pets\|` tag the tool wrote from a sidecar does the same. | Reject. |
-| **ignore** | A cluster of strangers, posters or statues: never named, never tagged. | Trash. |
+| **ignore** | A cluster of strangers, posters or statues: never named, never tagged. In the gallery the button is **Not a person** / **Not a pet**, and **Not ignored** undoes it. | Trash. |
+| **People & Pets** | The gallery sidebar's section: each name you gave or confirmed with its item count, and **Name new faces/pets**. Shown only once the recognition store exists. | Quick views. |
+| **Name faces and pets** | The gallery's naming view (its **Name new faces/pets** entry): the clusters to name, the suggestions, the named and the ignored ones. | The review page. |
+| **Looks like _Name_** | In the naming view only: a cluster close to one you named ("Looks like Ann.", with Merge into Ann…), or the suggestions waiting for a name ("Looks like Ann: 42"). | **Looks like** the content label (dog, beach). |
 
 ## Events
 

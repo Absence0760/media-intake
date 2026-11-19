@@ -382,6 +382,17 @@ class NamesAndTags(Base):
         self.assertEqual((cl["name"], cl["how"], cl["count"], cl["suggested"]), ("Ann", "owner", 3, 0))
         self.assertLessEqual(set(cl["crops"]), {x["id"] for x in self.c.execute("SELECT id FROM detections")})
 
+    def test_tag_only_some_paths(self):
+        """write_tags(only=...): the gallery writes the files one naming action touched, and reads no other."""
+        seen = []
+        reader = lambda paths: (seen.extend(paths), self.side.read(paths))[1]  # noqa: E731
+        cnt = recog.write_tags(self.c, self.spec, reader=reader, writer=self.side.write, state=self.state,
+                               only={self.p[0]})
+        self.assertEqual((cnt["sidecars changed"], seen), (1, [self.p[0]]))
+        self.assertEqual(self.side.tags[self.p[0]], ["People|Ann"])
+        self.assertNotIn(self.p[1], self.side.tags)
+        self.assertEqual(self.tag()["sidecars changed"], len(self.p) - 1, "the rest on the next full run")
+
     def test_reject_is_never_suggested_again(self):
         new = self.grow("other", self.s_ann)
         (d,) = self.det_of(new)

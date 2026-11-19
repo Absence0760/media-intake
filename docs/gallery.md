@@ -46,7 +46,11 @@ without one" (`/api/facets` gives `drive`, the mount or null).
   plugin tab; quick views **Favorites** (below), **Added in the last 30
   days** = filed into the library in the last 30 days, by the file's inode
   change time, Possible child = `Review|child-in-shot`,
-  Untagged, **Dates to check** (below); then **Events** with counts, the eight largest and "All N events"),
+  Untagged, **Dates to check** (below); then **Events** with counts, the eight largest and "All N events";
+  then **Places** (below); then, only once people and pets recognition has a store, **People & Pets**:
+  each person and pet you named with the number of items tagged with the
+  name, and **Name new faces/pets** with the clusters still to name plus the
+  suggestions waiting, below),
   the search box (a one-line hint when semantic search is off, the
   full reason under "why"), then the filters as collapsible sections with
   counts (open / closed remembered per section) and "Clear filters (N)",
@@ -56,7 +60,7 @@ without one" (`/api/facets` gives `drive`, the mount or null).
   search and filters.
   Counts are for the whole library, not narrowed by the other filters.
   Collapsed to the rail, each icon has a short word under it (Library, Junk,
-  Favorites, Recent, Child, No tags, Search, Filters); the full name stays its tooltip
+  Favorites, Recent, Child, No tags, Names, Search, Filters); the full name stays its tooltip
   and the name a screen reader reads.
 - **Sidebar width**: 300 px by default; on a desktop, with the sidebar
   expanded, drag its right edge to make it wider or narrower (the grid
@@ -442,6 +446,77 @@ exactly that fix back through fix-dates' record (`fix-dates --undo` sees it
 too), refusing (409) once a sidecar changed again. A fixed file leaves the
 view, and its tile shows the new date elsewhere.
 
+## People and pets
+
+Off by default: nothing of it shows until `media-intake people scan` (or
+`pets scan`) has made the recognition store ([recognition.md](recognition.md));
+the gallery reads that store and never creates one. Words:
+[words.md](words.md), "People and pets".
+
+- **Sidebar, People & Pets** (below Places): each name you gave or confirmed,
+  with the number of library items whose sidecar has its tag
+  (`People|<Name>` or `Pets|<Name>`). A click shows those items, by the tag
+  (`who=People|<Name>` on `/api/list`), with the name as the title. A
+  suggestion never counts or shows there. Then **Name new faces/pets**, its
+  count the clusters with no name yet (two or more faces or pets) plus the
+  suggestions waiting; collapsed to the rail it is the face icon with
+  "Names".
+- **Name faces and pets** (that entry; in the main column, not a separate
+  server): People or Pets (when the store has both), then **To name**,
+  **Suggestions**, **Named** and **Not a person** / **Not a pet**, each with
+  its count. A cluster is a card with up to 24 crops, largest first, loaded
+  as you scroll; 30 cards a page, **More clusters** for the next.
+  - **To name**: type a name (the box suggests the names you gave) and press
+    Enter or **Name**: every face of the cluster gets it, and its tag is
+    written into the sidecars of the files it is in at once (under the
+    library lock, like Keep). The message has **Undo** (Ctrl+Z), which takes
+    the name and the tags back off. **Merge into…** asks for a name you gave
+    or a cluster number; a cluster close to one you named says "Looks like
+    Ann." with **Merge into Ann…**. **Not a person** / **Not a pet** ignores
+    the cluster: never tagged.
+  - A click (or Enter / Space) on a crop takes that one face or pet out of
+    the cluster's name (its tag comes off that file; the message has Undo),
+    a second one puts it back. A taken-out crop is shown crossed out
+    (`aria-pressed`).
+  - **Suggestions**: one card per name, "Looks like Ann: 42", for faces that
+    joined a cluster you named since. Click a crop that isn't Ann to mark it
+    ("Not Ann"); **Confirm all 42** (or "Confirm 40, reject 2") and
+    **Reject all** ask first. Confirmed ones are tagged; rejected ones are
+    never suggested that name again.
+  - **Named**: Rename (asks), Merge into…, Unname… (asks; the tags it wrote
+    come off). **Not a person**: **Not ignored** puts a cluster back to name.
+  - Merge, rename, unname and confirm / reject say "This can't be undone
+    here" in their dialog: the store has no step back for them (you can
+    still unname, take out or name again).
+  - Every POST names the cluster run the page listed; after `people cluster`
+    (or `pets cluster`) ran, it gets 409 "The clusters changed since this
+    page loaded…" with **Reload the list**, and nothing changes. An Undo
+    from before a re-cluster is refused the same way.
+- **Large view**: "People: Ann, Bo" and "Pets: Rex" under Details, from the
+  tags you confirmed (only there: not under "Your tags" or "Added by the
+  tools", and "+ tag" refuses `People|` / `Pets|`); each name shows the grid of that name. For a video,
+  "Ann appears at 0:12, 1:40" (the times the store saw Ann, one a second at
+  most) seeks the player. Each time is the second of the frame
+  `media_intake/frames.py` sampled the face or pet in
+  ([recognition.md](recognition.md), "Videos").
+- **Crops** are biometric: served only as `/r/<detection id>` (no path),
+  made on demand by `recog.crop_bytes` into the store's own `crops/` (folder
+  `0700`, files `0600`; never the thumbnail cache), with `no-store` like
+  every response, and never for a file that is flagged, quarantined,
+  erased, trashed, in a running Trash or Erase, or not in the library the
+  gallery lists. Share copies never include them. A video's crop is cut
+  from the same sampled frame again (frames.py); a video that can no longer
+  be decoded shows an empty square.
+- **Suggested junk**: a file with a name you gave or confirmed (its
+  `People|<Name>` or `Pets|<Name>` tag) is never suggested as junk by a
+  label or the vision check (`owner.named`); a copy of something you
+  trashed still is, since a name is no Keep.
+- API: `GET /api/rec?kind=face|pet&show=todo|sugg|named|ignored&after=<cluster>`;
+  `POST /api/rec/name|ignore|unname|merge|out|back|answer` with
+  `{"kind", "run", ...}` (`cluster`, `name`, `into` a cluster number or a
+  name, `ids` detection ids, `confirm` / `reject` id lists); the token, Host,
+  Origin and CSRF checks of every POST (403), JSON only (415).
+
 ## Filters (all combinable)
 
 Project, Source, Event, Place (the city: a `Place|` tag with a comma), My place
@@ -554,7 +629,7 @@ a scroll and a selection.
 | Keep | sidecar: `Owner\|keep` and `Owner\|not-trash` added; `Review\|maybe-trash`, an older `Owner\|trash` and the legacy `Review\|not-trash` removed (each leaf only when no other tag uses it). Nothing else. The same rule as the review page's Keep (`intake.keep_args`). |
 | Trash | `media-intake trash FILE... --yes` (the page has already asked): plain delete of the file, its sidecar, thumbnails (freedesktop and the gallery's) and index entry; the sha goes in `trashed.json` (the durable `Owner\|trash`) so intake never takes it in again, and library copies of it left on disk get `Owner\|trash` in their sidecar. The same command the review page's Trash runs. Summary + confirm. |
 | Erase | `media-intake forget FILE... --yes [--drive]`: the erase-everywhere path (quarantine, sweep of HOME, sidecars, thumbnails, recent files, erase log, verify-gone). Summary + type ERASE. For anything private. |
-| My tag + / - | sidecar `HierarchicalSubject` + its `dc:Subject` leaf. Refused for the tools' namespaces (`Project\|`, `Source\|`, `Event\|`, `Place\|`, `Label\|`, `Review\|`, `AI\|`, `Used\|`, `Owner\|`); removal only touches your tags, and keeps a leaf another tag still uses. |
+| My tag + / - | sidecar `HierarchicalSubject` + its `dc:Subject` leaf. Refused for the tools' namespaces (`Project\|`, `Source\|`, `Event\|`, `Place\|`, `Label\|`, `Review\|`, `AI\|`, `Used\|`, `Owner\|`, `People\|`, `Pets\|`: names go through the naming view); removal only touches your tags, and keeps a leaf another tag still uses. |
 | Rotate | sidecar `XMP-tiff:Orientation` only (1/6/3/8), each item from its own orientation. The original is never re-encoded or written; digiKam reads the same field. |
 | Set event | `POST /api/event/set` (`{"ids": [...], "event": slug}`): sidecar `Event\|<slug>` (and `XMP-iptcExt:Event`), replacing the item's other `Event\|` tags; `"event": ""` takes the items out of every event. Nothing else. |
 | Share | nothing in the library: `media-intake share-copy` into a new folder (below), then that folder opened in the file manager. |
@@ -872,7 +947,9 @@ only, every byte of HTML/CSS/JS inline (no CDN, fonts or scripts), bound to
 SameSite=Strict cookie, a Host check against DNS rebinding, a CSRF value and
 an Origin check on every POST, `no-store` and a strict CSP on every response,
 media by opaque id only (never a path), Range requests for video. Plugin
-routes run only after the same token, Host, Origin and CSRF checks.
+routes run only after the same token, Host, Origin and CSRF checks. Face and
+pet crops (`/r/<id>`) follow the same rules and the ones under "People and
+pets" above.
 
 ## Performance
 
@@ -885,6 +962,22 @@ items and making 240 thumbnails (about 20 ms each for a 1600 x 1200 JPEG). A
 cold read from disk will be slower.
 
 ## Test
+
+`python3 -I -m unittest discover -s tests -p test_gallery_people.py`: People & Pets on a
+synthetic recognition store built through recog's API with a mock detector
+and embedder (no model): off without a store (none created), the facet and
+filter, name / Undo / ignore / unname / merge (across species refused) / take
+out / put back with the sidecars read back by exiftool, "looks like" hints
+(people at people.py's threshold, pets at pets.py's `SAME`, never a cat for a
+dog), a name only in the large view's People line (not "Your tags"; "+ tag"
+refuses `People|` / `Pets|`), suggestions after a re-cluster, 409 for a stale run and a stale Undo, 403 and
+415, crops (0600 in 0700, no-store, never for a flagged file) and the large
+view's names and a video's times. Its browser counterpart is
+`tests/browser/test_browser_gallery_people.py` (also: a junk-flagged photo
+leaves Suggested junk once named and comes back on Undo, and the sidebar's
+order, Quick views, Events, Places, People & Pets, with no sideways scroll at
+1000 px or on a phone). A video's crop through the real frame source (frames.py
+on an ffmpeg clip) is in `tests/test_recog.py`.
 
 `python3 -I -m unittest discover -s tests -p test_gallery.py`: synthetic media in a throwaway
 HOME, the re-run under the venv with every flag and nothing printed first (`VenvReexecTest`: `os.execv`
@@ -1134,6 +1227,11 @@ recent years, All years (N), kept across a reload, and a picked older year
 staying listed.
 
 ## Not verified
+
+- People and pets with the real models (YuNet + SFace, YOLOX + DINOv2) on
+  real photos: the gallery tests use a mock detector and embedder (with
+  pets.py's real thresholds); a video's times in the gallery come from a stub
+  frame source there, and from the real one only in `tests/test_recog.py`.
 
 - The layout by eye (sidebar, drawer and rail at phone width, light and
   dark), infinite scroll and HEVC posters through GStreamer in a real

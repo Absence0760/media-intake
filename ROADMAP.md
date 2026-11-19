@@ -163,12 +163,13 @@ The goal: someone else can install it on Fedora, import a phone, and trust it.
 - [ ] Optional local face grouping (off by default): face data counts as personal data,
       so erase/verify-gone must cover it; never names faces automatically. Core and CLI built
       (`recog.py`, `media-intake people`; names propagate only as suggestions until confirmed;
-      docs/recognition.md); the gallery's naming view is still to come.
+      docs/recognition.md); the gallery's People & Pets section and naming view are built too
+      (docs/gallery.md, "People and pets").
 - [ ] Pet recognition (`Pets|<Name>`) alongside face grouping, sharing one store, naming and
       erase path; suggestions only until the owner confirms: core and CLI built (`pets.py`,
       `media-intake pets`, YOLOX + DINOv2, `pets eval` against your own names;
-      docs/recognition.md, decisions in docs/research-pets.md); the gallery's naming view and
-      date-aware propagation are still to come.
+      docs/recognition.md, decisions in docs/research-pets.md), and named in the gallery's
+      naming view; date-aware propagation is still to come.
 - [ ] Search the text in photos: keep the OCR text the sensitive-content scan already reads
       (screenshots, receipts, signs) in a private local index and let `search` and the
       gallery find files by what they say; flagged and erased files never indexed, erase

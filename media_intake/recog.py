@@ -884,8 +884,9 @@ def desired_tags(c, spec):
     return want
 
 
-def write_tags(c, spec, dry=False, reader=None, writer=None, state=None):
-    """Bring spec.prefix tags in sidecars in line with the store. Idempotent; returns counts.
+def write_tags(c, spec, dry=False, reader=None, writer=None, state=None, only=None):
+    """Bring spec.prefix tags in sidecars in line with the store. Idempotent; returns counts. only: just these
+    paths (the gallery: the files one naming action touched, so it reads a few sidecars, not every one).
 
     Adds an owner name's tag (suggestions are never tags); removes only tags this tool wrote earlier (table
     `written`) that no longer apply; never re-adds a tag the owner removed from the sidecar (those
@@ -898,7 +899,7 @@ def write_tags(c, spec, dry=False, reader=None, writer=None, state=None):
     written = collections.defaultdict(dict)
     for r in c.execute("SELECT path, tag, state FROM written WHERE substr(tag, 1, ?)=?", (len(spec.prefix), spec.prefix)):
         written[r["path"]][r["tag"]] = r["state"]
-    paths = sorted(p for p in set(want) | set(written) if os.path.isfile(p))
+    paths = sorted(p for p in set(want) | set(written) if os.path.isfile(p) and (only is None or p in only))
     bad = set(label.refused(paths, state))
     paths = [p for p in paths if p not in bad]
     existing = reader(paths) if paths else {}

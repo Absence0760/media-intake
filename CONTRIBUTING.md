@@ -184,7 +184,11 @@ close the PR.
   `test_browser_gallery_places.py` runs My places: the sidebar's Places
   section, Add a place here… from the large view (name, radius, a refused
   look-alike), the "probably here" Yes and No, a name put on the page as text,
-  no sideways scroll on a phone, and no coordinate in any reply. They skip with a reason
+  no sideways scroll on a phone, and no coordinate in any reply. `test_browser_gallery_people.py` runs People & Pets on a
+  synthetic recognition store (mock detector and embedder, no model): no section without a store, naming
+  with Undo, a "Looks like" merge, Not a person, a crop taken out and put back, suggestions confirmed and
+  rejected, a stale page's 409, names with markup shown as text, a video's "appears at" seeking the player,
+  a confirmed name kept out of Suggested junk, and the naming view at 390 px in light and dark. They skip with a reason
   when Playwright or its Chromium is missing, so the commands above are
   unaffected; the `browser` job in `ci.yml` runs them (and fails, not skips,
   through `MEDIA_INTAKE_BROWSER_REQUIRED=1`). Locally, once:
