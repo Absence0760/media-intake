@@ -1104,7 +1104,9 @@ class Rec:
             if os.path.isfile(os.path.join(HERE, mod + ".py")):
                 try:
                     sp = __import__(mod).spec()
-                except Exception:  # its module failed to load: the stand-in below
+                except Exception as e:  # its module failed to load: the stand-in below, said once per kind
+                    print(f"gallery: {mod}.py failed to load ({type(e).__name__}: {str(e)[:200]}); {kind}s "
+                          "get no \"looks like\" hints", file=sys.stderr, flush=True)
                     sp = None
             if sp is None:
                 r = c.execute("SELECT e.model, COUNT(*) n FROM embeddings e JOIN detections d ON d.id=e.det "

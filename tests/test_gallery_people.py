@@ -390,5 +390,28 @@ class PeopleApiTest(unittest.TestCase):
         self.assertIn("People|Ann", hier(w.both))
 
 
+@unittest.skipUnless(TR.np, "numpy or Pillow missing (python3-numpy, python3-pillow)")
+class SpecFallbackTest(unittest.TestCase):
+    """Rec.spec in-process: a people / pets module that fails to load is said on stderr, once per kind, and the
+    stand-in (the store's own model, no "looks like" hints) still serves the kind."""
+
+    def test_a_failed_import_is_said_once(self):
+        import contextlib, io
+        import gallery
+        tmp = tempfile.mkdtemp(prefix="gallery-spec-")
+        self.addCleanup(shutil.rmtree, tmp, True)
+        w = RecLibrary(tmp, video=False)
+        self.addCleanup(w.close)
+        rec = gallery.Rec()
+        err = io.StringIO()
+        with mock.patch.object(pets, "spec", side_effect=RuntimeError("broken model list")), \
+                contextlib.redirect_stderr(err):
+            sp = rec.spec(w.c, "pet")
+            self.assertIs(rec.spec(w.c, "pet"), sp)
+        self.assertEqual(err.getvalue().count("\n"), 1, err.getvalue())
+        self.assertIn("pets.py failed to load (RuntimeError: broken model list)", err.getvalue())
+        self.assertEqual((sp.model, sp.same, sp.prefix), (PET_MODEL, None, "Pets|"))
+
+
 if __name__ == "__main__":
     unittest.main()
