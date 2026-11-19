@@ -58,6 +58,14 @@ buttons are named in **bold**, as they appear on screen.
 | **Looks like** | A content label (dog, beach, food, ...) from the local SigLIP model. |
 | **Flags** | The gallery filter for Tagged as junk, Possible child and Untagged. |
 
+## Events
+
+| Word | Means | Not to be confused with |
+| --- | --- | --- |
+| **event** | A named group of photos and videos (a trip, a shoot), held in each file's sidecar as `Event\|<slug>`. **Set event…**, **Rename…** and **Merge into…** change it. | A batch. |
+| **slug** | An event's name in the sidecars: lowercase letters, digits and dashes, like `summer-2026` (`plan --event`, Set event, Rename). Always in the tooltip and the event bar. | The display name. |
+| **display name** | What the gallery shows for an event in the sidebar and the title: one you set with **Display name…**, else the slug made readable ("Summer 2026") when no other event looks like it, else the slug. Kept by the gallery in the state folder, never in a sidecar; two events never show alike. | The slug. |
+
 The tool's own tag names (`Review|maybe-trash`, `Owner|keep`, `Label|food`)
 appear only in sidecars and in the developer docs; the pages map them to the
 words above in one place each (`WORDS` in `gallery.py`, the review page's

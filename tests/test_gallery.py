@@ -938,6 +938,69 @@ class GalleryTest(unittest.TestCase):
         for p, h0 in self.originals.items():
             self.assertEqual(sha(p), h0, p)
 
+    def test_display_name_follows_rename_and_merge(self):
+        """Rename moves an event's display name to the new slug (a stale name left for that slug never attaches);
+        merge keeps the target's name and drops the merged events'."""
+        write_tags(self.b, ["Event|beach"])
+        write_tags(self.lo, ["Project|Personal", "Event|hike"])
+        names = os.path.join(self.state, "event-names.json")
+        s = self.start()
+        for ev, n in (("beach", "Sea days"), ("hike", "Mountain walk"), ("city-expo", "The expo")):
+            code, j = s.post("/api/event/name", {"event": ev, "name": n})
+            self.assertEqual(code, 200, j)
+        # a name stored for "coast" from before (an event since emptied): never picked up by the rename
+        with open(names) as f:
+            d = json.load(f)
+        (key, lib), = d["libraries"].items()
+        lib["coast"] = "Stale"
+        with open(names, "w") as f:
+            json.dump(d, f)
+        code, j = s.post("/api/event/rename", {"from": "beach", "to": "coast"})
+        self.assertEqual(code, 200, j)
+        en = s.get("/api/facets")["event_names"]
+        self.assertEqual(en["coast"], {"label": "Sea days", "name": "Sea days"})
+        self.assertNotIn("beach", en)
+        with open(names) as f:
+            self.assertNotIn("beach", json.load(f)["libraries"][key])
+        code, j = s.post("/api/event/merge", {"from": ["coast", "city-expo"], "into": "hike"})
+        self.assertEqual(code, 200, j)
+        en = s.get("/api/facets")["event_names"]
+        self.assertEqual(en, {"hike": {"label": "Mountain walk", "name": "Mountain walk"}})
+        with open(names) as f:
+            self.assertEqual(json.load(f)["libraries"][key], {"hike": "Mountain walk"})
+        self.assertEqual(stat.S_IMODE(os.stat(names).st_mode), 0o600)
+        # Set event making a new event: a name left over for that slug never attaches either
+        with open(names) as f:
+            d = json.load(f)
+        d["libraries"][key]["picnic"] = "Stale"
+        with open(names, "w") as f:
+            json.dump(d, f)
+        code, j = s.post("/api/event/set", {"ids": [self.id_of(s, "a.jpg")], "event": "picnic"})
+        self.assertEqual(code, 200, j)
+        self.assertEqual(s.get("/api/facets")["event_names"]["picnic"], {"label": "Picnic", "name": ""})
+        with open(names) as f:
+            self.assertEqual(json.load(f)["libraries"][key], {"hike": "Mountain walk"})
+        # Set event into an event that exists keeps its name
+        code, j = s.post("/api/event/set", {"ids": [self.id_of(s, "b.jpg")], "event": "hike"})
+        self.assertEqual(code, 200, j)
+        self.assertEqual(s.get("/api/facets")["event_names"]["hike"]["label"], "Mountain walk")
+        # an unreadable names file: rename and merge still rewrite the sidecars, say the names weren't
+        # updated, and leave the file as it was
+        with open(names, "w") as f:
+            f.write("{not json")
+        code, j = s.post("/api/event/rename", {"from": "hike", "to": "trail"})
+        self.assertEqual(code, 200, j)
+        self.assertIn("display names not updated", j["result"])
+        self.assertIn("Event|trail", tags_of(self.lo)[0])
+        code, j = s.post("/api/event/merge", {"from": ["picnic"], "into": "trail"})
+        self.assertEqual(code, 200, j)
+        self.assertIn("display names not updated", j["result"])
+        self.assertIn("Event|trail", tags_of(self.a)[0])
+        with open(names) as f:
+            self.assertEqual(f.read(), "{not json")
+        for p, h0 in self.originals.items():
+            self.assertEqual(sha(p), h0, p)
+
     # ------------------------------------------------------------ bulk edits on a selection
     def test_bulk_edits(self):
         """Tags, event and rotate on several items at once, through the same endpoints as one item."""
@@ -1094,6 +1157,7 @@ class ViewsEndpointsTest(unittest.TestCase):
         return {"/api/event/set": {"ids": [ida, idb], "event": "picnic"},
                 "/api/event/rename": {"from": "beach", "to": "coast"},
                 "/api/event/merge": {"from": ["hike"], "into": "beach"},
+                "/api/event/name": {"event": "beach", "name": "Beach day"},
                 "/api/share": {"ids": [ida]},
                 "/api/favorite": {"ids": [ida, idb], "on": True},
                 "/api/undo": {"undo": "not-a-token"}}
@@ -1109,6 +1173,73 @@ class ViewsEndpointsTest(unittest.TestCase):
         r, page = s.req("GET", "/")
         for needle in (b'id="evlist"', b'id="evbar"', b'id="bevent"', b'id="bshare"', b'id="mfield"'):
             self.assertIn(needle, page)
+
+    def test_event_display_names(self):
+        """A display name is stored in <state>/event-names.json (0600, per library), survives a restart, never
+        touches a sidecar, and is refused when it would look like another event's slug or name."""
+        raw_xmp(self.b2, ["Event|some-trip-2024"])
+        c = os.path.join(self.lib, "2026/2026-08/c.jpg")
+        img(c, (90, 90, 90))
+        raw_xmp(c, [], event="Hike day")  # another tool's event text, not a slug
+        s = self.start()
+        en = s.get("/api/facets")["event_names"]
+        self.assertEqual(en["some-trip-2024"], {"label": "Some trip 2024", "name": ""})  # the default
+        self.assertEqual(en["beach"], {"label": "Beach", "name": ""})
+        self.assertEqual(en["Hike day"]["label"], "Hike day")
+        before = self.files()
+        names = os.path.join(self.state, "event-names.json")
+        # bad input: nothing stored
+        for body in ({"event": "beach", "name": "x" * 65}, {"event": "beach", "name": "a\nb"},
+                     {"event": "beach", "name": "be\u200bach"}, {"event": "beach", "name": 5},
+                     {"event": "no-such", "name": "Nope"}, {"event": "", "name": "Nope"}, {"name": "Nope"},
+                     {"event": "beach", "name": "HIKE"},                 # another event's slug, but for case
+                     {"event": "beach", "name": "  some  TRIP_2024 "},   # spacing, dashes, underscores
+                     {"event": "beach", "name": "hike-day"}):            # another tool's event text
+            code, j = s.post("/api/event/name", body)
+            self.assertEqual(code, 400, (body, j))
+        code, j = s.post("/api/event/name", {"event": "beach", "name": ""})  # clearing none: nothing written
+        self.assertEqual(code, 200, j)
+        self.assertIn("already shows its default name", j["result"])
+        self.assertFalse(os.path.exists(names))
+        code, j = s.post("/api/event/name", {"event": "beach", "name": "  Summer   at <b>the</b> sea "})
+        self.assertEqual(code, 200, j)
+        self.assertEqual(stat.S_IMODE(os.stat(names).st_mode), 0o600)
+        with open(names) as f:
+            d = json.load(f)
+        self.assertEqual(d["version"], 1)
+        (key, lib), = d["libraries"].items()
+        self.assertRegex(key, r"^[0-9a-f]{16}$")  # a hash of the library's folders, never a path
+        self.assertEqual(lib, {"beach": "Summer at <b>the</b> sea"})
+        # a name set for one event: another event can't take one that looks like it
+        code, j = s.post("/api/event/name", {"event": "hike", "name": "summer AT <b>the</b> sea"})
+        self.assertEqual(code, 400, j)
+        self.assertIn("looks like", j["error"])
+        code, j = s.post("/api/event/name", {"event": "hike", "name": "Mountain walk"})
+        self.assertEqual(code, 200, j)
+        # a default that looks like another event's text falls back to the slug: some-trip-2024 beside
+        # "Some Trip 2024" (another tool's), seen once the gallery restarts
+        img(os.path.join(self.lib, "2026/2026-07/d.jpg"), (10, 90, 90))
+        raw_xmp(os.path.join(self.lib, "2026/2026-07/d.jpg"), [], event="Some Trip 2024")
+        self.assertEqual(self.files(), before)  # never a sidecar
+        s.stop()
+        s = self.start()  # a restarted gallery shows the same names (and now sees d.jpg)
+        en = s.get("/api/facets")["event_names"]
+        self.assertEqual(en["beach"], {"label": "Summer at <b>the</b> sea", "name": "Summer at <b>the</b> sea"})
+        self.assertEqual(en["hike"]["label"], "Mountain walk")
+        self.assertEqual(en["some-trip-2024"]["label"], "some-trip-2024")
+        self.assertEqual(en["Some Trip 2024"]["label"], "Some Trip 2024")
+        # "" goes back to the default
+        code, j = s.post("/api/event/name", {"event": "hike", "name": ""})
+        self.assertEqual(code, 200, j)
+        self.assertEqual(s.get("/api/facets")["event_names"]["hike"], {"label": "Hike", "name": ""})
+        # an unreadable file is never overwritten (another library's names may be in it)
+        with open(names, "w") as f:
+            f.write("{not json")
+        self.assertEqual(s.get("/api/facets")["event_names"]["beach"]["label"], "Beach")
+        code, j = s.post("/api/event/name", {"event": "beach", "name": "Sea"})
+        self.assertEqual(code, 409, j)
+        with open(names) as f:
+            self.assertEqual(f.read(), "{not json")
 
     def test_share_out_flag_reaches_the_app(self):
         """gallery --share-out DIR: the page names DIR and an export lands in a new folder under it, never under
@@ -1144,6 +1275,7 @@ class ViewsEndpointsTest(unittest.TestCase):
             self.assertEqual(r.status, 415, path)
         self.assertEqual(self.files(), before)
         self.assertFalse(os.path.exists(self.share_root))
+        self.assertFalse(os.path.exists(os.path.join(self.state, "event-names.json")))  # no display name stored
         self.assertEqual(s.get("/api/job")["id"], None)  # no job started
 
     def test_rename_and_merge_refuse_an_unsafe_old_name_from_metadata(self):
@@ -1177,6 +1309,7 @@ class ViewsEndpointsTest(unittest.TestCase):
             self.assertEqual(code, 409, (path, j))
             self.assertEqual((j["error"], j.get("busy")), ("a Trash is still running; wait for it to finish, then try again", True), path)
         self.assertEqual(self.files(), before)
+        self.assertFalse(os.path.exists(os.path.join(self.state, "event-names.json")))
         self.assertEqual(os.listdir(self.share_root), [])  # the export's folder went with the refusal
         fd = os.open(gate, os.O_WRONLY)  # the fake is waiting on it: this returns at once
         os.write(fd, b"go")
@@ -1297,6 +1430,71 @@ class EventBlockTest(unittest.TestCase):
             with self.assertRaises(ValueError, msg=d):
                 self.g.App([], share_out=d).share_dir()
         self.assertFalse(os.path.exists(os.path.join(self.g.LIBRARY, "share")), "nothing created on refusal")
+
+
+class EventLabelsTest(unittest.TestCase):
+    """Display names in process: never two events that look alike, and the file kept per library."""
+
+    def setUp(self):
+        import gallery
+        self.g = gallery
+        self.tmp = tempfile.mkdtemp(prefix="gallery-evnames-test-")
+        self.addCleanup(shutil.rmtree, self.tmp, True)
+
+    def test_defaults_only_when_unique(self):
+        L = self.g.event_labels
+        self.assertEqual(L(["some-trip-2024", "beach"], {}), {"some-trip-2024": "Some trip 2024", "beach": "Beach"})
+        # a-b and "a b" (another tool's text) would look the same prettified: a-b keeps its slug
+        self.assertEqual(L(["a-b", "a b"], {}), {"a-b": "a-b", "a b": "a b"})
+        self.assertEqual(L(["trip", "Trip"], {}), {"trip": "trip", "Trip": "Trip"})
+        self.assertEqual(L(["a--b", "x-", "Mixed-Case"], {}), {"a--b": "a--b", "x-": "x-", "Mixed-Case": "Mixed-Case"})
+        # a set name is shown unless it looks like another event's slug or set name; then the defaults
+        self.assertEqual(L(["beach", "coast"], {"coast": "Sea"}), {"beach": "Beach", "coast": "Sea"})
+        self.assertEqual(L(["beach", "coast"], {"coast": "BEACH "}), {"beach": "Beach", "coast": "Coast"})
+        self.assertEqual(L(["beach", "coast"], {"beach": "Sea", "coast": "sea"}), {"beach": "Beach", "coast": "Coast"})
+        self.assertEqual(L(["beach"], {"gone-event": "Beach"}), {"beach": "Beach"})  # a name of no current event
+        self.assertEqual(L(["beach", "x"], {"beach": "beach"}), {"beach": "beach", "x": "X"})  # its slug, by choice
+        for events, names in ((["a-b", "a b", "A_B", "trip"], {"trip": "A  b"}),
+                              ([f"e-{i}" for i in range(30)] + ["E 3", "e 4"], {"e-5": "E 6", "e-7": "Seven"})):
+            shown = L(events, names)
+            self.assertEqual(sorted(shown), sorted(events))
+            self.assertEqual(len(set(shown.values())), len(events), shown)
+            k = self.g.look_key
+            for e, v in shown.items():  # a label other than its own slug looks like no other event's slug or label
+                if v != e:
+                    self.assertFalse([f for f in events if f != e and k(v) in (k(f), k(shown[f]))], (e, v))
+
+    def test_check_display_name(self):
+        c = self.g.check_display_name
+        self.assertEqual(c("  Summer   trip "), "Summer trip")
+        self.assertEqual(c(""), "")
+        for bad in ("x" * 65, "a\tb\x00", "be\u200bach", "\u202eevil", 3, None):
+            with self.assertRaises(ValueError, msg=repr(bad)):
+                c(bad)
+
+    def test_file_is_per_library_private_and_atomic(self):
+        st = os.path.join(self.tmp, "state")
+        one, two = [os.path.join(self.tmp, "lib1")], [os.path.join(self.tmp, "lib2"), os.path.join(self.tmp, "v")]
+        self.assertEqual(self.g.load_event_names(st, one), {})  # no file yet
+        self.g.save_event_names({"beach": "Sea"}, st, one)
+        self.g.save_event_names({"beach": "Lake"}, st, two)
+        self.assertEqual(self.g.load_event_names(st, one), {"beach": "Sea"})
+        self.assertEqual(self.g.load_event_names(st, two), {"beach": "Lake"})
+        p = os.path.join(st, self.g.EVENT_NAMES)
+        self.assertEqual(stat.S_IMODE(os.stat(p).st_mode), 0o600)
+        self.assertEqual(stat.S_IMODE(os.stat(st).st_mode), 0o700)
+        self.assertEqual(sorted(os.listdir(st)), [self.g.EVENT_NAMES])  # no temp file left behind
+        with open(p) as f:
+            self.assertNotIn(self.tmp, f.read())  # libraries by hash, never a path
+        with open(p) as f:  # a name edited by hand into one the page would refuse is left out
+            d = json.load(f)
+        d["libraries"][self.g.library_key(one)].update(bad="a\nb", sp="  x  ", zw="a\u200bb", ok="Fine")
+        with open(p, "w") as f:
+            json.dump(d, f)
+        self.assertEqual(self.g.load_event_names(st, one), {"beach": "Sea", "ok": "Fine"})
+        self.g.save_event_names({}, st, one)  # the last name gone: that library's entry goes
+        self.assertEqual(self.g.load_event_names(st, one), {})
+        self.assertEqual(self.g.load_event_names(st, two), {"beach": "Lake"})
 
 
 class SemanticArgvTest(unittest.TestCase):

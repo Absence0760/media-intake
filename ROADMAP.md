@@ -108,7 +108,8 @@ The goal: someone else can install it on Fedora, import a phone, and trust it.
       review page keeps serving batch files as they are: docs/gallery.md, "Video proxies").
 - [x] Burst groups: show bursts as one stack, pick the best, trash the rest (review page
       and gallery; docs/gallery.md, "Burst stacks").
-- [x] Albums/events as first-class views (from `Event|` tags), with rename and merge.
+- [x] Albums/events as first-class views (from `Event|` tags), with rename and merge, and display
+      names you can set (docs/gallery.md, "Events").
 - [x] Burst stacks in the gallery (the review page has them; `media_intake/bursts.py` is shared;
       docs/gallery.md, "Burst stacks").
 - [x] Record a camera's `BurstUUID` as `burst_id` in plan entries (Apple `BurstUUID`, Google

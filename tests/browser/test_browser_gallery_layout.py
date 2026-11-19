@@ -19,7 +19,8 @@ visible focus line in both schemes and in forced colours, no edge key with a mod
 list is open, a bad stored width falling back or clamped, an interrupted drag (pointercancel, lost capture)
 putting the width back, a right-button press not dragging, working with localStorage throwing, and no edge in
 the collapsed rail or at phone width (rail or drawer); Keyboard shortcuts at the sidebar's foot, not in the Views nav among the
-events, its list naming the Sidebar keys; the search placeholder fitting its box at the default width, a tenth to spare.
+events, its list naming the Sidebar keys; a 64-character event slug and display name fitting a phone's drawer, title and
+event bar; the search placeholder fitting its box at the default width, a tenth to spare.
 Review page: the burst badge, a pressed Keep and Submit at 4.5:1 or more in both schemes.
 
 The gallery's library is tests/test_gallery_bursts.py's BURST_LIBRARY in a throwaway HOME (a stack of three
@@ -510,6 +511,33 @@ class GalleryLayoutBrowserTest(LayoutCase):
         phone.locator("#rail").tap()
         B.expect(phone.locator("#rail")).to_have_attribute("aria-expanded", "true")
         B.expect(self.edge(phone)).to_be_hidden()  # the phone's drawer
+
+    def test_long_event_names_fit_a_phone(self):
+        """A 64-character slug and display name, neither with a place to break: the sidebar row, the title and
+        the event bar (name and slug) stay inside a 390 px phone, with no sideways scroll."""
+        slug, name = "trip2024" * 8, "W" * 64
+        G.img(os.path.join(self.env["PHOTO_LIBRARY"], "2026/2026-08/ev.jpg"), (10, 90, 90))
+        G.raw_xmp(os.path.join(self.env["PHOTO_LIBRARY"], "2026/2026-08/ev.jpg"), [f"Event|{slug}"])
+        s = G.Server(self.env)
+        self.addCleanup(s.stop)
+        code, j = s.post("/api/event/name", {"event": slug, "name": name})
+        self.assertEqual(code, 200, j)
+        page = self.context_page(s, PHONE)
+        page.locator("#rail").tap()
+        row = page.locator(f'#evlist [data-ev="{slug}"]')
+        B.expect(row.locator(".lbl")).to_have_text(name)
+        self.assert_no_hscroll(page, "390 px, the drawer's event row")
+        box, side = row.bounding_box(), page.locator("#sidebar").bounding_box()
+        self.assertLessEqual(box["x"] + box["width"], side["x"] + side["width"] + 1, "the event row runs out of the drawer")
+        row.tap()
+        B.expect(page.locator("#vtitle")).to_have_text(name)
+        bar = page.get_by_role("toolbar", name="Event", exact=True)
+        B.expect(bar.locator("#evslug")).to_have_text(slug)
+        self.assert_header_fits(page, "390 px, an event with a long display name")
+        width = page.evaluate("() => document.documentElement.clientWidth")
+        for sel in ("#evname", "#evslug"):
+            b = bar.locator(sel).bounding_box()
+            self.assertLessEqual(b["x"] + b["width"], width + 1, f"{sel} runs out of the page")
 
     def test_keyboard_shortcuts_at_the_sidebar_foot(self):
         page = self.page(DESKTOP)

@@ -8,7 +8,7 @@ shift-click), the bottom selection bar (shown only while something is selected),
 views, the confirm dialogs (Trash; Erase with ERASE typed; the Stop server button's in-page confirm),
 the lightbox video playing by itself, Space pausing and resuming it, HTTP Range while the video
 loads and seeks, the detached-job dialog, including re-attaching to a running job after a reload,
-and the Events list (filter, Rename), Set event on a selection and a Share-safe copy (the real
+and the Events list (filter, Rename, Display name), Set event on a selection and a Share-safe copy (the real
 intake.py share-copy, which only reads the originals); Favorites (the tile's star, F on a focused tile, a
 selection and in the large view, the bar's Favorite / Unfavorite, the Favorites view and its count, Undo) and
 the When list's recent years with "All years (N)" remembered across a reload.
@@ -26,8 +26,9 @@ output as its <pre>; the textbox named "Type ERASE"; the selection bar as role=t
 named "Selection actions"; the event bar as role=toolbar named "Event"; each sidebar event as
 #evlist [data-ev=<name>]; the dialog's text field by its label; buttons by their names (Confirm,
 Cancel, Trash N file(s), Erase N file(s), Hide (it keeps running), Close, Apply…, Suggested junk, Possible
-child, Library, Clear selection, Stop server, Rename…, Set event…, Share-safe copy, Favorites); a tile's star
-as .star (aria-pressed, named "Favorite <name>"), the bar's #bfav / #bunfav, the large view's .favb.
+child, Library, Clear selection, Stop server, Rename…, Display name…, Set event…, Share-safe copy, Favorites); a
+tile's star as .star (aria-pressed, named "Favorite <name>"), the bar's #bfav / #bunfav, the large view's .favb; an
+event's display name as its row's .lbl, its slug in the row's title and the event bar's #evslug.
 """
 import json, os, re, shutil, signal, sys, tempfile, unittest
 
@@ -530,7 +531,7 @@ class GalleryBrowserTest(B.BrowserCase):
         ev("picnic").click()
         B.expect(page.locator("[data-item]")).to_have_count(2)
         self.assertEqual(sorted(self.tiles(page)), ["b.jpg", "c.png"])
-        B.expect(page.locator("#vtitle")).to_have_text("picnic")
+        B.expect(page.locator("#vtitle")).to_have_text("Picnic")  # the event's default display name
         B.expect(page.locator("#chips")).to_be_hidden()  # the event is the title and the bar, not a chip too
         evbar = page.get_by_role("toolbar", name="Event", exact=True)
         evbar.get_by_role("button", name="Rename…").click()
@@ -546,7 +547,7 @@ class GalleryBrowserTest(B.BrowserCase):
             dlg.get_by_role("button", name="Confirm").click()
         self.assertEqual(resp.value.status, 200)
         B.expect(dlg).to_be_hidden()
-        B.expect(page.locator("#vtitle")).to_have_text("park-day")
+        B.expect(page.locator("#vtitle")).to_have_text("Park day")
         B.expect(ev("park-day")).to_contain_text("2")
         B.expect(ev("picnic")).to_have_count(0)
         for p in (self.b, self.c):
@@ -582,6 +583,66 @@ class GalleryBrowserTest(B.BrowserCase):
         (sub,) = os.listdir(share)
         self.assertEqual(os.listdir(os.path.join(share, sub)), ["d.jpg"])
         self.assertEqual(G.sha(self.d), before)  # the original is only read
+
+    def test_event_display_name(self):
+        """The sidebar and the title show an event's display name (escaped, never markup), its slug in the
+        tooltip and the event bar; Display name… sets and clears it; a default that would look like another
+        event's falls back to the slug; no sidecar changes."""
+        G.write_tags(self.b, ["Event|some-trip-2024"])
+        G.write_tags(self.c, ["Event|a-b"])
+        G.write_tags(self.d, [], extra=["-XMP-iptcExt:Event=A b"])  # another tool's text: "a-b" would look alike
+        tags = {p: G.tags_of(p) for p in (self.b, self.c, self.d)}
+        s = self.start()
+        page = self.new_page()
+        self.open(page, s)
+        ev = lambda n: page.locator(f'#evlist [data-ev="{n}"]')  # noqa: E731
+        B.expect(ev("some-trip-2024").locator(".lbl")).to_have_text("Some trip 2024")
+        B.expect(ev("some-trip-2024")).to_have_attribute("title", "Event: some-trip-2024")
+        B.expect(ev("a-b").locator(".lbl")).to_have_text("a-b")  # never "A b": that is the other event
+        B.expect(ev("A b").locator(".lbl")).to_have_text("A b")
+        ev("some-trip-2024").click()
+        title, evbar = page.locator("#vtitle"), page.get_by_role("toolbar", name="Event", exact=True)
+        B.expect(title).to_have_text("Some trip 2024")
+        B.expect(title).to_have_attribute("title", "Event: some-trip-2024")
+        B.expect(evbar.locator("#evname")).to_have_text("Event: Some trip 2024")
+        B.expect(evbar.locator("#evslug")).to_have_text("some-trip-2024")
+        B.expect(evbar.locator("#evslug")).to_be_visible()
+        dlg = self.confirm(page)
+        evbar.get_by_role("button", name="Display name…").click()
+        B.expect(dlg.get_by_role("heading")).to_have_text("Display name for the event some-trip-2024?")
+        field = dlg.get_by_label("Display name")
+        B.expect(field).to_have_value("")
+        field.fill("a_B")  # looks like another event's: refused, the dialog stays with the reason
+        dlg.get_by_role("button", name="Confirm").click()
+        B.expect(dlg.locator("pre")).to_contain_text("Refused:")
+        name = '<img src=x onerror="window.__evx=1"> Road & <b>trip</b>'
+        field.fill(name)
+        with page.expect_response(lambda r: r.url.endswith("/api/event/name")) as resp:
+            dlg.get_by_role("button", name="Confirm").click()
+        self.assertEqual(resp.value.status, 200)
+        B.expect(dlg).to_be_hidden()
+        B.expect(ev("some-trip-2024").locator(".lbl")).to_have_text(name)  # as text
+        B.expect(title).to_have_text(name)
+        B.expect(evbar.locator("#evname")).to_have_text("Event: " + name)
+        B.expect(evbar.locator("#evslug")).to_have_text("some-trip-2024")
+        B.expect(page.locator("#evlist img, #vtitle img, #evbar img, #evlist b, #vtitle b")).to_have_count(0)
+        self.assertIsNone(page.evaluate("window.__evx"))
+        page.reload()  # kept by the server, not the page
+        B.expect(ev("some-trip-2024").locator(".lbl")).to_have_text(name)
+        ev("some-trip-2024").click()
+        evbar.get_by_role("button", name="Display name…").click()
+        B.expect(field).to_have_value(name)
+        field.fill("")  # empty: back to the default
+        with page.expect_response(lambda r: r.url.endswith("/api/event/name")) as resp:
+            dlg.get_by_role("button", name="Confirm").click()
+        self.assertEqual(resp.value.status, 200)
+        B.expect(ev("some-trip-2024").locator(".lbl")).to_have_text("Some trip 2024")
+        B.expect(title).to_have_text("Some trip 2024")
+        ev("A b").click()  # an event shown by its own text: no second line in the bar, no tooltip on the title
+        B.expect(title).to_have_text("A b")
+        B.expect(evbar.locator("#evslug")).to_be_hidden()
+        self.assertEqual(title.get_attribute("title"), "")
+        self.assertEqual({p: G.tags_of(p) for p in tags}, tags)  # never a sidecar
 
     def test_crashed_job_is_shown(self):
         os.mkfifo(self.gate)
