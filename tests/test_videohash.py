@@ -19,17 +19,18 @@ INTAKE = os.path.join(support.PKG, "intake.py")
 PY = sys.executable
 
 
-def have_x264():
-    """ffmpeg and ffprobe on PATH, and an ffmpeg that encodes with libx264 (the clips here are H.264)."""
+def h264_encoder():
+    """The H.264 encoder to make the clips with: libx264, or libopenh264 (Fedora's ffmpeg-free has only
+    that one); None without ffmpeg and ffprobe on PATH or without either encoder."""
     if not (shutil.which("ffmpeg") and shutil.which("ffprobe")):
-        return False
+        return None
     r = subprocess.run(["ffmpeg", "-hide_banner", "-encoders"], capture_output=True, text=True,
                        stdin=subprocess.DEVNULL)
-    return " libx264 " in r.stdout
+    return next((e for e in ("libx264", "libopenh264") if f" {e} " in r.stdout), None)
 
 
-X264 = have_x264()
-NEEDS = "ffmpeg/ffprobe missing, or this ffmpeg has no libx264 encoder"
+H264 = h264_encoder()
+NEEDS = "ffmpeg/ffprobe missing, or this ffmpeg has no H.264 encoder (libx264 / libopenh264)"
 
 
 def sha(p):
@@ -43,14 +44,15 @@ def ff(*args):
 
 def clip(path, src="mandelbrot=size=320x180:rate=25", seconds=6, bitrate="1M"):
     os.makedirs(os.path.dirname(path), exist_ok=True)
-    ff("-f", "lavfi", "-i", src, "-t", str(seconds), "-c:v", "libx264", "-pix_fmt", "yuv420p", "-b:v", bitrate, path)
+    ff("-f", "lavfi", "-i", src, "-t", str(seconds), "-c:v", H264, "-pix_fmt", "yuv420p", "-b:v", bitrate, path)
     return path
 
 
 def reencode(src, dst, pre=(), post=()):
-    """dst: src through libx264 again; pre goes before -i (a seek), post after it (bitrate, scale, length)."""
+    """dst: src through the H.264 encoder again; pre goes before -i (a seek), post after it (bitrate, scale,
+    length)."""
     os.makedirs(os.path.dirname(dst), exist_ok=True)
-    ff(*pre, "-i", src, *post, "-c:v", "libx264", "-pix_fmt", "yuv420p", dst)
+    ff(*pre, "-i", src, *post, "-c:v", H264, "-pix_fmt", "yuv420p", dst)
     return dst
 
 
@@ -61,7 +63,7 @@ def junk(path):
     return path
 
 
-@unittest.skipUnless(X264, NEEDS)
+@unittest.skipUnless(H264, NEEDS)
 class Hash(unittest.TestCase):
     """video_hash and near on their own."""
 
@@ -150,7 +152,7 @@ class Hash(unittest.TestCase):
         self.assertFalse(videohash.near([], f))
 
 
-@unittest.skipUnless(X264, NEEDS)
+@unittest.skipUnless(H264, NEEDS)
 class Plan(unittest.TestCase):
     """intake.py plan: a near-copy video goes to review like a near-copy photo; nothing is deleted."""
 
@@ -254,6 +256,57 @@ class Plan(unittest.TestCase):
         staged = os.path.join(self.state, "batches", "2026-11-14-second", "raw", wa)
         self.assertEqual(sha(staged), sha(self.P(wa)), "plan only reads the staged copy")
         self.assertEqual((plan[wa]["action"], plan[wa]["why"]), ("review", f"near-duplicate of library {lib_path}"))
+
+    def flag_and_apply(self, batch, rels):
+        """apply batch with rels flagged by the scan: they go to quarantine, the rest is filed."""
+        with open(os.path.join(self.state, "batches", batch, "scan.json"), "w") as f:
+            json.dump({r: ["nudity"] for r in rels}, f)
+        self.intake("apply", batch, "--allow-missing-detectors")
+
+    def index(self):
+        with open(os.path.join(self.state, "index.json")) as f:
+            return json.load(f)
+
+    def test_released_video_keeps_its_hash_and_catches_a_later_copy(self):
+        rel = "DCIM/Camera/VID_20261101_100000.mp4"
+        cam = clip(self.P(rel))
+        plan, _ = self.plan("2026-11-17-first")
+        vh = plan[rel]["vhash"]
+        self.flag_and_apply("2026-11-17-first", [rel])
+        self.assertEqual(self.index(), {}, "a quarantined video is not in the library yet")
+        out = self.intake("release", "2026-11-17-first", rel)
+        (dst, entry), = self.index().items()
+        self.assertIn(f"released -> {dst}", out)
+        self.assertTrue(entry["released"])
+        self.assertIsNone(entry["dhash"], "videos have no dHash")
+        self.assertEqual(entry["vhash"], vh, "release hashes the video as plan did")
+        self.assertNotIn("vhash_note", entry)
+        # An index written before videohash has video entries with no vhash key: plan reads past them.
+        idx = self.index()
+        idx[os.path.join(self.home, "Videos/personal/2025/2025-01/old.mp4")] = dict(sha="0" * 64, size=1, dhash=None)
+        with open(os.path.join(self.state, "index.json"), "w") as f:
+            json.dump(idx, f)
+        wa = "Pictures/WhatsApp/VID-20261102-WA0001.mp4"
+        reencode(cam, self.P(wa), post=("-b:v", "120k"))
+        os.remove(cam)
+        plan, _ = self.plan("2026-11-17-second")
+        self.assertEqual((plan[wa]["action"], plan[wa]["why"]), ("review", f"near-duplicate of library {dst}"))
+
+    def test_unhashable_video_keeps_its_note_when_filed_or_released(self):
+        kept, flagged = "Pictures/WhatsApp/VID-20261101-WA0003.mp4", "Pictures/WhatsApp/VID-20261101-WA0004.mp4"
+        junk(self.P(kept))
+        with open(self.P(kept), "ab") as f:
+            f.write(b"filed")  # a different sha256 from the flagged one
+        junk(self.P(flagged))
+        self.plan("2026-11-17-junk")
+        self.flag_and_apply("2026-11-17-junk", [flagged])
+        self.intake("release", "2026-11-17-junk", flagged)
+        entries = self.index()
+        self.assertEqual(len(entries), 2)
+        for path, entry in entries.items():
+            self.assertEqual((entry["vhash"], entry["vhash_note"]), ([], videohash.UNREADABLE),
+                             f"{path}: not hashed is recorded, never read as unique")
+        self.assertEqual(sorted(e.get("released", False) for e in entries.values()), [False, True])
 
 
 if __name__ == "__main__":

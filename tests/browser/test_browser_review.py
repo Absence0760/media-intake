@@ -3,7 +3,7 @@
 
   .venv-browser/bin/python -I -m unittest discover -s tests/browser -t tests -p test_browser_review.py
 
-Covers what the HTTP tests in tests/test_review_ui.py can't: the K / E / D / T keys and the
+Covers what the HTTP tests in tests/test_review_ui.py can't: the K / E (Quarantine) / D (Review) / T keys and the
 arrows on the focused card, no Trash (button or T) on a quarantined card, Submit unlocking only when every item is decided, the confirm
 panel with ERASE typed, HTTP Range while a card's video loads and seeks, and the run's
 progress, including re-attaching to a running job after a reload.
@@ -22,7 +22,7 @@ confirm() or prompt() ever opens.
 Hooks the tests rely on: body[data-ready] once the items (or a running job) are shown; each
 card's [data-item] (its relative path) and aria-current on the focused one; the decision
 buttons' aria-pressed; the run panel's [data-job] = running/done/failed/crashed/replaced;
-the textbox named "Type ERASE"; buttons by their names (Submit, Run, Back) and the tabs (role tab).
+the textbox named "Type ERASE"; buttons by their names (Submit, "Apply N decisions", Back) and the tabs (role tab).
 """
 import json, os, re, shutil, subprocess, sys, tempfile, unittest
 
@@ -107,10 +107,10 @@ class ReviewCase(B.BrowserCase):
         return page.locator(f'[data-item="{rel}"]')
 
     def pressed(self, page, rel, which):
-        """Expect exactly the decision button `which` (Keep / Erase / Delete / Trash; None: no decision)
-        pressed on the card."""
+        """Expect exactly the decision button `which` (Keep / Erase / Delete this copy / Trash; None: no
+        decision) pressed on the card."""
         c = self.card(page, rel)
-        for name in ("Keep", "Erase", "Delete", "Trash"):
+        for name in ("Keep", "Erase", "Delete this copy", "Trash"):
             btn = c.get_by_role("button", name=re.compile(rf"^{name} \("))
             if btn.count():
                 B.expect(btn).to_have_attribute("aria-pressed", "true" if name == which else "false")
@@ -133,6 +133,26 @@ class ReviewCase(B.BrowserCase):
 
 
 class ReviewBrowserTest(ReviewCase):
+    # ------------------------------------------------------------ all keep: no ERASE word
+    def test_all_keep_asks_for_no_erase_word(self):
+        s = self.start()
+        page = self.new_page()
+        self.open(page, s)
+        for _ in range(3):
+            page.keyboard.press("k")
+        page.get_by_role("tab", name="Review (2)").click()
+        page.keyboard.press("k")
+        page.keyboard.press("k")
+        page.get_by_role("button", name="Submit").click()
+        B.expect(page.get_by_text("Nothing will be deleted.")).to_be_visible()
+        B.expect(page.get_by_role("textbox", name="Type ERASE")).to_be_hidden()
+        run = page.get_by_role("button", name="Apply 5 decisions")
+        B.expect(run).to_be_enabled()
+        B.expect(run).to_be_focused()
+        run.click()
+        B.expect(page.get_by_role("heading", name="Done. You can close this tab.")).to_be_visible(timeout=20000)
+        self.assertFalse(any(c[0] in ("erase", "trash", "purge-review") for c in self.calls()), self.calls())
+
     # ------------------------------------------------------------ keys, Submit and the ERASE panel
     def test_keys_and_confirm(self):
         s = self.start()
@@ -164,16 +184,18 @@ class ReviewBrowserTest(ReviewCase):
         page.keyboard.press("ArrowUp")
         page.keyboard.press("k")
         self.pressed(page, q[1], "Keep")
-        B.expect(page.get_by_text("2 undecided (quarantine 0, review 2)")).to_be_visible()
+        B.expect(page.locator("#done")).to_have_text("Decide 2 more to submit (2 in Review)")
         B.expect(submit).to_be_disabled()
-        # Review tab: D (or E) deletes, K keeps
+        # Review tab: D deletes this copy, E (Erase, Quarantine only) decides nothing here, K keeps
         page.get_by_role("tab", name="Review (2)").click()
         r = self.cards(page)
         self.focused(page, r[0])
         page.keyboard.press("d")
-        self.pressed(page, r[0], "Delete")
+        self.pressed(page, r[0], "Delete this copy")
         page.keyboard.press("e")
-        self.pressed(page, r[1], "Delete")
+        self.pressed(page, r[1], None)
+        page.keyboard.press("d")
+        self.pressed(page, r[1], "Delete this copy")
         page.keyboard.press("ArrowUp")
         page.keyboard.press("k")
         self.pressed(page, r[0], "Keep")
@@ -181,10 +203,10 @@ class ReviewBrowserTest(ReviewCase):
         B.expect(submit).to_be_enabled()
         # Submit: a summary and ERASE typed exactly; Back changes nothing
         submit.click()
-        typed, run = page.get_by_role("textbox", name="Type ERASE"), page.get_by_role("button", name="Run")
+        typed, run = page.get_by_role("textbox", name="Type ERASE"), page.get_by_role("button", name="Apply 5 decisions")
         B.expect(typed).to_be_focused()
-        B.expect(page.get_by_text("Quarantine: 1 keep / 2 erase;", exact=False)).to_be_visible()
-        B.expect(page.get_by_text("Review: 1 keep / 1 delete / 0 trash", exact=False)).to_be_visible()
+        B.expect(page.get_by_text("Quarantine: keep 1, erase 2", exact=True)).to_be_visible()
+        B.expect(page.get_by_text("Review: keep 1, delete this copy 1, trash 0", exact=True)).to_be_visible()
         B.expect(run).to_be_disabled()
         page.keyboard.press("k")  # keys do nothing while the panel is up (the focus is in the textbox)
         B.expect(typed).to_have_value("k")
@@ -233,7 +255,7 @@ class ReviewBrowserTest(ReviewCase):
         page.keyboard.press("t")
         self.pressed(page, q[0], None)
         self.focused(page, q[0])  # T neither decides nor moves on
-        B.expect(page.get_by_text("5 undecided (quarantine 3, review 2)")).to_be_visible()
+        B.expect(page.locator("#done")).to_have_text("Decide 5 more to submit (3 in Quarantine, 2 in Review)")
         # The server refuses it too: a trash decision posted straight to the API is a 400, nothing runs.
         status = page.evaluate("""async () => {
           const d = {}; data.items.forEach(i => d[i.id] = i.tab === "quarantine" ? "trash" : "keep");
@@ -262,15 +284,15 @@ class ReviewBrowserTest(ReviewCase):
         self.pressed(page, r[0], "Trash")
         page.keyboard.press("k")
         page.get_by_role("button", name="Submit").click()
-        B.expect(page.get_by_text("Quarantine: 0 keep / 3 erase;", exact=False)).to_be_visible()
+        B.expect(page.get_by_text("Quarantine: keep 0, erase 3", exact=True)).to_be_visible()
         page.get_by_role("textbox", name="Type ERASE").fill("ERASE")
-        page.get_by_role("button", name="Run").click()
+        page.get_by_role("button", name="Apply 5 decisions").click()
         B.expect(page.locator("[data-job]")).to_have_attribute("data-job", "done")
         calls = self.calls()
         self.assertIn(["erase", BATCH, "--yes"], calls)
         self.assertEqual([c for c in calls if c[0] == "trash"],
                          [["trash", "--batch", BATCH,
-                           os.path.join(self.state, "batches", BATCH, "review", r[0])]], "only the review item")
+                           os.path.join(self.state, "batches", BATCH, "review", r[0]), "--yes"]], "only the review item")
         self.assertFalse(os.path.exists(os.path.join(self.state, "quarantine", BATCH)))
 
     # ------------------------------------------------------------ video: Range while loading and seeking
@@ -324,7 +346,7 @@ class ReviewBrowserTest(ReviewCase):
         self.decide_all(page)
         page.get_by_role("button", name="Submit").click()
         page.get_by_role("textbox", name="Type ERASE").fill("ERASE")
-        page.get_by_role("button", name="Run").click()
+        page.get_by_role("button", name="Apply 5 decisions").click()
         panel = page.locator("[data-job]")
         B.expect(panel).to_have_attribute("data-job", "running")
         B.expect(page.get_by_role("heading", name=re.compile(r"^Running… \(closing this tab does not stop it\)"))) \
@@ -332,6 +354,7 @@ class ReviewBrowserTest(ReviewCase):
         B.expect(page.locator("pre")).to_contain_text("erase: waiting at the gate")
         B.expect(page.get_by_text(re.compile(rf"^Step \d+( of \d+)?: erase {BATCH} \(started "))).to_be_visible()
         B.expect(page.get_by_role("button", name="Submit")).to_be_disabled()
+        B.expect(page.get_by_role("button", name="Keys (?)")).to_be_enabled()  # the keys list stays open to read
         for name in (re.compile(r"^Quarantine"), re.compile(r"^Review")):
             B.expect(page.get_by_role("tab", name=name)).to_be_disabled()
         B.expect(page.locator("[data-item]")).to_have_count(0)  # no stale items under the run
@@ -497,7 +520,7 @@ class ReviewA11yBrowserTest(ReviewCase):
         self.decide_all(page)
         submit = page.get_by_role("button", name="Submit")
         submit.click()
-        dlg = page.get_by_role("dialog", name="Confirm")
+        dlg = page.get_by_role("dialog", name="Apply 5 decisions?")
         B.expect(dlg).to_be_visible()
         B.expect(dlg).to_have_attribute("aria-modal", "true")
         B.expect(dlg).to_have_attribute("aria-describedby", "summary")
@@ -505,7 +528,7 @@ class ReviewA11yBrowserTest(ReviewCase):
         B.expect(typed).to_be_focused()
         self.assertTrue(page.evaluate("() => document.querySelector('main').inert && "
                                       "document.querySelector('header').inert"))
-        # Tab stays inside: Run is disabled until ERASE is typed, so it cycles the textbox and Back.
+        # Tab stays inside: Apply is disabled until ERASE is typed, so it cycles the textbox and Back.
         page.keyboard.press("Tab")
         B.expect(dlg.get_by_role("button", name="Back")).to_be_focused()
         page.keyboard.press("Tab")
@@ -515,7 +538,7 @@ class ReviewA11yBrowserTest(ReviewCase):
         typed.fill("ERASE")
         B.expect(typed).to_be_focused()
         page.keyboard.press("Tab")
-        B.expect(dlg.get_by_role("button", name="Run")).to_be_focused()
+        B.expect(dlg.get_by_role("button", name="Apply 5 decisions")).to_be_focused()
         page.keyboard.press("Tab")
         page.keyboard.press("Tab")
         B.expect(typed).to_be_focused()
@@ -547,9 +570,10 @@ class ReviewA11yBrowserTest(ReviewCase):
         # every key the page handles, with where it applies (T does nothing in Quarantine)
         rows = keys.locator("tr[data-key]")
         self.assertEqual(rows.evaluate_all("rs => rs.map(r => r.dataset.key)"),
-                         ["k", "e", "t", "x", "next", "prev", "tabs", "tab", "?", "escape"])
+                         ["k", "e", "d", "t", "x", "next", "prev", "tabs", "tab", "?", "escape"])
         B.expect(keys.locator('tr[data-key="t"]')).to_contain_text("nothing in Quarantine")
-        B.expect(keys.locator('tr[data-key="e"]')).to_contain_text("nothing in Maybe trash")
+        B.expect(keys.locator('tr[data-key="e"]')).to_contain_text("Quarantine only")
+        B.expect(keys.locator('tr[data-key="d"]')).to_contain_text("Review only")
         for k in ("K", "E", "D", "T", "X", "J", "→", "←", "↑", "↓", "Home", "End", "?", "Esc"):
             B.expect(keys.locator("kbd", has_text=re.compile("^" + re.escape(k) + "$")).first).to_be_attached()
         # keys don't reach the list behind it, and Tab stays on its one button
@@ -570,7 +594,8 @@ class ReviewA11yBrowserTest(ReviewCase):
 
     def test_refused_submit_shows_a_banner(self):
         """A submit the server refuses (here: the library lock held by another process) shows its message in a
-        role=alert banner inside the confirm, never alert(); Dismiss hides it, and a retry once free runs."""
+        role=alert banner under the Apply dialog's title, in plain words (no PID or lock path), never alert();
+        Dismiss hides it, and a retry once free runs."""
         s = self.start()
         page = self.new_page()
         self.open(page, s)
@@ -585,13 +610,16 @@ class ReviewA11yBrowserTest(ReviewCase):
         self.addCleanup(holder.stdout.close)
         self.assertEqual(holder.stdout.readline().strip(), "held")
         page.get_by_role("button", name="Submit").click()
-        dlg = page.get_by_role("dialog", name="Confirm")
+        dlg = page.get_by_role("dialog", name="Apply 5 decisions?")
         dlg.get_by_role("textbox", name="Type ERASE").fill("ERASE")
-        run = dlg.get_by_role("button", name="Run")
+        run = dlg.get_by_role("button", name="Apply 5 decisions")
         run.click()
         banner = dlg.get_by_role("alert")
         B.expect(banner).to_be_visible()
-        B.expect(banner).to_contain_text(re.compile(r"^Refused: the library is busy: test holder \(PID \d+\)"))
+        B.expect(banner).to_contain_text(re.compile(r"^Not applied: Another action is using the library"))
+        self.assertNotRegex(banner.inner_text(), r"PID|\.lock|test holder")
+        # under the title, above the summary
+        self.assertEqual(dlg.locator("h2 + *").get_attribute("id"), "err")
         B.expect(run).to_be_enabled()
         B.expect(run).to_be_focused()
         self.assertEqual(self.calls(), [])
@@ -603,7 +631,7 @@ class ReviewA11yBrowserTest(ReviewCase):
         B.expect(banner).to_be_visible()
         page.keyboard.press("Escape")
         page_banner = page.locator("main").get_by_role("alert")
-        B.expect(page_banner).to_contain_text("Refused: the library is busy")
+        B.expect(page_banner).to_contain_text("Not applied: Another action is using the library")
         page_banner.get_by_role("button", name="Dismiss").click()
         B.expect(page_banner).to_be_hidden()
         # free the lock: the same page submits and runs
@@ -616,28 +644,198 @@ class ReviewA11yBrowserTest(ReviewCase):
         B.expect(page.get_by_role("alert")).to_have_count(0)
 
     def test_decided_counter(self):
+        """One counter (role=status), which is also why Submit is locked: how many are left, and in which tabs
+        unless only the open one; it ignores a changed decision and counts a cleared one again."""
         s = self.start()
         page = self.new_page()
         self.open(page, s)
         done = page.locator("#done")
         B.expect(done).to_have_attribute("role", "status")
-        B.expect(done).to_have_text("0 of 5 decided")
-        B.expect(page.get_by_text("5 undecided (quarantine 3, review 2)")).to_be_visible()  # the per-tab count stays
+        B.expect(done).to_have_text("Decide 5 more to submit (3 in Quarantine, 2 in Review)")
+        self.assertEqual(page.locator("header [role=status]").count(), 1, "one counter in the header")
         q = self.cards(page)
         page.keyboard.press("k")
-        B.expect(done).to_have_text("1 of 5 decided")
+        B.expect(done).to_have_text("Decide 4 more to submit (2 in Quarantine, 2 in Review)")
         page.keyboard.press("ArrowUp")
         page.keyboard.press("e")  # a changed decision is still one
-        B.expect(done).to_have_text("1 of 5 decided")
+        B.expect(done).to_have_text("Decide 4 more to submit (2 in Quarantine, 2 in Review)")
         self.pressed(page, q[0], "Erase")
         page.keyboard.press("e")
         page.keyboard.press("e")
-        B.expect(done).to_have_text("3 of 5 decided")
+        B.expect(done).to_have_text("Decide 2 more to submit (2 in Review)")
         page.get_by_role("tab", name="Review (2)").click()
+        B.expect(done).to_have_text("Decide 2 more to submit")  # only this tab is left: no list
         page.keyboard.press("d")
         page.keyboard.press("t")
-        B.expect(done).to_have_text("5 of 5 decided")
-        B.expect(page.get_by_text("All decided")).to_be_visible()
+        B.expect(done).to_have_text("All decided: 5 of 5. Ready to submit.")
+        B.expect(page.get_by_role("button", name="Submit")).to_be_enabled()
+
+
+class ReviewUxBrowserTest(ReviewCase):
+    """The page's words and phone layout: the locked Submit's reason, marks you can see and clear, the Apply
+    dialog named for its action, plain labels (no internal tag groups, scanner codes or state folders), and
+    44 px touch targets with a compact header at 390 px."""
+
+    def visible_text(self, page):
+        return page.evaluate("() => document.body.innerText")
+
+    def test_locked_submit_says_why(self):
+        s = self.start()
+        page = self.new_page()
+        self.open(page, s)
+        submit = page.get_by_role("button", name="Submit")
+        B.expect(submit).to_be_disabled()
+        B.expect(submit).to_have_accessible_description("Decide 5 more to submit (3 in Quarantine, 2 in Review)")
+        B.expect(page.get_by_text("Decide 5 more to submit", exact=False)).to_be_visible()
+        q = self.cards(page)
+        keep = self.card(page, q[0]).get_by_role("button", name="Keep (K)")
+        keep.click()
+        self.pressed(page, q[0], "Keep")
+        B.expect(self.card(page, q[0]).locator(".verdict")).to_have_text(
+            "Decided: Keep. It goes back into your library.")
+        B.expect(submit).to_have_accessible_description(re.compile(r"^Decide 4 more"))
+        keep.click()  # a second press clears the mark
+        self.pressed(page, q[0], None)
+        B.expect(self.card(page, q[0]).locator(".verdict")).to_be_hidden()
+        B.expect(submit).to_have_accessible_description(re.compile(r"^Decide 5 more"))
+        # K on a kept card clears it too, and stays there
+        self.card(page, q[0]).focus()
+        page.keyboard.press("k")
+        self.focused(page, q[1])
+        page.keyboard.press("ArrowUp")
+        page.keyboard.press("k")
+        self.pressed(page, q[0], None)
+        self.focused(page, q[0])
+        # Keep in Review shows what it does: the file stays in the review folder.
+        page.get_by_role("tab", name="Review (2)").click()
+        r = self.cards(page)
+        self.card(page, r[0]).get_by_role("button", name="Keep (K)").click()
+        B.expect(self.card(page, r[0]).locator(".verdict")).to_have_text(
+            "Decided: Keep. It stays in the review folder for now.")
+        B.expect(self.card(page, r[0]).get_by_role("button", name="Delete this copy (D)")).to_have_attribute(
+            "title", "Delete this copy: only this file is removed")
+        B.expect(self.card(page, r[0]).get_by_role("button", name="Trash (T)")).to_have_attribute(
+            "title", "Trash: it is removed, and skipped if imported again")
+
+    def test_apply_dialog_names_the_action(self):
+        phone = os.path.join(self.tmp, "phone-root")
+        os.makedirs(phone)
+        s = R.Server(self.env, "--phone", phone)
+        self.servers.append(s)
+        page = self.new_page()
+        self.open(page, s)
+        self.decide_all(page)  # Quarantine: keep 1, erase 2; Review: delete this copy 1, keep 1
+        page.get_by_role("button", name="Submit").click()
+        dlg = page.get_by_role("dialog", name="Apply 5 decisions?")
+        B.expect(dlg).to_be_visible()
+        B.expect(dlg.get_by_role("heading", name="Apply 5 decisions?")).to_be_visible()
+        B.expect(dlg.get_by_role("button", name="Apply 5 decisions")).to_be_disabled()
+        items = dlg.get_by_role("listitem")
+        B.expect(items).to_have_text(["Quarantine: keep 1, erase 2", "Review: keep 1, delete this copy 1, trash 0"])
+        B.expect(dlg).to_contain_text("Erase removes every copy: on this computer and your phone.")
+        B.expect(dlg).to_contain_text("Kept Review items stay in the review folder.")
+        B.expect(dlg).to_contain_text("3 files will be removed for good. This can't be undone.")
+        text = dlg.inner_text()
+        for bad in (phone, self.tmp, "xcheck", "Confirm", "Run"):
+            self.assertNotIn(bad, text)
+        self.assertEqual(dlg.get_by_role("button", name=re.compile(r"^(Run|Confirm)$")).count(), 0)
+
+    def test_no_internal_names_in_visible_text(self):
+        """Tags' groups (Review|, Label|), scanner codes (nudity, id-barcode), the plan's raw `why`, a sub-batch
+        prefix and the state folder never reach the page's text: each has a plain name."""
+        quar = os.path.join(self.state, "quarantine", BATCH)
+        with open(os.path.join(quar, "quarantine.json")) as f:
+            q = json.load(f)
+        q["DCIM/Camera/a.jpg"]["reasons"] = ["nudity", "id-barcode", "secret-words:banking"]
+        R.write_json(os.path.join(quar, "quarantine.json"), q)
+        near = os.path.join(self.state, "quarantine", "near-" + BATCH)
+        R.img(os.path.join(near, "DCIM/Camera/n1.jpg"), (90, 90, 200))
+        R.write_json(os.path.join(near, "quarantine.json"), {
+            "DCIM/Camera/n1.jpg": {"reasons": [], "sha": "a" * 64, "size": 1, "erased_on": "2026-11-10"}})
+        lib = os.path.join(self.home, "photo_library/2026/2026-11")
+        pasta = os.path.join(lib, "pasta.jpg")
+        R.img(pasta, (200, 180, 90))
+        R.write_json(os.path.join(self.state, "maybe-trash.json"), {"batch": None, "items": [
+            {"path": pasta, "labels": ["Review|maybe-trash", "Label|food"]}]})
+        s = R.Server(self.env, "--maybe-trash")
+        self.servers.append(s)
+        page = self.new_page()
+        self.open(page, s)
+        B.expect(page).to_have_title(f"Review {BATCH}")
+        seen = []
+        for name in ("Quarantine", "Review", "Maybe trash"):
+            page.get_by_role("tab", name=re.compile("^" + name + r" \(")).click()
+            text = self.visible_text(page)
+            seen.append(text)
+            for bad in ("|", "near-" + BATCH + " /", ".local/share", "/quarantine/", "/batches/", "id-barcode",
+                        "secret-words", "junk: tiny", "near-duplicate of", "No library place"):
+                self.assertNotIn(bad, text, f"{name} tab")
+            for chip in page.locator(".labels span").all_inner_texts():  # a raw code is one lowercase word
+                self.assertNotRegex(chip, r"^[a-z0-9-]+$", f"{name} tab")
+        allt = "\n".join(seen)
+        for good in ("Possible nudity", "Looks like an ID card", "Private text: banking", "Suggested junk",
+                     "Looks like: food", "Tiny or empty image", "Near-copy of DCIM/x.png", "DCIM/Camera/n1.jpg"):
+            self.assertIn(good, allt)
+
+    def phone_page(self, scheme="light"):
+        ctx = self.browser.new_context(viewport={"width": 390, "height": 844}, is_mobile=True, has_touch=True,
+                                       device_scale_factor=2, color_scheme=scheme)
+        ctx.set_default_timeout(B.STEP_MS)
+        self.addCleanup(ctx.close)
+        page = ctx.new_page()
+        page.on("dialog", lambda d: (self.native.append(f"{d.type}: {d.message}"), d.dismiss()))
+        return page
+
+    def small_targets(self, page):
+        """Every visible button, tab and text box under 44 x 44 CSS px, as (label, w, h)."""
+        return page.evaluate("""() => [...document.querySelectorAll('button, [role=tab], input')]
+          .filter(e => e.getClientRects().length && getComputedStyle(e).visibility !== 'hidden')
+          .map(e => { const r = e.getBoundingClientRect(); return [e.textContent.trim() || e.id, r.width, r.height] })
+          .filter(([, w, h]) => w < 44 || h < 44)""")
+
+    def test_phone_targets_and_compact_header(self):
+        plan = os.path.join(self.state, "batches", BATCH, "plan.json")
+        with open(plan) as f:
+            rows = json.load(f)
+        rows += [{"rel": "DCIM/Camera/a.jpg", "action": "file", "why": "", "date": "2026-11-08T07:15:00",
+                  "device": "cam-a"},
+                 {"rel": "DCIM/Camera/b.png", "action": "file", "why": "", "date": "2026-11-08T07:15:01",
+                  "device": "cam-a"}]
+        R.write_json(plan, rows)  # a burst, for its stack buttons
+        s = self.start()
+        page = self.phone_page()
+        self.open(page, s)
+        self.assertEqual(self.small_targets(page), [])
+        B.expect(page.get_by_role("button", name="Keys (?)")).to_be_hidden()  # no keyboard on a phone
+        self.card(page, "DCIM/Camera/a.jpg").locator(".burst .x").click()  # open the stack: "Keep this one"
+        B.expect(page.get_by_role("button", name=re.compile("Keep this one")).first).to_be_visible()
+        self.assertEqual(self.small_targets(page), [])
+        # Scrolled down, only the header's bar (the counter and Submit) stays: a small part of the screen.
+        page.evaluate("() => window.scrollTo(0, 1500)")
+        page.wait_for_function("() => document.querySelector('header').getBoundingClientRect().bottom < 130")
+        hb = page.locator("header").bounding_box()
+        self.assertLess(hb["y"] + hb["height"], 130, hb)
+        B.expect(page.get_by_role("button", name="Submit")).to_be_in_viewport()
+        B.expect(page.locator("#done")).to_be_in_viewport()
+        # A refused submit's alert sits below the header, never over it.
+        page.evaluate("() => window.scrollTo(0, 0)")
+        self.decide_all(page)
+        page.route("**/api/submit", lambda r: r.fulfill(status=409, content_type="application/json", body=json.dumps(
+            {"error": "the library is busy: job gallery (PID 510) holds its lock (/tmp/x/locks/library-1.lock); "
+                      "try again when it has finished"})))
+        page.get_by_role("button", name="Submit").click()
+        dlg = page.get_by_role("dialog", name="Apply 5 decisions?")
+        dlg.get_by_role("textbox", name="Type ERASE").fill("ERASE")
+        dlg.get_by_role("button", name="Apply 5 decisions").click()
+        B.expect(dlg.get_by_role("alert")).to_contain_text("Another action is using the library")
+        self.assertEqual(self.small_targets(page), [])
+        page.keyboard.press("Escape")
+        alert = page.locator("main").get_by_role("alert")
+        B.expect(alert).to_be_visible()
+        B.expect(alert).to_be_in_viewport()
+        self.assertNotIn("PID", alert.inner_text())
+        a, h = alert.bounding_box(), page.locator("header").bounding_box()
+        self.assertGreaterEqual(a["y"], h["y"] + h["height"] - 1, (a, h))
 
 
 if __name__ == "__main__":

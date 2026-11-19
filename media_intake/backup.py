@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""`media-intake backup MOUNT [--verify] [--dry-run]`: copy the library to a mounted drive.
+"""`media-intake backup MOUNT [--verify] [--dry-run] [--skip PART]...`: copy the library to a mounted drive.
 
   <MOUNT>/media-intake-backup/library/...          the photo library   (config `library`)
   <MOUNT>/media-intake-backup/videos/...           personal footage    (config `videos`)
@@ -25,6 +25,9 @@ Rules (docs/backup.md):
     erased content by checksum). A changed library file replaces its own older copy.
   - Reader of the library: no library lock (a backup can take hours); a file that changes or vanishes while it
     is copied is skipped and counted, and the next run picks it up.
+  - --skip PART leaves one library root out of this run (`library`, `videos` or `projects/<key>`; e.g. the
+    drive has no room for it yet): it is neither copied nor verified, and its copy on the drive and its
+    manifest entries stay as they were.
   - Output is counts and paths only, never file contents.
 """
 import argparse, hashlib, os, shutil, stat, sys
@@ -96,15 +99,25 @@ def check_dest(mount, cfg=None):
     return dest
 
 
-def walk_library(cfg=None):
+def part_names(cfg=None):
+    """What --skip takes: each root's destination subfolder (library, videos, projects/<key>)."""
+    return [sub for _, sub in roots(cfg)]
+
+
+def _skipped(rel, skip):
+    return any(rel == s or rel.startswith(s + "/") for s in skip)
+
+
+def walk_library(cfg=None, skip=()):
     """Yield (source path, destination relative path) for each media file and its sidecar, roots in order.
-    A root nested in another is walked once, under its own name; the state folder is never entered."""
+    A root nested in another is walked once, under its own name; the state folder is never entered.
+    Roots whose subfolder is in skip are left out (their folders are still never entered from another root)."""
     cfg = cfg or config.get()
     rs = roots(cfg)
     real_roots = {os.path.realpath(s) for s, _ in rs}
     never = {os.path.realpath(p) for p in (cfg["state"], intake.THUMBS, intake.PROXIES)}
     for src, sub in rs:
-        if not os.path.isdir(src) or os.path.islink(src):
+        if sub in skip or not os.path.isdir(src) or os.path.islink(src):
             continue
         top = os.path.realpath(src)
         for r, dirs, files in os.walk(src, followlinks=False):
@@ -244,18 +257,25 @@ def _known(entry, src_st, dst_st):
     return None
 
 
-def backup(mount, verify=False, dry_run=False, out=print):
+def backup(mount, verify=False, dry_run=False, out=print, skip=()):
     """One backup run. Returns the exit code: 0 when everything is on the drive (and verified), else 1."""
     cfg = config.get()
+    skip = tuple(dict.fromkeys(skip))
+    bad = [s for s in skip if s not in part_names(cfg)]
+    if bad:
+        out(f"backup: refused: --skip {bad[0]}: not a library root (one of: {', '.join(part_names(cfg))})")
+        return 2
     try:
         dest = check_dest(mount, cfg)
     except Refused as e:
         out(f"backup: refused: {e}")
         return 2
+    for s in skip:
+        out(f"backup: {s}: skipped this run (--skip); its copy on the drive, if any, is left as it was")
     mpath = manifest_path(mount, cfg)
     manifest = load_manifest(mpath)
     todo, same, seen_case, clashes, files = [], 0, set(), [], []
-    for src, rel in walk_library(cfg):
+    for src, rel in walk_library(cfg, skip):
         k = sources.case_key(rel)
         if k in seen_case:  # exFAT/FAT ignore case: the two would be one file there
             clashes.append(rel)
@@ -295,7 +315,9 @@ def backup(mount, verify=False, dry_run=False, out=print):
     if not dry_run and todo:
         free = shutil.disk_usage(mount).free
         if need > free:
-            out(f"backup: refused: {need / 1e6:,.1f} MB to copy, {free / 1e6:,.1f} MB free on {mount}")
+            out(f"backup: refused: {need / 1e6:,.1f} MB to copy, {free / 1e6:,.1f} MB free on {mount}"
+                + ("" if len(skip) + 1 >= len(part_names(cfg)) else
+                   f" (--skip PART backs up the rest first; parts: {', '.join(part_names(cfg))})"))
             return 1
         _safe_dir(dest, "")
         marker = os.path.join(mount, sources.BACKUP_MARKER)
@@ -318,7 +340,8 @@ def backup(mount, verify=False, dry_run=False, out=print):
             copied += not existed
     if not dry_run:
         live = {rel for _, rel in files}
-        manifest = {rel: e for rel, e in manifest.items() if rel in live}  # bookkeeping only; the drive keeps them
+        # bookkeeping only (the drive keeps them); a skipped root's entries stay for its next run
+        manifest = {rel: e for rel, e in manifest.items() if rel in live or _skipped(rel, skip)}
         save_manifest(mpath, manifest)
         out(f"backup: {copied:,} copied, {updated:,} replaced (changed in the library)")
     if vanished:
@@ -332,7 +355,7 @@ def backup(mount, verify=False, dry_run=False, out=print):
         out(f"backup: {len(failed)} could not be copied:")
         for rel, why in failed:
             out(f"  {rel}: {why}")
-    extra = _extra_on_drive(dest, {rel for _, rel in files} | set(clashes))
+    extra = _extra_on_drive(dest, {rel for _, rel in files} | set(clashes), skip)
     if extra:
         out(f"backup: {extra:,} files on the drive are no longer in the library; left alone "
             "(nothing on the drive is deleted; erase --drive removes erased files by checksum)")
@@ -343,7 +366,7 @@ def backup(mount, verify=False, dry_run=False, out=print):
     return 0 if ok and not changed else 1
 
 
-def _extra_on_drive(dest, live):
+def _extra_on_drive(dest, live, skip=()):
     n = 0
     if not os.path.isdir(dest):
         return 0
@@ -352,7 +375,8 @@ def _extra_on_drive(dest, live):
         for f in fs:
             if f.startswith("."):
                 continue
-            if os.path.relpath(os.path.join(r, f), dest) not in live:
+            rel = os.path.relpath(os.path.join(r, f), dest)
+            if rel not in live and not _skipped(rel, skip):
                 n += 1
     return n
 
@@ -397,6 +421,9 @@ def build_parser(prog="media-intake backup"):
     ap.add_argument("mount", help="the drive's mount point (e.g. /run/media/$USER/<label>)")
     ap.add_argument("--verify", action="store_true", help="then re-read every copy and compare sha256")
     ap.add_argument("--dry-run", action="store_true", help="say what would be copied; write nothing")
+    ap.add_argument("--skip", action="append", default=[], metavar="PART",
+                    help="leave this root out of the run (library, videos or projects/<key>; repeatable), "
+                         "e.g. when the drive has no room for it yet")
     return ap
 
 
@@ -404,7 +431,7 @@ def main(argv=None):
     a = build_parser().parse_args(argv)
     if hasattr(sys.stdout, "reconfigure"):
         sys.stdout.reconfigure(line_buffering=True)
-    return backup(a.mount, verify=a.verify, dry_run=a.dry_run, out=lambda s: print(s, flush=True))
+    return backup(a.mount, verify=a.verify, dry_run=a.dry_run, out=lambda s: print(s, flush=True), skip=a.skip)
 
 
 if __name__ == "__main__":

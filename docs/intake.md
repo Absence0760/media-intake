@@ -60,6 +60,26 @@ default; all of them come from `~/.config/media-intake/config.toml`
   ffmpeg and ffprobe get every path as `file:` plus the absolute path, so a
   name or relative source like `concat:...` or `http:...` is never followed as
   a protocol.
+- **A motion photo's video is scanned too.** Samsung motion photos and
+  Google's (Pixel Motion Photos, older MicroVideo) are a JPEG or
+  HEIC with a few seconds of MP4 appended. `scan` finds the video from the
+  file's bytes (`media_intake/motion.py`): the Google XMP
+  (`Camera:MotionPhoto`, the `Container:Directory` item with
+  `Item:Semantic="MotionPhoto"` and its `Item:Length`, or `MicroVideoOffset`),
+  Samsung's `MotionPhoto_Data` block in the `SEFT` trailer (a `sefd` box in a
+  HEIC), a HEIC's `mpvd` box, or an MP4 `ftyp` box after the JPEG's end. It
+  checks the still as an image, copies the video into its private work folder,
+  samples its frames like any video's, and adds those flags to the photo's
+  (`nudity`, `unscanned-nudity`); the copy is deleted at once and the original
+  only read. A file that claims a video `scan` can't locate or copy out (a
+  damaged trailer, a `MotionPhoto=1` with unexplained bytes after the image)
+  is `unscanned-video`, the same as an undecodable clip, never clean.
+  `scan_sensitive.py --videos-only` re-checks motion photos with the videos.
+  Sources (checked 2026-11-17): Google's
+  [Motion Photo format](https://developer.android.com/media/platform/motion-photo-format),
+  exiftool's [Samsung trailer tags](https://exiftool.org/TagNames/Samsung.html)
+  and its reader (`ProcessSamsung` in
+  [Samsung.pm](https://github.com/exiftool/exiftool/blob/master/lib/Image/ExifTool/Samsung.pm)).
 
 ## Messaging apps
 
@@ -117,16 +137,22 @@ Dates: an export's own names (`photo_<n>@DD-MM-YYYY_HH-MM-SS.jpg`,
 `video_<n>@...`, `file_<n>@...`, the message's time on the exporting
 computer) and Signal's `signal-YYYY-MM-DD-HH-mm-ss` names are `filename`
 dates ("Dates" below). A file an export keeps under its own name (a video
-or file sent with a name) is dated by its metadata, else its mtime: reading
-`result.json`'s per-message dates for those is a ROADMAP follow-up.
+or file sent with a name) is dated by its own metadata when it has a
+camera or GPS date, else by its message's date in the export's
+`result.json` (the `export` source; "Cloud exports" below), else by its
+mtime. An HTML-only export has no `result.json`, so its own-named files
+skip that step.
 
-**Stage the folder that holds the export, not the export itself.** A file is
-labelled `messaging:Telegram` by a `ChatExport_<date>` / `DataExport_<date>`
-folder in its path under the staged folder, or by its own `photo_<n>@...`,
-`video_<n>@...`, `file_<n>@...` name. When the staged folder *is* the export
-(or a renamed one), the same files are taken (the export rules still apply),
-but its files kept under their own names are filed as ordinary photos and
-videos; making the category see the source root is a ROADMAP follow-up.
+A file is labelled `messaging:Telegram` when it is inside a Telegram
+Desktop export: a `ChatExport_<date>` / `DataExport_<date>` folder, or a
+renamed one (`result.json` or `messages.html` beside `photos/` or
+`video_files/`), anywhere from the staged folder down, the staged folder
+itself included; or by its own `photo_<n>@...`, `video_<n>@...`,
+`file_<n>@...` name. So you can stage the export itself or the folder that
+holds it. `stage` checks the source folder and records the app in the batch
+manifest (`files[rel].app`), so `plan` files the export's media under
+`Messaging/Telegram/` even when the export's own folder isn't part of the
+file's path in the batch.
 
 Sources (checked 2026-11-14):
 [Telegram Android `ImageLoader.java`](https://github.com/DrKLO/Telegram/blob/master/TMessagesProj/src/main/java/org/telegram/messenger/ImageLoader.java)
@@ -141,22 +167,22 @@ Sources (checked 2026-11-14):
 ## Commands
 
 ```
-media-intake stage SRC_ROOT --kind phone|gopro|drive|folder [--batch NAME] [--only LISTFILE]
+media-intake stage SOURCE --kind phone|gopro|drive|folder [--batch NAME] [--only LISTFILE]
 media-intake plan BATCH [--event [PROJECT/]SLUG@YYYY-MM-DD ...] [--clock-offset DEVICE=±Nh ...]
-media-intake scan BATCH                 # local detectors; labels only
+media-intake scan BATCH                 # local detectors; flags only
 media-intake apply BATCH                # moves files; prints a summary
-media-intake quarantine BATCH           # counts + the folder to open
+media-intake quarantine BATCH           # counts + the folder to open, and the erase line for its kind
 media-intake release BATCH FILE...      # false positive -> library
-media-intake erase BATCH [--phone ROOT [--keep-phone-thumbnails]] [--drive MOUNT [--no-wipe-free]] [--yes]
-media-intake forget LIBRARY_FILE... [--drive MOUNT] [--yes]   # asks (type ERASE) before anything moves
-media-intake verify-gone [BATCH] [--drive MOUNT]   # with BATCH, also its last erase coverage report
-media-intake sweep-erased [BATCH] [--drive MOUNT [--drive-only] [--no-wipe-free]] [--yes]   # copies erase missed; dry run without --yes
-media-intake wipe-free MOUNT
-media-intake offload BATCH --phone ROOT [--yes]   # asks (type DELETE); refused for a --kind folder batch
-media-intake purge-review BATCH        # a batch name, never a path
-media-intake trash [BATCH] FILE... [--phone ROOT]
+media-intake erase BATCH [--phone PHONE [--keep-phone-thumbnails]] [--drive DRIVE [--no-wipe-free]] [--yes]
+media-intake forget FILE... [--drive DRIVE] [--yes]   # asks (type ERASE) before anything moves
+media-intake verify-gone [BATCH] [--drive DRIVE]   # with BATCH, also its last erase coverage report
+media-intake sweep-erased [BATCH] [--drive DRIVE [--drive-only] [--no-wipe-free]] [--yes]   # copies erase missed; dry run without --yes
+media-intake wipe-free DRIVE
+media-intake offload BATCH --phone SOURCE [--yes]   # asks (type DELETE); refused for a --kind folder batch
+media-intake purge-review BATCH [--yes]   # a batch name, never a path; a dry run without --yes
+media-intake trash [BATCH] FILE... [--phone PHONE] [--yes]   # a dry run without --yes
 media-intake trash --from-digikam [--yes]
-media-intake suggest-trash [--batch B] [--phone ROOT]
+media-intake suggest-trash [--batch BATCH] [--phone PHONE]
 media-intake not-trash FILE...
 media-intake migrate-tags [--dry-run]
 media-intake share-copy FILE... --out DIR     # alias: social-copy
@@ -164,12 +190,18 @@ media-intake tag BATCH [--no-labels]
 media-intake tag-files FILE... [--event SLUG] [--no-labels]
 media-intake mark-used FILE... --post SLUG
 media-intake find [--tag T] [--event E] [--place P] [--project P] [--unused-since 30d] [--never-used]
-media-intake gallery [--drive MOUNT] [--share-out DIR]
+media-intake gallery [--drive DRIVE] [--share-out DIR]
 media-intake prune-cache [--dry-run]          # gallery thumbnails and proxies nothing shows any more
-media-intake backup MOUNT [--verify] [--dry-run]   # library, videos, sidecars to a mounted drive (backup.md)
+media-intake calibrate [--precision P] [--json]   # label thresholds vs your marks, report only (configuration.md)
+media-intake backup DRIVE [--verify] [--dry-run] [--skip PART]   # library, videos, sidecars to the backup drive (backup.md)
+media-intake zip-check ROOT [--known DIR]... [--out JSON]   # what export zips hold that you lack; read-only
 ```
 
-`media-intake <command> --help` shows every option. The review page is
+`media-intake <command> --help` says what the command does, what it touches
+(`Touches:`) and whether it deletes (`Deletes:`), then every option. The
+placeholders mean: `SOURCE` the folder you import from, `PHONE` a phone's or
+camera's folder, `DRIVE` the folder the backup drive is mounted on, `BATCH` a
+batch name ([words.md](words.md)). The review page is
 `media-intake review BATCH` ([review-ui.md](review-ui.md)), the web gallery
 [gallery.md](gallery.md), the drive and laptop-folder queue [queue.md](queue.md),
 the backup to a mounted drive [backup.md](backup.md),
@@ -184,6 +216,72 @@ A typical phone batch: `stage` the phone's storage root, `plan` (add
 `--event` for a shoot), `scan`, `apply`, open the review page, `tag`, then,
 once the library is backed up, `offload` to free the phone.
 
+### Wrong names, empty sources and steps out of order
+
+Each of these stops with one plain message (exit 1, no traceback) and
+changes nothing:
+
+- **A batch name that doesn't exist** (`plan`, `scan`, `apply`,
+  `quarantine`, `release`, `tag`, `erase`, `offload`, `verify-gone`): `no batch named 'x'. Batches, newest
+  first: ... List them all with: ls ~/.local/share/media-intake/batches`
+  (or, before anything is staged, the `stage` line to start with). One
+  helper, `intake.need_batch()`, makes the check for every command.
+  `quarantine` and `release` also take a quarantine-only batch
+  (`near-<batch>`, `xcheck-<batch>`); `release` on a batch whose quarantine
+  was erased says so. `erase` and `verify-gone` take a quarantine-only
+  batch too; `verify-gone` on a real batch with nothing erased says
+  `nothing erased yet`, and `offload` before `plan` names the steps to run.
+- **A `--phone` or `--drive` that isn't there** (`erase`, `forget`,
+  `offload`, `verify-gone`): refused in one line (`--drive X: no such
+  folder, so not a mounted drive. Mount the drive and pass its folder, e.g.
+  /run/media/$USER/<label>.`) before any prompt and before anything is
+  deleted (`intake.need_device()`). When the drive's free space will be
+  wiped (`erase`/`forget --drive` without `--no-wipe-free`), the folder must
+  also pass `wipe-free`'s check (not on the laptop's own disk), up front
+  rather than after the erase.
+- **A source folder that isn't there**: `stage` says `no such folder`
+  before any batch folder exists; for a phone, how to make it show up
+  (unlock it, choose File transfer, then `ls /run/user/$UID/gvfs/`).
+- **A source with no photos or videos**: `stage` says `nothing to stage`,
+  where it looked for that `--kind` (a phone: `DCIM/`, `Pictures/` and the
+  configured messaging folders), and for a phone the likely cause (locked,
+  or charge-only USB), and creates no batch.
+- **A step run too early**: `apply` before `plan` or `scan`, and `tag`
+  before `plan`, name the step to run, with its command line. `apply` with
+  a document detector missing names only the missing packages, the
+  `sudo dnf install -y` line for them, and `media-intake scan BATCH` to run
+  after. `--no-scan` and `--allow-missing-detectors` are described in
+  `apply --help` and are never offered in an error.
+
+`quarantine` prints nothing but `nothing in quarantine for BATCH.` when it
+is empty. Otherwise its closing erase line fits the batch: `erase BATCH
+--phone <the folder it was staged from>` for a phone or camera batch,
+`erase BATCH --drive <the folder it was staged from>` for a drive batch
+(`--drive` deletes identical copies anywhere under that folder, then
+overwrites the drive's free space), and plain `erase BATCH` for a laptop
+folder (where `--phone` is refused) or a quarantine-only batch.
+
+### Summary lines
+
+`plan` and `apply` end with counts in words, never a Python dict:
+
+```
+plan: 7 files: 6 to file, 1 exact duplicate to drop, 0 to review. Nothing has moved yet.
+dates: 6 from the camera, 1 from file times (no camera date found)
+will be filed in:
+  ~/Pictures/library/2026/2026-11  (6)
+apply: 6 files filed, 1 exact duplicate dropped
+```
+
+The `dates:` line names where each date came from (the camera's EXIF, the
+video's own date, GPS time, a cloud export, the file or folder name,
+`--clock-offset`). `from file times (no camera date found)` is the one to
+check: those files had no date of their own, so they are filed by the
+file's modified time. `apply` names only the outcomes that happened, and,
+when files stay behind, how many are left in the batch folder and why.
+`stage` names only the cloud export kinds it found (`dates from cloud export
+files: Telegram 2`).
+
 ### Progress and the `next:` line
 
 The long steps print counts-only progress, so a big batch never sits
@@ -193,8 +291,9 @@ seconds, whichever comes first (`MEDIA_INTAKE_PROGRESS_EVERY` and
 near-duplicate search use the same lines):
 
 - `stage: 5,000 of 12,000 files staged` while it copies;
-- `plan: 5,000 of 12,000 files hashed` (sha256, dHash, video hash), then
-  `plan: ... photos compared` / `videos compared` in the near-copy search;
+- `plan: 5,000 of 12,000 files read` (dates, then sha256, dHash and video
+  hash to find duplicates), then `plan: ... photos compared` / `videos
+  compared` in the look-alike (near-copy) search;
 - `apply: 5,000 of 12,000 files done`;
 - `tag` (and `tag-files`): a line per phase (place names, content labels: one
   pass with no per-file lines), then `tag: 400 of 12,000 sidecars written`
@@ -209,12 +308,12 @@ At a terminal, each step of the flow ends with one line naming the command to
 run next, with the batch's real name:
 
 ```
-next: media-intake plan BATCH          # after stage (nothing staged: no line)
+next: media-intake plan BATCH          # after stage
 next: media-intake scan BATCH          # after plan
 next: media-intake apply BATCH         # after scan
 next: media-intake review BATCH        # after apply, while anything is in quarantine or the review folder
 next: media-intake tag BATCH           # after apply, when nothing is
-next: media-intake backup <MOUNT>, then media-intake offload BATCH --phone ROOT   # after tag
+next: media-intake backup <DRIVE>, then media-intake offload BATCH --phone ROOT   # after tag
 next: media-intake gallery             # after tag, for a laptop folder batch (no offload)
 ```
 
@@ -227,12 +326,29 @@ is no `next:` line at all, so `scan`'s last line stays its JSON summary;
 ### Confirmation prompts
 
 Without `--yes`, `erase` and `forget` ask you to type `ERASE`, and `offload`
-to type `DELETE`, before anything is deleted. Any other answer, or none at
+to type `DELETE`, before anything is deleted. Before the prompt, `erase` and
+`forget` say what goes, with counts: the quarantined (or library) files, the
+identical copies already in the library, every identical copy anywhere in
+your home folder (your photo folders and the folder you imported from
+included), with `--phone` the matching files on the phone or camera (and its
+thumbnail folders), with `--drive` every identical copy on that drive (and
+its free space overwritten), and what no erase can reach. `offload` names how
+many files it would delete and from where (the phone, or the drive for a
+drive batch), and with nothing to delete says so and asks nothing (exit 0). Any other answer, or none at
 all, deletes nothing: with no terminal (a cron job, the folder queue, stdin
 closed) or Ctrl-C at the prompt, the command prints `nothing erased` /
 `nothing deleted` and exits 1, with no traceback. Every such prompt goes
 through one helper, `intake.ask()`; `--yes` skips the prompt only, never the
 checks on what may be deleted.
+
+`trash` and `purge-review` don't ask: without `--yes` they are a dry run.
+They run every check (the folder-batch, letter-case and quarantine refusals
+included), print what would go as counts (`would trash 2 files; phone
+originals 2`, `would delete 5 reviewed near-duplicates/junk from batch B`),
+then `dry run: nothing deleted` and the exact command to run again with
+`--yes`. A dry run exits 0, or 1 when the real run would refuse a file; then
+it prints no `--yes` command, only what to fix first (take the refused files
+off the command; erase or keep a quarantined one on the review page). The review page and the gallery ask in the page first, then run them with `--yes`.
 
 ### One writer at a time: the library lock
 
@@ -260,6 +376,8 @@ run and a CLI `apply` never interleave (`media_intake/library_lock.py`):
   `media-intake backup` is cli.py's too and takes no library lock: it only
   reads the library, and checks each file before and after copying it, so one
   that changes mid-copy is skipped for the next run ([backup.md](backup.md)).
+  `media-intake zip-check` is cli.py's and read-only, so it takes no lock
+  either (Cloud exports, below).
   `vlm-trash` takes it around each batch of verdicts it writes.
 - **Jobs** (the review page's run, the gallery's Trash, Erase and Share-safe copy) take it with
   their job lock at submit and hold it until their last step is over; each
@@ -284,7 +402,14 @@ exiftool `-all=` for images (orientation and ICC profile kept), an ffmpeg
 stream copy without data streams or metadata for videos. exiftool cannot write
 GoPro GPMF tags, so the GPS track is removed by dropping the stream; a video's
 attached picture (cover art, a JPEG with its own EXIF) and subtitle streams
-are dropped too, so a copy holds only its video and audio streams. It checks
+are dropped too, so a copy holds only its video and audio streams. A motion
+photo's copy is the still alone: exiftool `-all=` drops a JPEG's trailer (its
+`Trailer` group, Samsung's and Google's video with it), and share-copy then
+cuts anything still appended off the copy (a JPEG after its end of image, a
+HEIC's trailing `mpvd`/`sefd` box). Everything after the first image goes,
+so an Ultra HDR photo's gain map goes too: the copy shows as a plain SDR
+photo. A copy that would still carry a video
+is removed and share-copy stops with an error (copies made before it stay). It checks
 everything before copying anything, and refuses (writing nothing) when `--out`
 is inside a library root or the state folder (the gallery's Share-safe copy
 has the same rule: a copy there would be taken for a library file, and could
@@ -304,7 +429,7 @@ order (`date_src` in `plan.json`; `plan` prints a count per source):
 | `exif` | `DateTimeOriginal`, else EXIF `CreateDate`, else `ModifyDate`; local time, with `OffsetTimeOriginal` (else `OffsetTime`) as its offset |
 | `video` | Apple's `Keys:CreationDate` (local time with its own offset), else QuickTime `CreateDate` / ffprobe `creation_time`, which is UTC: converted to local time with `OffsetTimeOriginal` when the file has one, else this machine's time zone for that date |
 | `gps` | `GPSDateTime` (EXIF, or a GoPro's GPMF track read with `exiftool -ee`; the start of the locked run, below), else `GPSDateStamp` alone (noon UTC of that day). UTC, converted like `video` |
-| `export` | a cloud export's own record of the date, from the file's Google Takeout JSON (`photoTakenTime`) or iCloud `Photo Details.csv` row (`originalCreationDate`): UTC, converted like `video` ("Cloud exports", below) |
+| `export` | a cloud export's own record of the date, from the file's Google Takeout JSON (`photoTakenTime`) or iCloud `Photo Details.csv` row (`originalCreationDate`), or a Telegram Desktop export's `result.json` message (`date_unixtime`): UTC, converted like `video` ("Cloud exports", below) |
 | `filename` | a date in the name (`20261108_071502`, `2026-11-08 07.15.02`, `20261108`; a Telegram export's day-first `@08-11-2026_07-15-02`) |
 | `folder` | an iPhone export's `DCIM/YYYYMM__/` folder: the 1st of that month (day unknown, so `--event` days don't match it) |
 | `mtime` | the file's modification time, last resort |
@@ -376,7 +501,20 @@ except a GoPro video's GPMF GPS time and any serial number: ffprobe can't
 read a video's serial, so neither fallback reads one, and a camera's photos
 and videos get the same Make/Model device id (Devices, below).
 
-### Cloud exports (Google Takeout, iCloud)
+### Cloud exports (Google Takeout, iCloud, Telegram)
+
+Before unzipping one, `media-intake zip-check ROOT` says what the zips under
+ROOT hold that this machine doesn't have. It streams every member through
+sha256 without extracting anything and counts each as `library` (in the
+library index), `known` (under a `--known DIR`, a folder outside the library
+you also keep), `trashed` (you trashed it before), `erased` (on the erase log:
+it must not come back), `json` (Takeout's metadata), `dir`, or `new-media`,
+`new-doc`, `new-other`; a zip or member it can't read is counted as such. It
+prints counts per top-level folder of ROOT and a total with sizes, never a
+member name. `--out JSON` writes each member's class for a later step (mode
+0600; it names files, so keep it out of shared folders, and never inside
+ROOT). The `--known` checksums are cached in `<state>/zipcheck/` by path,
+size and mtime.
 
 A Google Photos Takeout or an iCloud Photos export ("Request a copy of your
 data" at privacy.apple.com) is a folder of photos and videos: unzip it and
@@ -385,8 +523,8 @@ its files have lost their own capture date (edited copies, messaging images,
 scans, screenshots) and their mtime is the download time, but the export
 keeps the date beside them. `stage` (`media_intake/exports.py`) reads it, for
 `--kind folder` and `--kind drive` only, into the batch manifest
-(`files[rel].export`: `time` in UTC, `via` `google-takeout` or `icloud`, the
-`sidecar` it came from, and `lat`/`lon` when there is a place), and prints
+(`files[rel].export`: `time` in UTC, `via` `google-takeout`, `icloud` or
+`telegram`, the `sidecar` it came from, and `lat`/`lon` when there is a place), and prints
 how many files matched. `plan` turns it into the `export` date source above:
 below the file's own EXIF, QuickTime and GPS dates (Google and Apple usually
 copied those from the file anyway), above the file name, folder and mtime.
@@ -420,32 +558,55 @@ camera's clock).
   different dates in that folder gets none. `importDate` is never used (it
   is when the file reached iCloud, not when it was taken). A file with both
   kinds of record takes the Google one.
+- **Telegram Desktop export** (JSON format, "Messaging apps" above): one
+  `result.json` at the export's top folder, holding one chat's object
+  (`messages`) or, for "Export Telegram data", every chat under
+  `chats.list` and `left_chats.list`. Each message's `photo` or `file` is a
+  path relative to that folder (`files/IMG_0007.HEIC`,
+  `chats/chat_001/video_files/clip.mp4`) and its date is `date_unixtime`
+  (UTC epoch seconds), else, in older exports, `date` (the exporting
+  computer's local time, read in this machine's time zone). Only a file
+  inside a Telegram export (the same test the walk uses), kept under its own
+  name, and listed by its exact path (compared in Unicode NFC) is matched:
+  `photo_<n>@<date>` names are already `filename` dates. A path listed with
+  two different dates gets none (counted as ambiguous). The nearest
+  `result.json` from the file's folder up to the staged folder is used, and
+  each is read once. A file with a Takeout or iCloud record takes that one.
 - **Places**: the export's place is stored only when the file has no GPS of
   its own: `plan.json` keeps it as `export_gps`, and `tag` geocodes it
   offline like file GPS (a `Place|` tag, `XMP-exif:GPSLatitude/Longitude` in
   the sidecar). Nothing is ever looked up online.
-- **Duplicates**: the JSON and CSV files are never staged or filed (only
+- **Duplicates**: the JSON (`result.json` too) and CSV files are never staged or filed (only
   media extensions are walked). A Takeout puts the same photo in its year
   folder and in each album folder; `plan` drops the copies by sha256 against
   the batch and the library like any other duplicate ("Duplicates", below).
-- Only these small files (at most 1 MiB for a JSON, `JSON_MAX`; 64 MiB for a
-  CSV, `CSV_MAX`) are read, never through a symlink, and a CSV must be UTF-8;
+- Only these small files (at most 1 MiB for a Takeout JSON, `JSON_MAX`;
+  64 MiB for a CSV, `CSV_MAX`, and for a Telegram `result.json`,
+  `TELEGRAM_MAX`, which also holds every message's text) are read, never
+  through a symlink, and a CSV or `result.json` must be UTF-8;
   nothing is written to the export (its files, mtimes and folders are left
   exactly as they were). A metadata file that breaks one of these rules, or
   isn't a regular file, or fails to read, is skipped without stopping
   `stage`, its media are staged without an export date, and `stage` reports
   each reason it hit: `skipped N symlinked cloud export metadata files (never
-  followed)`, `... over the size cap`, `skipped N cloud export CSV files that
-  are not UTF-8`, `... that are not regular files or could not be read`
+  followed)`, `... over the size cap`, `skipped N cloud export CSV files or
+  Telegram result.json files that are not UTF-8`, `... that are not regular files or could not be read`
   (`exports.REFUSED`; each file counted once). Staging the same folder
   again gives the same files, dates and report.
 - **Offload** of a drive deletes only the media originals: the JSON and CSV
-  files stay on the drive; delete the export folder yourself once it is filed.
+  files (and a Telegram export's `result.json`) stay on the drive; delete the export folder yourself once it is filed.
 - **Erase** doesn't reach them either: an erased file's Takeout JSON or iCloud
-  CSV row (which can hold its date, place and description) stays beside where
-  it was, and the coverage report lists it under `cant_reach`.
+  CSV row (which can hold its date, place and description), and a Telegram
+  export's `result.json` (which holds the chat's messages), stay beside where
+  they were, and the coverage report lists them under `cant_reach`.
 
-Neither format is documented by Google or Apple. The rules above follow the
+Telegram's format is read from tdesktop's
+[`export_output_json.cpp`](https://github.com/telegramdesktop/tdesktop/blob/dev/Telegram/SourceFiles/export/output/export_output_json.cpp)
+(checked 2026-11-17: `result.json`, `date` / `date_unixtime`, `photo` /
+`file` relative to the export folder, the single-chat and whole-account
+layouts) and tested on synthetic exports, not a real one.
+
+Neither Google's nor Apple's format is documented by its vendor. The rules above follow the
 open-source importers that parse them, checked 2026-11-14:
 [immich-go](https://github.com/simulot/immich-go) (`adapters/googlePhotos/matchers.go`
 and its test cases, `adapters/googlePhotos/json.go`, `adapters/folder/icloud.go`
@@ -582,7 +743,7 @@ cameras of one model share a folder, as above.
     clips 15 or more), not on real phone video: see Unverified.
 - Images under 200 px and empty files go to review as junk.
 - `index.json` in the state folder keeps sha256 and dHash of everything in
-  the library (and each filed video's frame hashes, `vhash`), so later
+  the library (and each filed or released video's frame hashes, `vhash`), so later
   batches are checked against it.
 - **A move never replaces a file** (`intake.free_path`). `release` puts a
   file back at its old place only while that place and its sidecar are free.
@@ -599,9 +760,9 @@ cameras of one model share a folder, as above.
 
 ## Trash vs erase
 
-`trash [BATCH] FILE... [--phone ROOT]` is a plain delete for junk that isn't
-private: the file (library or review copy), its `.xmp` sidecar,
-its thumbnails (freedesktop and the gallery's) and the gallery's H.264 proxy
+`trash [BATCH] FILE... [--phone ROOT] --yes` is a plain delete for junk that
+isn't private (without `--yes`, a dry run: see "Confirmation prompts"): the
+file (library or review copy), its `.xmp` sidecar, its thumbnails (freedesktop and the gallery's) and the gallery's H.264 proxy
 of a video, its `index.json` entry, and
 with `--phone` its phone original (the manifest's `src`, checked by
 `sources.check`). No home sweep, near-duplicate search, erase log or
@@ -659,11 +820,13 @@ quarantine. A file named twice is forgotten once.
   left (including orphaned sidecars, gallery thumbnails and gallery video
   proxies). `erase` runs it
   last. Given a batch, it then prints that batch's last coverage report in
-  full (below), or says the batch was erased before reports were kept.
+  full (below), or says the batch was erased before reports were kept. A
+  batch with no erase-log entries yet exits 1 at once with `nothing erased yet
+  for BATCH: erase it first (media-intake erase BATCH)`, before any sweep.
 - **sweep-erased: a drive that was unplugged at erase time.** `erase` can
   only reach the drive named with `--drive`, and refuses once the quarantine
   is empty (it says to run this). `media-intake sweep-erased [BATCH] --drive
-  MOUNT` finds the copies left there, and any made in HOME since, by size and
+  DRIVE` finds the copies left there, and any made in HOME since, by size and
   sha256 from the erase log (one batch, or every entry), with erase's own
   sweep: the same HOME skips (`SWEEP_SKIP`, `.git`, `node_modules`,
   `__pycache__`), every folder on the drive including its Trash and the
@@ -718,11 +881,16 @@ quarantine. A file named twice is forgotten once.
     app-private storage on a phone or camera (a gallery app's own trash),
     other computers and backup drives not named with `--drive`, filesystem
     snapshots and the blocks an SSD keeps aside, re-encoded or trimmed video
-    copies, and a cloud export's Takeout JSON or iCloud CSV row left beside an
-    erased file on its source drive.
+    copies, and a cloud export's Takeout JSON or iCloud CSV row (or a Telegram
+    export's `result.json`) left beside an erased file on its source drive.
 
-  `erase` prints a short form (places with a count, what was left, what was
-  not checked, what it can't reach); `verify-gone BATCH` prints the full one.
+  `erase` ends with one summary line (`erased N files: Q quarantined, L in
+  your library, H in your home folder, P on the phone or camera, D on the
+  drive`, then the home-folder count per top-level folder), and a short form
+  (what was left, what was not checked, and what it can't reach in a few
+  words: `CANT_REACH_SHORT`), plus the command for the full report:
+  `verify-gone BATCH` prints the full one. `forget` says `F from your
+  library, L more in your library` in place of the first two counts.
 - **Progress while it searches.** The HOME sweep, the drive sweep, the
   near-duplicate search and verify-gone can take minutes on a big HOME, so
   each prints a start line (what it searches, how many erased items), then a
@@ -921,7 +1089,7 @@ any plugin's `after_tag` hook ([plugins.md](plugins.md)).
   files still go by date. `tag-files` reads the project and event from
   `<project folder>/<date>-<slug>/`, or takes `--event`.
 - **Protected projects**: files tagged with a project's `Project|<name>`
-  (`protect = true`, the default) are never trash suggestions and never get a
+  (`protect = true`, the default) are never Suggested junk and never get a
   VLM trash verdict.
 - **Used**: `mark-used FILE... --post <slug>` adds `Used|<slug>`; the slug's
   leading date is the date of use, so `find --unused-since 30d` needs slugs
@@ -1032,6 +1200,7 @@ own namespace; your tags win.
 | `Review\|child-in-shot` | SigLIP | added, never removed by a tool; only you clear it |
 | `AI\|vlm/<model>/...` (and the older `Review\|vlm-trash/*`, `Review\|vlm-keep`) | the VLM (`vlm_trash.py`) | its own; tagging never touches them |
 | `Used\|<slug>` | `mark-used` | never removed |
+| `Calibrate\|<label>\|yes`, `Calibrate\|<label>\|no` | you (the gallery's "+ tag") | never touched by a tool; only `calibrate` reads them ([configuration.md](configuration.md), "Calibrating label thresholds") |
 
 - `Review|maybe-trash` is never added to a file with `Owner|not-trash`,
   `Owner|keep`, `Owner|trash` (or the legacy `Review|not-trash`) or digiKam
@@ -1062,7 +1231,7 @@ suggest-trash, vlm-trash, semantic `--clean`, the gallery and the review page.
   sidecar once (idempotent; `--dry-run` counts), and any re-tag of a file
   (`tag`, `tag-files`) or Keep rewrites it on the way. Reading it stays because
   a sidecar can come back unmigrated (a restored backup, a digiKam copy), and
-  dropping the read would turn a kept file into a trash suggestion.
+  dropping the read would turn a kept file into Suggested junk.
 - `dc:Subject` leaves go only with a removed tag, and never a leaf another
   kept tag or digiKam's `TagsList` still uses (your keyword "food" survives
   `Label|food` being replaced).
@@ -1156,7 +1325,8 @@ Rejected:
 - Tesseract on embossed card numbers and cheque MICR lines.
 - `scan` time: about 1-2 s an image on CPU (OCR dominates), estimated.
 - Label accuracy on real photos, and the thresholds in `labels.yaml` (first
-  guesses; `label.py --all` prints every score for calibrating).
+  guesses; `media-intake calibrate` reports precision and recall against
+  your own marks: configuration.md, "Calibrating label thresholds").
 - How reliably `child-in-shot` catches children, especially small or in the
   background: treat a missing flag as "not checked", not "no child".
 - Label speed: measured on synthetic images only. Estimate 0.1-0.3 s an image
@@ -1174,6 +1344,12 @@ Rejected:
   check that crashes on one file `unscanned-error` (the rest of the batch is
   still scanned and `scan.json` still written). GoPro `.gpr` raw files are
   read through Pillow; one it can't open is `unreadable`.
+- Motion photos: built from Google's spec and exiftool's reading of Samsung's
+  trailer, tested on synthetic files only (a Pillow JPEG with an ffmpeg clip
+  appended, stand-in HEIC boxes), not on real Samsung or Pixel files. HEIC
+  motion photos' videos are found but their stills need `pillow-heif`; AVIF
+  and Samsung PNG trailers aren't read. An Ultra HDR photo whose video was
+  removed by an editor that kept `MotionPhoto=1` gets `unscanned-video`.
 - `backup` on real exFAT, ext4-on-LUKS and NTFS drives (fsync refusals, name
   rules, timestamps): tested on a folder standing in for the drive and a faked
   `findmnt` only ([backup.md](backup.md), "Not tested here").
@@ -1182,7 +1358,7 @@ Rejected:
 
 `python3 -I -m unittest discover -s tests` (synthetic media, a throwaway HOME,
 a hermetic config), or one module: `python3 -I -m unittest discover -s tests -p test_intake.py`
-(also `test_intake_output`: the progress lines of stage, plan, apply and tag by count, none naming a file, and the `next:` line for a clean, quarantined and review batch, on a terminal and off it; `test_dates`, `test_devices`, `test_sources`, `test_exports` (Google Takeout and iCloud export metadata), `test_tagging`, `test_config`, and `test_device_case`: offload,
+(also `test_intake_output`: the progress lines of stage, plan, apply and tag by count, none naming a file, and the `next:` line for a clean, quarantined and review batch, on a terminal and off it, the plan and apply summary lines in words, a wrong batch name on each command, a missing or empty source, steps out of order, the missing-detector message, and the quarantine hint by batch kind; `test_dates`, `test_devices`, `test_sources`, `test_exports` (Google Takeout and iCloud export metadata), `test_tagging`, `test_config`, and `test_device_case`: offload,
 erase and trash on fake MTP, gphoto2 and drive trees with case-only collisions, in the manifests or only in the live listing, and a listing that fails; `test_device_ops_media_kinds`:
 stage, plan, apply, erase, offload and verify-gone with photos, videos and a mix from a phone, a GoPro card,
 a drive, a laptop folder and the drive queue, and erase's and offload's prompts (a wrong answer or closed
@@ -1202,5 +1378,8 @@ dropping the rest (dry run, unreadable files, symlinked cache folders, the libra
 and git repos, content in the library index left alone, counts only); `test_library_ops_media_kinds`: every
 library-side command on a photo, an mp4 and a .mov, alone and mixed; `test_detectors_media_kinds`: scan,
 vlm_trash, semantic, label and the plugin hook on photos, videos and mixed batches, broken videos that
-must be flagged "not checked", never clean, and the GStreamer fallback with a hostile file name and its one-line skip note for an unsafe work folder (fake tools); `test_offline_guard`). Run long jobs under your
+must be flagged "not checked", never clean, and the GStreamer fallback with a hostile file name and its one-line skip note for an unsafe work folder (fake tools); `test_motion`: motion photos (Google,
+Samsung and bare-`ftyp` styles, HEIC `mpvd`/`sefd` boxes) detected, their video extracted, scanned and its
+flags merged, an extraction failure flagged "not checked", and share-copy dropping the video (exiftool and
+Pillow paths); `test_offline_guard`). Run long jobs under your
 own memory cap if you like.

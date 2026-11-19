@@ -171,9 +171,33 @@ class PruneCacheTest(unittest.TestCase):
         r = self.run_cli()
         self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
         self.assertIn("library folder not found", r.stdout)
-        self.assertIn("only legacy thumbnails were pruned", r.stdout)
+        self.assertIn("only legacy thumbnails are in scope this time (a library folder is missing, so what the "
+                      "library holds is unknown). Run it again once every library folder is there and readable.",
+                      r.stdout)
+        self.assertNotIn("pruned", r.stdout)
         self.assertEqual(self.present(self.legacy), [])
         self.assertEqual(self.present(self.keep + self.turns + self.gone), self.keep + self.turns + self.gone)
+
+    def test_dry_run_with_a_missing_folder_never_says_pruned(self):
+        """A dry run deletes nothing, so its summary never says anything was pruned or deleted."""
+        os.rmdir(os.path.join(self.foot, "originals"))
+        before = sorted(os.listdir(self.thumbs)) + sorted(os.listdir(self.proxies))
+        r = self.run_cli("--dry-run")
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+        self.assertEqual(sorted(os.listdir(self.thumbs)) + sorted(os.listdir(self.proxies)), before)
+        self.assertIn("would delete 3 legacy thumbnails", r.stdout)
+        self.assertIn("only legacy thumbnails are in scope this time", r.stdout)
+        for word in ("pruned", "deleted"):
+            self.assertNotIn(word, r.stdout)
+
+    def test_help_says_what_it_deletes(self):
+        r = self.run_cli("--help")
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+        h = " ".join(r.stdout.split())
+        self.assertIn("usage: media-intake prune-cache", h)
+        self.assertIn("DELETES the gallery's cached thumbnails and video proxies", h)
+        self.assertIn("Never touches your photos, videos or tags", h)
+        self.assertIn("only count what would be deleted", h)
 
     def test_symlinked_cache_folder_is_not_followed(self):
         """thumbs/ itself a symlink to a folder elsewhere: nothing in that folder is listed or deleted."""
@@ -205,7 +229,8 @@ class PruneCacheTest(unittest.TestCase):
     def only_legacy_went(self, r):
         self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
         self.assertIn("1 library files could not be read", r.stdout)
-        self.assertIn("only legacy thumbnails were pruned", r.stdout)
+        self.assertIn("only legacy thumbnails are in scope this time (a library file could not be read, so",
+                      r.stdout)
         self.assertEqual(self.present(self.legacy), [])
         self.assertEqual(self.present(self.keep + self.turns + self.gone), self.keep + self.turns + self.gone)
         self.assert_untouched_outside()

@@ -4,7 +4,7 @@
 that intake files: a day-to-day browser in place of digiKam.
 
 ```
-media-intake gallery [--drive MOUNT] [--port 0] [--share-out DIR]
+media-intake gallery [--drive DRIVE] [--port 0] [--share-out DIR]
 ```
 
 `python3 -I media_intake/gallery.py` takes the same flags. `--share-out` is
@@ -13,32 +13,41 @@ where share-safe copies go (below).
 It prints exactly one `xdg-open 'http://127.0.0.1:<port>/?t=<token>'` line,
 then a note with the item count, the start-up time, how many flagged or erased
 files were left out and any plugin tabs. A private browser window keeps the
-page out of your history. It runs until Ctrl-C or the page's **Close** button.
+page out of your history. It runs until Ctrl-C or the page's **Stop server** button.
 An assistant may start it and hand you the line; only you open the page and
 click.
 
-`--drive` is your backup drive's mount, passed to `forget` when you Erase, so
-copies there go too.
+`--drive` is your backup drive (the folder it is mounted on), passed to `forget` when you Erase, so
+copies there go too. The Erase dialog says whether it is included: "and on the
+backup drive (<mount>)", or "Not on a backup drive: the gallery was started
+without one" (`/api/facets` gives `drive`, the mount or null).
 
 ## Layout
 
 - **Left sidebar** (its own scroll; the menu button collapses it to an icon
   rail, remembered per browser; at phone width it is a rail by default and
-  opens as a drawer): the views with counts (Library, Trash suggestions, any
+  opens as a drawer): the views with counts (Library, Suggested junk, any
   plugin tab; quick views Recently added = filed in the last 30 days, by the
   file's inode change time, Possible child = `Review|child-in-shot`,
   Untagged; then **Events** with counts, the eight largest and "All N events";
-  then **Keyboard shortcuts**, the `?` list below), the search box (a one-line hint when semantic search is off, the
+  then **Keyboard shortcuts**, the `?` list below, left out on a touch screen
+  with no keyboard), the search box (a one-line hint when semantic search is off, the
   full reason under "why"), then the filters as collapsible sections with
   counts (open / closed remembered per section) and "Clear filters (N)".
   Counts are for the whole library, not narrowed by the other filters.
+  Collapsed to the rail, each icon has a short word under it (Library, Junk,
+  Recent, Child, No tags, Search, Filters); the full name stays its tooltip
+  and the name a screen reader reads.
 - **Main area**: a slim header (view, item count, **Select all**,
-  thumbnail-size slider, Close; at phone width the item count is left out and
-  Close is an icon, so the header fits beside a long title, which shortens with
-  an ellipsis), the active filters as removable chips (in an event: the event's
+  thumbnail-size slider, **Stop server**, and while a Trash, Erase or
+  Share-safe copy runs with its dialog hidden, a "Trash running… Show" button
+  that brings the dialog back; at phone width the item count is left out and
+  Stop server is an icon, so the header fits beside a long title, which
+  shortens with an ellipsis), the active filters as removable chips (in an
+  event: the event's name as the title, no chip for it, and the event's
   **Rename…** and **Merge into…** bar), the month grid. The
   selection actions sit in a bar at the bottom that appears only while
-  something is selected (Trash suggestions keeps its Apply bar there). It
+  something is selected (Suggested junk keeps its Apply bar there). It
   floats over the grid while you scroll and takes its own room at the end, so
   the last row is never stuck under it, however many rows its buttons wrap to.
   On a small tile (narrower than 150 px, as at phone width) a burst's badge and
@@ -47,8 +56,30 @@ copies there go too.
   readers) and an open stack's other shots show their badge as "×N"; on a
   wider tile the full labels stay, shortening with an ellipsis rather than
   covering the checkbox. At phone width the burst help above the grid is one
-  line ("Bursts are stacked; X opens one.") with a **more** link for the whole
+  line ("Burst stacks: tap ×N to open one." on a touch screen, "Bursts are
+  stacked; X opens one." with a keyboard) with a **more** link for the whole
   text (open / closed remembered per browser).
+- **The grid's own states** (in place of the tiles, `role=status`):
+  "Loading your library…" (with `aria-busy` on the grid) until the first page
+  arrives; an empty library: "Your library is empty." with the commands that
+  fill it (`media-intake stage <folder> --kind folder --batch first`, then
+  `plan`, `scan` and `apply`) and a pointer to Getting started; no results:
+  "Nothing matches this search." / "these filters." with a **Clear search** /
+  **Clear filters** button, or "Nothing in Untagged right now." with **Show
+  the whole library** for an empty quick view or event; Find similar without
+  the search index: "Find similar needs the search index: run media-intake
+  index in a terminal, then try again." with **Back to the library**. A load
+  error is an alert in the grid ("Couldn't load the library", the reason, and
+  "restart media-intake gallery" if Try again keeps failing) with **Try
+  again**; a later page failing says so in the error message, with Try again,
+  and the grid stops asking until then. Opening an item that is gone since
+  the list loaded says "That file is no longer in the library. The list will
+  refresh." and reloads the list.
+- **Touch targets**: at phone width or on a touch screen every control the
+  grid shows takes a 44 x 44 px tap: buttons, the rail's icons, the filter
+  rows, the size slider, a chip's ×, the tile checkbox (a 22 px box in a 44 px
+  hit area), the ×N button and text links (a larger hit area around them).
+  The selection bar's **Erase** sits apart from Keep and Trash.
 - **Colours** follow the system's light or dark scheme. Every label meets
   WCAG 2's 4.5:1 contrast in both: text on the accent colour (burst badges,
   ×N, the rail's filter count, primary buttons) is white in light and near
@@ -70,13 +101,31 @@ copies there go too.
 - **Messages and dialogs**: the page never uses the browser's own `alert`,
   `confirm` or `prompt`. What an action did shows in a message at the bottom
   (`role=status`) that fades after a few seconds; one with **Undo** (below)
-  stays 10 s, longer while the pointer or focus is on it. An error (the
-  server's own message: a refusal, a 409 naming who holds the library lock)
-  shows at the top as an alert (`role=alert`, read out at once) and stays
-  until **Dismiss**. The confirm dialogs (Trash, Erase, Set event, a tag,
-  Stop the server, ...) and the shortcut list take focus when they open, keep
-  it inside on Tab, close on Esc (or Cancel) and give focus back to where it
-  was; the large view keeps Tab inside it too (and its messages).
+  stays 10 s, longer while the pointer or focus is on it. The message sits
+  above the selection bar (on a phone the bar wraps to several rows), never
+  over its buttons. An error (the server's own message: a refusal, or a 409
+  saying in plain words what is running, below) shows below the header as an
+  alert (`role=alert`, read out at once) and stays until **Dismiss**. The
+  confirm dialogs (Trash, Erase, Set event, a tag, Stop the server, ...) and
+  the shortcut list take focus when they open, keep it inside on Tab, close
+  on Esc (or Cancel) and give focus back to where it was; the large view
+  keeps Tab inside it too (and its messages).
+- **Plain words**: what the page shows never carries a tool's tag namespace
+  (`Owner|`, `Review|`, `Label|`, ...), a PID or a lock file's path. One map
+  in `gallery.py` (`WORDS`, handed to the page) gives every internal name its
+  words, and the server's own messages use it too:
+
+  | Internal | Shown as |
+  |---|---|
+  | `Review\|maybe-trash`, the old Trash suggestions view | Suggested junk (view, Flags filter, tile flag) |
+  | `Review\|child-in-shot` | Possible child (quick view, Flags filter, tile flag) |
+  | `Owner\|keep` (tile flag "kept") | Kept on the tile; "Marked Keep" in the large view's Details; the large view lists no `Owner\|` tag |
+  | `Owner\|trash` on a copy (flag "trashed copy") | Copy of a trashed photo |
+  | `Used\|*` (flag "used") | Used in a post |
+  | an AI trash verdict's confidence | Junk score (tile "Junk score 0.9", the filter's "Junk score at least", the chip "Junk score ≥ 0.70") |
+  | filters Review, AI, Label | Flags; Junk check (Judged junk / Judged fine / Not checked); Looks like |
+  | a tool's tag in the large view | "Project: Personal", "Looks like: food", "Junk check: Judged junk (blurry)" under "Added by the tools", apart from "Your tags" |
+  | a 409 (library or job lock) | "a Trash is still running; wait for it to finish, then try again" (or an Erase, a Share-safe copy, a run from the review page, the media-intake apply command, ...) |
 
 The sidebar rail, open sections and tile size live in the browser's
 `localStorage` (a per-browser convenience; the page works without it).
@@ -96,8 +145,8 @@ closes it, and no other key acts while it is open.
 - **Bursts**: X opens or closes the focused tile's stack.
 - **Large view**: ← / → previous / next, Space plays / pauses, K / T / E,
   R / Shift+R rotate, Esc closes.
-- **Trash suggestions**: arrows (and J) move the outline, K / T mark it,
-  Enter opens it.
+- **Suggested junk**: arrows (and J) move the outline, K / T mark it (as its
+  Keep and Trash buttons do), Enter opens it.
 - **Dialogs**: Esc cancels, Enter in the text field confirms, Tab stays inside.
 
 `tests/browser/test_browser_gallery_dialogs.py` reads the key names from the
@@ -116,18 +165,25 @@ page's own handlers and fails when the list leaves one out.
   by itself; HEIC/DNG get a 1600 px JPEG made in memory) with tags, date,
   place, event, project, source, folder, resolution and size. Arrow keys go to
   the previous/next item, Esc closes, `/` jumps to the search box.
-- **Trash suggestions**: `Review|maybe-trash`, an `AI|vlm/<model>/trash/*`
-  verdict with that model's `conf` >= 0.7 (or the older `Review|vlm-trash/*`),
-  or `Owner|trash` (a copy of content you trashed elsewhere, chip "trashed
-  copy"); never a file with `Owner|not-trash` (or the legacy
+- **Suggested junk** (was "Trash suggestions"): `Review|maybe-trash`, an
+  `AI|vlm/<model>/trash/*` verdict with that model's `conf` >= 0.7 (or the
+  older `Review|vlm-trash/*`), or `Owner|trash` (a copy of content you trashed
+  elsewhere, flag "Copy of a trashed photo"); never a file with `Owner|not-trash` (or the legacy
   `Review|not-trash`), `Owner|keep`, digiKam Accepted,
   `Used|*` or a protected project's `Project|<name>`. Most confident first,
-  big tiles. K / T mark the outlined tile, arrows move, Enter opens it;
-  nothing changes until **Apply**, which shows the counts and needs a confirm.
+  big tiles, with a line under the title saying what the view is and that
+  nothing changes until Apply. Every tile has **Keep** and **Trash** buttons
+  (pressed when marked; a second tap unmarks), and a marked tile says
+  "Keep" or "Trash" in its corner, not by its outline's colour alone. A tap
+  or click on the photo opens it. There are no checkboxes or selection bar
+  here: the marks are the only choice. With a keyboard, K / T mark the
+  outlined tile, arrows move, Enter opens it. Nothing changes until **Apply**, which shows the counts (and the thumbnails
+  and names of what it trashes) and needs a confirm ("Apply", or "Apply and
+  trash N files").
 - **Events**: every event in the library, from the sidecars' `Event|<slug>`
   tags (or `XMP-iptcExt:Event` on a file with no `Event|` tag), with its count;
   an item in two events counts and shows in both. A click shows that event's
-  items (the Event filter, as a chip) and a bar with:
+  items (the Event filter; the event's name is the view's title) and a bar with:
   - **Rename…** (`POST /api/event/rename`, `{"from": old, "to": new}`): every
     sidecar with `Event|old` gets `Event|new` instead. The new name is a slug
     (lowercase letters, digits, dashes, like `plan --event`) that no event has
@@ -157,10 +213,12 @@ Shots of one burst (one camera, a moment apart) show as one stack, the same
 look and keys as the review page ([review-ui.md](review-ui.md)): the cover
 (the burst's first shot) with a stacked edge, a count badge ("Burst: 4
 shots") and a **Show all 4 (X)** button. **X** or `x` on a focused shot, or
-the button, opens the stack (every shot follows the cover, each with the
-badge) or closes it, and focus goes back to the cover either way. A line
+the button, opens the stack (every shot follows the cover, each with a badge
+giving its place, "Burst: shot 2 of 3", and the shots sharing a coloured ring)
+or closes it, and focus goes back to the cover either way. A line
 above the grid says what a stack is and how actions behave. At phone width
-the cover shows a compact **×N** button instead, and the line is shortened
+the cover shows a compact **×N** button instead ("Close" while the stack is
+open, and the other shots "2/3", "3/3"), and the line is shortened
 with a **more** link ("Layout" above).
 
 - **A closed stack acts on its cover only.** Selecting (Space, a click, a
@@ -187,28 +245,29 @@ with a **more** link ("Layout" above).
 - **Where**: the timeline (Library, events, quick views and every filter).
   Only the listed shots stack: a filter that leaves one shot of a burst
   shows it as a plain tile, and the badge counts the shots listed. Ranked
-  lists (search results, Similar, Trash suggestions) are never stacked,
+  lists (search results, Find similar, Suggested junk) are never stacked,
   since their order is not time. A burst's shots sit together at the place
   of the newest one, in time order.
 
 ## Filters (all combinable)
 
-Project, Source, Event, Place, year or month, any `Label|*`, my tags, Review
-(maybe-trash, child-in-shot, untagged = `Review|untagged-*` or no tags), AI
-(trash with confidence >= N, keep, not judged), Used (used; or unused in the
-last N days, blank = never used), photos / videos, and added in the last N
-days (`added=N` on `/api/list`, what Recently added sets).
+Project, Source, Event, Place, year or month, Looks like (any `Label|*`), my
+tags, Flags (Suggested junk = `Review|maybe-trash`, Possible child =
+`Review|child-in-shot`, Untagged = `Review|untagged-*` or no tags), Junk check
+(Judged junk with a junk score >= N, Judged fine, Not checked), Used (in a
+post; or not in the last N days, blank = never), photos / videos, and added
+in the last N days (`added=N` on `/api/list`, what Recently added sets).
 
 `GET /api/facets` gives the sidebar its options and counts: `facets` (per
 project, source, event, place, label, month and year, my tag), `counts`
 (`kind:photo`, `kind:video`, `review:<flag>`, `ai:trash|keep|none`,
-`used:used|unused`, `suggest`, `recent`), `recent_days` and the search
-status. Like every route it needs the session cookie or token.
+`used:used|unused`, `suggest`, `recent`), `recent_days`, the search
+status, `share_out` and `drive` (the backup drive Erase includes, or null). Like every route it needs the session cookie or token.
 
 The search box runs `semantic.py search` (local SigLIP text model, through the
 media-intake venv). When the venv, the embeddings or the text model are
 missing, the page says why and falls back to matching tags, file names and
-folders. **Similar** on any item runs `semantic.py similar`. Both need
+folders. **Find similar** on any item runs `semantic.py similar`. Both need
 `media-intake index` to have run ([search.md](search.md)).
 
 ## Actions (one item, or a selection)
@@ -220,17 +279,21 @@ it; Space on a focused tile ticks it; **Select all** in the header, or Ctrl+A /
 Cmd+A, ticks every tile shown), then the bottom bar's buttons or keys:
 **K** Keep, **T** Trash, **E** Erase, **+ tag** / **− tag** (a field that
 suggests your tags as you type, from `/api/facets`' My tags, and refuses the
-tools' namespaces before anything is sent, as the server does), **Set event…**,
+tools' namespaces before anything is sent, as the server does; it is also how
+you add `Calibrate|<label>|yes` or `|no` marks for `media-intake calibrate`,
+[configuration.md](configuration.md), "Calibrating label thresholds"), **Set event…**,
 **Rotate ⟳**, **Share-safe copy**; Esc or **Clear selection** clears it. Each
 applies to every selected item through the same endpoint as one item, photos
 and videos alike (one unknown or removed id refuses the whole request, and so
 does a file deleted since the gallery scanned, by a CLI `trash` say: 400,
 nothing written, so no sidecar is made for a file that is gone, and it leaves
 the grid). The replies to Keep, my tags, Rotate and Set event carry the
-items' new grid summaries (`"items"`), so the tiles' flags ("kept", ...)
-change at once; the selection stays for the next action. In the large view the keys
-act on the item shown; **R** / **Shift+R** rotate, and its buttons include Set
-event and Share-safe copy.
+items' new grid summaries (`"items"`), so the tiles' flags ("Kept", ...)
+change at once; the selection stays for the next action. Keep's message is
+"Kept 3. They won't be suggested as junk again." In the large view the keys
+act on the item shown; **R** / **Shift+R** rotate (its buttons **Rotate left
+(Shift+R)** and **Rotate right (R)**), and its buttons include Set event,
+Share-safe copy and **Find similar**.
 
 **Select all** ticks every tile the grid shows now: the current view, filters
 and search, and only the pages loaded so far (the grid loads 240 at a time as
@@ -242,20 +305,20 @@ reaches a file the page hasn't shown, so a Trash or Erase after it can't take
 more than you scrolled past, and they ask exactly as for any selection (the
 count and names, then Confirm, or ERASE typed). Ctrl+A in the search box or
 any other text field selects that field's text, as usual; Select all is not
-offered in Trash suggestions (K / T and Apply there) or a plugin tab. Ticking
+offered in Suggested junk (K / T and Apply there) or a plugin tab. Ticking
 or unticking a tile afterwards, opening or closing a stack, or a new page
 loading turns the line back into a plain count. Esc clears.
 
 | Action | What it writes |
 |---|---|
 | Keep | sidecar: `Owner\|keep` and `Owner\|not-trash` added; `Review\|maybe-trash`, an older `Owner\|trash` and the legacy `Review\|not-trash` removed (each leaf only when no other tag uses it). Nothing else. The same rule as the review page's Keep (`intake.keep_args`). |
-| Trash | `media-intake trash FILE...`: plain delete of the file, its sidecar, thumbnails (freedesktop and the gallery's) and index entry; the sha goes in `trashed.json` (the durable `Owner\|trash`) so intake never takes it in again, and library copies of it left on disk get `Owner\|trash` in their sidecar. The same command the review page's Trash runs. Summary + confirm. |
+| Trash | `media-intake trash FILE... --yes` (the page has already asked): plain delete of the file, its sidecar, thumbnails (freedesktop and the gallery's) and index entry; the sha goes in `trashed.json` (the durable `Owner\|trash`) so intake never takes it in again, and library copies of it left on disk get `Owner\|trash` in their sidecar. The same command the review page's Trash runs. Summary + confirm. |
 | Erase | `media-intake forget FILE... --yes [--drive]`: the erase-everywhere path (quarantine, sweep of HOME, sidecars, thumbnails, recent files, erase log, verify-gone). Summary + type ERASE. For anything private. |
 | My tag + / - | sidecar `HierarchicalSubject` + its `dc:Subject` leaf. Refused for the tools' namespaces (`Project\|`, `Source\|`, `Event\|`, `Place\|`, `Label\|`, `Review\|`, `AI\|`, `Used\|`, `Owner\|`); removal only touches your tags, and keeps a leaf another tag still uses. |
 | Rotate | sidecar `XMP-tiff:Orientation` only (1/6/3/8), each item from its own orientation. The original is never re-encoded or written; digiKam reads the same field. |
 | Set event | `POST /api/event/set` (`{"ids": [...], "event": slug}`): sidecar `Event\|<slug>` (and `XMP-iptcExt:Event`), replacing the item's other `Event\|` tags; `"event": ""` takes the items out of every event. Nothing else. |
 | Share-safe copy | nothing in the library: `media-intake share-copy` into a new folder (below). |
-| Undo | `POST /api/undo` (`{"undo": token}`): puts back what one Keep, my tag + / -, Rotate or Set event changed, below. Never offered for Trash, Erase, Share-safe copy, Trash suggestions' Apply, Rename or Merge. |
+| Undo | `POST /api/undo` (`{"undo": token}`): puts back what one Keep, my tag + / -, Rotate or Set event changed, below. Never offered for Trash, Erase, Share-safe copy, Suggested junk's Apply, Rename or Merge. |
 | Open in the system player | nothing: `POST /api/open` with one id (`{"ids": [id]}`) runs `xdg-open <file>` (an argument list, no shell, detached) for the one item, only on that button's POST, and only for a regular file inside a library root after resolving links, not in a running job and not flagged, quarantined or erased (else 400). |
 
 ### Undo
@@ -293,24 +356,43 @@ Every action holds the library lock ([intake.md](intake.md), "One writer at
 a time"): Keep, my tags, Rotate, Set event, Undo, Rename, Merge and a plugin view's
 POST for the write ([plugins.md](plugins.md)), Trash, Erase and Share-safe copy
 for their whole job. While a CLI command (`apply`, `erase`, ...), a review run or
-another gallery's job holds it, the action gets 409 naming the holder and
-nothing is written; browsing is never locked.
+another gallery's job holds it, the action gets 409 (`{"error": ..., "busy":
+true}`) and nothing is written; browsing is never locked. The error says in
+plain words what is running and what to do ("a Trash is still running; wait
+for it to finish, then try again"; or an Erase, a Share-safe copy, a run from
+the review page, "the media-intake apply command", ...), never a PID or the
+lock file's path, and while a gallery job runs the alert has **Show
+progress**.
 
-The summary before Trash or Erase lists the names and warns when any were
-used or kept before. Trash and Erase run one at a time with their output
-streamed into the dialog.
+The dialog before Trash or Erase shows up to 12 of the grid's thumbnails ("and
+N more"), the names, and in plain words what happens: Trash "Deletes these 2
+files from this computer for good, with their tags and thumbnails. They don't
+go to the desktop Trash, and this can't be undone. If the same photo is
+imported again, it is skipped."; Erase "Erases every copy of these 2 files: in
+your library and the rest of your home folder, with their thumbnails and
+recent-file entries", and whether the backup drive is in, then "This can't be
+undone." It warns when any were used in a post or marked Keep earlier ("2 of
+these were marked Keep earlier."). The button names the action: **Trash 2
+files**, **Erase 2 files** (after ERASE is typed). Trash and Erase run one at
+a time with their output streamed into the dialog.
 
 Trash, Erase and Share-safe copy run as a detached job (`media_intake/jobs.py`, the same module
 as the review page), so closing the page or stopping the server never stops
 one that has started:
 
-- The dialog shows what the job is doing from the moment it starts, before
-  any output exists (Erase: "Erasing… looking for copies in your home folder.
-  This can take a few minutes; you can close this page, it keeps running.",
-  since the sweep of HOME can print nothing for minutes), then polls the job
-  and shows its step and output as it arrives. When it ends the status goes
-  and the title says "Done" or "Finished with problems", with the summary
-  line last in the output. A page opened (or
+- The dialog drops the confirm text and shows what the job is doing from the
+  moment it starts, before any output exists (title "Erase running"; status
+  "Erasing… looking for copies in your home folder. This can take a few
+  minutes; you can close this page, it keeps running.", since the sweep of
+  HOME can print nothing for minutes), then polls the job and shows its output
+  as it arrives. There is no stop: a half-done erase must finish. So the
+  dialog's one button is **Hide (it keeps running)**; hidden, the header's
+  "Trash running… Show" button brings it back. When it ends the title says
+  "Done" or "Finished with problems", the status line (`role=status`, read
+  out) says how it ended ("Done: 2 files trashed.", "Done: 1 file erased
+  everywhere."), and the button becomes **Close**. If the dialog was hidden,
+  the end shows as a message instead ("Done: 2 files trashed."), or an alert
+  with **Details** when it finished with problems or crashed. A page opened (or
   reloaded) while one runs, from this server or a restarted one, opens the
   dialog on the running job; the files it acts on stay hidden from thumbnails
   and media until it ends.
@@ -321,8 +403,8 @@ one that has started:
   (409, naming it), and they can't start while it runs.
 - When a job ends, the gallery re-reads the sidecars of the other items that
   could be copies of what it deleted (same size), so a copy `trash` just
-  marked `Owner|trash` shows as "trashed copy" in Trash suggestions without a
-  restart, and a copy `forget` deleted drops out.
+  marked `Owner|trash` shows as "Copy of a trashed photo" in Suggested junk
+  without a restart, and a copy `forget` deleted drops out.
 - A job whose worker PID is gone (checked by PID and its `/proc` start time) is
   reported as crashed, at its step, not as running; its files stay busy while
   the step it started is still running, and nothing re-runs by itself.
@@ -342,13 +424,17 @@ included, until the next job.
 
 ## Share-safe copy
 
-**Share-safe copy** (bottom bar, or the large view) asks first, naming the
-items and the folder, then runs `media-intake share-copy FILE... --out DIR`
+**Share-safe copy** (bottom bar, or the large view; its tooltip "Make a copy
+without location and camera info, to send to someone") asks first, with the
+thumbnails, names and folder ("Makes copies without location (GPS) or other
+hidden info, in a new folder under ~/Pictures/share-safe. Your originals are
+not changed."), then runs `media-intake share-copy FILE... --out DIR`
 as a job (`POST /api/share`, `{"ids": [...]}`): every metadata field and the
 GPS stripped (exiftool `-all=` for images, keeping orientation and ICC; an
 ffmpeg stream copy without data streams for videos, which also drops a video's
-cover art, an attached JPEG with its own EXIF, and its subtitles;
-[intake.md](intake.md)). The stripping is share-copy's own; the gallery only
+cover art, an attached JPEG with its own EXIF, and its subtitles; a motion
+photo's copy is the still alone, its appended video cut off, and one that would
+still carry a video is removed and the job fails; [intake.md](intake.md)). The stripping is share-copy's own; the gallery only
 picks the files and the folder. share-copy also checks everything before it
 copies anything: it refuses, writing nothing, an `--out` where a copy would
 land on its source or inside a library root or the state folder, two files
@@ -507,9 +593,11 @@ cold read from disk will be slower.
 HOME, the real `intake.py` for trash and forget, and a demo plugin view; the
 job tests swap in a fake `intake.py` whose trash waits on a FIFO, then kill
 the server or the worker mid-job, and a plugin POST gets 409 while such a job
-holds the library lock (a view declared `post_read_only` does not). Also: the sidebar counts against their
+holds the library lock (a view declared `post_read_only` does not), every 409 then reading "a Trash is still
+running; wait for it to finish, then try again" with `"busy": true`; `busy_text` naming each holder plainly
+(no PID or path) and `WORDS` holding no tool namespace (`PlainWordsTest`). Also: the sidebar counts against their
 filters, the added-in-N-days filter, a trashed file's copy showing as
-"trashed copy" at once, and Open in the system player through a fake
+flagged `trashed copy` at once, and Open in the system player through a fake
 `xdg-open` on PATH (its refusals included). Events: the sidebar counts, the
 filter, rename and merge (and their refusals) with `Owner|` and other tags
 kept; bulk tags, Set event (and clearing it) and Rotate on a selection;
@@ -536,7 +624,12 @@ namespaces. `tests/browser/test_browser_gallery_dialogs.py` does it on the
 page with a listener that fails on any native dialog: the tag field's
 suggestions and refusals, focus kept in a dialog and given back on Esc, an
 error message staying past the time a plain one fades (Playwright's clock) until
-dismissed, a 409 while a job holds the lock shown as one, the `?` list naming
+dismissed, a 409 while a job holds the lock shown as one in plain words with
+Show progress, the job dialog's Hide, the header's pill and the end announced
+in a message while hidden, the Keep message, no `Owner|` / `Review|` /
+`Label|` in any text, tooltip or name the page shows (grid, filters, chips,
+the large view, every dialog), the message above the action bar at phone
+width, the `?` list naming
 every key the handlers check, Undo of Rotate, Keep (Ctrl+Z), Set event and a
 tag added in the large view restoring the sidecars, Undo refused after the
 item changed, and none after Trash, Erase or a Share-safe copy.
@@ -547,7 +640,7 @@ copy from another device, an unplanned file without a marker and a video
 never; a released file found by `lib_dst`; a later batch winning; unplanned
 files by a burst name or a sidecar's GCamera BurstID), and `/api/list`
 putting a burst's shots after their cover across pages, no stack of one
-under a filter, and none in Trash suggestions.
+under a filter, and none in Suggested junk.
 `tests/browser/test_browser_gallery_select_all.py`: Select all by the button,
 Ctrl+A and Cmd+A, a closed stack adding its cover only (and an open one every
 shot), an event filter respected, Ctrl+A in the search box left to the field,
@@ -558,6 +651,16 @@ cover, badge and X, `x` and `X` with focus back on the cover, a near-copy
 never stacked, a closed stack's range selection and Keep reaching only the
 cover, closing a stack unselecting its hidden shots, and the large view's
 arrows over a closed and an open stack.
+`tests/browser/test_browser_gallery_grid.py`: Suggested junk by tap on a
+390 px touch phone (Keep and Trash pressed and unpressed, the mark in words,
+a tap on the photo opening it, no checkboxes or selection bar, the view's
+note, Apply keeping what was marked) and by mouse and keys; every grid control
+on the phone taking a 44 x 44 px tap (probed with `elementFromPoint` 21 px
+from its centre); the loading state (the list request held by the test), an
+empty library naming the commands, no results for a search, a filter and an
+empty quick view, Find similar without the index, an item gone since the list
+loaded, a load error with Try again; and the rail's words, with no Keyboard
+shortcuts item on a touch screen.
 `tests/browser/test_browser_gallery_layout.py` checks the layout at 390 px
 (phone) and 800 px (just above the phone breakpoint): no sideways page
 scroll, the header's title shown and its controls inside the header, a burst
@@ -569,12 +672,12 @@ of tiles above the selection bar at the end of the page.
 a mixed selection (JPEG, PNG, H.264 in .mp4 and an upper-case .MOV): the
 listing, kind filter and counts, item detail, media with Range, the photo-only
 preview, thumbnails, Keep, my tags, Rotate, events (set, rename, merge, clear),
-Trash and Erase (the real `intake.py`), Trash suggestions' Apply both ways,
+Trash and Erase (the real `intake.py`), Suggested junk's Apply both ways,
 Share-safe copy (the copies' title and GPS gone, the video a stream copy),
 Open in the system player, and the refusal of a selection holding a file
 deleted since the scan. `tests/browser/test_browser_gallery_media_kinds.py`
 does it on the page: a mixed selection by Space, a shift-click range and
-Ctrl-click, Keep by K and by the bar (sidecars and the tiles' "kept" flags),
+Ctrl-click, Keep by K and by the bar (sidecars and the tiles' "Kept" flags),
 a shift-click after the grid reloads, + tag / − tag, Set event, Rotate (the
 thumbnails made again turned) and Trash on a mixed selection, and the large
 view playing an .mp4 and a .MOV and rotating a video.
@@ -607,11 +710,12 @@ with the original and frees the slot.
 In headless Chromium (`tests/browser/test_browser_gallery.py`, see
 CONTRIBUTING.md, Tests): keys, click and shift-click selection, the bottom
 selection bar appearing only while something is selected, a sidebar quick
-view and its chip, the Trash, Erase (ERASE typed) and Close confirms (all in
-the page), the
+view and its chip, the Trash, Erase (ERASE typed, plain words, thumbnails,
+the backup drive named or not) and Stop server confirms (all in the page), the
 lightbox video playing by itself, Space pausing and resuming it, seeking by
-Range, and the job dialog's progress, re-attach after a reload and crash
-message, Erase's status line shown while its output is still empty (a
+Range, and the job dialog's progress (no confirm text left, Hide), re-attach
+after a reload, its end (Done, the status line, Close) and crash message,
+Erase's status line shown while its output is still empty (a
 fake `intake.py` that prints nothing until the test opens a FIFO), and the
 Events list (filter, Rename with a refused name first), Set event on a
 selection and a Share-safe copy ending in "Done: share-safe copies in ...".
@@ -625,7 +729,7 @@ selection and a Share-safe copy ending in "Done: share-safe copies in ...".
 - Burst stacks from a real iPhone or Pixel burst: the tests write the plan
   entries and a GCamera BurstID by hand; Apple's MakerNotes BurstUUID is
   read through exiftool's `BurstUUID` tag on no real file here.
-- Semantic search and Similar through the venv: tested only as "unavailable,
+- Semantic search and Find similar through the venv: tested only as "unavailable,
   falls back", not with the real model.
 - Start-up time on a large real library read from disk.
 - Share-safe copy of HEIC and DNG from the gallery (the gallery tests copy

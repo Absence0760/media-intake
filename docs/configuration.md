@@ -79,3 +79,74 @@ protect = true               # default: never a trash suggestion or a VLM trash 
 - `tag`, `tag-files` and `find --project` read the project from the folder a
   file sits in, so files filed under a project folder keep `Project|<name>`.
 - The name `Personal` is reserved for everything else.
+
+## Calibrating label thresholds
+
+The thresholds in [`media_intake/labels.yaml`](../media_intake/labels.yaml)
+(each content label, `child-in-shot`, `maybe-trash`) are first guesses.
+`media-intake calibrate` measures them against your own marks, on this
+machine: it reads stored numbers and sidecar tags only, opens no photo or
+video, and writes nothing (not `labels.yaml`, not this config, not a sidecar).
+Changing a threshold stays your edit to `labels.yaml`.
+
+1. **Build or update the search index**: `media-intake index`. Without it,
+   calibrate stops with `calibrate: no search index yet. Build it first:
+   media-intake index` (exit 1). `tag` keeps
+   only the labels over each threshold, so calibrate works each label's score
+   out again from the index's vectors (`<state>/embeddings.npz`) and
+   `labels.npz`, with `label.py`'s formula. Photos only by default: a video's
+   index vector is a mean of 8 frames where `tag` takes the best of up to 30,
+   so `--with-videos` counts them as an approximation.
+2. **Mark a sample in the gallery** with **+ tag** (on one item or a whole
+   selection): `Calibrate|<label>|yes` when the item shows the label,
+   `Calibrate|<label>|no` when it doesn't, with the label's name as in
+   `labels.yaml` (case doesn't matter), e.g. `Calibrate|dog|yes`,
+   `Calibrate|child-in-shot|no`. Mark items whatever their current tags say,
+   including ones the label missed, or recall means nothing. Aim for a few
+   hundred items, with at least 20 yes and 20 no per label you want a
+   suggestion for.
+3. **`maybe-trash` needs fewer marks**: your trash decisions count already.
+   A file you kept (Keep: `Owner|keep` / `Owner|not-trash`, or digiKam
+   Accepted) is a "no"; `Owner|trash` on a copy, or its sha256 in
+   `<state>/trashed.json`, is a "yes". Trash deletes the file, so a trashed
+   item counts only until the next `media-intake index` drops its vector;
+   run `calibrate` before re-indexing. A `Calibrate|maybe-trash|...` tag wins
+   over these, and a Keep wins over a trashed copy.
+4. **Run `media-intake calibrate`.** For each label with marks: the yes and
+   no counts, then precision (of the items the label flags, how many you said
+   yes to), recall (of your yes items, how many it flags) and F1 (one number
+   for both) at the current threshold, and a suggested threshold: the one with
+   a balance of both, or with
+   `--precision 0.9` the one that flags the most of your yes items while at
+   least 90% of what it flags is a yes (sensible for `maybe-trash`, where a
+   false flag costs you a look). The suggestion sits halfway between two
+   marked scores. Under `--min` (default 20) yes or no marks it says so
+   instead of suggesting anything. Under the table, a short legend says what
+   each column means in plain words; with no marks yet, calibrate says how to
+   add them instead of printing an empty table. `--json` prints the same as
+   one object.
+
+   ```
+   calibrate: 50 photos have a stored score; you marked 49 of them
+   suggested cut-off: the best balance of precision and recall (best F1)
+     (only for a label with at least 20 yes and 20 no marks)
+   label          pos   neg   thresh  prec recall    F1  | suggest  prec recall    F1
+   dog             20    22   0.0500 0.909  1.000 0.952  |  0.3994 1.000  1.000 1.000
+   maybe-trash      3     3   0.1000 0.667  0.667 0.667  | too few marked items: 3 positive, 3 negative; need at least 20 of each
+   what the columns mean:
+     pos / neg  items you marked yes / no for that label
+     thresh     the cut-off in labels.yaml now: a score at or above it adds the label
+     prec       precision: of the items it flagged, how many you agree with
+     recall     of the items you marked yes, how many it flagged
+     F1         one number for both (1.000 is perfect, higher is better)
+     suggest    a better cut-off, with the prec, recall and F1 it would give
+   this command changes nothing: to use a suggestion, edit the threshold in labels.yaml yourself
+   ```
+
+Output is counts and numbers, never file names. Copies of one file pool their
+tags; an item marked both yes and no for a label is reported as a conflict
+and left out; flagged, quarantined or erased content is never counted.
+`maybe-trash` also comes from a pixel check (very blurry or near-black
+photos) that has no threshold here; only the SigLIP score is calibrated. A
+small or one-sided sample (only the items a label already flagged) gives
+numbers that look better than they are.

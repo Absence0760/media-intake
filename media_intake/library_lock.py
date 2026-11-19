@@ -29,7 +29,7 @@ the flock; then refuse (Busy). The CLI waits MEDIA_INTAKE_LOCK_WAIT seconds (def
 gallery Keep or tag edit; a job can run for an hour, so it is never waited on for long); the pages
 never wait (an HTTP request gets 409 with the holder at once).
 """
-import contextlib, fcntl, hashlib, json, os, sys, time
+import contextlib, fcntl, hashlib, json, os, re, sys, time
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 if HERE not in sys.path:
@@ -106,6 +106,21 @@ def describe(h):
         gone = os.path.isdir("/proc/self") and _proc_start(pid) != h.get("pstart")
         s += f" (PID {pid}" + (", now gone: a step it started is still running" if gone else "") + ")"
     return s
+
+
+def plain_holder(h):
+    """The holder's note (h) as a user reads it, or None when it names nothing known. Never a PID or a path:
+    the one map from a holder to words, for the gallery's busy_text and the review page's refused submit."""
+    w = str((h or {}).get("what") or "")
+    if w.startswith("job review-") or w == "job maybe-trash":
+        return "a run from the review page"
+    if w.startswith("job "):
+        return "a Trash, Erase or Share-safe copy from another gallery"
+    if w.startswith("gallery "):
+        return "a change from another gallery page"
+    if re.fullmatch(r"intake\.py [a-z-]{1,32}", w):
+        return f"the media-intake {w.split()[1]} command"
+    return None
 
 
 def note(fd, what, pid=None):

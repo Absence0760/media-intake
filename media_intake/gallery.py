@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Local web gallery for the media library (a day-to-day browser, in place of digiKam).
 
-  media-intake gallery [--drive MOUNT] [--port 0] [--share-out DIR]
+  media-intake gallery [--drive DRIVE] [--port 0] [--share-out DIR]
   python3 -I media_intake/gallery.py         (same flags)
 
 Shows everything under the library, videos and project folders (config.toml)
@@ -555,7 +555,8 @@ def make_proxy(src, dst):
 
 # ---------------------------------------------------------------- app
 class LockBusy(RuntimeError):
-    """App.writing() could not take the library lock (an HTTP 409; its message names the holder)."""
+    """The library lock or the gallery's job lock is held by someone else (an HTTP 409 with "busy": true). Its
+    message is busy_text(): plain words for what is running, never a PID or the lock file's path."""
 
 
 class Changed(RuntimeError):
@@ -585,6 +586,51 @@ UNDO_SCOPE = {
     "event": dict(tags=lambda t: t.startswith("Event|"), orient=False, xevent=True),
     "rotate": dict(tags=lambda t: False, orient=True, xevent=False),
 }
+
+
+# Internal names -> the words a user reads. The one place: the page gets it as WORDS (page()), and the server's
+# own messages (busy_text, Keep, the tag refusal) use it too. No tool namespace (Owner|, Review|, Label|, ...),
+# PID or lock path reaches the page's text (tests/browser/test_browser_gallery_dialogs.py scans for them).
+WORDS = {
+    # tile flags (summary()["f"]) and the Flags filter's values (?review=)
+    "flag": {"maybe-trash": "Suggested junk", "child-in-shot": "Possible child", "untagged": "Untagged",
+             "kept": "Kept", "trashed copy": "Copy of a trashed photo", "used": "Used in a post"},
+    # the Junk check filter's values (?ai=), and the AI| / Review|vlm-* verdict tags in the large view
+    "ai": {"trash": "Judged junk", "keep": "Judged fine", "none": "Not checked"},
+    "score": "Junk score",  # an AI trash verdict's confidence, 0-1
+    # filter sections and their chips
+    "filter": {"kind": "Kind", "ym": "When", "project": "Project", "source": "Source", "place": "Place",
+               "event": "Event", "label": "Looks like", "mine": "My tag", "review": "Flags", "ai": "Junk check",
+               "used": "Used", "added": "Added"},
+    # a tool tag's namespace, shown as "<word>: <value>" in the large view (Owner| is not shown there:
+    # the Details row says "Marked Keep")
+    "ns": {"Project": "Project", "Source": "Source", "Event": "Event", "Place": "Place", "Label": "Looks like",
+           "Used": "Used in", "AI": "Junk check", "Review": "Flag"},
+    # whole tags with their own words
+    "tag": {"Review|maybe-trash": "Suggested junk", "Review|child-in-shot": "Possible child",
+            "Review|vlm-keep": "Junk check: Judged fine"},
+    # tool namespaces "my tag" refuses, as a user reads them (the refusal and the tag dialog)
+    "tools": "Project, Source, Event, Place, Label, Review, AI, Used and Owner",
+    # a job, by what started it (its spec's label) and by its step (intake.py's subcommand)
+    "job": {"trash": "Trash", "erase": "Erase", "share": "Share-safe copy",
+            "forget": "Erase", "share-copy": "Share-safe copy"},
+    # the sidebar views
+    "view": {"lib": "Library", "sug": "Suggested junk", "recent": "Recently added", "child": "Possible child",
+             "untagged": "Untagged"},
+}
+
+
+def busy_text(holder=None):
+    """Plain words for a 409 "the library is busy": what is running and what to do, for the page. holder: the
+    library lock's note when known (library_lock.Busy.holder), else read now. Never a PID or a path."""
+    st = jobs.status(JOB_KEY)
+    if st and not st["done"]:
+        job = WORDS["job"].get((st.get("spec") or {}).get("label"), "")
+        what = (f"an {job}" if job[:1] in "AEIOU" else f"a {job}") if job else "a gallery action"
+    else:
+        h = holder if holder is not None else library_lock.read_holder()
+        what = library_lock.plain_holder(h) or "another media-intake command"
+    return f"{what} is still running; wait for it to finish, then try again"
 
 
 class App:
@@ -787,7 +833,10 @@ class App:
             else (self.text_why or "checking the search model...")
         share = "~/" + os.path.relpath(self.share_out, HOME) if self.share_out.startswith(HOME + os.sep) \
             else self.share_out
-        return dict(total=n, facets=out, counts=dict(counts), recent_days=RECENT_DAYS, search=search, share_out=share)
+        drive = None if not self.drive else "~/" + os.path.relpath(self.drive, HOME) \
+            if self.drive.startswith(HOME + os.sep) else self.drive
+        return dict(total=n, facets=out, counts=dict(counts), recent_days=RECENT_DAYS, search=search, share_out=share,
+                    drive=drive)
 
     def suggested(self, it):
         if it["kept"] or it["used"] or f"Project|{it['project']}" in PROTECTED or PROTECTED.intersection(it["tags"]):
@@ -873,17 +922,18 @@ class App:
             except ValueError:
                 si = -1
             if not self.live(si):
-                return dict(total=0, items=[], note="that item is gone", ranked=True)
+                return dict(total=0, items=[], note="That photo is no longer in the library.", ranked=True)
             self.text_checked.wait(timeout=30)
             key = ("similar", si)
             if key not in self.search_cache:
                 if not os.path.exists(intake.VENV_PY) or not os.path.exists(os.path.join(STATE, "embeddings.npz")):
                     return dict(total=0, items=[], ranked=True,
-                                note="Similar needs the semantic index (semantic.py index); not available here")
+                                note="Find similar needs the search index: run media-intake index in a terminal, "
+                                     "then try again.")
                 try:
                     self.search_cache[key] = self.semantic(["similar", self.items[si]["path"], "-n", "300", "--format", "machine"])
                 except (RuntimeError, OSError, subprocess.TimeoutExpired) as e:
-                    return dict(total=0, items=[], ranked=True, note=f"Similar failed: {e}")
+                    return dict(total=0, items=[], ranked=True, note=f"Find similar didn't work: {e}")
             ids, ranked = [i for _, i in self.search_cache[key]], True
             note = f"Similar to {os.path.basename(self.items[si]['path'])}"
         elif q:
@@ -996,7 +1046,7 @@ class App:
         try:
             fd = library_lock.acquire(f"gallery {what}")
         except library_lock.Busy as e:
-            raise LockBusy(str(e)) from None
+            raise LockBusy(busy_text(e.holder)) from None
         try:
             yield
         finally:
@@ -1031,8 +1081,10 @@ class App:
                                *intake.keep_args(it["tags"], leaves), x])
             self.run_exiftool(blocks)
             self.refresh(ids)
-            return self.journal("keep", before,
-                                f"kept {len(ids)}: Owner|keep + Owner|not-trash, Review|maybe-trash and Owner|trash removed")
+            # Owner|keep + Owner|not-trash added; Review|maybe-trash and Owner|trash removed (docs/gallery.md)
+            n = len(ids)
+            return self.journal("keep", before, f"Kept {n}. {'It' if n == 1 else 'They'} won't be suggested "
+                                                "as junk again.")
 
     def tag_block(self, it, add=(), remove=(), extra=()):
         """One exiftool block for one sidecar: HierarchicalSubject tags added / removed with their dc:Subject
@@ -1056,8 +1108,7 @@ class App:
         if not TAG_RE.match(tag) or tag.startswith("-") or "@@sep@@" in tag:
             raise ValueError("a tag is 1-64 characters on one line")
         if not owner_tag(tag):
-            raise ValueError("Project|, Source|, Event|, Place|, Label|, Review|, AI|, Used| and Owner| belong to the "
-                             "tools; pick another name")
+            raise ValueError(f"{WORDS['tools']} tags belong to the tools; pick another name")
         if op not in ("add", "remove"):
             raise ValueError("op is add or remove")
         with self.writing("tag"), self.lock:
@@ -1287,8 +1338,8 @@ class App:
             files = [list(self.items[i]["fid"]) for i in ids if self.items[i].get("fid")] if hold else []
             try:
                 claim = jobs.claim(JOB_KEY)  # atomic across pages and servers; the worker inherits it
-            except jobs.Busy as e:  # this page's last job, another page's, or the library lock (says who)
-                raise RuntimeError(f"another action is still running: {e}")
+            except jobs.Busy:  # this page's last job, another page's, or the library lock (says who, plainly)
+                raise LockBusy(busy_text()) from None
             with claim:
                 st = claim.spawn("commands", dict(label=label_, files=files, count=len(ids)), total=len(argsets),
                                  private=dict(argsets=argsets, paths=paths, **({} if redact else {"shown": shown})),
@@ -1366,7 +1417,8 @@ class App:
             self._follow(st["id"])
             tail = self.tail
         ls, nxt = tail.lines(since, st["done"])  # read after the status: a finished job has written every line
-        return dict(jobs.public(st), lines=ls, next=nxt, ids=self.job_items(st))
+        return dict(jobs.public(st), lines=ls, next=nxt, ids=self.job_items(st),
+                    kind=(st.get("spec") or {}).get("label"))  # trash, erase or share: what started it
 
     def trash(self, ids, confirm):
         if confirm is not True:
@@ -1377,7 +1429,7 @@ class App:
             bad = [p for p in paths if not intake.trash_allowed(p) or under_state(p)]
             if bad:
                 raise ValueError(f"{len(bad)} items are not library files")
-        self.start_job("trash", [["trash", *paths]], ids)
+        self.start_job("trash", [["trash", *paths, "--yes"]], ids)
         return f"trashing {len(ids)}"
 
     def erase(self, ids, confirm):
@@ -1485,10 +1537,11 @@ class App:
             r = self.keep(keep)
             msg.append(r["result"] if isinstance(r, dict) else r)  # Apply offers no Undo (it may trash too)
         if trash:
-            msg.append(self.trash(trash, confirm))
+            self.trash(trash, confirm)
+            msg.append(f"Trashing {len(set(trash))}.")
         if not msg:
             raise ValueError("nothing decided")
-        return "; ".join(msg)
+        return " ".join(msg)
 
 def view_list(views):
     """Plugin tab dicts, checked: id a slug, title text, script a string."""
@@ -1504,7 +1557,8 @@ def view_list(views):
 def page(app):
     tabs = json.dumps([dict(id=v["id"], title=v["title"]) for v in app.views.values()]).replace("</", "<\\/")
     scripts = "".join(f"<script>\n{v.get('script', '')}\n</script>\n" for v in app.views.values())
-    return (PAGE.replace("__CSRF__", html.escape(app.csrf)).replace("__VIEWS__", tabs)
+    words = json.dumps(WORDS).replace("</", "<\\/")
+    return (PAGE.replace("__CSRF__", html.escape(app.csrf)).replace("__VIEWS__", tabs).replace("__WORDS__", words)
             .replace("</body>", scripts + "</body>"))
 
 
@@ -1659,7 +1713,7 @@ class Handler(R.Handler):
                         else app.writing(f"plugin {m.group(1)}"):
                     got = v["post"](m.group(2), body)
             except LockBusy as e:
-                self.json(409, {"error": str(e)})
+                self.json(409, {"error": str(e), "busy": True})
                 return
             if got is not None:
                 self.json(*got)
@@ -1673,6 +1727,9 @@ class Handler(R.Handler):
             msg = acts[path]()
         except ValueError as e:
             self.json(400, {"error": str(e)})
+            return
+        except LockBusy as e:
+            self.json(409, {"error": str(e), "busy": True})
             return
         except RuntimeError as e:
             self.json(409, {"error": str(e)})
@@ -1701,11 +1758,24 @@ def serve(app, port=0):
 
 
 def main(argv=None):
-    ap = argparse.ArgumentParser(description="Local web gallery for the media library.")
-    ap.add_argument("--drive", help="backup drive mount, passed to forget (Erase)")
-    ap.add_argument("--port", type=int, default=0, help="0 = a random free port (default)")
-    ap.add_argument("--share-out", help=f"folder for share-safe copies, one dated subfolder per export "
-                                        f"(default {SHARE_OUT}); never inside the library")
+    def port(v):
+        if not v.isdigit() or int(v) > 65535:
+            raise argparse.ArgumentTypeError(f"{v}: a port is 0-65535 (0 picks a free one)")
+        return int(v)
+
+    ap = argparse.ArgumentParser(
+        prog="media-intake gallery", formatter_class=argparse.RawDescriptionHelpFormatter,
+        description="Browse the library in a local web page (127.0.0.1 only: open the link it\n"
+                    "prints). Keep, Trash, Erase, tag, rotate, set events and make share-safe copies,\n"
+                    "on one photo or a selection. Quarantined and flagged files are never shown.\n\n"
+                    "Touches: reads the library; Keep, tags, Rotate and events write sidecars (never\n"
+                    "  the photos); Share-safe copy writes to --share-out.\n"
+                    "Deletes: only what you Trash or Erase on the page, after you confirm.")
+    ap.add_argument("--drive", metavar="DRIVE", help="the backup drive: the folder it is mounted on, e.g. "
+                    "/run/media/$USER/<label>. Erase in the gallery then deletes the copies there too")
+    ap.add_argument("--port", type=port, default=0, help="the page's port (default 0: a free one)")
+    ap.add_argument("--share-out", metavar="DIR", help=f"folder for share-safe copies, one dated subfolder per "
+                                                       f"export (default {SHARE_OUT}); never inside the library")
     a = ap.parse_args(argv)
     if a.drive and not os.path.isdir(a.drive):
         sys.exit(f"--drive {a.drive}: not a directory")
@@ -1716,12 +1786,15 @@ def main(argv=None):
     app = App(items, os.path.abspath(a.drive) if a.drive else None, views, a.share_out)
     running = app.sync()  # a trash/erase started before a restart: its files stay busy until it ends
     threading.Thread(target=app.check_text, daemon=True).start()
-    httpd, url = serve(app, a.port)
+    try:
+        httpd, url = serve(app, a.port)
+    except OSError as e:  # the port is taken, or not ours to use
+        sys.exit(f"port {a.port} can't be used ({e.strerror or e}): pick another with --port, or leave it out")
     print(f"xdg-open '{url}'", flush=True)
     reg = f" Plugin tabs: {', '.join(v['title'] for v in views)}." if views else ""
     print(f"({len(items)} items in {time.monotonic() - t0:.1f} s, {skipped} flagged/erased left out.{reg} "
           "A private browser window keeps it out of history. "
-          "Ctrl-C or the Close button stops it.)", flush=True)
+          "Ctrl-C or the page's Stop server button stops it.)", flush=True)
     if running and not running["done"]:
         print("(a trash/erase started earlier is still running; the page shows its progress)", flush=True)
     try:
@@ -1777,6 +1850,16 @@ kbd{font:600 11px/1 ui-monospace,monospace;border:1px solid currentColor;border-
 .warn{color:var(--erase)}
 .empty{color:var(--mut);font-size:13px;padding:4px 8px}
 .empty.big{font-size:15px;padding:48px 0;text-align:center}
+/* the grid's own states (listState): loading, an empty library, no results, a load error; each says what to do */
+.state{max-width:560px;margin:40px auto;padding:0 8px;text-align:center;color:var(--mut);font-size:15px}
+.state h2{margin:0 0 8px;font-size:17px;color:var(--fg)}
+.state p{margin:6px 0}
+.state pre{text-align:left;font-size:13px;background:var(--card);color:var(--fg);padding:10px 12px;border-radius:8px;white-space:pre-wrap;overflow-wrap:anywhere;margin:10px 0}
+.state .btn{margin-top:10px}
+.state.err h2{color:var(--erase)}
+.spin{display:inline-block;width:18px;height:18px;margin-right:8px;vertical-align:-3px;border:2px solid var(--line);border-top-color:var(--acc);border-radius:50%;animation:spin .8s linear infinite}
+@keyframes spin{to{transform:rotate(360deg)}}
+@media (prefers-reduced-motion:reduce){.spin{animation:none}}
 
 /* ---------------------------------------------------------------- sidebar */
 #sidebar{position:fixed;top:0;left:0;bottom:0;width:var(--sbw);background:var(--panel);border-right:1px solid var(--line);overflow-y:auto;overflow-x:hidden;z-index:15;display:flex;flex-direction:column;overscroll-behavior:contain}
@@ -1792,6 +1875,7 @@ kbd{font:600 11px/1 ui-monospace,monospace;border:1px solid currentColor;border-
 .ct{color:var(--mut);font-size:12px;font-variant-numeric:tabular-nums;font-weight:400}
 .nv[aria-current=page] .ct{color:var(--acc)}
 .railonly{display:none}
+.rl{display:none}
 #evlist{display:flex;flex-direction:column;gap:2px}
 .evmore{align-self:flex-start;margin:2px 10px}
 #evbar{display:flex;flex-wrap:wrap;align-items:center;gap:8px;padding:12px 24px 0}
@@ -1851,6 +1935,10 @@ output{font-variant-numeric:tabular-nums;color:var(--fg);font-weight:600}
 .collapsed .sb-search,.collapsed #filters,.collapsed #evsec{display:none}
 .collapsed #views{padding:4px 8px}
 .collapsed .nv{justify-content:center;padding:0;height:40px}
+/* the rail names each icon in a word under it (the full name stays the button's title and accessible name) */
+.collapsed .nv:has(.rl){flex-direction:column;gap:1px;height:50px}
+.collapsed .rl{display:block;max-width:100%;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;font-size:10px;line-height:1.1;color:var(--mut)}
+.collapsed .nv[aria-current=page] .rl{color:var(--acc)}
 .collapsed .railonly{display:flex}
 .badge-n{position:absolute;top:3px;right:3px;min-width:16px;height:16px;border-radius:8px;background:var(--acc);color:var(--on-acc);font-size:10px;line-height:16px;text-align:center;padding:0 4px}
 .overlay{--ml:60px;--sbw:min(304px,86vw)}
@@ -1886,12 +1974,24 @@ h2.month{position:sticky;top:var(--hh);z-index:2;margin:0;padding:16px 0 8px;fon
 .tile.sel::after{content:"";position:absolute;inset:0;background:var(--acc-soft);pointer-events:none}
 .tile.cur{box-shadow:inset 0 0 0 3px var(--fg)}
 .tile.dk{outline-color:var(--keep)}.tile.dt{outline-color:var(--trash)}
-.tile .ck{position:absolute;top:6px;left:6px;z-index:2;width:22px;height:22px;margin:0;accent-color:var(--acc);cursor:pointer}
-@media (hover:hover){.tile .ck{opacity:0;transition:opacity .1s}.tile:hover .ck,.tile:focus-within .ck,.selecting .tile .ck{opacity:1}}
+/* the tile's checkbox: a 22 px box in a larger hit area (.ckw: 34 px, 44 px on a touch screen or a phone) */
+.tile .ckw{position:absolute;top:0;left:0;z-index:2;width:34px;height:34px;display:flex;align-items:center;justify-content:center;cursor:pointer}
+.tile .ck{width:22px;height:22px;margin:0;accent-color:var(--acc);cursor:pointer}
+@media (hover:hover){.tile .ckw{opacity:0;transition:opacity .1s}.tile:hover .ckw,.tile:focus-within .ckw,.selecting .tile .ckw{opacity:1}}
+/* Suggested junk: Keep and Trash on every tile (aria-pressed), the mark in words too, never by colour alone */
+.tile .dec{position:absolute;left:0;right:0;bottom:0;z-index:2;display:flex;gap:6px;padding:6px;background:linear-gradient(transparent,rgba(0,0,0,.45))}
+.tile .dec .btn{flex:1;justify-content:center;height:40px}
+.tile .dec .btn[aria-pressed=true]{font-weight:700;box-shadow:inset 0 0 0 2px currentColor}
+.tile .dec .btn.keep[aria-pressed=true]{background:var(--keep);border-color:var(--keep);color:var(--on-acc)}
+.tile .dec .btn.trash[aria-pressed=true]{background:var(--trash);border-color:var(--trash);color:var(--on-acc)}
+[data-view=sug] .tile .flag{bottom:58px}
+.tile .mark{position:absolute;left:6px;top:6px;z-index:2;font-size:12px;font-weight:700;letter-spacing:.04em;border-radius:4px;padding:2px 8px;color:var(--on-acc)}
+.tile .mark.keep{background:var(--keep)}.tile .mark.trash{background:var(--trash)}
 .play{position:absolute;right:6px;top:6px;width:24px;height:24px;border-radius:50%;background:rgba(0,0,0,.55);color:#fff;font-size:10px;display:flex;align-items:center;justify-content:center;padding-left:2px}
 /* Burst stacks: the review page's look (a stacked card, a count badge, an X button) on a tile */
 .tile.stack{box-shadow:4px 4px 0 -1px var(--bg),4px 4px 0 0 var(--mut),8px 8px 0 -1px var(--bg),8px 8px 0 0 var(--mut)}
 .tile.stack.cur{box-shadow:inset 0 0 0 3px var(--fg),4px 4px 0 -1px var(--bg),4px 4px 0 0 var(--mut),8px 8px 0 -1px var(--bg),8px 8px 0 0 var(--mut)}
+.tile.inb{box-shadow:0 0 0 2px var(--acc)}  /* the shots of an open stack: one ring colour, one group */
 .tile .badge{position:absolute;right:6px;top:6px;z-index:2;background:var(--acc);color:var(--on-acc);font-size:11px;font-weight:700;border-radius:999px;padding:1px 8px;white-space:nowrap}
 .tile .x{position:absolute;right:6px;top:28px;z-index:2;font-size:11px;padding:2px 8px;border-radius:6px;border:1px solid var(--line);background:var(--panel);color:var(--fg);cursor:pointer;white-space:nowrap}
 /* on a small tile they shorten (ellipsis) rather than run over the checkbox or out of the tile */
@@ -1905,6 +2005,8 @@ h2.month{position:sticky;top:var(--hh);z-index:2;margin:0;padding:16px 0 8px;fon
  .tile .bx~.badge,.tile .bx~.x{display:none}
  .tile .badge{font-size:0;padding:2px 7px}
  .tile .badge::before{content:"×" attr(data-count);font-size:12px}
+ .tile .badge[data-pos]::before{content:attr(data-pos) "/" attr(data-count)}
+ .tile .bx.open{background:var(--panel);color:var(--fg);border:1px solid var(--acc)}
 }
 .flag{position:absolute;left:6px;bottom:6px;width:max-content;max-width:calc(100% - 12px);background:rgba(0,0,0,.62);color:#fff;font-size:11px;border-radius:4px;padding:1px 6px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
 #sentinel{height:40px}
@@ -1915,15 +2017,16 @@ h2.month{position:sticky;top:var(--hh);z-index:2;margin:0;padding:16px 0 8px;fon
 .grp{display:flex;flex-wrap:wrap;gap:6px;align-items:center}
 #seln,#sugn{font-weight:650;font-size:14px;margin-right:4px;white-space:nowrap}
 .sep{width:1px;height:22px;background:var(--line)}
-#toast{position:fixed;left:50%;bottom:90px;transform:translateX(-50%);z-index:40;background:var(--fg);color:var(--bg);padding:8px 14px;border-radius:8px;font-size:14px;max-width:min(560px,90vw);box-shadow:var(--shadow);opacity:0;pointer-events:none;transition:opacity .2s;display:flex;align-items:center;gap:12px}
+#toast{position:fixed;left:50%;bottom:24px;transform:translateX(-50%);z-index:40;background:var(--fg);color:var(--bg);padding:8px 14px;border-radius:8px;font-size:14px;max-width:min(560px,90vw);box-shadow:var(--shadow);opacity:0;pointer-events:none;transition:opacity .2s;display:flex;align-items:center;gap:12px}
 #toast.on{opacity:1;pointer-events:auto}
 #toast button,#etoast button{flex:none;border:0;background:none;color:inherit;font-weight:650;text-decoration:underline;padding:4px 2px;border-radius:4px}
 #toast button:focus-visible{outline-color:var(--bg)}
 /* an error stays until dismissed (role=alert: read out at once) */
-#etoast{position:fixed;left:50%;top:12px;transform:translateX(-50%);z-index:41;display:none;align-items:flex-start;gap:12px;background:var(--panel);color:var(--erase);border:1px solid var(--erase);padding:10px 14px;border-radius:8px;font-size:14px;width:max-content;max-width:min(640px,calc(100vw - 32px));box-shadow:var(--shadow)}
+#etoast{position:fixed;left:50%;top:calc(var(--hh) + 8px);transform:translateX(-50%);z-index:41;display:none;align-items:flex-start;gap:12px;background:var(--panel);color:var(--erase);border:1px solid var(--erase);padding:10px 14px;border-radius:8px;font-size:14px;width:max-content;max-width:min(640px,calc(100vw - 32px));box-shadow:var(--shadow)}
 #etoast.on{display:flex}
 #etoast span{flex:1;min-width:0;word-break:break-word;color:var(--fg)}
 #etoast b{color:var(--erase)}
+#etoast .act{color:var(--acc)}
 /* the keyboard-shortcut list */
 #keys .box{max-width:720px}
 #keys h4{margin:14px 0 6px;font-size:12px;font-weight:650;letter-spacing:.06em;text-transform:uppercase;color:var(--mut)}
@@ -1978,11 +2081,20 @@ dl.dt dd{margin:0;word-break:break-word}
 .box input{height:34px;padding:0 10px;border:1px solid var(--line);border-radius:8px;background:var(--bg)}
 .mbtns{display:flex;gap:8px;justify-content:flex-end;margin-top:14px}
 #mstatus{margin:12px 0 0;padding:10px 12px;border-radius:8px;background:var(--acc-soft)}
+#mstatus[data-state=done]{background:color-mix(in srgb,var(--keep) 12%,var(--panel));font-weight:600}
+#mstatus[data-state=failed],#mstatus[data-state=crashed]{background:color-mix(in srgb,var(--erase) 12%,var(--panel));font-weight:600}
+.mthumbs{display:flex;flex-wrap:wrap;gap:4px;align-items:center;margin:4px 0 8px}
+.mthumbs img{width:56px;height:56px;object-fit:cover;border-radius:6px;background:var(--card)}
+.mthumbs span{color:var(--mut);font-size:13px;margin-left:4px}
+.mnames{color:var(--mut);font-size:13px;word-break:break-word}
+#jobpill{flex:0 1 auto;min-width:0;overflow:hidden;border-color:var(--acc);color:var(--acc)}
 
 /* ---------------------------------------------------------------- narrow: the header's controls fit beside the title */
 @media (max-width:900px){
  #tsize{width:72px}
  #close .lbl2{display:none}#close{padding:0 8px}
+ #jobpill{padding:0 8px}#jobpill .pr{display:none}body.jobpill #tsizew{display:none}
+ #etoast{flex-wrap:wrap}#etoast span{flex-basis:100%}
 }
 /* ---------------------------------------------------------------- phone */
 @media (max-width:760px){
@@ -2002,6 +2114,34 @@ dl.dt dd{margin:0;word-break:break-word}
  #actionbar kbd,#actionbar .sep{display:none}
  #seln{white-space:normal;min-width:0}
 }
+/* ---------------------------------------------------------------- touch targets: 44 px on a phone or a touch screen */
+@media (max-width:760px),(pointer:coarse){
+ .btn,#info .btn{height:44px;min-width:44px;justify-content:center}
+ .icon,#rail{width:44px;height:44px;flex:none}
+ .collapsed .sb-top{padding:6px 7px;justify-content:center}
+ .collapsed #views{padding:4px 6px}
+ .nv,.collapsed .nv{min-height:44px}
+ .fs-h,.opt,.yr .caret{min-height:44px}
+ .caret{width:44px}
+ #tsize{height:44px}
+ .chip{height:44px}.chip .x{width:44px;height:44px}
+ .tile .ckw{width:44px;height:44px}
+ .tile .bx{top:8px;right:8px}
+ .tile .bx::after{content:"";position:absolute;inset:-8px}
+ .link::after{content:"";position:absolute;inset:-11px -8px}
+ .link{position:relative;z-index:3}  /* its hit area over the month heading below */
+ #helpb{margin-top:12px}  /* room for "more"'s hit area under the header */
+ .tile .dec .btn{height:44px}
+ .arrow{width:44px}
+ /* Erase sits apart from Keep and Trash, so a slip of the thumb doesn't land on it */
+ #berase{margin-left:14px}
+}
+/* no keyboard: the shortcut list and key hints go; the burst help says "tap" */
+@media (hover:none){
+ #bkeys,.kbonly{display:none!important}
+ #helpb .hshort .kb{display:none}
+}
+@media (hover:hover){#helpb .hshort .tch{display:none}}
 </style></head><body data-view="lib">
 <svg width="0" height="0" style="position:absolute" aria-hidden="true" focusable="false">
  <symbol id="i-menu" viewBox="0 0 24 24"><path d="M4 6h16M4 12h16M4 18h16"/></symbol>
@@ -2026,17 +2166,17 @@ dl.dt dd{margin:0;word-break:break-word}
   <span class="brand">Media gallery</span>
  </div>
  <nav id="views" aria-label="Views">
-  <button type="button" class="nv" data-v="lib" title="Library"><svg class="ic"><use href="#i-lib"/></svg><span class="lbl">Library</span><span class="ct" id="c-lib"></span></button>
-  <button type="button" class="nv" data-v="sug" title="Trash suggestions"><svg class="ic"><use href="#i-trash"/></svg><span class="lbl">Trash suggestions</span><span class="ct" id="c-sug"></span></button>
+  <button type="button" class="nv" data-v="lib" title="Library"><svg class="ic"><use href="#i-lib"/></svg><span class="lbl">Library</span><span class="rl" aria-hidden="true">Library</span><span class="ct" id="c-lib"></span></button>
+  <button type="button" class="nv" data-v="sug" title="Suggested junk"><svg class="ic"><use href="#i-trash"/></svg><span class="lbl">Suggested junk</span><span class="rl" aria-hidden="true">Junk</span><span class="ct" id="c-sug"></span></button>
   <div id="ptabs"></div>
   <div class="nvhead">Quick views</div>
-  <button type="button" class="nv" data-v="recent" title="Recently added"><svg class="ic"><use href="#i-clock"/></svg><span class="lbl">Recently added</span><span class="ct" id="c-recent"></span></button>
-  <button type="button" class="nv" data-v="child" title="Possible child (Review|child-in-shot)"><svg class="ic"><use href="#i-child"/></svg><span class="lbl">Possible child</span><span class="ct" id="c-child"></span></button>
-  <button type="button" class="nv" data-v="untagged" title="Untagged"><svg class="ic"><use href="#i-tag"/></svg><span class="lbl">Untagged</span><span class="ct" id="c-untagged"></span></button>
+  <button type="button" class="nv" data-v="recent" title="Recently added"><svg class="ic"><use href="#i-clock"/></svg><span class="lbl">Recently added</span><span class="rl" aria-hidden="true">Recent</span><span class="ct" id="c-recent"></span></button>
+  <button type="button" class="nv" data-v="child" title="Possible child"><svg class="ic"><use href="#i-child"/></svg><span class="lbl">Possible child</span><span class="rl" aria-hidden="true">Child</span><span class="ct" id="c-child"></span></button>
+  <button type="button" class="nv" data-v="untagged" title="Untagged"><svg class="ic"><use href="#i-tag"/></svg><span class="lbl">Untagged</span><span class="rl" aria-hidden="true">No tags</span><span class="ct" id="c-untagged"></span></button>
   <div id="evsec"><div class="nvhead">Events</div><div id="evlist"></div></div>
   <button type="button" class="nv" id="bkeys" title="Keyboard shortcuts (?)" aria-keyshortcuts="?" aria-haspopup="dialog"><svg class="ic"><use href="#i-keys"/></svg><span class="lbl">Keyboard shortcuts</span><span class="ct"><kbd>?</kbd></span></button>
-  <button type="button" class="nv railonly" id="rsearch" title="Search (/)"><svg class="ic"><use href="#i-search"/></svg><span class="vh">Search</span></button>
-  <button type="button" class="nv railonly icon" id="rfilter" title="Filters" style="width:100%"><svg class="ic"><use href="#i-filter"/></svg><span class="vh">Filters</span><span class="badge-n" id="rbadge" hidden></span></button>
+  <button type="button" class="nv railonly" id="rsearch" title="Search (/)"><svg class="ic"><use href="#i-search"/></svg><span class="vh">Search</span><span class="rl" aria-hidden="true">Search</span></button>
+  <button type="button" class="nv railonly icon" id="rfilter" title="Filters" style="width:100%"><svg class="ic"><use href="#i-filter"/></svg><span class="vh">Filters</span><span class="rl" aria-hidden="true">Filters</span><span class="badge-n" id="rbadge" hidden></span></button>
  </nav>
  <div class="sb-search">
   <div class="field"><svg class="ic"><use href="#i-search"/></svg><input id="q" type="search" placeholder="Search photos and videos" aria-label="Search" autocomplete="off"></div>
@@ -2053,20 +2193,21 @@ dl.dt dd{margin:0;word-break:break-word}
   <h1 id="vtitle">Library</h1><span id="count"></span><span class="grow"></span>
   <button type="button" class="btn" id="ball" aria-keyshortcuts="Control+A Meta+A" title="Select every tile shown (Ctrl+A, or Cmd+A on a Mac); Esc clears" hidden>Select all</button>
   <label class="size" id="tsizew" title="Thumbnail size"><svg class="ic"><use href="#i-size"/></svg><span class="vh">Thumbnail size</span><input id="tsize" type="range" min="80" max="320" step="8"></label>
-  <button type="button" class="btn" id="close" title="Stop the gallery server"><svg class="ic"><use href="#i-power"/></svg><span class="lbl2">Close</span></button>
+  <button type="button" class="btn" id="jobpill" aria-haspopup="dialog" hidden></button>
+  <button type="button" class="btn" id="close" title="Stop the gallery server" aria-label="Stop server"><svg class="ic"><use href="#i-power"/></svg><span class="lbl2">Stop server</span></button>
  </header>
  <div id="chips" aria-label="Active filters" hidden></div>
  <div id="evbar" role="toolbar" aria-label="Event" hidden><span class="evt" id="evname"></span><button type="button" class="btn" id="evren">Rename…</button><button type="button" class="btn" id="evmerge">Merge into…</button></div>
  <p id="note" class="note" hidden></p>
- <p id="helpb" class="note" hidden><span class="hshort">Bursts are stacked; X opens one.</span><span class="hfull">A stack is a burst (shots from one camera a moment apart): X opens or closes it. On a closed stack, selecting and every action (Keep, Trash, Erase, tags, Rotate, Set event, Share-safe copy) act on the cover shot only; open the stack to act on the others.</span><button type="button" class="link" id="hmore" aria-controls="helpb" aria-expanded="false">more</button></p>
- <main id="main"><div id="list"></div><div id="sentinel"></div><div id="plugin" hidden></div></main>
+ <p id="helpb" class="note" hidden><span class="hshort"><span class="kb">Bursts are stacked; X opens one.</span><span class="tch">Burst stacks: tap ×N to open one.</span></span><span class="hfull">A stack is a burst (shots from one camera a moment apart): its Show all button (×N on a small tile) or the X key opens or closes it; the shots of an open stack share a coloured ring. On a closed stack, selecting and every action (Keep, Trash, Erase, tags, Rotate, Set event, Share-safe copy) act on the cover shot only; open the stack to act on the others.</span><button type="button" class="link" id="hmore" aria-controls="helpb" aria-expanded="false">more</button></p>
+ <main id="main" aria-busy="true"><div id="list"><div class="state" role="status"><p><span class="spin" aria-hidden="true"></span>Loading your library…</p></div></div><div id="sentinel"></div><div id="plugin" hidden></div></main>
  <div id="actionbar" hidden>
   <div class="grp" id="selgrp" role="toolbar" aria-label="Selection actions" hidden><span id="seln"></span>
    <button type="button" class="btn keep" id="bkeep">Keep <kbd>K</kbd></button><button type="button" class="btn trash" id="btrash">Trash <kbd>T</kbd></button><button type="button" class="btn erase" id="berase">Erase <kbd>E</kbd></button>
    <span class="sep"></span>
    <button type="button" class="btn" id="btag">+ tag</button><button type="button" class="btn" id="buntag">− tag</button><button type="button" class="btn" id="bevent">Set event…</button><button type="button" class="btn" id="brot">Rotate ⟳</button><button type="button" class="btn" id="bshare">Share-safe copy</button><button type="button" class="btn" id="bnone">Clear selection <kbd>Esc</kbd></button>
   </div>
-  <div class="grp" id="suggrp" role="group" aria-label="Decisions" hidden><span id="sugn"></span><span class="note" style="margin:0">K / T on the outlined tile, arrows move, Enter opens</span><button type="button" class="btn primary" id="sugapply">Apply…</button></div>
+  <div class="grp" id="suggrp" role="group" aria-label="Decisions" hidden><span id="sugn"></span><span class="note" style="margin:0">Mark Keep or Trash on each, then Apply<span class="kbonly"> (keys: K, T, arrows)</span></span><button type="button" class="btn primary" id="sugapply">Apply…</button></div>
  </div>
 </div>
 <div id="toast" role="status" aria-live="polite"></div>
@@ -2079,7 +2220,8 @@ dl.dt dd{margin:0;word-break:break-word}
 <div class="modal" id="modal" role="dialog" aria-modal="true" aria-labelledby="mh" data-dialog="confirm"><div class="box"><h3 id="mh"></h3><div id="mb"></div>
  <p id="mfieldp" hidden><label for="mfield" id="mflabel"></label><input id="mfield" list="evnames" autocomplete="off" spellcheck="false"><datalist id="evnames"></datalist><datalist id="mytags"></datalist></p>
  <p id="mtype" hidden>Type <b>ERASE</b> to confirm: <input id="mtyped" autocomplete="off" spellcheck="false" aria-label="Type ERASE"></p>
- <div class="mbtns"><button type="button" class="btn" id="mno">Cancel</button><button type="button" class="btn primary" id="mgo">Confirm</button></div><p id="mstatus" role="status" hidden></p><pre id="mout" hidden></pre></div></div>
+ <p id="mstatus" role="status" hidden></p><pre id="mout" hidden></pre>
+ <div class="mbtns"><button type="button" class="btn" id="mno">Cancel</button><button type="button" class="btn primary" id="mgo">Confirm</button></div></div></div>
 <div class="modal" id="keys" role="dialog" aria-modal="true" aria-labelledby="kh"><div class="box"><h3 id="kh">Keyboard shortcuts</h3>
  <p class="note">Keys act on the page, never while you type in a field. Esc closes this list.</p>
  <h4>Grid</h4><dl>
@@ -2103,13 +2245,13 @@ dl.dt dd{margin:0;word-break:break-word}
   <dt><kbd>R</kbd> / <kbd>Shift</kbd>+<kbd>R</kbd></dt><dd>Rotate clockwise / anticlockwise (the sidecar only)</dd>
   <dt><kbd>Esc</kbd></dt><dd>Close the large view</dd>
  </dl>
- <h4>Trash suggestions</h4><dl>
+ <h4>Suggested junk</h4><dl>
   <dt><kbd>←</kbd> <kbd>↑</kbd> / <kbd>→</kbd> <kbd>↓</kbd> <kbd>J</kbd></dt><dd>Move the outline</dd>
-  <dt><kbd>K</kbd> <kbd>T</kbd></dt><dd>Mark the outlined tile keep / trash (nothing changes until Apply)</dd>
-  <dt><kbd>Enter</kbd></dt><dd>Open the outlined tile</dd>
+  <dt><kbd>K</kbd> <kbd>T</kbd></dt><dd>Mark the outlined tile Keep / Trash, like its Keep and Trash buttons (nothing changes until Apply)</dd>
+  <dt><kbd>Enter</kbd></dt><dd>Open the outlined tile (a click on the photo does too)</dd>
  </dl>
  <h4>Dialogs</h4><dl>
-  <dt><kbd>Esc</kbd></dt><dd>Cancel and close</dd>
+  <dt><kbd>Esc</kbd></dt><dd>Cancel and close (a running Trash, Erase or Share-safe copy keeps going)</dd>
   <dt><kbd>Enter</kbd></dt><dd>Confirm, in a dialog's text field</dd>
   <dt><kbd>Tab</kbd></dt><dd>Move between the dialog's controls (focus stays in the dialog)</dd>
  </dl>
@@ -2125,16 +2267,26 @@ const LS={get(k,d){try{const v=localStorage.getItem("gallery."+k);return v===nul
 let view="lib",items=[],total=0,loading=false,done=false,sel=new Set(),last=null,cur=-1,ranked=false,simId=null,simName="",dec={},vi=-1,facets=null,gen=0,lastFocus=null,openB={},allSel=null;
 let F={aimin:"0.7"};
 const ACTIVE=["kind","ym","project","source","place","event","label","mine","review","ai","used","added"];
-const NAMES={kind:"Kind",ym:"When",project:"Project",source:"Source",place:"Place",event:"Event",label:"Label",mine:"My tag",review:"Review",ai:"AI",used:"Used",added:"Added"};
-const REVIEW={"maybe-trash":"Maybe trash","child-in-shot":"Child in shot",untagged:"Untagged"};
-const AIV={trash:"Trash",keep:"Keep",none:"Not judged"};
+// internal names -> the words shown: gallery.py WORDS, the one place (no Owner|, Review|, Label| in the page's text)
+const WORDS=__WORDS__;
+const NAMES=WORDS.filter;
+const REVIEW={"maybe-trash":WORDS.flag["maybe-trash"],"child-in-shot":WORDS.flag["child-in-shot"],untagged:WORDS.flag.untagged};
+const AIV=WORDS.ai;
 const VIEWS=__VIEWS__;window.mediaIntakeViews=window.mediaIntakeViews||{};
-const TITLES={lib:"Library",sug:"Trash suggestions",recent:"Recently added",child:"Possible child",untagged:"Untagged"};
+const TITLES=Object.assign({},WORDS.view);
+const plural=(n,w)=>fmt(n)+" "+w+(n===1?"":"s");
+// a tool's tag as a user reads it ("Project: Personal", "Suggested junk"); null: not shown (Owner|, a model's confidence)
+function plainTag(t){if(Object.prototype.hasOwnProperty.call(WORDS.tag,t))return WORDS.tag[t];const i=t.indexOf("|");if(i<0)return t;const ns=t.slice(0,i),v=t.slice(i+1);
+ if(ns==="Owner")return null;
+ if(ns==="Review"){if(v.startsWith("untagged-"))return WORDS.flag.untagged;const m=/^vlm-trash\/?(.*)$/.exec(v);if(m)return WORDS.ns.AI+": "+WORDS.ai.trash+(m[1]?" ("+m[1].replace(/[/|]/g," ")+")":"")}
+ if(ns==="AI"){const m=/^vlm\/[^/]+\/(trash|keep)(?:\/(.*))?$/.exec(v);if(m)return WORDS.ns.AI+": "+WORDS.ai[m[1]]+(m[2]?" ("+m[2].replace(/[/|]/g," ")+")":"");return null}
+ return (WORDS.ns[ns]||ns)+": "+v.split("|").join(" › ")}
 VIEWS.forEach(v=>{TITLES["p-"+v.id]=v.title});
 const activeKeys=()=>ACTIVE.filter(k=>F[k]);
 const plugView=()=>view.startsWith("p-");
 async function api(path,body){const o={credentials:"same-origin"};if(body!==undefined){o.method="POST";o.headers={"Content-Type":"application/json","X-CSRF":CSRF};o.body=JSON.stringify(body)}
- const r=await fetch(path,o);let j={};try{j=await r.json()}catch(e){}if(!r.ok)throw new Error(j.error||("HTTP "+r.status));return j}
+ const r=await fetch(path,o);let j={};try{j=await r.json()}catch(e){}
+ if(!r.ok){const er=new Error(j.error||("HTTP "+r.status));er.busy=!!j.busy;er.status=r.status;throw er}return j}
 function filt(){const f={};for(const k of ACTIVE.concat(["aimin","days"]))if(F[k])f[k]=F[k];
  if(f.ai!=="trash")delete f.aimin;if(f.used!=="unused")delete f.days;const q=$("#q").value.trim();if(q)f.q=q;if(simId!==null){f.similar=simId;delete f.q}
  if(view==="sug")f.view="suggest";return f}
@@ -2142,7 +2294,7 @@ function qs(o){return Object.entries(o).map(([k,v])=>encodeURIComponent(k)+"="+e
 function monthName(k){const [y,m]=k.split("-");return new Date(+y,+m-1,1).toLocaleString(undefined,{month:"long",year:"numeric"})}
 function monthOnly(k){const [y,m]=k.split("-");return new Date(+y,+m-1,1).toLocaleString(undefined,{month:"long"})}
 function chipVal(k){const v=F[k];if(k==="kind")return v==="photo"?"Photos":"Videos";if(k==="ym")return v.length===4?v:monthName(v);if(k==="review")return REVIEW[v]||v;
- if(k==="ai")return v==="trash"?"trash ≥ "+(+F.aimin||0).toFixed(2):AIV[v]||v;if(k==="used")return v==="used"?"used":(F.days?"not in "+F.days+" days":"never used");
+ if(k==="ai")return v==="trash"?WORDS.score+" ≥ "+(+F.aimin||0).toFixed(2):AIV[v]||v;if(k==="used")return v==="used"?"in a post":(F.days?"not in "+F.days+" days":"never");
  if(k==="added")return "last "+v+" days";return v}
 // ---------------------------------------------------------------- sidebar: layout
 const mqPhone=matchMedia("(max-width:760px)");let railPref=LS.get("rail","0")==="1",drawer=false;
@@ -2160,7 +2312,7 @@ $("#rsearch").onclick=()=>{expandSidebar();$("#q").focus()};
 $("#rfilter").onclick=()=>{expandSidebar();const f=$("#filters");if(!f.hidden){f.scrollIntoView({block:"start"});const h=f.querySelector(".fs-h");if(h)h.focus()}};
 // ---------------------------------------------------------------- sidebar: filter sections
 const SECS=[["kind","Kind","1"],["when","When","1"],["project","Project","1"],["source","Source","1"],["place","Place","0"],["event","Event","0"],
- ["label","Label","1"],["mine","My tags","0"],["review","Review flags","1"],["ai","AI verdict","0"],["used","Used","0"]];
+ ["label",NAMES.label,"1"],["mine","My tags","0"],["review",NAMES.review,"1"],["ai",NAMES.ai,"0"],["used","Used","0"]];
 const SECKEY={when:"ym"};
 function buildSections(){const box=$("#fsecs");
  for(const [s,title,open0] of SECS){const sec=el("section","fs");sec.dataset.s=s;const h3=el("h3"),h=el("button","fs-h");h.type="button";const bid="fsb-"+s;h.setAttribute("aria-controls",bid);
@@ -2170,7 +2322,7 @@ function buildSections(){const box=$("#fsecs");
    [["","All"],["photo","Photos"],["video","Videos"]].forEach(([v,l])=>{const x=el("button");x.type="button";x.dataset.k="kind";x.dataset.val=v;const c=el("span","ct");c.id="ck-"+(v||"all");x.append(el("span",null,l),c);x.onclick=()=>setF("kind",v);g.append(x)});b.append(g)}
   else if(s==="when"){const w=el("div");w.id="when";b.append(w)}
   else{const o=el("div","opts");o.dataset.k=s;o.dataset.name=title.toLowerCase();b.append(o)}
-  if(s==="ai"){const d=el("div","sub");d.id="aiconf";d.innerHTML='<label for="aimin">Confidence at least <output id="aiv">0.70</output></label><input type="range" id="aimin" min="0" max="1" step="0.05">';b.append(d)}
+  if(s==="ai"){const d=el("div","sub");d.id="aiconf";d.innerHTML='<label for="aimin">'+WORDS.score+' at least <output id="aiv">0.70</output></label><input type="range" id="aimin" min="0" max="1" step="0.05">';b.append(d)}
   if(s==="used"){const d=el("div","sub");d.id="usedays";d.innerHTML='<label for="days">Not used in the last <input type="number" id="days" min="0" step="1" placeholder="ever"> days</label>';b.append(d)}
   const open=LS.get("sec."+s,open0)==="1";setSec(sec,open);h.onclick=()=>{const o=h.getAttribute("aria-expanded")!=="true";setSec(sec,o);LS.set("sec."+s,o?"1":"0")}}
  $("#aimin").oninput=()=>{$("#aiv").textContent=(+$("#aimin").value).toFixed(2)};
@@ -2195,7 +2347,7 @@ async function loadFacets(tries){facets=await api("/api/facets");const fc=facets
  ["project","source","place","event","label","mine"].forEach(k=>renderOpts(k,fc[k]||[]));
  renderOpts("review",Object.keys(REVIEW).map(v=>[v,c["review:"+v]||0]),v=>REVIEW[v]);
  renderOpts("ai",Object.keys(AIV).map(v=>[v,c["ai:"+v]||0]),v=>AIV[v]);
- renderOpts("used",[["used",c["used:used"]||0],["unused",c["used:unused"]||0]],v=>v==="used"?"Used in a post":"Unused");
+ renderOpts("used",[["used",c["used:used"]||0],["unused",c["used:unused"]||0]],v=>v==="used"?WORDS.flag.used:"Not used");
  renderWhen();renderEvents();renderMyTags();
  $("#ck-all").textContent=fmt(facets.total);$("#ck-photo").textContent=fmt(c["kind:photo"]);$("#ck-video").textContent=fmt(c["kind:video"]);
  $("#c-lib").textContent=fmt(facets.total);$("#c-sug").textContent=fmt(c.suggest);$("#c-recent").textContent=fmt(c.recent);
@@ -2218,9 +2370,9 @@ function renderEvents(){const L=$("#evlist");L.replaceChildren();const ev=(facet
  if(ev.length>EVSHOW){const m=el("button","link evmore",evAll?"Fewer events":"All "+fmt(ev.length)+" events");m.type="button";m.onclick=()=>{evAll=!evAll;renderEvents();syncUI()};L.append(m)}}
 function askField(title,lines,label,value,go,list){confirmBox(title,lines,false,go);$("#mfieldp").hidden=false;$("#mflabel").textContent=label;const f=$("#mfield");f.setAttribute("list",list||"evnames");f.value=value||"";f.focus();f.select()}
 async function afterEvent(j,ev){closeModal();toast(j.result,j.undo);if(ev!==undefined){if(ev)F.event=ev;else delete F.event}await loadFacets();reset()}
-$("#evren").onclick=()=>{const old=F.event;askField("Rename the event "+old+"?",["Every sidecar with Event|"+old+" gets the new name instead: the Event| tag and XMP-iptcExt:Event only. The files and every other tag stay as they are.","A slug: lowercase letters, digits and dashes. To join an event that already exists, use Merge."],"New name",old,
+$("#evren").onclick=()=>{const old=F.event;askField("Rename the event "+old+"?",["Every photo and video in "+old+" moves to the new name. Only the event changes: the files and your other tags stay as they are.","Use lowercase letters, digits and dashes, like summer-2026. To join an event that already exists, use Merge."],"New name",old,
  async()=>afterEvent(await api("/api/event/rename",{from:old,to:$("#mfield").value.trim()}),$("#mfield").value.trim()))};
-$("#evmerge").onclick=()=>{const src=F.event;askField("Merge "+src+" into another event?",["Every item of "+src+" moves to the event you name (the Event| tag and XMP-iptcExt:Event in its sidecar only); "+src+" is gone afterwards."],"Merge into (an event that exists)","",
+$("#evmerge").onclick=()=>{const src=F.event;askField("Merge "+src+" into another event?",["Every photo and video in "+src+" moves to the event you name, and "+src+" is gone afterwards. The files and your other tags don't change."],"Merge into (an event that exists)","",
  async()=>afterEvent(await api("/api/event/merge",{from:[src],into:$("#mfield").value.trim()}),$("#mfield").value.trim()))};
 // ---------------------------------------------------------------- filter state
 function setF(k,v){if(v)F[k]=v;else delete F[k];simId=null;if(plugView()){setView("lib");return}syncUI();reset()}
@@ -2235,24 +2387,53 @@ function syncUI(){$$("button[data-k]").forEach(b=>b.setAttribute("aria-pressed",
  const chip=(text,fn)=>{const c=el("span","chip"),x=el("button","x","×");c.append(el("span",null,text));x.type="button";x.setAttribute("aria-label","Remove "+text);x.onclick=fn;c.append(x);C.append(c)};
  if(simId!==null)chip("Similar to "+simName,()=>{simId=null;syncUI();reset()});
  const q=$("#q").value.trim();if(q&&simId===null)chip("Search: "+q,()=>{$("#q").value="";syncUI();reset()});
- activeKeys().forEach(k=>chip(NAMES[k]+": "+chipVal(k),()=>setF(k,"")));
+ const na=navActive();activeKeys().forEach(k=>{if(k==="event"&&na==="ev")return;chip(NAMES[k]+": "+chipVal(k),()=>setF(k,""))});
  if(C.children.length>1){const a=el("button","link","Clear all");a.type="button";a.onclick=clearAll;C.append(a)}
  C.hidden=!C.children.length||plugView();
- const na=navActive();$$(".nv[data-v]").forEach(b=>{if(b.dataset.v===na)b.setAttribute("aria-current","page");else b.removeAttribute("aria-current")});
+ $$(".nv[data-v]").forEach(b=>{if(b.dataset.v===na)b.setAttribute("aria-current","page");else b.removeAttribute("aria-current")});
  $$(".nv[data-ev]").forEach(b=>{if(na==="ev"&&b.dataset.ev===F.event)b.setAttribute("aria-current","page");else b.removeAttribute("aria-current")});
  $("#evbar").hidden=na!=="ev";if(na==="ev")$("#evname").textContent="Event: "+F.event;
- $("#vtitle").textContent=na==="ev"?"Event: "+F.event:TITLES[na]||""}
+ $("#vtitle").textContent=na==="ev"?F.event:TITLES[na]||""}
 $("#clear").onclick=clearAll;
 // ---------------------------------------------------------------- listing
-function setNote(n){n=n||"";if(/^Semantic search unavailable/.test(n))n="Semantic search is off: showing tag and file-name matches.";$("#note").textContent=n;$("#note").hidden=!n}
-function reset(){gen++;items=[];total=0;done=false;cur=-1;last=null;openB={};$("#list").replaceChildren();sel.clear();dec={};paintSel();more()}
-async function more(){if(loading||done||plugView())return;loading=true;const g=gen;let stale=false;
+// the view's note above the grid; Suggested junk always says what the view is and that nothing changes until Apply
+const SUGNOTE="Photos the tools suggest as junk, most likely first. Mark each Keep or Trash, then Apply. Nothing changes until you Apply.";
+function plainNote(n){n=n||"";return /^Semantic search unavailable/.test(n)?"Semantic search is off: showing tag and file-name matches.":n}
+function setNote(n){n=plainNote(n);$("#note").textContent=n;$("#note").hidden=!n}
+/* The grid's own states, in #list: loading, an empty library, no results, a load error. Each says what is going on
+   and what to do next (role=status; a load error role=alert). o: {lines, cmd (a terminal command), after, act} */
+function listState(kind,head,o){o=o||{};const d=el("div","state"+(kind==="error"?" err":""));d.dataset.state=kind;d.setAttribute("role",kind==="error"?"alert":"status");
+ if(head)d.append(el("h2",null,head));(o.lines||[]).forEach(l=>d.append(el("p",null,l)));if(o.cmd)d.append(el("pre",null,o.cmd));(o.after||[]).forEach(l=>d.append(el("p",null,l)));
+ if(o.act){const b=el("button","btn",o.act.label);b.type="button";b.onclick=o.act.fn;d.append(b)}$("#list").replaceChildren(d);return d}
+function loadingState(){const d=listState("loading"),p=el("p"),sp=el("span","spin");sp.setAttribute("aria-hidden","true");p.append(sp,"Loading your library…");d.append(p);
+ $("#main").setAttribute("aria-busy","true")}
+const QUICK=["recent","child","untagged","ev"];
+function emptyState(note){const q=$("#q").value.trim(),nf=activeKeys().length,na=navActive();
+ if(simId!==null)return listState("none",note||"No photos look like this one.",{act:{label:"Back to the "+TITLES.lib.toLowerCase(),fn:()=>{simId=null;syncUI();reset()}}});
+ if(facets&&facets.total===0)return listState("none","Your library is empty.",{lines:["To add photos and videos, run these in a terminal, with the folder they are in:"],
+  cmd:"media-intake stage <folder> --kind folder --batch first\nmedia-intake plan first\nmedia-intake scan first\nmedia-intake apply first",
+  after:["Then reload this page. Getting started (docs/getting-started.md) explains each step."]});
+ if(view==="lib"&&QUICK.includes(na))return listState("none","Nothing in "+(na==="ev"?F.event:TITLES[na])+" right now.",{act:{label:"Show the whole "+TITLES.lib.toLowerCase(),fn:clearAll}});
+ if(q||nf)return listState("none","Nothing matches "+(q&&nf?"this search and these filters":q?"this search":"these filters")+".",
+  {act:{label:q&&nf?"Clear search and filters":q?"Clear search":"Clear filters",fn:clearAll}});
+ if(view==="sug")return listState("none","No "+WORDS.view.sug.toLowerCase()+" right now.",{lines:["When the tools flag a photo as possible junk, it shows up here for you to mark Keep or Trash."]});
+ return listState("none","Nothing to show here.")}
+function retryLoad(){loadingState();loadFacets().then(()=>reset()).catch(loadError)}
+function loadError(e){$("#main").removeAttribute("aria-busy");const why=e.message||"no answer from the gallery server";
+ if(items.length){errorToast("Couldn't load more of the library: "+why+".",{label:"Try again",fn:()=>{failed=false;more()}});return}
+ $("#count").textContent="";
+ listState("error","Couldn't load the library",{lines:[why+".","Try again. If it keeps failing, restart media-intake gallery in the terminal and open the new link it prints."],act:{label:"Try again",fn:retryLoad}})}
+let failed=false;  // the last page failed to load: no retry by itself (scrolling would loop), Try again does
+function reset(){gen++;items=[];total=0;done=false;failed=false;cur=-1;last=null;openB={};loadingState();sel.clear();dec={};paintSel();more()}
+async function more(){if(loading||done||failed||plugView())return;loading=true;const g=gen;let stale=false;
  try{const j=await api("/api/list?"+qs(Object.assign(filt(),{offset:items.length,limit:240})));
-  if(g!==gen)stale=true;else{total=j.total;ranked=j.ranked;setNote(j.note);const start=items.length;items=items.concat(j.items);done=items.length>=total;render(start);
+  if(g!==gen)stale=true;else{total=j.total;ranked=j.ranked;const start=items.length;items=items.concat(j.items);done=items.length>=total;
+   if(!start)$("#list").replaceChildren();render(start);$("#main").removeAttribute("aria-busy");
+   const n=plainNote(j.note);setNote(view==="sug"?SUGNOTE+(n?" "+n:""):n);
    $("#count").textContent=fmt(total)+(total===1?" item":" items")+(view==="sug"?" suggested":"");
-   if(!items.length)$("#list").replaceChildren(el("p","empty big",view==="sug"?"No trash suggestions here.":"Nothing matches."));
+   if(!items.length){if(simId!==null)setNote("");emptyState(n)}
    document.body.dataset.ready="1"}}
- catch(e){if(g===gen)setNote("Error: "+e.message)}finally{loading=false}
+ catch(e){if(g===gen){failed=true;loadError(e)}}finally{loading=false}
  if(stale){more();return}
  if(!done&&$("#sentinel").getBoundingClientRect().top<innerHeight+600)more()}
 function groupKey(it){return ranked?(view==="sug"?"Most likely junk first":"Best matches first"):it.mo}
@@ -2266,34 +2447,50 @@ function hiddenAt(n){const it=items[n];return !!it&&it.b!=null&&!it.bc&&!openB[i
 function stepVis(n,d){n+=d;while(n>=0&&n<items.length&&hiddenAt(n))n+=d;return n}
 function stackLabel(it){return openB[it.b]?"Close stack (X)":`Show all ${it.bn} (X)`}
 function bxLabel(it){return `Burst: ${it.bn} shots, ${openB[it.b]?"close":"open"} stack`}
+// the compact cover button: "×N" on a closed stack, "Close" on an open one
+function paintBx(bx,it){const o=!!openB[it.b];bx.textContent=o?"Close":"×"+it.bn;bx.classList.toggle("open",o);bx.setAttribute("aria-label",bxLabel(it))}
 function toggleStack(n){const it=items[n];if(!it||it.b==null)return;const b=it.b;allSel=null;openB[b]=!openB[b];let c=-1,dropped=0;
- items.forEach((m,i)=>{if(m.b!==b)return;if(m.bc)c=i;const t=$("#t"+m.id);if(t)t.hidden=hiddenAt(i);if(hiddenAt(i)&&sel.has(m.id)){sel.delete(m.id);dropped++}});
+ items.forEach((m,i)=>{if(m.b!==b)return;if(m.bc)c=i;const t=$("#t"+m.id);if(t){t.hidden=hiddenAt(i);t.classList.toggle("inb",!!openB[b])}if(hiddenAt(i)&&sel.has(m.id)){sel.delete(m.id);dropped++}});
  if(last!==null&&hiddenAt(last))last=null;if(cur>=0&&hiddenAt(cur))cur=c;
- const ct=c>=0?$("#t"+items[c].id):null;if(ct){ct.classList.toggle("stack",!openB[b]);const x=ct.querySelector(".x");if(x)x.textContent=stackLabel(items[c]);const bx=ct.querySelector(".bx");if(bx)bx.setAttribute("aria-label",bxLabel(items[c]));ct.focus({preventScroll:false})}
+ const ct=c>=0?$("#t"+items[c].id):null;if(ct){ct.classList.toggle("stack",!openB[b]);const x=ct.querySelector(".x");if(x)x.textContent=stackLabel(items[c]);const bx=ct.querySelector(".bx");if(bx)paintBx(bx,items[c]);ct.focus({preventScroll:false})}
  if(dropped)toast(`Stack closed: ${dropped} hidden shot${dropped>1?"s":""} unselected (actions act on the cover only).`);paintSel()}
-function tile(it,n){const t=el("div","tile");t.id="t"+it.id;t.dataset.n=n;t.dataset.item=it.n;t.tabIndex=0;t.title=it.n;
+function tile(it,n){const t=el("div","tile"),sug=view==="sug";t.id="t"+it.id;t.dataset.n=n;t.dataset.item=it.n;t.tabIndex=0;t.title=it.n;
  const im=el("img");im.loading="lazy";im.decoding="async";im.alt=it.n;im.src="/t/"+it.id;im.onerror=()=>{im.replaceWith(el("div","ph",(it.m==="video"?"video: ":"")+it.n))};t.append(im);
- const cb=el("input","ck");cb.type="checkbox";cb.tabIndex=-1;cb.setAttribute("aria-label","select "+it.n);cb.onclick=ev=>{ev.stopPropagation();pick(n,ev.shiftKey)};t.append(cb);
+ // the checkbox in a larger hit area (a tap beside the 22 px box still ticks it); none in Suggested junk, whose Keep / Trash marks are the only choice there
+ if(!sug){const w=el("span","ckw"),cb=el("input","ck");cb.type="checkbox";cb.tabIndex=-1;cb.setAttribute("aria-label","select "+it.n);
+  cb.onclick=ev=>{ev.stopPropagation();pick(n,ev.shiftKey)};w.onclick=ev=>{ev.stopPropagation();if(ev.target===w)pick(n,ev.shiftKey)};w.append(cb);t.append(w)}
  if(it.m==="video")t.append(el("span","play","▶"));
- if(it.b!=null){t.dataset.burst=it.b;const bd=el("span","badge",`Burst: ${it.bn} shots`);bd.dataset.count=it.bn;t.append(bd);
-  if(it.bc){const bx=el("button","bx","×"+it.bn);bx.type="button";bx.tabIndex=-1;bx.setAttribute("aria-label",bxLabel(it));bx.onclick=ev=>{ev.stopPropagation();toggleStack(n)};bd.before(bx);
+ if(it.b!=null){t.dataset.burst=it.b;if(openB[it.b])t.classList.add("inb");
+  let pos=1;for(let i=n-1;i>=0&&items[i].b===it.b;i--)pos++;
+  const bd=el("span","badge",it.bc?`Burst: ${it.bn} shots`:`Burst: shot ${pos} of ${it.bn}`);bd.dataset.count=it.bn;if(!it.bc)bd.dataset.pos=pos;t.append(bd);
+  if(it.bc){const bx=el("button","bx");bx.type="button";bx.tabIndex=-1;paintBx(bx,it);bx.onclick=ev=>{ev.stopPropagation();toggleStack(n)};bd.before(bx);
    const x=el("button","x",stackLabel(it));x.type="button";x.tabIndex=-1;x.onclick=ev=>{ev.stopPropagation();toggleStack(n)};t.append(x);if(!openB[it.b])t.classList.add("stack")}
   else t.hidden=hiddenAt(n)}
  const fl=flagsOf(it);if(fl)t.append(el("span","flag",fl));
- t.onclick=ev=>{if(ev.shiftKey||ev.ctrlKey||ev.metaKey){pick(n,ev.shiftKey);return}if(view==="sug"){cur=n;paintSel();return}openViewer(n)};
+ // Suggested junk: Keep and Trash on the tile (a tap marks it, a second tap unmarks; nothing changes until Apply)
+ if(sug){const d=el("div","dec");d.setAttribute("role","group");d.setAttribute("aria-label","Mark "+it.n);
+  [["keep","Keep"],["trash","Trash"]].forEach(([k,l])=>{const b=el("button","btn "+k,l);b.type="button";b.dataset.dec=k;b.setAttribute("aria-pressed","false");
+   b.onclick=ev=>{ev.stopPropagation();mark(n,k)};d.append(b)});t.append(d)}
+ // a click or tap opens the large view (Shift / Ctrl / Cmd+click selects, not in Suggested junk)
+ t.onclick=ev=>{if(!sug&&(ev.shiftKey||ev.ctrlKey||ev.metaKey)){pick(n,ev.shiftKey);return}openViewer(n)};
+ t.onfocus=()=>{if(view==="sug"&&cur!==n){cur=n;paintSel()}};
  // Enter opens, Space selects (on the focused tile, never while the large view is open: Space plays / pauses there)
- t.onkeydown=ev=>{if(vi>=0||ev.target!==t)return;if(ev.key==="Enter"&&view!=="sug"){ev.preventDefault();ev.stopPropagation();openViewer(n)}else if(ev.key===" "){ev.preventDefault();ev.stopPropagation();pick(n,ev.shiftKey)}
+ t.onkeydown=ev=>{if(vi>=0||ev.target!==t)return;if(ev.key==="Enter"){ev.preventDefault();ev.stopPropagation();openViewer(n)}else if(ev.key===" "&&!sug){ev.preventDefault();ev.stopPropagation();pick(n,ev.shiftKey)}
   else if((ev.key==="x"||ev.key==="X")&&it.b!=null&&!ev.ctrlKey&&!ev.metaKey&&!ev.altKey){ev.preventDefault();ev.stopPropagation();toggleStack(n)}};return t}
-function flagsOf(it){const fl=[];if(it.c!=null)fl.push("AI "+it.c.toFixed(1));fl.push(...it.f);return fl.join(" · ")}
+function mark(n,k){const id=items[n].id;if(dec[id]===k)delete dec[id];else dec[id]=k;cur=n;paintSel()}
+function flagsOf(it){const fl=[];if(it.c!=null)fl.push(WORDS.score+" "+it.c.toFixed(1));fl.push(...it.f.map(f=>WORDS.flag[f]||f));return fl.join(" · ")}
 // after an edit: the reply's summaries replace those items and their tiles' flags (kept, ...);
 // the tile, its focus and the selection stay
 function patchTiles(fresh){(fresh||[]).forEach(s=>{const n=items.findIndex(i=>i.id===s.id);if(n<0)return;const o=items[n];items[n]=o.b!=null?Object.assign(s,{b:o.b,bn:o.bn,bc:o.bc,mo:o.mo}):s;const t=$("#t"+s.id);if(!t)return;
   const old=t.querySelector(".flag"),fl=flagsOf(s);if(old)old.remove();if(fl)t.append(el("span","flag",fl))})}
-function pick(n,range){allSel=null;if(range&&last!==null){const [a,b]=[Math.min(last,n),Math.max(last,n)];for(let i=a;i<=b;i++)if(!hiddenAt(i))sel.add(items[i].id)}
+function pick(n,range){if(view==="sug")return;allSel=null;if(range&&last!==null){const [a,b]=[Math.min(last,n),Math.max(last,n)];for(let i=a;i<=b;i++)if(!hiddenAt(i))sel.add(items[i].id)}
  else{const id=items[n].id;sel.has(id)?sel.delete(id):sel.add(id)}last=n;paintSel()}
-function paintSel(){$$(".tile").forEach(t=>{const id=+t.id.slice(1),n=+t.dataset.n;t.classList.toggle("sel",sel.has(id));t.querySelector("input").checked=sel.has(id);
-  t.classList.toggle("cur",n===cur);t.classList.toggle("dk",dec[id]==="keep");t.classList.toggle("dt",dec[id]==="trash")});
- const selOn=sel.size>0&&!plugView(),sugOn=view==="sug";$("#selgrp").hidden=!selOn;$("#suggrp").hidden=!sugOn;$("#actionbar").hidden=!(selOn||sugOn);
+function paintSel(){$$(".tile").forEach(t=>{const id=+t.id.slice(1),n=+t.dataset.n,d=dec[id];t.classList.toggle("sel",sel.has(id));const cb=t.querySelector("input.ck");if(cb)cb.checked=sel.has(id);
+  t.classList.toggle("cur",n===cur);t.classList.toggle("dk",d==="keep");t.classList.toggle("dt",d==="trash");
+  // a mark in words too (top left), not by the outline's colour alone
+  t.querySelectorAll("[data-dec]").forEach(b=>b.setAttribute("aria-pressed",String(b.dataset.dec===d)));
+  let m=t.querySelector(".mark");if(d){if(!m){m=el("span");t.append(m)}m.className="mark "+d;m.textContent=d==="keep"?"Keep":"Trash"}else if(m)m.remove()});
+ const selOn=sel.size>0&&!plugView()&&view!=="sug",sugOn=view==="sug";$("#selgrp").hidden=!selOn;$("#suggrp").hidden=!sugOn;$("#actionbar").hidden=!(selOn||sugOn);
  document.body.classList.toggle("selecting",sel.size>0);
  $("#seln").textContent=allSel&&allSel.n===sel.size?allSel.text:fmt(sel.size)+" selected";$("#ball").hidden=!canSelectAll();
  const nk=Object.values(dec).filter(d=>d==="keep").length,nt=Object.values(dec).filter(d=>d==="trash").length;
@@ -2314,25 +2511,35 @@ function nameOf(id){const it=items.find(i=>i.id===id);return it?it.n:"#"+id}
 let tt=null,undoTok=null;
 function toast(s,undo){const t=$("#toast");t.replaceChildren(el("span",null,s));undoTok=undo||null;
  if(undo){const b=el("button",null,"Undo");b.type="button";b.id="tundo";b.title="Undo (Ctrl+Z)";b.setAttribute("aria-keyshortcuts","Control+Z Meta+Z");b.onclick=doUndo;t.append(b)}
- t.classList.add("on");clearTimeout(tt);tt=setTimeout(hideToast,undo?10000:4500)}
+ placeToast();t.classList.add("on");clearTimeout(tt);tt=setTimeout(hideToast,undo?10000:4500)}
+// the message sits above the bottom action bar (which wraps to several rows on a phone), never over its buttons
+function placeToast(){const b=$("#actionbar");let y=24;if(vi<0&&!b.hidden){const r=b.getBoundingClientRect();if(r.height&&r.top<innerHeight)y=Math.max(y,innerHeight-r.top+12)}
+ $("#toast").style.bottom=y+"px"}
+new ResizeObserver(placeToast).observe($("#actionbar"));addEventListener("resize",placeToast);
+addEventListener("scroll",()=>{if(isOn("#toast"))placeToast()},{passive:true});
 function hideToast(){const t=$("#toast");if(t.matches(":hover,:focus-within")){tt=setTimeout(hideToast,1500);return}
  t.classList.remove("on");undoTok=null;const b=$("#tundo");if(b)b.remove()}
-function errorToast(s){const t=$("#etoast"),x=el("button",null,"Dismiss");x.type="button";x.setAttribute("aria-label","Dismiss error");
- x.onclick=()=>{t.classList.remove("on");t.replaceChildren()};t.replaceChildren(el("span",null,s),x);t.classList.add("on")}
+// act: {label, fn}, a button before Dismiss (e.g. "Show progress" when a Trash, Erase or Share-safe copy is running)
+function errorToast(s,act){const t=$("#etoast"),x=el("button",null,"Dismiss"),off=()=>{t.classList.remove("on");t.replaceChildren()};x.type="button";x.setAttribute("aria-label","Dismiss error");
+ x.onclick=off;t.replaceChildren(el("span",null,s));if(act){const a=el("button","act",act.label);a.type="button";a.onclick=()=>{off();act.fn()};t.append(a)}t.append(x);t.classList.add("on")}
+/* A refusal: the server's own words. A 409 "busy" (the library lock or the gallery's job) already says in plain words
+   what is running; while a gallery job runs, the alert offers its progress. */
+async function refused(what,e){let act=null;if(e.busy){try{const j=await api("/api/job");if(!j.done)act={label:"Show progress",fn:attachJob}}catch(x){}}
+ errorToast((what?what+" refused: ":"Refused: ")+e.message,act)}
 /* Undo: the server recorded what Keep, a tag, Rotate or Set event changed and answers with a token; /api/undo puts
    exactly that back, under the library lock, and refuses (nothing written) when those items changed again since.
    Trash, Erase and Share-safe copy never offer it. */
 async function doUndo(){const tok=undoTok;if(!tok)return;undoTok=null;const b=$("#tundo");if(b)b.remove();
  try{const j=await api("/api/undo",{undo:tok});toast(j.result);loadFacets();if(j.kind==="event"&&vi<0){patchTiles(j.items);reset()}else refreshAfter(j.ids,j.thumbs,j.items)}
- catch(e){errorToast("Undo refused: "+e.message)}}
-async function doKeep(ids){try{const j=await api("/api/keep",{ids});toast(j.result,j.undo);refreshAfter(ids,false,j.items);loadFacets()}catch(e){errorToast("Keep refused: "+e.message)}}
+ catch(e){refused("Undo",e)}}
+async function doKeep(ids){try{const j=await api("/api/keep",{ids});toast(j.result,j.undo);refreshAfter(ids,false,j.items);loadFacets()}catch(e){refused("Keep",e)}}
 /* In-page dialogs (the confirm / job dialog, the shortcut list): focus moves in, Tab stays in, Esc closes, and
    focus goes back to where it was. The large view is a dialog too (Tab stays in it, and its messages). */
 let modalReturn=null,keysReturn=null;
 const isOn=s=>$(s).classList.contains("on");
 function refocus(r){if(r&&r.isConnected&&r.focus&&r.getClientRects().length)r.focus({preventScroll:true})}
-function openModal(){if(!isOn("#modal"))modalReturn=document.activeElement;$("#modal").classList.add("on")}
-function closeModal(){if(!isOn("#modal"))return;$("#modal").classList.remove("on");const r=modalReturn;modalReturn=null;refocus(r);
+function openModal(){if(!isOn("#modal"))modalReturn=document.activeElement;$("#modal").classList.add("on");paintPill()}
+function closeModal(){if(!isOn("#modal"))return;$("#modal").classList.remove("on");paintPill();const r=modalReturn;modalReturn=null;refocus(r);
  const a=document.activeElement;if(a&&a.closest&&a.closest("#modal"))a.blur()}  // never left on a hidden field: the next key goes to the page
 function openKeys(){if(isOn("#keys"))return;keysReturn=document.activeElement;$("#keys").classList.add("on");$("#kclose").focus()}
 function closeKeys(){if(!isOn("#keys"))return;$("#keys").classList.remove("on");const r=keysReturn;keysReturn=null;refocus(r)}
@@ -2343,69 +2550,105 @@ function trapTab(ev,d){const vis=e=>!e.disabled&&e.getClientRects().length>0;
  if(!f.length){ev.preventDefault();return}
  const a=f[0],z=f[f.length-1],at=document.activeElement,inside=f.includes(at);
  if(!inside){ev.preventDefault();(ev.shiftKey?z:a).focus()}else if(ev.shiftKey&&at===a){ev.preventDefault();z.focus()}else if(!ev.shiftKey&&at===z){ev.preventDefault();a.focus()}}
-function confirmBox(title,lines,needType,go){$("#mh").textContent=title;$("#mgo").textContent="Confirm";const b=$("#mb");b.replaceChildren();lines.forEach(l=>b.append(el("p",l.startsWith("!")?"warn":null,l.replace(/^!/,""))));
- $("#mtype").hidden=!needType;$("#mfieldp").hidden=true;$("#mtyped").value="";$("#mgo").disabled=!!needType;$("#mgo").hidden=false;$("#mout").hidden=true;$("#mout").textContent="";$("#mstatus").hidden=true;delete $("#modal").dataset.job;openModal();
+/* lines: text ("!..." a warning) or an element (the thumbnails); goLabel names the action ("Trash 2 files"), else Confirm */
+function confirmBox(title,lines,needType,go,goLabel){$("#mh").textContent=title;$("#mgo").textContent=goLabel||"Confirm";$("#mno").textContent="Cancel";const b=$("#mb");b.replaceChildren();
+ lines.forEach(l=>b.append(typeof l==="string"?el("p",l.startsWith("!")?"warn":null,l.replace(/^!/,"")):l));
+ $("#mtype").hidden=!needType;$("#mfieldp").hidden=true;$("#mtyped").value="";$("#mgo").disabled=!!needType;$("#mgo").hidden=false;$("#mout").hidden=true;$("#mout").textContent="";$("#mstatus").hidden=true;delete $("#mstatus").dataset.state;delete $("#modal").dataset.job;openModal();
  $("#mtyped").oninput=()=>{$("#mgo").disabled=$("#mtyped").value!=="ERASE"};if(needType)$("#mtyped").focus();else $("#mno").focus();
  $("#mgo").onclick=async()=>{$("#mgo").disabled=true;try{await go()}catch(e){$("#mout").hidden=false;$("#mout").textContent="Refused: "+e.message;$("#mgo").disabled=false}}}
 $("#mno").onclick=closeModal;
 $("#kclose").onclick=closeKeys;$("#bkeys").onclick=openKeys;
 $("#keys").onclick=ev=>{if(ev.target===$("#keys"))closeKeys()};  // a click on the backdrop
 $("#mfield").onkeydown=ev=>{if(ev.key==="Enter"&&!$("#mgo").disabled){ev.preventDefault();$("#mgo").click()}};
-function names(ids){const n=ids.map(nameOf);return n.slice(0,15).join(", ")+(n.length>15?` … and ${n.length-15} more`:"")}
-function warnings(ids){const its=ids.map(id=>items.find(i=>i.id===id)).filter(Boolean),w=[];
- const u=its.filter(i=>i.f.includes("used")).length;if(u)w.push(`!${u} were used in posts (Used|…).`);
- const k=its.filter(i=>i.f.includes("kept")).length;if(k)w.push(`!${k} you marked Keep before.`);return w}
-function askTrash(ids){confirmBox(`Trash ${ids.length} item${ids.length>1?"s":""}?`,[names(ids),"Plain delete (not erase): the file, its sidecar and thumbnails go, and intake never takes the same file in again. Use Erase for anything private.",...warnings(ids)],false,
- ()=>runJob("/api/trash",{ids,confirm:true},ids))}
-function askErase(ids){confirmBox(`Erase ${ids.length} item${ids.length>1?"s":""} everywhere?`,[names(ids),"For sensitive files: intake.py forget moves them to quarantine and erases every copy in HOME (and the drive, if the gallery was started with --drive), with the sidecars, thumbnails and recent-file entries. This cannot be undone.",...warnings(ids)],true,
- ()=>runJob("/api/erase",{ids,confirm:$("#mtyped").value},ids))}
-function askSetEvent(ids){if(!ids.length)return;askField("Set the event on "+ids.length+" item"+(ids.length>1?"s":"")+"?",[names(ids),"Each one goes into this event and out of any other: the Event| tag and XMP-iptcExt:Event in its sidecar. The originals and every other tag stay as they are. Leave it empty to take them out of every event."],"Event (a slug: lowercase letters, digits, dashes)",F.event||"",
+function names(ids){const n=ids.map(nameOf);const p=el("p","mnames",n.slice(0,15).join(", ")+(n.length>15?` … and ${n.length-15} more`:""));return p}
+// what the dialog acts on, as the grid's own thumbnails (/t/<id>): up to 12, then "and N more"
+const THUMBS=12;
+function thumbs(ids){const d=el("div","mthumbs");d.setAttribute("aria-hidden","true");ids.slice(0,THUMBS).forEach(id=>{const im=el("img");im.alt="";im.loading="lazy";im.src="/t/"+id;im.title=nameOf(id);im.onerror=()=>im.remove();d.append(im)});
+ if(ids.length>THUMBS)d.append(el("span",null,`and ${fmt(ids.length-THUMBS)} more`));return d}
+function warnings(ids){const its=ids.map(id=>items.find(i=>i.id===id)).filter(Boolean),w=[],one=ids.length===1;
+ const u=its.filter(i=>i.f.includes("used")).length;if(u)w.push(one?"!This one was used in a post.":`!${fmt(u)} of these ${u===1?"was":"were"} used in a post.`);
+ const k=its.filter(i=>i.f.includes("kept")).length;if(k)w.push(one?"!This one was marked Keep earlier.":`!${fmt(k)} of these ${k===1?"was":"were"} marked Keep earlier.`);return w}
+const these=n=>n===1?"this file":"these "+plural(n,"file");
+function trashText(n){return `Deletes ${these(n)} from this computer for good, with ${n===1?"its":"their"} tags and thumbnails. ${n===1?"It doesn't":"They don't"} go to the desktop Trash, and this can't be undone. If the same photo is imported again, it is skipped.`}
+function askTrash(ids){const n=ids.length;confirmBox(`Trash ${plural(n,"item")}?`,[thumbs(ids),names(ids),trashText(n)+" Use Erase for anything private.",...warnings(ids)],false,
+ ()=>runJob("/api/trash",{ids,confirm:true},ids),"Trash "+plural(n,"file"))}
+// the backup drive is included only when the gallery was started with one (/api/facets "drive")
+function askErase(ids){const n=ids.length,dr=facets&&facets.drive;confirmBox(`Erase ${plural(n,"item")} everywhere?`,[thumbs(ids),names(ids),
+  `For private files. Erases every copy of ${these(n)}: in your library and the rest of your home folder, with ${n===1?"its":"their"} thumbnails and recent-file entries`
+  +(dr?`, and on the backup drive (${dr}).`:". Not on a backup drive: the gallery was started without one.")+" This can't be undone.",...warnings(ids)],true,
+ ()=>runJob("/api/erase",{ids,confirm:$("#mtyped").value},ids),"Erase "+plural(n,"file"))}
+function askSetEvent(ids){if(!ids.length)return;askField("Set the event on "+plural(ids.length,"item")+"?",[names(ids),"Each one goes into this event and out of any other. The photos and your other tags don't change. Leave it empty to take them out of every event."],"Event name (lowercase letters, digits and dashes, like summer-2026)",F.event||"",
  async()=>{const ev=$("#mfield").value.trim(),j=await api("/api/event/set",{ids,event:ev});if(vi>=0){closeModal();toast(j.result,j.undo);loadFacets();openViewer(vi,{keep:true})}else afterEvent(j)})}
 /* Share-safe copies: intake.py share-copy as a job (one at a time, with Trash and Erase), into a new folder; the page
    shows the folder and share-copy's own lines (each copy's path and "gps=none"), never the copies themselves. */
-let jobDest="";
-function askShare(ids){if(!ids.length)return;confirmBox("Make share-safe copies of "+ids.length+" item"+(ids.length>1?"s":"")+"?",[names(ids),"Copies with all metadata and GPS stripped (media-intake share-copy) go into a new folder under "+((facets&&facets.share_out)||"the share-safe folder")+". The originals and their sidecars are only read."],false,
+function askShare(ids){if(!ids.length)return;confirmBox("Make share-safe copies of "+plural(ids.length,"item")+"?",[thumbs(ids),names(ids),"Makes copies without location (GPS) or other hidden info, in a new folder under "+((facets&&facets.share_out)||"the share-safe folder")+". Your originals are not changed."],false,
  ()=>runShare(ids))}
-async function runShare(ids){let j;try{j=await api("/api/share",{ids})}catch(e){if(/still running/.test(e.message)){attachJob();return}throw e}
- jobDest=j.dest;const b=$("#mb");b.replaceChildren(el("p",null,"Destination: "+j.dest));b.firstChild.id="mdest";progressMode("share-copy");poll(0,[])}
-/* Trash and Erase run as a detached job (jobs.py): closing the page or stopping the server never stops
-   them, and any page (a reload, a second tab, a restarted server) shows the running one from its status file. */
-async function runJob(path,body,ids){jobDest="";try{await api(path,body)}catch(e){if(/still running/.test(e.message)){attachJob();return}throw e}
- progressMode(path==="/api/erase"?"forget":"trash");poll(0,ids)}
-/* Shown from the moment a job starts, before its first output line: an erase sweeps HOME for copies and can
-   print nothing for minutes, which looked like a hang. Hidden once the job has finished. */
-const STATUS={forget:"Erasing… looking for copies in your home folder. This can take a few minutes; you can close this page, it keeps running.",
+async function runShare(ids){let j;try{j=await api("/api/share",{ids})}catch(e){if(e.busy&&await attachJob())return;throw e}
+ jobDest=j.dest;startJob("share",ids)}
+/* Trash, Erase and Share-safe copy run as a detached job (jobs.py): closing the page or stopping the server never
+   stops them, and any page (a reload, a second tab, a restarted server) shows the running one from its status file.
+   There is no stop (a half-done erase must finish), so the dialog's button says what it does: "Hide (it keeps
+   running)", then "Close" once the job has ended. While it is hidden the header's pill brings it back, and its end
+   is announced: a message (role=status) when it went well, an alert with Details when it did not. */
+let job=null,jobDest="";
+const SHARE_TIP="Make a copy without location and camera info, to send to someone";
+const JOBRUN={erase:"Erasing… looking for copies in your home folder. This can take a few minutes; you can close this page, it keeps running.",
  trash:"Trashing… you can close this page, it keeps running.",
- "share-copy":"Copying without metadata or GPS… you can close this page, it keeps running."};
-function jobStatus(label){const t=STATUS[label]||"Working… you can close this page, it keeps running.";const m=$("#mstatus");if(m.textContent!==t)m.textContent=t;m.hidden=false}
-function progressMode(label){$("#mgo").hidden=true;$("#mtype").hidden=true;$("#mfieldp").hidden=true;$("#mout").hidden=false;$("#mout").textContent="";jobStatus(label);openModal()}
-function stepText(j){return j.step?` (step ${j.step}${j.total?" of "+j.total:""}: ${j.label})`:""}
-async function poll(since,ids){let j;try{j=await api("/api/job?since="+since)}catch(e){$("#mout").textContent+="\n(server stopped; an action already started keeps going on its own)";return}
- if(j.lines.length){$("#mout").textContent+=j.lines.join("\n")+"\n";$("#mout").scrollTop=1e9}$("#modal").dataset.job=j.done?(j.state==="crashed"?"crashed":j.ok?"done":"failed"):"running";
- if(!j.done){if(j.label)jobStatus(j.label);$("#mh").textContent="Running"+stepText(j)+"; closing the page does not stop it";setTimeout(()=>poll(j.next,ids),600);return}
- $("#mh").textContent=j.state==="crashed"?"The action stopped unexpectedly (crashed)"+stepText(j)+(j.step_running?"; the step it started is still running":"")+". Nothing more runs by itself."
-  :/gps=STILL PRESENT/.test($("#mout").textContent)?"Finished, but GPS is still in some copies (see below): don't share those"
-  :j.ok?"Done"+(j.label==="share-copy"&&jobDest?": share-safe copies in "+jobDest:""):"Finished with problems (see below)";
- $("#mstatus").hidden=true;ids.forEach(id=>sel.delete(id));closeViewer();loadFacets();reset()}
-async function attachJob(){let j;try{j=await api("/api/job")}catch(e){return}if(j.done)return;$("#mh").textContent="An action is running";$("#mb").replaceChildren();progressMode(j.label);poll(0,j.ids||[])}
+ share:"Copying without location or hidden info… you can close this page, it keeps running."};
+const jobWord=k=>WORDS.job[k]||"The action";
+function jobKind(j){return j.kind||({forget:"erase","share-copy":"share"})[j.label]||j.label||""}
+async function runJob(path,body,ids){jobDest="";try{await api(path,body)}catch(e){if(e.busy&&await attachJob())return;throw e}
+ startJob(path==="/api/erase"?"erase":"trash",ids)}
+function startJob(kind,ids,log){job={kind,ids:ids||[],log:log||"",state:"running",head:jobWord(kind)+" running",status:JOBRUN[kind]||""};showJob();poll(0)}
+const jobInDialog=()=>isOn("#modal")&&$("#modal").dataset.job!==undefined;
+// (re)open the dialog on the job: no confirm text, buttons or fields of the dialog that started it
+function showJob(){if(!job)return;const b=$("#mb");b.replaceChildren();if(job.kind==="share"&&jobDest){const p=el("p",null,"Destination: "+jobDest);p.id="mdest";b.append(p)}
+ $("#mgo").hidden=true;$("#mtype").hidden=true;$("#mfieldp").hidden=true;$("#mout").hidden=false;$("#mout").textContent="";$("#modal").dataset.job=job.state;openModal();paintJob();$("#mno").focus()}
+function paintJob(){paintPill();if(!job)return;const d=$("#modal");if(d.dataset.job!==undefined)d.dataset.job=job.state;  // also while hidden
+ if(!jobInDialog())return;$("#mh").textContent=job.head;
+ const o=$("#mout");if(o.textContent!==job.log){o.textContent=job.log;o.scrollTop=1e9}
+ const m=$("#mstatus");if(m.textContent!==job.status)m.textContent=job.status;m.hidden=!job.status;m.dataset.state=job.state;
+ $("#mno").textContent=job.state==="running"?"Hide (it keeps running)":"Close"}
+function paintPill(){const p=$("#jobpill"),on=!!job&&job.state==="running"&&!jobInDialog();p.hidden=!on;document.body.classList.toggle("jobpill",on);
+ if(on){const t=jobWord(job.kind)+" running…";const w=el("span",null,jobWord(job.kind));w.append(el("span","pr"," running"),"…");p.replaceChildren(w,el("b",null,"Show"));p.title=t+" Show its progress";p.setAttribute("aria-label",t+" Show progress")}}
+$("#jobpill").onclick=showJob;
+function stepText(j){return j.step&&j.total>1?` (step ${j.step} of ${j.total})`:""}
+function jobEnd(j){const n=job.ids.length,k=job.kind;
+ if(j.state==="crashed")return [`The ${jobWord(k).toLowerCase()} stopped unexpectedly`+stepText(j)+(j.step_running?"; the step it started is still running":"")+". Nothing more runs by itself.",
+  jobWord(k)+" stopped unexpectedly. Nothing more runs by itself; see the details."];
+ if(/gps=STILL PRESENT/.test(job.log))return ["Finished, but GPS is still in some copies (see below): don't share those","Share-safe copy finished, but GPS is still in some copies: don't share those."];
+ if(!j.ok)return ["Finished with problems (see below)",jobWord(k)+" finished with problems; see the details."];
+ const what=k==="trash"?`${plural(n,"file")} trashed.`:k==="erase"?`${plural(n,"file")} erased everywhere.`:k==="share"&&jobDest?`share-safe copies in ${jobDest}.`:"";
+ return ["Done"+(k==="share"&&jobDest?": share-safe copies in "+jobDest:""),"Done"+(what&&n?": "+what:".")]}
+async function poll(since){const me=job;let j;try{j=await api("/api/job?since="+since)}catch(e){if(job!==me)return;
+  job.log+="\n(server stopped; an action already started keeps going on its own)";job.state="unknown";job.status="The server stopped. The action keeps going on its own.";paintJob();return}
+ if(job!==me)return;if(j.lines.length)job.log+=j.lines.join("\n")+"\n";const k=jobKind(j);if(k)job.kind=k;
+ if(!j.done){job.state="running";job.head=jobWord(job.kind)+" running"+stepText(j);job.status=JOBRUN[job.kind]||"Working… you can close this page, it keeps running.";paintJob();setTimeout(()=>poll(j.next),600);return}
+ job.state=j.state==="crashed"?"crashed":j.ok?"done":"failed";[job.head,job.status]=jobEnd(j);
+ const seen=jobInDialog();paintJob();job.ids.forEach(id=>sel.delete(id));closeViewer();loadFacets();reset();
+ if(!seen){if(job.state==="done")toast(job.status);else errorToast(job.status,{label:"Details",fn:showJob})}}
+// a job this page didn't start (a reload, another tab, a restarted server): true when one is running and shown
+async function attachJob(){if(job&&job.state==="running"){showJob();return true}let j;try{j=await api("/api/job")}catch(e){return false}if(j.done)return false;
+ job={kind:jobKind(j),ids:j.ids||[],log:"",state:"running",head:"",status:""};job.head=jobWord(job.kind)+" running";showJob();poll(0);return true}
 /* Your tags: the same refusals as the server (gallery.py tag(): TAG_RE, TOOL_PREFIXES), checked first so the field
    says why at once; the server checks again. Suggestions: every tag of yours in the library (#mytags). */
 const TOOL_NS=["project|","source|","event|","place|","label|","review|","ai|","used|","owner|"];
 function tagProblem(t){if(!t||[...t].length>64||/[\x00-\x1f\x7f]/.test(t)||t.startsWith("-")||t.includes("@@sep@@"))return "a tag is 1-64 characters on one line";
- if(TOOL_NS.some(p=>t.toLowerCase().startsWith(p)))return "Project|, Source|, Event|, Place|, Label|, Review|, AI|, Used| and Owner| belong to the tools; pick another name";return ""}
-function tagAsk(op){const ids=vi>=0&&!sel.size?[items[vi].id]:selIds();if(!ids.length)return;const n=ids.length+" item"+(ids.length>1?"s":"");
- askField(op==="add"?"Add a tag of yours to "+n+"?":"Remove a tag of yours from "+n+"?",[names(ids),"Your own tags only, not the tools' (Project|, Source|, Event|, Place|, Label|, Review|, AI|, Used|, Owner|). A | makes a hierarchy, like Trips|Spain. Only the sidecars change."],
+ if(TOOL_NS.some(p=>t.toLowerCase().startsWith(p)))return WORDS.tools+" tags belong to the tools; pick another name";return ""}
+function tagAsk(op){const ids=vi>=0&&!sel.size?[items[vi].id]:selIds();if(!ids.length)return;const n=plural(ids.length,"item");
+ askField(op==="add"?"Add a tag of yours to "+n+"?":"Remove a tag of yours from "+n+"?",[names(ids),"Your own tags only (not "+WORDS.tools.replace(" and "," or ")+", which belong to the tools). Use | for a group, like Trips|Spain. The photos themselves don't change."],
   "Tag (yours: suggestions as you type)","",async()=>{const t=$("#mfield").value.trim(),why=tagProblem(t);if(why)throw new Error(why);
    const j=await api("/api/tag",{ids,tag:t,op});closeModal();toast(j.result,j.undo);loadFacets();refreshAfter(ids,false,j.items)},"mytags")}
-async function rot(ids,dir){try{const j=await api("/api/rotate",{ids,dir});toast(j.result,j.undo);refreshAfter(ids,true,j.items)}catch(e){errorToast("Rotate refused: "+e.message)}}
+async function rot(ids,dir){try{const j=await api("/api/rotate",{ids,dir});toast(j.result,j.undo);refreshAfter(ids,true,j.items)}catch(e){refused("Rotate",e)}}
 function refreshAfter(ids,thumbs,fresh){patchTiles(fresh);if(thumbs)ids.forEach(id=>{const t=$("#t"+id);if(t){const im=t.querySelector("img");if(im)im.src="/t/"+id+"?r="+Date.now()}});
  if(vi>=0)openViewer(vi,{keep:true});else if(view==="sug")reset()}
 $("#bkeep").onclick=()=>doKeep(selIds());$("#btrash").onclick=()=>askTrash(selIds());$("#berase").onclick=()=>askErase(selIds());
 $("#btag").onclick=()=>tagAsk("add");$("#buntag").onclick=()=>tagAsk("remove");$("#brot").onclick=()=>rot(selIds(),"cw");
-$("#ball").onclick=selectAll;$("#bevent").onclick=()=>askSetEvent(selIds());$("#bshare").onclick=()=>askShare(selIds());$("#bnone").onclick=()=>{sel.clear();paintSel()};
+$("#bshare").title=SHARE_TIP;$("#ball").onclick=selectAll;$("#bevent").onclick=()=>askSetEvent(selIds());$("#bshare").onclick=()=>askShare(selIds());$("#bnone").onclick=()=>{sel.clear();paintSel()};
 $("#sugapply").onclick=()=>{const keep=Object.keys(dec).filter(k=>dec[k]==="keep").map(Number),trash=Object.keys(dec).filter(k=>dec[k]==="trash").map(Number);
- confirmBox(`Apply: ${keep.length} keep, ${trash.length} trash?`,[keep.length?"Keep: Owner|keep + Owner|not-trash in the sidecar (never suggested again).":"",trash.length?"Trash ("+names(trash)+"): plain delete, never taken in again (Owner|trash: the sha256 in trashed.json; copies left on disk are marked).":""].filter(Boolean),false,
-  async()=>{const j=await api("/api/decide",{keep,trash,confirm:true});if(trash.length){progressMode("trash");$("#mout").textContent=j.result+"\n";poll(0,trash)}else{closeModal();toast(j.result);loadFacets();reset()}})};
+ const nk=keep.length,nt=trash.length;
+ confirmBox(`Apply: ${nk} keep, ${nt} trash?`,[nk?`Keep ${plural(nk,"item")}: ${nk===1?"it":"they"} won't be suggested as junk again.`:"",...(nt?[thumbs(trash),names(trash),"Trash: "+trashText(nt)]:[])].filter(Boolean),false,
+  async()=>{const j=await api("/api/decide",{keep,trash,confirm:true});if(nt){jobDest="";startJob("trash",trash,j.result+"\n")}else{closeModal();toast(j.result);loadFacets();reset()}},nt?"Apply and trash "+plural(nt,"file"):"Apply")};
 // ---------------------------------------------------------------- large view
 function curVideo(){return $("#media video")}
 function stopVideo(){const v=curVideo();if(v){v.pause();v.removeAttribute("src");v.load()}}  // releases the file
@@ -2428,7 +2671,9 @@ async function openViewer(n,opt){opt=opt||{};if(n<0||n>=items.length)return;if(v
  if(items[n].m==="video"){const v=el("video");v.controls=true;v.preload="auto";v.playsInline=true;v.autoplay=true;v.poster="/t/"+items[n].id;v.dataset.id=items[n].id;
   v.src="/m/"+items[n].id;M.replaceChildren(v);fitMedia();startVideo(v);if(tKeep)v.currentTime=tKeep}
  else M.replaceChildren();
- let d;try{d=await pend}catch(e){toast("gone");return}if(vi!==n)return;
+ let d;try{d=await pend}catch(e){if(vi!==n)return;closeViewer();
+  if(e.status===404){toast("That file is no longer in the library. The list will refresh.");loadFacets().catch(()=>{});reset()}else errorToast("Couldn't open it: "+e.message);return}
+ if(vi!==n)return;
  const v=curVideo();
  if(d.video&&d.src&&v){v.dataset.rot=d.rot;fitMedia();
   const bad=()=>{if(curVideo()===v)cantPlay(d,"This browser can't play this video (HEVC, most likely).")};
@@ -2443,22 +2688,25 @@ async function openViewer(n,opt){opt=opt||{};if(n<0||n>=items.length)return;if(v
  head.append(el("h2",null,d.name),x);s.append(head);
  const acts=el("div","acts"),mk=(box,t,f,c)=>{const b=el("button","btn"+(c?" "+c:""),t);b.type="button";b.onclick=f;box.append(b);return b};
  mk(acts,"Keep (K)",()=>doKeep([d.id]),"keep");mk(acts,"Trash (T)",()=>askTrash([d.id]),"trash");mk(acts,"Erase (E)",()=>askErase([d.id]),"erase");s.append(acts);
- const tools=el("div","tools");mk(tools,"⟲ Rotate",()=>rot([d.id],"ccw")).title="Shift+R";mk(tools,"⟳ Rotate",()=>rot([d.id],"cw")).title="R";
- mk(tools,"Set event…",()=>askSetEvent([d.id]));mk(tools,"Share-safe copy",()=>askShare([d.id]));
- mk(tools,"Similar",()=>{simId=d.id;simName=d.name;closeViewer();$("#q").value="";syncUI();reset()});s.append(tools);
+ const tools=el("div","tools");mk(tools,"Rotate left (Shift+R)",()=>rot([d.id],"ccw")).setAttribute("aria-keyshortcuts","Shift+R");mk(tools,"Rotate right (R)",()=>rot([d.id],"cw")).setAttribute("aria-keyshortcuts","R");
+ mk(tools,"Set event…",()=>askSetEvent([d.id]));mk(tools,"Share-safe copy",()=>askShare([d.id])).title=SHARE_TIP;
+ mk(tools,"Find similar",()=>{simId=d.id;simName=d.name;closeViewer();$("#q").value="";syncUI();reset()}).title="Photos that look like this one";s.append(tools);
  const dl=el("dl","dt"),row=(k,v)=>{if(v){dl.append(el("dt",null,k),el("dd",null,v))}};
  row("Date",d.date);row("Place",d.place);row("Event",d.event);row("Project",d.project);row("Source",d.source);row("Folder",d.folder);row("Resolution",d.res);row("Size",d.size);
- if(d.ai!=null)row("AI trash",d.ai.toFixed(2));if(d.used.length)row("Used in",d.used.join(", "));if(d.kept)row("Owner","kept");
+ if(d.ai!=null)row(WORDS.score,d.ai.toFixed(2));if(d.used.length)row("Used in",d.used.join(", "));if(d.kept)row("Your decision","Marked Keep");
  const det=el("div");det.append(el("p","sh","Details"),dl);s.append(det);
- const tg=el("div"),tl=el("div","tags");tg.append(el("p","sh","Tags"),tl);
- d.tags.forEach(t=>{const c=el("span","tag");c.append(el("span",null,t));if(d.mine.includes(t)){const b=el("button",null,"×");b.type="button";b.title="Remove my tag";b.setAttribute("aria-label","Remove my tag "+t);
-  b.onclick=async()=>{try{const j=await api("/api/tag",{ids:[d.id],tag:t,op:"remove"});patchTiles(j.items);toast(j.result,j.undo);openViewer(n,{keep:true});loadFacets()}catch(e){errorToast("Refused: "+e.message)}};c.append(b)}tl.append(c)});
- if(!d.tags.length)tl.append(el("span","tag","none"));
+ // your tags (removable) apart from the tools' (in plain words: plainTag; Owner| is the Details row's "Marked Keep")
+ const tg=el("div"),tl=el("div","tags"),tt2=el("div","tags");tl.id="mytagl";tt2.id="tooltagl";
+ d.mine.forEach(t=>{const c=el("span","tag");c.append(el("span",null,t));const b=el("button",null,"×");b.type="button";b.title="Remove my tag";b.setAttribute("aria-label","Remove my tag "+t);
+  b.onclick=async()=>{try{const j=await api("/api/tag",{ids:[d.id],tag:t,op:"remove"});patchTiles(j.items);toast(j.result,j.undo);openViewer(n,{keep:true});loadFacets()}catch(e){refused("",e)}};c.append(b);tl.append(c)});
+ if(!d.mine.length)tl.append(el("span","tag","none"));
+ const auto=[...new Set(d.tags.filter(t=>!d.mine.includes(t)).map(plainTag).filter(Boolean))];auto.forEach(t=>tt2.append(el("span","tag",t)));
+ tg.append(el("p","sh","Your tags"),tl);
  const add=el("input");add.placeholder="Add my tag, Enter";add.setAttribute("aria-label","Add my tag");add.setAttribute("list","mytags");add.autocomplete="off";
  add.onkeydown=async ev=>{if(ev.key==="Enter"&&add.value.trim()){ev.stopPropagation();const t=add.value.trim(),why=tagProblem(t);if(why){errorToast("Refused: "+why);return}
-  try{const j=await api("/api/tag",{ids:[d.id],tag:t,op:"add"});patchTiles(j.items);toast(j.result,j.undo);loadFacets();openViewer(n,{keep:true})}catch(e){errorToast("Refused: "+e.message)}}};
- tg.append(add);s.append(tg);
- s.append(el("p","fine","Rotate writes XMP-tiff:Orientation in the sidecar only; the original is never touched. No crop here: make crops as copies in an editor."));
+  try{const j=await api("/api/tag",{ids:[d.id],tag:t,op:"add"});patchTiles(j.items);toast(j.result,j.undo);loadFacets();openViewer(n,{keep:true})}catch(e){refused("",e)}}};
+ tg.append(add);if(auto.length){const h=el("p","sh","Added by the tools");h.style.marginTop="14px";tg.append(h,tt2)}s.append(tg);
+ s.append(el("p","fine","Rotate only changes how the photo is shown; the original file is never touched. To crop, make a copy in an editor."));
  if(!opt.keep)$("#viewer").focus({preventScroll:true});
  $("#viewer").dataset.current=d.name;  // last: the keys (Space, arrows) act on this item from here on
  if(n>=items.length-20)more()}
@@ -2493,19 +2741,19 @@ document.addEventListener("keydown",ev=>{const tg=ev.target,modal=isOn("#modal")
   else if(k==="k"||k==="K")doKeep([id]);else if(k==="t"||k==="T")askTrash([id]);else if(k==="e"||k==="E")askErase([id]);
   else if(k==="r")rot([id],"cw");else if(k==="R")rot([id],"ccw");else return;ev.preventDefault();return}
  if(k==="/"){ev.preventDefault();expandSidebar();$("#q").focus();return}
- if(view==="sug"){if(k==="ArrowRight"||k==="ArrowDown"||k==="j"){cur=Math.min(items.length-1,cur+1)}else if(k==="ArrowLeft"||k==="ArrowUp"){cur=Math.max(0,cur-1)}
+ if(view==="sug"){if((k==="Enter"||k===" ")&&tg.tagName==="BUTTON")return;if(k==="ArrowRight"||k==="ArrowDown"||k==="j"){cur=Math.min(items.length-1,cur+1)}else if(k==="ArrowLeft"||k==="ArrowUp"){cur=Math.max(0,cur-1)}
   else if((k==="k"||k==="K"||k==="t"||k==="T")&&cur>=0){dec[items[cur].id]=k.toLowerCase()==="k"?"keep":"trash";cur=Math.min(items.length-1,cur+1)}
   else if(k==="Enter"&&cur>=0){openViewer(cur)}else return;ev.preventDefault();paintSel();const t=$("#t"+(items[cur]||{}).id);if(t)t.scrollIntoView({block:"nearest"});if(cur>=items.length-10)more();return}
  if(k==="Escape"&&drawer){drawer=false;layout();return}
  if(!sel.size)return;if(k==="k"||k==="K")doKeep(selIds());else if(k==="t"||k==="T")askTrash(selIds());else if(k==="e"||k==="E")askErase(selIds());else if(k==="Escape"){sel.clear();paintSel()}else return;ev.preventDefault()});
 // ---------------------------------------------------------------- views (plugin tabs go in the sidebar, after the built-in ones)
-VIEWS.forEach(v=>{const b=el("button","nv");b.type="button";b.dataset.v="p-"+v.id;b.title=v.title;b.insertAdjacentHTML("beforeend",'<svg class="ic"><use href="#i-plug"/></svg>');b.append(el("span","lbl",v.title));$("#ptabs").append(b)});
+VIEWS.forEach(v=>{const b=el("button","nv");b.type="button";b.dataset.v="p-"+v.id;b.title=v.title;b.insertAdjacentHTML("beforeend",'<svg class="ic"><use href="#i-plug"/></svg>');const rl=el("span","rl",v.title);rl.setAttribute("aria-hidden","true");b.append(el("span","lbl",v.title),rl);$("#ptabs").append(b)});
 function setView(v){view=v;simId=null;document.body.dataset.view=v;const plug=plugView();
  $("#list").hidden=plug;$("#sentinel").hidden=plug;$("#plugin").hidden=!plug;$("#filters").hidden=plug;$(".sb-search").hidden=plug;$("#tsizew").hidden=plug;
  if(plug){sel.clear();dec={};paintSel();$("#count").textContent="";setNote("");$("#helpb").hidden=true;syncUI();const id=v.slice(2),P=$("#plugin"),pv=window.mediaIntakeViews[id];P.replaceChildren();
   if(!pv||typeof pv.render!=="function"){P.append(el("p","warn","Plugin view "+id+" has no render()"));return}
   pv.render(P,{el,api:(p,b)=>api("/plugin/"+id+"/"+p,b),media:p=>"/plugin/"+id+"/media/"+p})}
- else{if(v==="sug")setNote("K = keep, T = trash on the outlined tile; nothing changes until Apply.");syncUI();reset()}}
+ else{syncUI();reset()}}
 $$(".nv[data-v]").forEach(b=>b.onclick=()=>{const v=b.dataset.v;
  if(v==="lib"){if(["recent","child","untagged","ev"].includes(navActive()))F={aimin:F.aimin};setView("lib")}
  else if(v==="sug"||v.startsWith("p-"))setView(v);
@@ -2520,7 +2768,7 @@ let ts=+LS.get("tile",mqPhone.matches?"92":"168");if(!(ts>=80&&ts<=320))ts=168;$
 $("#tsize").oninput=()=>{document.documentElement.style.setProperty("--tile",$("#tsize").value+"px");LS.set("tile",$("#tsize").value)};
 // ---------------------------------------------------------------- start
 layout();buildSections();syncUI();
-loadFacets().then(()=>reset()).then(attachJob).catch(e=>setNote("Error: "+e.message));
+loadFacets().then(()=>reset()).then(attachJob).catch(loadError);
 </script></body></html>
 """
 

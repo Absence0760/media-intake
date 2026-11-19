@@ -202,7 +202,10 @@ class LibraryLockTest(unittest.TestCase):
             until(lambda: self.held_by("intake.py erase"), "the CLI erase to hold the lock")
             code, j = s.post("/api/keep", {"ids": [ida]})
             self.assertEqual(code, 409, j)
-            self.assertIn(f"intake.py erase (PID {er.pid})", j["error"])
+            # the page names what holds it in plain words, never a PID or a lock path (gallery.busy_text)
+            self.assertIn("the media-intake erase command is still running", j["error"])
+            self.assertNotIn(str(er.pid), j["error"])
+            self.assertTrue(j.get("busy"), j)
             self.assertFalse(os.path.exists(a + ".xmp"))  # nothing written
             self.assertEqual(s.get("/api/list?limit=50")["total"], 1)  # reading is never locked
             er.stdin.write("no\n")
@@ -221,7 +224,7 @@ class LibraryLockTest(unittest.TestCase):
             self.assertIn(f"refused: the library is busy: gallery keep (PID {s.p.pid})", r.stderr)
             self.assertTrue(os.path.exists(self.qfile))  # erase never started
             # With a wait it says so, then runs once Keep is done.
-            pr = self.popen([PY, "-I", INTAKE, "purge-review", "q1"], env=dict(self.env, **{library_lock.WAIT_ENV: "120"}),
+            pr = self.popen([PY, "-I", INTAKE, "purge-review", "q1", "--yes"], env=dict(self.env, **{library_lock.WAIT_ENV: "120"}),
                             stdout=subprocess.PIPE, stderr=subprocess.PIPE)
             self.assertIn("waiting up to 120 s: gallery keep", pr.stderr.readline())
             self.assertTrue(os.path.isdir(self.review))
@@ -262,13 +265,13 @@ class LibraryLockTest(unittest.TestCase):
             # the worker dies; the step it started still holds the lock
             os.kill(pid, signal.SIGKILL)
             until(lambda: jobs.status("gallery")["state"] == "crashed", "the job to be reported crashed")
-            r = self.intake("purge-review", "q1")
+            r = self.intake("purge-review", "q1", "--yes")
             self.assertEqual(r.returncode, library_lock.EX_TEMPFAIL, r.stderr)
             self.assertIn("now gone: a step it started is still running", r.stderr)
             self.assertTrue(os.path.isdir(self.review))
             open_gate(gate)
             until(lambda: not jobs.status("gallery")["step_running"], "the orphaned step to end")
-            r = self.intake("purge-review", "q1")
+            r = self.intake("purge-review", "q1", "--yes")
             self.assertEqual(r.returncode, 0, r.stderr)
             self.assertFalse(os.path.exists(self.review))
         finally:
@@ -279,7 +282,7 @@ class LibraryLockTest(unittest.TestCase):
         """The real intake.py, run as a job step with no wait allowed, takes the inherited lock and does its work."""
         os.environ[library_lock.WAIT_ENV] = "0"  # a step that failed to inherit would be refused, not wait
         with jobs.claim("review-q1") as c:
-            st = c.spawn("commands", dict(argsets=[["purge-review", "q1"]], paths=[]), total=1)
+            st = c.spawn("commands", dict(argsets=[["purge-review", "q1", "--yes"]], paths=[]), total=1)
         end = jobs.wait("review-q1", st["id"], interval=0.02)
         self.assertTrue(end["ok"], jobs.lines("review-q1")[0])
         self.assertFalse(os.path.exists(self.review))
@@ -296,7 +299,7 @@ class LibraryLockTest(unittest.TestCase):
         p.kill()  # by PID
         p.wait()
         self.assertEqual(library_lock.read_holder(self.path)["what"], "intake.py apply")  # stale, and harmless
-        r = self.intake("purge-review", "q1")
+        r = self.intake("purge-review", "q1", "--yes")
         self.assertEqual(r.returncode, 0, r.stderr)
         self.assertFalse(os.path.exists(self.review))
 
@@ -314,7 +317,7 @@ class LibraryLockTest(unittest.TestCase):
                     with library_lock.hold("spoof"):
                         self.fail("ran without the lock")
             env = dict(self.env, **{library_lock.FD_ENV: "0"})  # a child's stdin is no lock either
-            r = self.intake("purge-review", "q1", env=env)
+            r = self.intake("purge-review", "q1", "--yes", env=env)
             self.assertEqual(r.returncode, library_lock.EX_TEMPFAIL, r.stderr)
             self.assertTrue(os.path.isdir(self.review))
         finally:
@@ -363,7 +366,7 @@ class LibraryLockTest(unittest.TestCase):
         self.assertFalse(os.path.exists(gone + ".xmp"))
 
     def test_bad_wait_setting(self):
-        r = self.intake("purge-review", "q1", env=dict(self.env, **{library_lock.WAIT_ENV: "soon"}))
+        r = self.intake("purge-review", "q1", "--yes", env=dict(self.env, **{library_lock.WAIT_ENV: "soon"}))
         self.assertNotEqual(r.returncode, 0)
         self.assertIn(library_lock.WAIT_ENV, r.stderr)
         self.assertTrue(os.path.isdir(self.review))
@@ -372,7 +375,7 @@ class LibraryLockTest(unittest.TestCase):
         """Negative and over a day are refused before anything runs; 0 and exactly a day are accepted."""
         for bad in ("-1", "-0.5", "86400.5", "86401", "1e9"):
             with self.subTest(wait=bad):
-                r = self.intake("purge-review", "q1", env=dict(self.env, **{library_lock.WAIT_ENV: bad}))
+                r = self.intake("purge-review", "q1", "--yes", env=dict(self.env, **{library_lock.WAIT_ENV: bad}))
                 self.assertNotEqual(r.returncode, 0)
                 self.assertNotEqual(r.returncode, library_lock.EX_TEMPFAIL, "a bad setting, not a busy lock")
                 self.assertIn(f"{library_lock.WAIT_ENV}={bad!r}: between 0 and 86400 seconds", r.stderr)
@@ -385,7 +388,7 @@ class LibraryLockTest(unittest.TestCase):
     def test_zero_wait_refuses_at_once(self):
         """0: a busy lock is refused on the first try, with no wait announced and nothing done."""
         p = self.hold_in_child("intake.py apply")
-        r = self.intake("purge-review", "q1", env=dict(self.env, **{library_lock.WAIT_ENV: "0"}))
+        r = self.intake("purge-review", "q1", "--yes", env=dict(self.env, **{library_lock.WAIT_ENV: "0"}))
         self.assertEqual(r.returncode, library_lock.EX_TEMPFAIL, r.stderr)
         self.assertNotIn("waiting", r.stderr)
         self.assertIn(f"refused: the library is busy: intake.py apply (PID {p.pid})", r.stderr)
@@ -394,7 +397,8 @@ class LibraryLockTest(unittest.TestCase):
         p.wait()
 
     def test_review_submit_refused_while_another_writer_holds_the_lock(self):
-        """The review page never waits: Submit gets 409 naming the holder, and no run starts."""
+        """The review page never waits: Submit gets 409 naming the holder in plain words (no PID, no lock file's
+        path), and no run starts."""
         from test_review_ui import Server
         p = self.hold_in_child("intake.py apply")
         s = Server(self.env, batch="q1")
@@ -407,7 +411,10 @@ class LibraryLockTest(unittest.TestCase):
             dec = {str(i): pick[it["tab"]] for i, it in enumerate(items)}  # submit takes the list index
             r, b = s.req("POST", "/api/submit", headers={"X-CSRF": s.csrf()}, body={"decisions": dec, "confirm": "ERASE"})
             self.assertEqual(r.status, 409, b)
-            self.assertIn(f"intake.py apply (PID {p.pid})", json.loads(b)["error"])
+            err = json.loads(b)["error"]
+            self.assertEqual(err, "Another action is using the library (the media-intake apply command). "
+                                  "Wait for it to finish, then apply again.")
+            self.assertNotIn(str(p.pid), err)
             self.assertIsNone(jobs.status("review-q1"))
             self.assertTrue(os.path.exists(self.qfile) and os.path.isdir(self.review), "nothing was run")
         finally:

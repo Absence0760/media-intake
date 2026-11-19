@@ -1,21 +1,61 @@
-"""`media-intake`: one entry point for every tool in this package.
+"""`media-intake`: copy photos and videos off a phone, camera, drive or laptop
+folder into one library, set private-looking files aside for you to decide on,
+and browse, search and back up the library. Everything runs on this machine.
 
-  media-intake <intake command> ...      stage, plan, scan, apply, tag, erase, trash, ... (intake.py)
-  media-intake gallery [--drive MOUNT] [--port N] [--share-out DIR]   local web gallery of the library (gallery.py)
-  media-intake queue add|run|status|offload ...   external-drive process queue (drive_queue.py)
-  media-intake review BATCH ...          local review page for a batch (review_ui.py)
-  media-intake prune-cache [--dry-run]   delete gallery thumbnails and proxies nothing shows (cache_prune.py)
-  media-intake backup MOUNT [--verify] [--dry-run]   copy the library to a mounted drive (backup.py)
-  media-intake index                     build or update the semantic search index  (venv)
-  media-intake search "TEXT" ...         semantic search                             (venv)
-  media-intake similar FILE ...          nearest neighbours of a file                (venv)
-  media-intake vlm-trash ...             local vision-model second opinion on trash  (venv, Ollama)
-  media-intake doctor                    check system packages, venv, model checksums, Ollama digest, config
+usage: media-intake <command> [options]
+       media-intake <command> --help    what it does, touches and deletes
+       media-intake --version           the installed version
 
-`media-intake` alone, `--help` or `-h` prints this; an unknown command prints
-the nearest real one and exits 2.
+Commands that delete say DELETES. The words used (batch, source, backup drive,
+quarantine, review folder, Keep, Trash, Erase, ...): docs/words.md.
 
-`media-intake <command> --help` shows each command's options. Commands marked
+Import, in this order
+  stage SOURCE --kind K     copy a phone, camera, drive or folder into a batch
+  plan BATCH                find dates, folders and duplicates; moves nothing
+  scan BATCH                flag private files (IDs, cards, nudity)
+  apply BATCH               file into the library; flagged files to quarantine
+  review BATCH              a page to Keep, Trash or Erase what was set aside
+  tag BATCH                 write tags (place, event, labels) to sidecar files
+  offload BATCH --phone P   DELETES the batch's files from the phone or camera
+  quarantine BATCH          count what is in quarantine; changes nothing
+  release BATCH FILE...     a false positive: quarantine -> library
+
+Big folders and drives
+  queue add|run|status|offload   import in resumable chunks, unattended
+  zip-check ROOT            what export zips hold that you lack; changes nothing
+
+Erase and trash
+  erase BATCH               DELETES quarantined files and all their copies
+  forget FILE...            DELETES library files the same way (found later)
+  verify-gone [BATCH]       check erased files left no copy; changes nothing
+  sweep-erased [BATCH]      DELETES copies erase missed, with --yes
+  trash FILE...             DELETES junk (not private files), with --yes
+  purge-review BATCH        DELETES a batch's review folder, with --yes
+  suggest-trash             find Suggested junk; opens the review page
+  not-trash FILE...         Keep suggested files: never suggest them again
+  vlm-trash                 a vision model's opinion on junk (venv, Ollama)
+
+Library
+  gallery                   browse the library: Keep, Trash, Erase, tags
+  find                      search the tags (event, place, project, tag)
+  index                     build or update the search index (venv)
+  search "TEXT"             find photos by a description (venv)
+  similar FILE              find photos that look like this one (venv)
+  tag-files FILE...         write tags again for library files
+  mark-used FILE --post P   record that files were used in a post
+  share-copy FILE --out D   copy without GPS or metadata (or social-copy)
+  calibrate                 test content labels on your marks; changes nothing
+  migrate-tags              one-off: rename an older tool tag in your sidecars
+  prune-cache               DELETES gallery thumbnails nothing shows any more
+
+Backup drive
+  backup DRIVE              copy the library to the backup drive (no deletes)
+  wipe-free DRIVE           overwrite the backup drive's free space with zeros
+
+Setup
+  doctor                    check the install; changes nothing
+
+A mistyped command prints the nearest real one and exits 2. Commands marked
 (venv) run in the venv setup.sh builds; the rest need only the system Python.
 """
 import difflib, importlib, os, shutil, subprocess, sys
@@ -106,7 +146,7 @@ def doctor(probe=None, out=print, colour=None):
     if colour is None:
         colour = out is print and use_colour(sys.stdout)
     ok, need, want = True, [], []   # need/want: Fedora packages missing (required / optional)
-    counts, first = {"problems": 0, "optional": 0}, True
+    counts, first = {"problems": 0, "optional": 0, "setup": 0}, True   # setup: problems `bash setup.sh` fixes
 
     def paint(text, code):
         return f"\033[{code}m{text}\033[0m" if colour and code else text
@@ -121,6 +161,7 @@ def doctor(probe=None, out=print, colour=None):
     def report(status, text):
         if status in PROBLEMS:
             counts["problems"] += 1
+            counts["setup"] += "bash setup.sh" in text
         elif status == "optional":
             counts["optional"] += 1
         out(paint(status, STATUS_COLOURS.get(status)) + " " * max(1, 9 - len(status)) + text)
@@ -132,6 +173,8 @@ def doctor(probe=None, out=print, colour=None):
         if need:
             out("Install the required packages:")
             out("sudo dnf install -y " + " ".join(dict.fromkeys(need)))
+        if counts["setup"]:
+            out(("Then run" if need else "Run") + ": bash setup.sh   (venv, SigLIP model, GeoNames data)")
         if want:
             out("Optional packages:")
             out("sudo dnf install -y " + " ".join(dict.fromkeys(want)))
@@ -290,6 +333,11 @@ def _backup(rest):
     return backup.main(rest)
 
 
+def _zip_check(rest):
+    import zip_check
+    return zip_check.main(rest)
+
+
 def _gallery(rest):  # here, not in intake.py: gallery imports intake, so intake never imports gallery
     import gallery
     return gallery.main(rest)
@@ -302,8 +350,21 @@ def _prune_cache(rest):  # cli.py's too: it reads the library as the gallery doe
 
 # cli.py's own commands; VENV_SCRIPTS run in the venv; everything else goes to intake.py's parser.
 COMMANDS = {"doctor": lambda rest: doctor(), "queue": _queue, "review": _review, "backup": _backup,
-            "gallery": _gallery, "prune-cache": _prune_cache}
+            "gallery": _gallery, "prune-cache": _prune_cache, "zip-check": _zip_check}
 HELP = ("-h", "--help", "help")
+
+
+def _calibrate(rest):  # system Python: numpy and PyYAML, which setup.sh installs
+    try:
+        mod = importlib.import_module("calibrate")
+    except ModuleNotFoundError as e:
+        print(f"calibrate needs the Python package {e.name}: run bash setup.sh, then media-intake doctor",
+              file=sys.stderr)
+        return 1
+    return mod.main(rest)
+
+
+COMMANDS["calibrate"] = _calibrate
 
 
 def intake_commands():
@@ -317,33 +378,74 @@ def command_names():
     return sorted({*COMMANDS, *VENV_SCRIPTS, *intake_commands()})
 
 
+def package_version():
+    """The version, from media_intake/__init__.py (its one home, docs/release.md). Read as text: cli.py runs as
+    a script, so the package itself may not be importable."""
+    with open(os.path.join(HERE, "__init__.py")) as f:
+        for line in f:
+            if line.startswith("__version__ = "):
+                return line.split("=", 1)[1].strip().strip("\"'")
+    return "unknown"
+
+
 def unknown_command(cmd, err=None):
-    """One-line error (with a "did you mean" when a real command is close), the short usage; exit code 2."""
+    """One-line error (with a "did you mean" when a real command is close), the short usage; exit code 2.
+    An unknown option (`-x`, `--foo`) gets no guess: a flag is never a misspelt command."""
     err = err or sys.stderr
     names = command_names()
-    close = difflib.get_close_matches(cmd, names, n=1)
-    print(f"media-intake: unknown command {cmd!r}" + (f"; did you mean {close[0]!r}?" if close else ""), file=err)
+    if cmd.startswith("-"):
+        print(f"media-intake: unknown option {cmd!r} (on its own it takes only --help and --version; "
+              "other options go after a command)", file=err)
+    else:
+        close = difflib.get_close_matches(cmd, names, n=1)
+        print(f"media-intake: unknown command {cmd!r}" + (f"; did you mean {close[0]!r}?" if close else ""), file=err)
     print("usage: media-intake <command> [options]\ncommands: " + ", ".join(names)
           + "\n'media-intake --help' describes them; 'media-intake <command> --help' shows a command's options",
           file=err)
     return 2
 
 
+def no_venv(cmd, script, pre, rest, vp):
+    """A venv command before setup.sh built the venv. --help still works: the script's parser needs only the
+    standard library, so the system Python prints it, then one line saying the command needs the venv. Any
+    other use exits 1 with that line."""
+    need = f"media-intake {cmd} needs the venv, which is not built yet ({vp}): run bash setup.sh first"
+    if not any(x in ("-h", "--help") for x in rest):
+        print(need, file=sys.stderr)
+        return 1
+    r = subprocess.run([sys.executable, "-I", os.path.join(HERE, script), *pre, "--help"],
+                       capture_output=True, text=True, stdin=subprocess.DEVNULL)
+    sys.stdout.write(r.stdout)
+    sys.stderr.write(r.stderr)
+    print(f"\nnote: {need}")
+    return r.returncode
+
+
 def main(argv=None):
     argv = list(sys.argv[1:] if argv is None else argv)
     if not argv or argv[0] in HELP:
-        import intake
-        print(__doc__.strip() + "\n\nIntake commands:\n")
-        intake.build_parser("media-intake").print_help()
+        print(__doc__.strip())  # one list, by task; tests/test_cli.py checks it names every command
         return 0
     cmd, rest = argv[0], argv[1:]
+    if cmd in ("--version", "-V", "version"):
+        print(f"media-intake {package_version()}")
+        return 0
+    if cmd == "doctor" and rest:  # doctor takes no options; only --help is answered
+        if rest[0] in HELP:
+            print("usage: media-intake doctor\n\nCheck the install: system packages, venv, model checksums, "
+                  "Ollama, config.\nChanges nothing. Exits 1 if something required is missing or a pinned file "
+                  "is wrong.")
+            return 0
+        print("media-intake doctor takes no options ('media-intake doctor --help' says what it checks)",
+              file=sys.stderr)
+        return 2
     if cmd in COMMANDS:
         return COMMANDS[cmd](rest)
     if cmd in VENV_SCRIPTS:
         script, pre = VENV_SCRIPTS[cmd]
         vp = venv_python()
         if not os.path.exists(vp):
-            sys.exit(f"no venv at {vp}: run bash setup.sh first")
+            return no_venv(cmd, script, pre, rest, vp)
         os.execv(vp, [vp, "-I", os.path.join(HERE, script), *pre, *rest])
     if cmd not in intake_commands():
         return unknown_command(cmd)

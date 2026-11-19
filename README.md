@@ -2,8 +2,8 @@
 
 Local-only intake for your photos and videos: copy them off a phone, camera or
 old drive into one organised library, drop exact and near duplicates, put
-anything sensitive (IDs, payment cards, 2FA codes, nudity) in a private
-quarantine for you to review, tag the rest, and search and browse it, all on
+anything sensitive (IDs, payment cards, 2FA codes, nudity) in quarantine
+for you to decide on, tag the rest, and search and browse it, all on
 your own machine. When you erase something, it is erased everywhere the tool
 can reach: the library, the phone, the backup drive, thumbnails and caches.
 
@@ -11,6 +11,8 @@ Fedora Linux first. Python, no service, no account.
 
 New here? [docs/getting-started.md](docs/getting-started.md) walks through a
 first run on a folder of test photos, from install to the gallery.
+[docs/words.md](docs/words.md) says what each word means (batch, source,
+backup drive, quarantine, review folder, Keep, Trash, Erase, ...).
 
 ## Privacy guarantees
 
@@ -65,8 +67,8 @@ first run on a folder of test photos, from install to the gallery.
   file name) of what it reached, including GNOME's per-file metadata and the
   desktop search index, and what nothing on the machine can reach (cloud
   services, chat apps and recipients, a device's app-private storage,
-  backups, and a cloud export's Takeout JSON or iCloud CSV row left beside an
-  erased file on its source drive). It is kept in the erase log;
+  backups, and a cloud export's Takeout JSON or iCloud CSV row (or a Telegram
+  export's `result.json`) left beside an erased file on its source drive). It is kept in the erase log;
   `verify-gone BATCH` shows it.
 
 ## Install (Fedora)
@@ -90,8 +92,11 @@ when something required is missing or a pinned file is wrong. Colour is used
 only on a terminal and never when `NO_COLOR` is set.
 
 `setup.sh` prints a `==> [n/N]` heading per step and ends with a summary of
-what it installed or found already present, and where, then `next:
-media-intake doctor`. If a step fails it names the step and the likely fix:
+what it installed or found already present, and where, how to find a phone
+(unlock it, choose "File transfer", then `ls /run/user/$UID/gvfs/`), and a
+`next:` line: the first import, or fixing what `doctor` (its last step) found.
+When `~/.local/bin` isn't on your `PATH` it says so and prints the `export
+PATH=...` line to add. If a step fails it names the step and the likely fix:
 the exact `sudo dnf install -y ...` line for a missing package, no network, or
 a download that didn't match its sha256 pin (that file is deleted and nothing
 is installed from it; re-run, and never skip the check). Colour only on a
@@ -123,34 +128,36 @@ A phone import, start to finish:
 media-intake stage /run/user/$UID/gvfs/mtp:host=.../Internal\ shared\ storage --kind phone --batch phone-1
                                    # --batch is optional; default <device id>-<YYYYMMDD>
 media-intake plan phone-1 [--event park-race@2026-05-01] [--clock-offset DEVICE=±Nh]
-media-intake scan phone-1          # local detectors; flags only
-media-intake apply phone-1         # file, dedupe, quarantine
-media-intake review phone-1        # local page: release false positives, erase the rest
+media-intake scan phone-1          # local detectors; flags private files
+media-intake apply phone-1         # file into the library; flagged files to quarantine
+media-intake review phone-1        # local page: Keep false positives, Erase the rest
 media-intake tag phone-1           # XMP tags: project, source, event, place, labels
-media-intake offload phone-1 --phone <device root> --yes   # after a backup: free the phone
+media-intake offload phone-1 --phone <phone folder>   # after a backup: free the phone (asks you to type DELETE)
 ```
 
 | Command | What |
 | --- | --- |
 | `stage`, `plan`, `scan`, `apply` | Copy in, plan (dates, dedupe, folders), detect, file |
-| `quarantine`, `release`, `review` | Review what the detectors flagged |
-| `erase`, `forget`, `verify-gone`, `sweep-erased`, `wipe-free` | Erase everywhere, check, catch copies on a drive that was unplugged, overwrite free space on a drive |
-| `trash`, `suggest-trash`, `not-trash`, `purge-review` | Plain deletes of junk, with suggestions |
+| `quarantine`, `release`, `review` | Decide on what the detectors flagged (quarantine) and the review folder |
+| `erase`, `forget`, `verify-gone`, `sweep-erased`, `wipe-free` | Erase everywhere, check, catch copies on a backup drive that was unplugged at erase time, overwrite the backup drive's free space |
+| `trash`, `suggest-trash`, `not-trash`, `purge-review` | Trash junk, find Suggested junk, Keep a suggestion, empty a review folder (`trash` and `purge-review` delete only with `--yes`; without it, a dry run) |
 | `tag`, `tag-files`, `mark-used`, `find` | Sidecar tags and searching them |
 | `migrate-tags` | One-shot: rewrite the legacy `Review\|not-trash` tag as `Owner\|not-trash` |
 | `index`, `search`, `similar` | Local semantic search (SigLIP) |
-| `vlm-trash` | Local vision-model second opinion on trash candidates |
-| `gallery` | Local web gallery: browse, keep, trash, erase, tag, rotate, events, bulk edits, share-safe copies |
+| `vlm-trash` | Local vision-model second opinion on Suggested junk |
+| `calibrate` | Report precision and recall of each label's threshold against your own marks; changes nothing |
+| `gallery` | Local web gallery: browse, Keep, Trash, Erase, tag, rotate, events, bulk edits, share-safe copies |
 | `prune-cache` | Delete gallery thumbnails and video proxies nothing in the library shows any more (`--dry-run` first) |
-| `backup` | Copy the library (photos, videos, sidecars) to a mounted drive: incremental, never deletes there |
-| `queue add/run/status/offload` | Process an old external drive or a laptop folder in resumable chunks |
+| `backup` | Copy the library (photos, videos, sidecars) to the backup drive: incremental, never deletes there |
+| `queue add/run/status/offload` | Import a source drive or a big laptop folder in resumable chunks |
 | `share-copy` | Copy files with GPS and metadata stripped, for posting |
 | `doctor` | Check the install |
 
-`media-intake <command> --help` for options; `media-intake` alone (or
-`--help`) lists the commands, and a mistyped command exits 2 with the nearest
-real one. Details:
-[getting started](docs/getting-started.md), [intake](docs/intake.md), [review page](docs/review-ui.md),
+`media-intake <command> --help` says what a command does, what it touches,
+whether it deletes, and its options; `media-intake` alone (or `--help`) lists
+the commands by task, and a mistyped command exits 2 with the nearest real
+one. Details:
+[getting started](docs/getting-started.md), [words used](docs/words.md), [intake](docs/intake.md), [review page](docs/review-ui.md),
 [gallery](docs/gallery.md), [search and VLM](docs/search.md),
 [drive and folder queue](docs/queue.md), [backup](docs/backup.md), [configuration](docs/configuration.md),
 [plugins](docs/plugins.md), [releases](docs/release.md).
@@ -168,7 +175,8 @@ Detectors are hints, never guarantees: NudeNet flags exposed regions only,
 OCR misses embossed card numbers, and the zero-shot "child in shot" label
 misses small or distant children. "Not checked" is never "clean": a file a
 detector can't read (an HEVC video without a decoder, a broken or audio-only
-video, a type no detector reads) or that crashes a check is flagged and
+video, a motion photo whose embedded video can't be located or copied out, a type
+no detector reads) or that crashes a check is flagged and
 quarantined for you to look at, never filed as clean. Read
 [ROADMAP.md](ROADMAP.md), "Known limitations", before relying on the tool.
 

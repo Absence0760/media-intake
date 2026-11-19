@@ -122,7 +122,7 @@ class SweepErased(unittest.TestCase):
 
     def test_drive_only_needs_a_drive_and_a_missing_drive_refuses(self):
         self.intake("sweep-erased", "--drive-only", "--yes", code=1)
-        self.assertIn("--drive-only needs --drive MOUNT", self.stderr)
+        self.assertIn("--drive-only needs --drive DRIVE", self.stderr)
         self.intake("sweep-erased", "--drive", self.D("unplugged"), "--yes", code=1)
         self.assertIn("is the drive plugged in?", self.stderr)
 
@@ -188,8 +188,9 @@ class SweepErased(unittest.TestCase):
         self.assertRegex(out, r"\n  drive:media-intake-backup +1\n")
 
     def test_erase_of_an_empty_quarantine_points_at_sweep_erased(self):
+        os.makedirs(os.path.join(self.state, "batches", self.batch))  # an erased batch keeps its batch folder
         self.intake("erase", self.batch, "--yes", code=1)
-        self.assertIn(f"media-intake sweep-erased {self.batch} --drive MOUNT", self.stderr)
+        self.assertIn(f"media-intake sweep-erased {self.batch} --drive DRIVE", self.stderr)
 
     def test_erase_drive_takes_the_drive_trashinfo_too(self):
         """erase --drive (drive_purge) deletes a drive Trash copy's .trashinfo with it, and the coverage report

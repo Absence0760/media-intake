@@ -11,7 +11,7 @@ ffmpeg test patterns: no real photos are read. scan.json is written by hand
 NudeNet venv exists, and the OCR/barcode cases only when those tools are
 installed.
 """
-import json, os, re, shutil, stat, subprocess, sys, tempfile, unittest
+import json, os, re, shlex, shutil, stat, subprocess, sys, tempfile, unittest
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import support  # noqa: E402,F401  (hermetic config)
@@ -183,7 +183,7 @@ class IntakeE2E(unittest.TestCase):
             json.dump(flags, f)
         # ---- apply
         out = self.run_intake("apply", batch, "--allow-missing-detectors").stdout
-        self.assertIn("'quarantined': 3", out)
+        self.assertIn("3 quarantined", out)
         self.assertFalse(os.path.exists(os.path.join(bd, "raw")), "raw must be removed once applied")
         shoot = os.path.join(self.footage, "originals", f"{DAY}-{EVENT}", "phone")
         self.assertEqual(sorted(os.listdir(shoot)),
@@ -216,8 +216,12 @@ class IntakeE2E(unittest.TestCase):
         self.assertEqual(stat.S_IMODE(os.stat(released).st_mode), 0o666 & ~um)
         index = jload(os.path.join(self.state, "index.json"))
         self.assertIsNotNone(index[released]["dhash"])
-        # ---- purge-review
-        self.assertIn("deleted 2", self.run_intake("purge-review", batch).stdout)
+        # ---- purge-review: a dry run without --yes, then the delete
+        out = self.run_intake("purge-review", batch).stdout
+        self.assertIn(f"would delete 2 reviewed near-duplicates/junk from batch {batch}", out)
+        self.assertIn(f"media-intake purge-review {batch} --yes", out)
+        self.assertTrue(os.path.isdir(os.path.join(bd, "review")))
+        self.assertIn("deleted 2", self.run_intake("purge-review", batch, "--yes").stdout)
         self.assertFalse(os.path.exists(os.path.join(bd, "review")))
         # ---- erase, with a backup drive and a thumbnail cache
         sens = os.path.join(self.drive, "photos", "2026", "2026-10", "20261023_100000.jpg")
@@ -233,7 +237,8 @@ class IntakeE2E(unittest.TestCase):
         open(kept_thumb, "wb").close()
         out = self.run_intake("erase", batch, "--phone", self.phone, "--drive", self.drive, "--yes",
                               "--keep-phone-thumbnails").stdout
-        self.assertIn("erased 2 files; library copies 0; phone 3; drive 1", out)
+        self.assertRegex(out, r"erased \d+ files: 2 quarantined, 0 in your library, \d+ in your home folder, "
+                              r"3 on the phone or camera, 1 on the drive\n")
         self.assertTrue(os.path.exists(kept_thumb), "--keep-phone-thumbnails keeps them")
         shutil.rmtree(os.path.dirname(kept_thumb))
         self.assertFalse(os.path.exists(quar))
@@ -267,7 +272,8 @@ class IntakeE2E(unittest.TestCase):
         os.makedirs(os.path.dirname(dcopy))
         shutil.copyfile(f1, dcopy)
         out = self.run_intake("forget", f1, f2, "--drive", self.drive, "--yes").stdout
-        self.assertIn("erased 2 files; library copies 0; phone 0; drive 1", out)
+        self.assertRegex(out, r"erased \d+ files: 2 from your library, 0 more in your library, \d+ in your home folder, "
+                              r"1 on the drive\n")
         self.assertFalse(os.path.exists(f1) or os.path.exists(f2) or os.path.exists(dcopy))
         self.assertEqual([d for d in os.listdir(os.path.join(self.state, "quarantine")) if d.startswith("forget-")], [])
         # ---- share-copy strips GPS (image) and metadata/data streams (video)
@@ -363,13 +369,13 @@ class EraseEverywhere(unittest.TestCase):
         stem, ext = os.path.splitext(want)
         self.assertTrue(os.path.isfile(stem + "_1" + ext), out)
         self.assertFalse(os.path.exists(stem + "_1" + ext + ".xmp"))
-        self.assertIn("1 files went to a free name", out)
+        self.assertIn("1 file went to a free name", out)
         plan = {p["rel"]: p for p in jload(os.path.join(bd, "plan.json"))}
         self.assertEqual(plan["DCIM/Camera/20261024_100000.jpg"]["dst"], stem + "_1" + ext,
                          "tag and offload find it where it went")
         self.assertIn(stem + "_1" + ext, jload(os.path.join(self.state, "index.json")))
         self.assertEqual(self.sha(qtaken), qbefore, "a quarantined file is never replaced either")
-        self.assertIn("'left in raw (its quarantine place is taken)': 1", out)
+        self.assertIn("(1 because their quarantine place is taken)", out)
         self.assertTrue(os.path.isfile(os.path.join(bd, "raw", "DCIM/Camera/20261023_100000.jpg")))
 
     def sha(self, p):
@@ -387,7 +393,7 @@ class EraseEverywhere(unittest.TestCase):
         start = out.index("home sweep: searching every file in HOME for copies of 1 erased items "
                           "(same size, then sha256)")
         ticks = [i for i, ln in enumerate(out) if re.fullmatch(r"home sweep: [\d,]+ files checked, \d+ copies so far", ln)]
-        summary = next(i for i, ln in enumerate(out) if re.fullmatch(r"home sweep: \d+ more copies deleted", ln))
+        summary = next(i for i, ln in enumerate(out) if re.fullmatch(r"erased \d+ files?: 1 quarantined, .*", ln))
         self.assertGreaterEqual(len(ticks), 2, out)
         self.assertTrue(start < ticks[0] and ticks[-1] < summary, out)
         self.assertEqual([out[i].split(":")[1].split()[0] for i in ticks[:2]], ["5", "10"], "a line every 5 files")
@@ -456,12 +462,11 @@ class EraseEverywhere(unittest.TestCase):
         out = self.intake("erase", batch, "--phone", self.phone, "--drive", self.drive, "--yes")
         for c in copies + [dcopy, tinfo, qpath, self.sens, err]:
             self.assertFalse(os.path.exists(c), c)
-        self.assertIn("home sweep: 4 more copies deleted", out)
-        for loc in ("Pictures", "Downloads", ".cache/some-app", "Trash"):
-            self.assertRegex(out, rf"\n  {re.escape(loc)} +1\n")
+        self.assertIn(", 4 in your home folder, ", out)
+        self.assertIn("\n  in your home folder: .cache/some-app 1, Downloads 1, Pictures 1, Trash 1\n", out)
         self.assertTrue(os.path.exists(other_trash))
         self.assertTrue(os.path.exists(skipped), "skipped trees are not swept")
-        self.assertIn("drive 1", out)
+        self.assertIn(", 1 on the drive\n", out)
         self.assertIn("drive free space wiped: 3 MB", out)
         self.assertFalse([f for f in os.listdir(self.drive) if f.startswith(".media-intake-wipe")])
         # near-duplicate moved to near-<batch>, not deleted; the unrelated image stays
@@ -680,7 +685,17 @@ class Trash(unittest.TestCase):
         os.makedirs(os.path.dirname(thumb))
         open(thumb, "w").close()
         sha, size = self.sha(junk), os.path.getsize(junk)
+        # Without --yes: a dry run. Counts and the command to rerun; nothing deleted, not even from the phone.
         out = self.intake("trash", batch, junk, "--phone", self.phone)
+        self.assertIn("would trash 1 files; phone originals 1", out)
+        self.assertIn("dry run: nothing deleted. To delete for good, run:", out)  # nothing refused: the command
+        self.assertNotIn("Fix that first", out)
+        self.assertIn(shlex.join(["media-intake", "trash", "--batch", batch, junk, "--phone", self.phone, "--yes"]), out)
+        for p in (junk, side, thumb, P("DCIM/Camera/20261101_100000.jpg")):
+            self.assertTrue(os.path.exists(p), p)
+        self.assertIn(junk, jload(os.path.join(self.state, "index.json")))
+        self.assertFalse(os.path.exists(os.path.join(self.state, "trashed.json")))
+        out = self.intake("trash", batch, junk, "--phone", self.phone, "--yes")
         self.assertIn("trashed 1 files; sidecars 1; thumbnails 1; phone 1", out)
         for p in (junk, side, thumb, P("DCIM/Camera/20261101_100000.jpg")):
             self.assertFalse(os.path.exists(p), p)
@@ -702,7 +717,14 @@ class Trash(unittest.TestCase):
         link = os.path.join(self.lib, "link.jpg")
         os.makedirs(self.lib)
         os.symlink(dl, link)
-        out = self.intake("trash", dl, link, code=1)
+        out = self.intake("trash", dl, link, code=1)  # dry run: the same refusal, exit 1, nothing deleted
+        self.assertIn("would trash 0 files; refused 2 (not a library or review file)", out)
+        # no --yes command to copy while a file would be refused: it says what to fix first
+        self.assertIn("dry run: nothing deleted. Some files would be refused", out)
+        self.assertIn("Fix that first", out)
+        self.assertNotIn("media-intake trash", out)
+        self.assertTrue(os.path.isfile(dl) and os.path.islink(link))
+        out = self.intake("trash", dl, link, "--yes", code=1)
         self.assertIn("refused 2", out)
         self.assertTrue(os.path.isfile(dl))
         quar = os.path.join(self.state, "quarantine", "xcheck-b")
@@ -714,7 +736,12 @@ class Trash(unittest.TestCase):
         before = jload(os.path.join(quar, "quarantine.json"))
         ok = os.path.join(self.lib, "2026/2026-11/junk.jpg")  # named with it: still trashed
         save_jpg(pattern(16), ok)
-        out = self.intake("trash", "xcheck-b", q, ok, code=1)
+        out = self.intake("trash", "xcheck-b", q, ok, code=1)  # dry run: the same refusal, nothing deleted
+        self.assertIn("would trash 1 files; refused 1 quarantined", out)
+        self.assertIn("erase or keep a quarantined one", out)
+        self.assertNotIn("media-intake trash", out)
+        self.assertTrue(os.path.isfile(q) and os.path.isfile(ok))
+        out = self.intake("trash", "xcheck-b", q, ok, "--yes", code=1)
         self.assertIn("refused 1 quarantined", out)
         self.assertIn("trashed 1 files", out)
         self.assertTrue(os.path.isfile(q), "a quarantined file is erased or kept, never trashed")
@@ -806,7 +833,8 @@ class Trash(unittest.TestCase):
             self.xmp(p, f"-XMP-digiKam:PickLabel={v}")
         out = self.intake("trash", "--from-digikam")
         self.assertIn("1 library files marked Rejected", out)
-        self.assertIn("dry run", out)
+        self.assertIn("dry run: nothing deleted", out)
+        self.assertIn("media-intake trash --from-digikam --yes", out)
         self.assertTrue(os.path.isfile(rej))
         self.intake("trash", "--from-digikam", "--yes")
         self.assertFalse(os.path.exists(rej) or os.path.exists(rej + ".xmp"))

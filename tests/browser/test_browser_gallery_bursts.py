@@ -94,8 +94,8 @@ class GalleryBurstsBrowserTest(B.BrowserCase):
         page.keyboard.press("x")
         self.assert_open(page)
         B.expect(self.tile(page, COVER)).to_be_focused()
-        for n in REST:  # each shot of an open stack carries the badge, only the cover the X
-            B.expect(self.tile(page, n).locator(".badge")).to_have_text("Burst: 3 shots")
+        for k, n in enumerate(REST, 2):  # each shot of an open stack carries the badge with its place, only the cover the X
+            B.expect(self.tile(page, n).locator(".badge")).to_have_text(f"Burst: shot {k} of 3")
             B.expect(self.tile(page, n).locator(".x")).to_have_count(0)
         # X (upper case) on another shot closes it, and focus goes back to the cover
         self.tile(page, REST[1]).focus()
@@ -130,12 +130,12 @@ class GalleryBurstsBrowserTest(B.BrowserCase):
         with page.expect_response(lambda r: r.url.endswith("/api/keep")) as resp:
             page.keyboard.press("k")
         self.assertEqual(resp.value.status, 200)
-        B.expect(page.locator("#toast")).to_contain_text("kept 4:")
+        B.expect(page.locator("#toast")).to_contain_text("Kept 4. They won't be suggested as junk again.")
         for n in ("lone.jpg", "copy.jpg", COVER, "early.jpg"):
             self.assertIn("Owner|keep", G.tags_of(self.path[n])[0], n)
         for n in REST:
             self.assertNotIn("Owner|keep", G.tags_of(self.path[n])[0], n)
-        B.expect(self.tile(page, COVER).locator(".flag")).to_have_text("kept")
+        B.expect(self.tile(page, COVER).locator(".flag")).to_have_text("Kept")
         B.expect(self.tile(page, COVER).locator(".badge")).to_have_text("Burst: 3 shots")  # still a stack
         B.expect(self.tile(page, COVER)).to_have_class(STACK)
         for n, p in self.path.items():

@@ -5,7 +5,7 @@
 
 Covers what the HTTP tests in tests/test_gallery.py can't: keys, tile selection (click and
 shift-click), the bottom selection bar (shown only while something is selected), the sidebar's
-views, the confirm dialogs (Trash; Erase with ERASE typed; the Close button's in-page confirm),
+views, the confirm dialogs (Trash; Erase with ERASE typed; the Stop server button's in-page confirm),
 the lightbox video playing by itself, Space pausing and resuming it, HTTP Range while the video
 loads and seeks, the detached-job dialog, including re-attaching to a running job after a reload,
 and the Events list (filter, Rename), Set event on a selection and a Share-safe copy (the real
@@ -19,12 +19,12 @@ Hooks the tests rely on (keep them when the layout changes): body[data-ready] on
 items has rendered; each grid item's [data-item] (its file name) and its checkbox named
 "select <name>"; the lightbox as role=dialog named "Item" with [data-current] = the name of the item shown;
 the confirm/job dialog as [data-dialog=confirm] (role=dialog) with [data-job] =
-running/done/failed/crashed, its job status as role=status (shown while a job runs, hidden when it ends)
-and its output as its <pre>; the textbox named "Type ERASE"; the selection bar as role=toolbar
+running/done/failed/crashed, its job status as role=status (what runs, then how it ended) and its
+output as its <pre>; the textbox named "Type ERASE"; the selection bar as role=toolbar
 named "Selection actions"; the event bar as role=toolbar named "Event"; each sidebar event as
 #evlist [data-ev=<name>]; the dialog's text field by its label; buttons by their names (Confirm,
-Cancel, Apply…, Trash suggestions, Possible child, Library, Clear selection, Close, Rename…, Set event…,
-Share-safe copy).
+Cancel, Trash N file(s), Erase N file(s), Hide (it keeps running), Close, Apply…, Suggested junk, Possible
+child, Library, Clear selection, Stop server, Rename…, Set event…, Share-safe copy).
 """
 import json, os, re, shutil, signal, sys, tempfile, unittest
 
@@ -158,8 +158,8 @@ class GalleryBrowserTest(B.BrowserCase):
         self.assertEqual(G.sha(path), before)  # the original is never written
         page.keyboard.press("Escape")
         B.expect(viewer).to_be_hidden()
-        # Trash suggestions: arrows move the outline, K / T mark, nothing changes until Apply + Confirm
-        page.get_by_role("button", name="Trash suggestions").click()
+        # Suggested junk: arrows move the outline, K / T mark, nothing changes until Apply + Apply
+        page.get_by_role("navigation", name="Views").get_by_role("button", name="Suggested junk").click()
         B.expect(page.locator("[data-item]")).to_have_count(1)
         B.expect(page.locator("[data-item]")).to_have_attribute("data-item", "a.jpg")
         page.keyboard.press("ArrowRight")
@@ -170,8 +170,9 @@ class GalleryBrowserTest(B.BrowserCase):
         dlg = self.confirm(page)
         B.expect(dlg).to_be_visible()
         B.expect(dlg.get_by_role("heading")).to_have_text("Apply: 1 keep, 0 trash?")
+        B.expect(dlg).to_contain_text("Keep 1 item: it won't be suggested as junk again.")
         with page.expect_response(lambda r: r.url.endswith("/api/decide")) as resp:
-            dlg.get_by_role("button", name="Confirm").click()
+            dlg.get_by_role("button", name="Apply", exact=True).click()
         self.assertEqual(resp.value.status, 200)
         B.expect(dlg).to_be_hidden()
         self.assertIn("Owner|keep", G.tags_of(self.a)[0])
@@ -206,10 +207,10 @@ class GalleryBrowserTest(B.BrowserCase):
         G.write_tags(self.c, ["Review|child-in-shot"])  # read at start-up: a fresh server
         s2 = self.start()
         self.open(page, s2)
-        page.get_by_role("button", name="Possible child").click()
+        page.get_by_role("navigation", name="Views").get_by_role("button", name="Possible child").click()
         B.expect(page.locator("[data-item]")).to_have_count(1)
         B.expect(page.locator("[data-item]")).to_have_attribute("data-item", "c.png")
-        B.expect(page.get_by_role("button", name="Remove Review: Child in shot")).to_be_visible()
+        B.expect(page.get_by_role("button", name="Remove Flags: Possible child")).to_be_visible()
         page.get_by_role("button", name="Library").click()
         B.expect(page.locator("[data-item]")).to_have_count(4)
 
@@ -225,6 +226,10 @@ class GalleryBrowserTest(B.BrowserCase):
         B.expect(dlg).to_be_visible()
         B.expect(dlg.get_by_role("heading")).to_have_text("Trash 1 item?")
         B.expect(dlg.get_by_text("b.jpg", exact=True)).to_be_visible()
+        B.expect(dlg.locator(".mthumbs img")).to_have_count(1)  # the grid's own thumbnail of what it deletes
+        B.expect(dlg).to_contain_text("Deletes this file from this computer for good")
+        B.expect(dlg).to_contain_text("this can't be undone")
+        B.expect(dlg.get_by_role("button", name="Trash 1 file")).to_be_visible()
         B.expect(dlg.get_by_role("textbox", name="Type ERASE")).to_be_hidden()
         dlg.get_by_role("button", name="Cancel").click()
         B.expect(dlg).to_be_hidden()
@@ -232,8 +237,13 @@ class GalleryBrowserTest(B.BrowserCase):
         # E needs ERASE typed exactly
         page.keyboard.press("e")
         B.expect(dlg.get_by_role("heading")).to_have_text("Erase 1 item everywhere?")
-        typed, go = dlg.get_by_role("textbox", name="Type ERASE"), dlg.get_by_role("button", name="Confirm")
+        typed, go = dlg.get_by_role("textbox", name="Type ERASE"), dlg.get_by_role("button", name="Erase 1 file")
         B.expect(typed).to_be_focused()
+        # plain words: what, from where, and whether the backup drive is in (no --drive here); no command names
+        B.expect(dlg).to_contain_text("Erases every copy of this file: in your library and the rest of your home folder")
+        B.expect(dlg).to_contain_text("Not on a backup drive: the gallery was started without one.")
+        B.expect(dlg.locator("#mb")).not_to_contain_text("intake")
+        B.expect(dlg.locator("#mb")).not_to_contain_text("HOME")
         B.expect(go).to_be_disabled()
         for wrong in ("erase", "ERAS", "ERASE ", " ERASE"):
             typed.fill(wrong)
@@ -248,13 +258,14 @@ class GalleryBrowserTest(B.BrowserCase):
         go.click()
         B.expect(dlg).to_have_attribute("data-job", "done")
         B.expect(dlg.get_by_role("heading")).to_have_text("Done")
+        B.expect(dlg.get_by_role("status")).to_have_text("Done: 1 file erased everywhere.")
         B.expect(dlg.locator("pre")).to_contain_text("$ intake.py forget [1 file] --yes")
         B.expect(dlg.locator("pre")).to_contain_text("done: 1 of 1 gone from the library")
         self.assertFalse(os.path.exists(self.b))
         B.expect(page.locator('[data-item="b.jpg"]')).to_have_count(0)
-        # the Close button's in-page confirm: Cancel keeps the server, Stop the server stops it
-        dlg.get_by_role("button", name="Cancel").click()
-        close = page.get_by_role("button", name="Close", exact=True)
+        # the Stop server button's in-page confirm: Cancel keeps the server, Stop the server stops it
+        dlg.get_by_role("button", name="Close", exact=True).click()
+        close = page.get_by_role("button", name="Stop server", exact=True)
         close.click()
         B.expect(dlg.get_by_role("heading")).to_have_text("Stop the gallery server?")
         dlg.get_by_role("button", name="Cancel").click()
@@ -312,20 +323,21 @@ class GalleryBrowserTest(B.BrowserCase):
         dlg = self.confirm(page)
         page.get_by_role("checkbox", name="select c.png").click()
         page.keyboard.press("t")
-        dlg.get_by_role("button", name="Confirm").click()
-        # progress: the step and the output so far, while the fake waits at the gate
+        dlg.get_by_role("button", name="Trash 1 file").click()
+        # progress: what runs and the output so far, while the fake waits at the gate
         B.expect(dlg).to_have_attribute("data-job", "running")
-        B.expect(dlg.get_by_role("heading")).to_have_text(re.compile(r"^Running \(step 1 of 1: trash\)"))
+        B.expect(dlg.get_by_role("heading")).to_have_text("Trash running")
         out = dlg.locator("pre")
         B.expect(out).to_contain_text("$ intake.py trash 'c.png'")
         B.expect(out).to_contain_text("trash: waiting at the gate")
-        B.expect(dlg.get_by_role("button", name="Confirm")).to_be_hidden()
+        B.expect(dlg.get_by_role("button", name="Trash 1 file")).to_be_hidden()
+        B.expect(dlg.get_by_role("button", name="Hide (it keeps running)")).to_be_visible()
         # a reload (the page closed and opened again) attaches to the running job from its status file
         page.reload()
         B.expect(page.locator("body")).to_have_attribute("data-ready", "1")
         B.expect(dlg).to_be_visible()
         B.expect(dlg).to_have_attribute("data-job", "running")
-        B.expect(dlg.get_by_role("heading")).to_have_text(re.compile(r"^Running \(step 1 of 1: trash\)"))
+        B.expect(dlg.get_by_role("heading")).to_have_text("Trash running")
         B.expect(out).to_contain_text("trash: waiting at the gate")
         # a second page opened meanwhile shows the running job too
         other = self.new_page()
@@ -337,6 +349,7 @@ class GalleryBrowserTest(B.BrowserCase):
         for p, d in ((page, dlg), (other, odlg)):
             B.expect(d).to_have_attribute("data-job", "done")
             B.expect(d.get_by_role("heading")).to_have_text("Done")
+            B.expect(d.get_by_role("button", name="Close", exact=True)).to_be_visible()
             B.expect(d.locator("pre")).to_contain_text("done: 1 of 1 gone from the library")
             B.expect(p.locator('[data-item="c.png"]')).to_have_count(0)
         self.assertFalse(os.path.exists(self.c))
@@ -356,7 +369,7 @@ class GalleryBrowserTest(B.BrowserCase):
         page.get_by_role("checkbox", name="select b.jpg").click()
         page.keyboard.press("e")
         dlg.get_by_role("textbox", name="Type ERASE").fill("ERASE")
-        dlg.get_by_role("button", name="Confirm").click()
+        dlg.get_by_role("button", name="Erase 1 file").click()
         status, out = dlg.get_by_role("status"), dlg.locator("pre")
         B.expect(status).to_have_text("Erasing… looking for copies in your home folder. This can take a few "
                                       "minutes; you can close this page, it keeps running.")
@@ -371,7 +384,7 @@ class GalleryBrowserTest(B.BrowserCase):
         B.expect(dlg).to_have_attribute("data-job", "done")
         B.expect(dlg.get_by_role("heading")).to_have_text("Done")
         B.expect(out).to_contain_text("done: 1 of 1 gone from the library")
-        B.expect(status).to_be_hidden()
+        B.expect(status).to_have_text("Done: 1 file erased everywhere.")  # the end, read out (role=status)
         self.assertFalse(os.path.exists(self.b))
 
     # ------------------------------------------------------------ events, a bulk event and a share-safe copy
@@ -389,7 +402,8 @@ class GalleryBrowserTest(B.BrowserCase):
         ev("picnic").click()
         B.expect(page.locator("[data-item]")).to_have_count(2)
         self.assertEqual(sorted(self.tiles(page)), ["b.jpg", "c.png"])
-        B.expect(page.locator("#vtitle")).to_have_text("Event: picnic")
+        B.expect(page.locator("#vtitle")).to_have_text("picnic")
+        B.expect(page.locator("#chips")).to_be_hidden()  # the event is the title and the bar, not a chip too
         evbar = page.get_by_role("toolbar", name="Event", exact=True)
         evbar.get_by_role("button", name="Rename…").click()
         B.expect(dlg.get_by_role("heading")).to_have_text("Rename the event picnic?")
@@ -404,7 +418,7 @@ class GalleryBrowserTest(B.BrowserCase):
             dlg.get_by_role("button", name="Confirm").click()
         self.assertEqual(resp.value.status, 200)
         B.expect(dlg).to_be_hidden()
-        B.expect(page.locator("#vtitle")).to_have_text("Event: park-day")
+        B.expect(page.locator("#vtitle")).to_have_text("park-day")
         B.expect(ev("park-day")).to_contain_text("2")
         B.expect(ev("picnic")).to_have_count(0)
         for p in (self.b, self.c):
@@ -417,7 +431,7 @@ class GalleryBrowserTest(B.BrowserCase):
         bar = page.get_by_role("toolbar", name="Selection actions")
         bar.get_by_role("button", name="Set event…").click()
         B.expect(dlg.get_by_role("heading")).to_have_text("Set the event on 2 items?")
-        dlg.get_by_label("Event (a slug").fill("park-day")
+        dlg.get_by_label("Event name").fill("park-day")
         with page.expect_response(lambda r: r.url.endswith("/api/event/set")) as resp:
             dlg.get_by_role("button", name="Confirm").click()
         self.assertEqual(resp.value.status, 200)
@@ -449,12 +463,12 @@ class GalleryBrowserTest(B.BrowserCase):
         dlg = self.confirm(page)
         page.get_by_role("checkbox", name="select d.jpg").click()
         page.keyboard.press("t")
-        dlg.get_by_role("button", name="Confirm").click()
+        dlg.get_by_role("button", name="Trash 1 file").click()
         B.expect(dlg.locator("pre")).to_contain_text("trash: waiting at the gate")
         with open(os.path.join(self.state, "jobs", "gallery.json")) as f:
             os.kill(json.load(f)["pid"], signal.SIGKILL)
         B.expect(dlg).to_have_attribute("data-job", "crashed")
-        B.expect(dlg.get_by_role("heading")).to_contain_text("The action stopped unexpectedly (crashed)")
+        B.expect(dlg.get_by_role("heading")).to_contain_text("The trash stopped unexpectedly")
         B.expect(dlg.get_by_role("heading")).to_contain_text("the step it started is still running")
         B.open_gate(self.gate)  # let the orphaned step end so nothing outlives the test
         B.until(lambda: not s.get("/api/job")["step_running"], "the orphaned step to end")

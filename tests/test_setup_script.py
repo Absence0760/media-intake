@@ -27,7 +27,7 @@ PIP_STUB = """#!/bin/sh
 exit 0
 """
 PY_STUB = "#!/bin/sh\necho venv-python-stub\n"
-DOCTOR_STUB = "print('doctor stub')\n"
+DOCTOR_STUB = "import os, sys\nprint('doctor stub')\nsys.exit(1 if os.environ.get('STUB_DOCTOR') == 'fail' else 0)\n"
 
 
 def stub_sha(name):
@@ -78,7 +78,7 @@ class Static(unittest.TestCase):
         text = read_setup()
         for msg in ("FAILED at step", "sudo dnf install -y", "didn't match its sha256 pin",
                     "nothing was installed", "never skip", "No network", "setup.sh --refresh-geo",
-                    "Never drop --require-hashes", "next: media-intake doctor", "NO_COLOR"):
+                    "Never drop --require-hashes", "then run: media-intake doctor", "NO_COLOR"):
             self.assertIn(msg, text)
 
 
@@ -136,7 +136,9 @@ class Run(unittest.TestCase):
         self.assertRegex(summary, r"SigLIP vision model\s+downloaded")
         self.assertRegex(summary, r"GeoNames\s+downloaded")
         self.assertRegex(summary, r"launcher\s+written\s+" + re.escape(os.path.join(self.home, ".local/bin/media-intake")))
-        self.assertTrue(r.stdout.rstrip().endswith("next: media-intake doctor"))
+        self.assertTrue(r.stdout.rstrip().endswith("next: media-intake stage <folder> --kind folder   "
+                                                   "(guide: docs/getting-started.md)"), r.stdout[-300:])
+        self.assertNotIn("next: media-intake doctor", r.stdout, "doctor just ran; don't send the user back to it")
 
         again = self.run_setup()
         self.assertEqual(again.returncode, 0, again.stderr)
@@ -149,6 +151,45 @@ class Run(unittest.TestCase):
         self.assertEqual(r.returncode, 0, r.stderr)
         self.assertIn("==> [5/5] media-intake doctor", r.stdout)
         self.assertNotIn("Launcher", r.stdout)
+
+    def test_doctor_gaps_change_the_next_line(self):
+        r = self.run_setup(STUB_DOCTOR="fail")
+        self.assertEqual(r.returncode, 0, r.stderr)
+        self.assertRegex(r.stdout.split("==> Summary", 1)[1], r"doctor\s+gaps listed above")
+        self.assertTrue(r.stdout.rstrip().endswith("next: fix what doctor listed above, then run: media-intake doctor"))
+
+    def test_path_hint_when_local_bin_is_not_on_path(self):
+        r = self.run_setup()
+        self.assertEqual(r.returncode, 0, r.stderr)
+        self.assertIn("Your PATH lacks ~/.local/bin, so the shell won't find media-intake yet", r.stderr)
+        tail = r.stdout.split("==> Summary", 1)[1]
+        self.assertIn('  export PATH="$HOME/.local/bin:$PATH"\n', tail)
+        self.assertIn("~/.bashrc for bash, ~/.zshrc for zsh", tail)
+        self.assertIn("python3 -I " + os.path.join(self.repo, "media_intake", "cli.py"), tail)
+        self.assertIn("The launcher runs this copy (" + self.repo + ")", tail)
+
+    def test_no_path_hint_when_local_bin_is_on_path(self):
+        local_bin = os.path.join(self.home, ".local", "bin")
+        for entry in (local_bin, local_bin + "/"):
+            with self.subTest(entry=entry):
+                r = self.run_setup(PATH=os.pathsep.join([self.bin, entry, os.environ["PATH"]]))
+                self.assertEqual(r.returncode, 0, r.stderr)
+                self.assertNotIn("Your PATH lacks", r.stdout + r.stderr)
+                self.assertNotIn("export PATH=", r.stdout)
+
+    def test_no_launcher_no_path_hint(self):
+        r = self.run_setup("--no-launcher")
+        self.assertEqual(r.returncode, 0, r.stderr)
+        self.assertNotIn("Your PATH lacks", r.stdout + r.stderr)
+        self.assertNotIn("The launcher runs this copy", r.stdout)
+
+    def test_phone_hint_in_the_closing_lines(self):
+        tail = self.run_setup().stdout.split("==> Summary", 1)[1]
+        self.assertIn('choose "File transfer"', tail)
+        self.assertIn("ls /run/user/$UID/gvfs/", tail, "printed literally, for the user to type")
+        self.assertIn("--kind phone", tail)
+        phone = tail[tail.index("To find a phone"):].split("\n\n", 1)[0]
+        self.assertEqual(len(phone.splitlines()), 3, "one paragraph, no blank lines inside")
 
     def test_checksum_mismatch_names_step_and_installs_nothing(self):
         r = self.run_setup(STUB_CURL="bad")

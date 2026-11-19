@@ -16,7 +16,8 @@ the library, or that scan flagged, quarantined or erased, are dropped.
 Refused, never read: label.refused() files (quarantine/, batches/ staging,
 flagged/quarantined/erased sha256). Nothing but vectors, shas and paths is stored.
 
-search: the query through SigLIP's text model. It lives only in the build cache
+search: the query through SigLIP's text model, averaged over a few prompt templates
+("a photo of {}", "a picture of {}", "{}"; --no-ensemble: the query alone). It lives only in the build cache
 (~/.cache/media-intake-build, from setup.sh --build-labels) and is used from
 there read-only, sha256-checked; without it only `similar` works.
 similar: nearest neighbours of FILE by cosine (FILE is embedded on the fly if new).
@@ -30,13 +31,14 @@ Used|<YYYY-MM-DD-slug> in the last N days, like intake.py find), --clean (no
 Review|child-in-shot, no Owner|trash, and no Review|maybe-trash or AI|vlm/*/trash/*
 unless you kept the file: owner.kept, so Owner|not-trash outranks a trash flag).
 """
-import argparse, datetime, json, os, re, shutil, string, subprocess, sys, tempfile, time
+import argparse, datetime, json, os, re, shutil, subprocess, sys, tempfile, time
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, HERE)
 import label  # noqa: E402  (read-only: encoder path/sha, preprocessing, refusals)
 import owner  # noqa: E402  (owner decisions outrank AI trash flags)
 import meter  # noqa: E402  (counts-only progress, stdlib)
+from build_label_embeddings import MAX_LEN, PAD, canonical  # noqa: E402  (the labels' text handling)
 
 HOME = os.path.expanduser("~")
 STATE = label.STATE
@@ -47,7 +49,6 @@ STORE = os.path.join(STATE, "embeddings.npz")
 BUILD = os.environ.get("MEDIA_INTAKE_BUILD", f"{HOME}/.cache/media-intake-build")
 TEXT_SHA = label.PINS["siglip"]["files"]["onnx/text_model.onnx"]  # media_intake/pins.json
 TOK_SHA = label.PINS["siglip"]["files"]["tokenizer.json"]
-MAX_LEN, PAD = 64, 1   # as build_label_embeddings.py
 VIDEO_FRAMES = 8
 POST_SLUG = re.compile(r"^(\d{4}-\d\d-\d\d)-[a-z0-9][a-z0-9-]*$")
 
@@ -119,27 +120,59 @@ def text_available():
     return None
 
 
-def embed_text(q, np, ort):
+# Prompt ensemble for text queries (the CLIP/SigLIP zero-shot technique): the query is embedded
+# through each template, the normalised embeddings are averaged and renormalised. A query that
+# already starts with a template's prefix ("a photo of ...") is stripped of it first, so no
+# prompt reads "a photo of a photo of ...". --no-ensemble embeds the query as typed.
+TEMPLATES = ("a photo of {}", "a picture of {}", "{}")
+PREFIXES = tuple(t.split("{}")[0] for t in TEMPLATES if t != "{}")
+
+
+def query_prompts(q, ensemble=True):
+    """The prompts a query is embedded through, canonical as the labels' (build_label_embeddings)."""
+    q = canonical(q)
+    if not ensemble or not q:
+        return [q]
+    core = next((q[len(p):] for p in PREFIXES if q.startswith(p) and len(q) > len(p)), q)
+    out = []
+    for t in TEMPLATES:
+        p = canonical(t.format(core))
+        if p not in out:
+            out.append(p)
+    return out
+
+
+def encode_texts(texts, np, ort):
+    """Unit-length SigLIP text embeddings (len(texts) x D, float32), one batch through the model."""
     why = text_available()
     if why:
         sys.exit(f"semantic: SigLIP text model unavailable ({why}: {BUILD}); only `similar` works. "
                  "To enable search: bash setup.sh --build-labels, then media-intake search again")
-    sys.path.insert(0, os.path.join(BUILD, "site"))
+    site = os.path.join(BUILD, "site")
+    if site not in sys.path:
+        sys.path.insert(0, site)
     from tokenizers import Tokenizer
-    q = re.sub(r"\s+", " ", q.lower().translate(str.maketrans("", "", string.punctuation))).strip()
-    ids = np.full((1, MAX_LEN), PAD, dtype=np.int64)
-    e = Tokenizer.from_file(os.path.join(BUILD, "tokenizer.json")).encode(q).ids[:MAX_LEN]
-    if not e or e[-1] != 1:
-        e = (e + [1])[-MAX_LEN:] if len(e) < MAX_LEN else e[:-1] + [1]
-    ids[0, :len(e)] = e
+    tok = Tokenizer.from_file(os.path.join(BUILD, "tokenizer.json"))
+    ids = np.full((len(texts), MAX_LEN), PAD, dtype=np.int64)
+    for i, t in enumerate(texts):
+        e = tok.encode(t).ids[:MAX_LEN]
+        if not e or e[-1] != 1:
+            e = (e + [1])[-MAX_LEN:] if len(e) < MAX_LEN else e[:-1] + [1]
+        ids[i, :len(e)] = e
     so = ort.SessionOptions()
     so.log_severity_level = 3
     sess = ort.InferenceSession(os.path.join(BUILD, "text_model.onnx"), so, providers=["CPUExecutionProvider"])
     feed = {"input_ids": ids}
     if any(i.name == "attention_mask" for i in sess.get_inputs()):
         feed["attention_mask"] = np.ones_like(ids)
-    v = sess.run(["pooler_output"], feed)[0][0].astype(np.float32)
-    return v / np.linalg.norm(v)
+    v = np.asarray(sess.run(["pooler_output"], feed)[0], dtype=np.float32)
+    return v / np.linalg.norm(v, axis=1, keepdims=True)
+
+
+def embed_text(q, np, ort, ensemble=True):
+    """The query's unit vector: the renormalised mean over query_prompts (one prompt without the ensemble)."""
+    m = encode_texts(query_prompts(q, ensemble), np, ort).mean(axis=0)
+    return m / np.linalg.norm(m)
 
 
 # ---------------------------------------------------------------- index
@@ -209,16 +242,32 @@ def cmd_index(a, np, ort):
     cur = {p: v for p, v in cur.items() if v[2] in rows}
     order = sorted(rows)
     save_store(np, order, np.stack([rows[s] for s in order]) if order else np.zeros((0, 768), np.float32), cur)
-    print(json.dumps({"files": len(cur), "vectors": len(order), "new_images": n_img, "new_videos": n_vid,
-                      "undecodable": failed, "refused": len(bad), "dropped": dropped,
-                      "s_per_image": round(t_img / n_img, 3) if n_img else None,
-                      "s_per_video": round(t_vid / n_vid, 3) if n_vid else None,
-                      "seconds": round(time.monotonic() - t0, 1)}))
+    counts = {"files": len(cur), "vectors": len(order), "new_images": n_img, "new_videos": n_vid,
+              "undecodable": failed, "refused": len(bad), "dropped": dropped,
+              "s_per_image": round(t_img / n_img, 3) if n_img else None,
+              "s_per_video": round(t_vid / n_vid, 3) if n_vid else None,
+              "seconds": round(time.monotonic() - t0, 1)}
+    person = on_terminal()
+    if not person:  # the queue's step log and scripts read this one JSON line
+        print(json.dumps(counts))
     copies = sum(1 for p in new if p in cur) - (n_img + n_vid)  # same sha as a file embedded this run
     m.say(f"index: indexed {n_img + n_vid:,} new ({n_img:,} photos, {n_vid:,} videos), "
           f"{unchanged:,} unchanged, {failed:,} failed (undecodable)"
           + (f", {copies:,} copies of new files" if copies else "")
           + f"; {len(bad):,} refused, {dropped:,} dropped; took {meter.duration(time.monotonic() - t0)}")
+    if person:
+        print(INDEX_NEXT)
+
+
+INDEX_NEXT = 'next: media-intake search "a photo of a dog" -n 20'
+
+
+def on_terminal():
+    """True when stdout is a terminal (a person), False when piped or captured (the queue, the gallery)."""
+    try:
+        return sys.stdout.isatty()
+    except (AttributeError, ValueError):
+        return False
 
 
 # ---------------------------------------------------------------- query
@@ -298,10 +347,7 @@ def rank(np, q, a, exclude=None, store=None):
 def human(a):
     """--format human, or auto on a terminal. Piped or captured output (the gallery) stays machine."""
     if a.format == "auto":
-        try:
-            return sys.stdout.isatty()
-        except (AttributeError, ValueError):
-            return False
+        return on_terminal()
     return a.format == "human"
 
 
@@ -338,7 +384,8 @@ def show(out, a, file=None):
 
 def cmd_search(a, np, ort):
     store = need_index(np)  # before the text model: say the cheaper fix first
-    rank(np, embed_text(a.query, np, ort), a, store=store)
+    kw = {"ensemble": False} if a.no_ensemble else {}  # the default call keeps embed_text(q, np, ort)
+    rank(np, embed_text(a.query, np, ort, **kw), a, store=store)
 
 
 def cmd_similar(a, np, ort):
@@ -360,23 +407,46 @@ def cmd_similar(a, np, ort):
     rank(np, v / np.linalg.norm(v), a, exclude=s, store=store)
 
 
-def main(argv=None):
-    ap = argparse.ArgumentParser(description=__doc__.split("\n")[0])
-    sub = ap.add_subparsers(dest="cmd", required=True)
-    sub.add_parser("index")
+def main(argv=None, prog="media-intake"):
+    ap = argparse.ArgumentParser(
+        prog=prog, description="Search your library by what is in the pictures, offline on this laptop. Needs the "
+                               "venv and model that bash setup.sh installs (docs/search.md).")
+    sub = ap.add_subparsers(dest="cmd", required=True, metavar="index|search|similar")
+    sub.add_parser("index", help="build or update the search index",
+                   description="Build or update the search index: reads every photo and video in the library "
+                               "once (later runs only new ones) and stores a short summary of each in the "
+                               "media-intake state folder. Changes no photo, video or tag. Run it before search, "
+                               "similar or calibrate.")
+    filters = ("Filters: --photos or --videos, --project NAME, --unused-since Nd, --clean. Output on a terminal is a "
+               "numbered list, best match first; piped, it is `score  path` lines.")
     for name in ("search", "similar"):
-        s = sub.add_parser(name)
-        s.add_argument("query" if name == "search" else "file")
-        s.add_argument("-n", type=int, default=20)
+        what = ("Find photos and videos that match a description, e.g. \"dog on a beach\"." if name == "search"
+                else "Find photos and videos that look like FILE.")
+        s = sub.add_parser(name, help="find files matching a description" if name == "search"
+                           else "find files that look like a given one",
+                           description=f"{what} Read-only: changes nothing. Needs the search index "
+                                       f"(media-intake index). {filters}")
+        if name == "search":
+            s.add_argument("query", help="what to look for, in quotes, e.g. \"dog on a beach\"")
+        else:
+            s.add_argument("file", help="a photo or video; its look-alikes are listed")
+        s.add_argument("-n", type=int, default=20, metavar="N", help="how many results to show (default 20)")
         g = s.add_mutually_exclusive_group()
-        g.add_argument("--videos", action="store_true")
-        g.add_argument("--photos", action="store_true")
-        s.add_argument("--project")
-        s.add_argument("--unused-since", metavar="Nd")
-        s.add_argument("--clean", action="store_true", help="drop child-in-shot and trash-flagged files")
+        g.add_argument("--videos", action="store_true", help="videos only")
+        g.add_argument("--photos", action="store_true", help="photos only")
+        s.add_argument("--project", metavar="NAME", help="only files tagged with this project (Project|NAME)")
+        s.add_argument("--unused-since", metavar="Nd",
+                       help="only files not used in a post in the last N days, e.g. 30d")
+        s.add_argument("--clean", action="store_true",
+                       help="leave out files with a child in shot, and ones marked or suggested as trash "
+                            "(unless you kept them)")
         s.add_argument("--format", choices=("auto", "human", "machine"), default="auto",
                        help="human: numbered list with dates; machine: `score  path` lines (what the gallery "
                             "reads); auto (default): human on a terminal, machine otherwise")
+        if name == "search":
+            s.add_argument("--no-ensemble", action="store_true",
+                           help="embed the query as typed, not averaged over prompt templates "
+                                "(\"a photo of ...\", \"a picture of ...\", as typed); to compare results")
     a = ap.parse_args(argv)
     try:
         import numpy as np

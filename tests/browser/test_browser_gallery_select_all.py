@@ -108,13 +108,13 @@ class GallerySelectAllBrowserTest(B.BrowserCase):
     def test_respects_the_filter(self):
         page = self.page()
         page.locator('#evlist [data-ev="picnic"]').click()
-        B.expect(page.locator("#chips")).to_contain_text("Event: picnic")
+        B.expect(page.locator("#vtitle")).to_have_text("picnic")
         B.expect(page.locator("[data-item]")).to_have_count(2)
         page.get_by_role("button", name="Select all").click()
         B.expect(self.bar(page)).to_contain_text("Selected 2 (all shown)")
         self.assertEqual(self.selected(page), PICNIC)
         # clearing the filter reloads the grid and starts a new (empty) selection
-        page.locator("#chips").get_by_role("button", name="Remove Event: picnic").click()
+        page.get_by_role("button", name="Library").click()
         B.expect(page.locator("[data-item]")).to_have_count(len(GB.TIMELINE))
         B.expect(self.bar(page)).to_be_hidden()
 
