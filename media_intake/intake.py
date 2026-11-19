@@ -40,6 +40,7 @@ import dates  # noqa: E402
 import devices  # noqa: E402
 import exports  # noqa: E402
 import owner  # noqa: E402
+import places as myplaces  # noqa: E402  (My places: Place|<name> tags, <state>/places.json)
 import sources  # noqa: E402
 import videohash  # noqa: E402
 
@@ -1597,10 +1598,15 @@ def verify_gone(sig, drive=None, left=None, home=True, names=True):
     if orphans:
         print(f"ORPHAN SIDECARS: {sum(orphans.values())} .xmp files whose photo/video is gone (erase removes them): "
               + ", ".join(f"{k} {v}" for k, v in sorted(orphans.items())))
+    place_recs = myplaces.stale_count(STATE, LIB_ROOTS) if home else 0
+    if place_recs:
+        print(f"PLACE RECORDS: {place_recs} entries in places.json name files no longer in the library "
+              "(erase removes them; so does media-intake places tag)")
     if left is not None:
         left["copies still present at verify-gone"] += sum(found.values())
         left["orphan sidecars at verify-gone"] += sum(orphans.values())
-    return not found and not orphans
+        left["your places' records of files gone at verify-gone"] += place_recs
+    return not found and not orphans and not place_recs
 
 
 def cmd_verify_gone(a):
@@ -1914,6 +1920,13 @@ def cmd_erase(a):
     recent = prune_recent(uris, prefixes)
     traces = prune_app_traces(uris, prefixes)
     backups, backups_failed, backups_unread = prune_backup_records(gone, set(shas))
+    # places.json's records of these files (Place|<name> itself went with each sidecar), and of any file gone
+    # from a library folder that is there, so verify-gone finds none
+    try:
+        stale = myplaces.Store(STATE, LIB_ROOTS).stale(LIB_ROOTS)
+    except myplaces.Unreadable:
+        stale = set()
+    place_recs, place_err = myplaces.forget_paths(STATE, gone | stale)
     with open(os.path.join(STATE, "erase-log.txt"), "a") as f:
         for s, (size, _) in shas.items():
             f.write(f"{datetime.datetime.now():%Y-%m-%d %H:%M} {a.batch} sha256:{s} size:{size}\n")
@@ -1970,7 +1983,9 @@ def cmd_erase(a):
                                 "backup records that could not be rewritten (they keep the names)": backups_failed,
                                 "backup records that could not be read (they may keep names until the next backup "
                                 "to that drive)": backups_unread,
-                                "recognition store that could not be read": rec["store unreadable"]})
+                                "recognition store that could not be read": rec["store unreadable"],
+                                "your places' records that could not be rewritten (places.json keeps the names)":
+                                    int(bool(place_err))})
     ok = verify_gone(sig, a.drive, left)
     # The coverage report: every place this erase reached (counts), what it left, what it could not check.
     reached = {"quarantined files (state folder, quarantine/)": len(q),
@@ -1986,7 +2001,8 @@ def cmd_erase(a):
                    traces["showtime positions"] + traces["showtime log lines"],
                "localsearch error reports (~/.cache/tracker3/files/errors)": traces["localsearch error reports"],
                "near-duplicates moved to quarantine (not deleted)": near,
-               "backup records: erased files dropped (state folder, backup/)": backups}
+               "backup records: erased files dropped (state folder, backup/)": backups,
+               "your places' records: erased files dropped (state folder, places.json)": place_recs}
     not_checked = []
     if gio_metadata_on():
         reached["gvfs-metadata entries cleared (~/.local/share/gvfs-metadata)"] = stats["gvfs-metadata cleared"]
@@ -2254,7 +2270,7 @@ def trash_files(files, batch=None, phone=None, dry=False):
               + trash_refusals(refused, quarantined))
         return not refused and not quarantined
     n = sc = th = ph = 0
-    gone = set()
+    gone, gone_paths = set(), set()
     for p, srcs in todo:
         s, size = sha256(p), os.path.getsize(p)
         gone.add(s)
@@ -2265,6 +2281,7 @@ def trash_files(files, batch=None, phone=None, dry=False):
         sc += drop_sidecar(p)
         th += thumb_forget(p) + gallery_thumb_forget(s)
         index.pop(p, None)
+        gone_paths.add(p)
         for src, _ in srcs:
             th += thumb_forget(src)
             if src in phone_ok:
@@ -2272,6 +2289,9 @@ def trash_files(files, batch=None, phone=None, dry=False):
                 ph += len(device_remove([src]))
     save(os.path.join(STATE, "index.json"), index)
     rec = recog_forget(gone)
+    _, perr = myplaces.forget_paths(STATE, gone_paths)  # their records in places.json (the tag went with the sidecar)
+    if perr:
+        print(f"your places' records of the trashed files not dropped: {perr}")
     marked, spared, err = mark_trashed_copies(gone, index)
     print(f"trashed {n} files; sidecars {sc}; thumbnails {th}; phone {ph}"
           + (f"; recognition rows and crops {recog_count(rec)}" if recog_count(rec) else "")
@@ -2595,10 +2615,11 @@ def read_sidecar_tags(paths):
     return out
 
 
-def merge_tags(old, new, pick="", relabelled=True, owner_leaves=(), stars=None):
+def merge_tags(old, new, pick="", relabelled=True, owner_leaves=(), stars=None, named=()):
     """(hier to add, tags to remove, dc:Subject leaves to remove) for a re-tag.
 
-    Facts replace only the prefixes this run has a value for; AI labels replace SigLIP's
+    Facts replace only the prefixes this run has a value for (a Place| tag of a place you named, in named,
+    is not one: places.py owns those); AI labels replace SigLIP's
     namespace (only when it ran); everything else (owner keywords, Owner|, Used|, the VLM's
     Review|vlm-*, Review|child-in-shot) is never removed. A file you kept (a favorite too: stars, its
     xmp:Rating) or trashed (owner.py) never gets Review|maybe-trash. A legacy Review|not-trash is
@@ -2607,9 +2628,12 @@ def merge_tags(old, new, pick="", relabelled=True, owner_leaves=(), stars=None):
         new = [t for t in new if t != "Review|maybe-trash"]
     legacy = [t for t in old if t in owner.LEGACY]
     new = new + [h for h in dict.fromkeys(owner.LEGACY[t] for t in legacy) if h not in new]
-    have = {t.split("|", 1)[0] + "|" for t in new if t.startswith(FACT_PREFIXES)}
-    remove = [t for t in old if t not in new and ((relabelled and ai_owned(t)) or t in owner.LEGACY or
-                                                  any(t.startswith(p) for p in have))]
+    # A place you named (named: Place|Home for each place in places.json) is not the city fact: places.py alone
+    # adds and removes those. Without places, nothing changes from before.
+    named = set(named)
+    have = {t.split("|", 1)[0] + "|" for t in new if t.startswith(FACT_PREFIXES) and t not in named}
+    remove = [t for t in old if t not in new and t not in named and
+              ((relabelled and ai_owned(t)) or t in owner.LEGACY or any(t.startswith(p) for p in have))]
     keep_leaves = ({t.split("|")[-1] for t in old if t not in remove} | {t.split("|")[-1] for t in new}
                    | set(owner_leaves))
     leaves = sorted({t.split("|")[-1] for t in remove} - keep_leaves)
@@ -2650,6 +2674,14 @@ def tag_files(items, labels=True, label="tag"):
         lbl = venv_json("label.py", paths)
     entries, c, lc = [], collections.Counter(), collections.Counter()
     existing = read_sidecar_tags(paths)
+    try:  # My places (places.py): Place|<name> for files inside a place you named; counts only in the output
+        mine = myplaces.Store(STATE, LIB_ROOTS)
+    except myplaces.Unreadable as e:
+        print(f"your places not tagged: {e}")
+        mine = None
+    if mine is not None and not mine.places:
+        mine = None
+    named = {myplaces.tag_of(p["name"]) for p in mine.places.values()} if mine is not None else set()
     for path, project, source, event, dt, *_ in items:
         hier = [f"Project|{project}"]
         for s in (source if isinstance(source, (list, tuple)) else [source]):  # e.g. ("gopro", "HERO11 Black")
@@ -2673,7 +2705,18 @@ def tag_files(items, labels=True, label="tag"):
         for flag in lbl.get(path, {}).get("review", []):
             hier.append(f"Review|{flag}")
         old, pick, oleaves, stars = existing.get(path, ([], "", set(), None))
-        hier, remove, leaves = merge_tags(old, hier, pick, relabelled=path in lbl, owner_leaves=oleaves, stars=stars)
+        # a sidecar exiftool did not read (none yet, or a failed read) says nothing about a tag you removed
+        p_add, p_remove = mine.plan(path, gps.get(path), old if path in existing else None) \
+            if mine is not None else ([], [])
+        hier += [t for t in p_add if t not in hier]
+        if p_add:
+            c["your place tags added"] += len(p_add)
+        hier, remove, leaves = merge_tags(old, hier, pick, relabelled=path in lbl, owner_leaves=oleaves, stars=stars,
+                                          named=named)
+        if p_remove:
+            remove += [t for t in p_remove if t not in remove]
+            leaves = sorted(set(leaves) | set(myplaces.leaf_drops(old, remove, hier, oleaves)))
+            c["your place tags taken off"] += len(p_remove)
         for h in hier:
             if h.startswith("Review|"):
                 lc[h] += 1
@@ -2683,6 +2726,11 @@ def tag_files(items, labels=True, label="tag"):
     for i in range(0, len(entries), WRITE_CHUNK):  # one exiftool run per chunk, each a progress tick
         write_tags(entries[i:i + WRITE_CHUNK])
         prog.tick(by=len(entries[i:i + WRITE_CHUNK]))
+    if mine is not None:  # after the sidecars: a record never says a tag is there before it is
+        try:
+            mine.save()
+        except (myplaces.Unreadable, OSError) as e:
+            print(f"your places' records not saved ({e}); the next tag or places tag writes them")
     print(f"tagged {plural(len(entries), 'file')} (sidecars <file>.xmp)"
           + ("; " + ", ".join(f"{k} {v}" for k, v in sorted(c.items())) if c else ""))
     if lc:

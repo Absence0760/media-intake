@@ -318,6 +318,12 @@ page's own handlers and fails when the list leaves one out.
   name when the gallery next starts, but only when every library folder is
   there and no file was left out as flagged (an unmounted drive's events
   aren't gone); until then it would show the old name if made again.
+- **Places**: your own named places (My places), each with how many items
+  carry it; a click shows them (the My place filter). The large view's
+  **Add a place here…** (only on an item with GPS) names a new one at that
+  item's point, and an item without GPS can show a **Probably at …**
+  suggestion to answer Yes or No. The page never gets a coordinate: see
+  [places.md](places.md), "In the gallery".
 - **Plugin tabs**: any view a plugin adds through `gallery_views()`, with its
   routes under `/plugin/<id>/` ([plugins.md](plugins.md)).
 
@@ -408,7 +414,8 @@ the large view. The **Favorites** quick view lists them, with its count, and
 
 ## Filters (all combinable)
 
-Project, Source, Event, Place, year or month, Looks like (any `Label|*`), my
+Project, Source, Event, Place (the city: a `Place|` tag with a comma), My place
+(`myplace=<id>`: one of your named places, from the Places list), year or month, Looks like (any `Label|*`), my
 tags, Flags (Tagged as junk = `Review|maybe-trash`, Possible child =
 `Review|child-in-shot`, Untagged = `Review|untagged-*` or no tags, Favorite =
 `xmp:Rating` >= 5), Junk check
@@ -445,7 +452,9 @@ project, source, event, place, label, month and year, my tag), `counts`
 many more a lower Junk score adds), `recent`), `ai_scores` (`[score, n]`
 for every Judged junk score, to 2 decimals: the page sums those at or above
 its slider), `recent_days`, the search
-status, `share_out` and `drive` (the backup drive Erase includes, or null). Like every route it needs the session cookie or token.
+status, `share_out` and `drive` (the backup drive Erase includes, or null), `places` (`{id, name, n}` per
+named place, most items first), `places_error` (why they can't be read, or "") and `radii` / `radius` (Add a place
+here…'s choices and default, metres). Like every route it needs the session cookie or token.
 
 The search box runs `semantic.py search` (local SigLIP text model, through the
 media-intake venv). When the venv, the embeddings or the text model are

@@ -22,7 +22,8 @@ media-intake backup /run/media/$USER/<label> --skip videos   # leave one root ou
   under those folders, and its `<file>.<ext>.xmp` sidecar, under the same
   relative path.
 - **Never copied:** the state folder (`quarantine/`, `batches/` with staging
-  and review copies, `index.json`, jobs), the people and pets recognition
+  and review copies, `index.json`, jobs, `places.json`: My places, which says
+  where you live, so it never leaves the laptop; [places.md](places.md)), the people and pets recognition
   store (`recognition.dir`, wherever it is configured), the thumbnail and proxy caches,
   hidden files and folders (digiKam's `.dtrash`, `.thumbnails`), symlinks,
   sidecars whose file is gone, and anything else that sits in the library
