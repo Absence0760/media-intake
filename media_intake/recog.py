@@ -520,17 +520,23 @@ def scan(c, spec, paths, engine=None, frames="default", limit=None, log=print, s
         todo = todo[:limit]
     det = embs = None
     t0 = time.monotonic()
+    eta = Eta(sum(1 for _, _, v in todo if v), sum(1 for _, _, v in todo if not v))
+    if todo:
+        log(f"  {len(todo)} to scan: {eta.left[False]} photos, {eta.left[True]} videos (videos take much longer)")
     for i, (p, st, is_vid) in enumerate(todo, 1):
+        t_file, ran = time.monotonic(), False
         sha = file_sha(p, st.st_size, index)
         old = c.execute("SELECT sha FROM files WHERE path=?", (p,)).fetchone()
         if sha in trashed:
             cnt["trashed content skipped"] += 1
+            eta.done(is_vid, None)
             continue
         if c.execute("SELECT 1 FROM scans WHERE sha=? AND kind=?", (sha, spec.kind)).fetchone():
             c.execute("INSERT OR REPLACE INTO files(path, sha, size, mtime, skip) VALUES (?,?,?,?,NULL)",
                       (p, sha, st.st_size, st.st_mtime))
             cnt["same content as a scanned file"] += 1
         else:
+            ran = True
             if det is None:
                 det, embs = (engine or spec.engine)()
             try:  # one video that can't be sampled is counted unreadable; the scan goes on
@@ -553,14 +559,52 @@ def scan(c, spec, paths, engine=None, frames="default", limit=None, log=print, s
         if old and old["sha"] and old["sha"] != sha and not c.execute(
                 "SELECT 1 FROM files WHERE sha=? LIMIT 1", (old["sha"],)).fetchone():
             forget_sha(c, old["sha"], d)  # the file's content changed: its old rows go
+        eta.done(is_vid, time.monotonic() - t_file if ran else None)  # a copy or skip isn't a timing
         if i % 50 == 0:
             c.commit()
-            dt = time.monotonic() - t0
-            log(f"  {i}/{len(todo)}  {dt / i:.2f} s a file, about {dt / i * (len(todo) - i) / 60:.0f} min left")
+            log(f"  {i}/{len(todo)}  {eta.line()}")
     c.commit()
     if todo:
         cnt["seconds a file"] = round((time.monotonic() - t0) / len(todo), 3)
     return +cnt
+
+
+class Eta:
+    """The scan's time left, kept apart for photos and videos: a video takes many times a photo's time (it is
+    decoded and sampled at several frames), and a library lists its photos first, so one running average
+    across both says "13 min left" while the photos go and then keeps growing once the videos start.
+    Each kind's rate is the average of its last WINDOW files (recent load counts more than the first
+    minutes); a kind not timed yet is guessed at GUESS seconds a file and the line says so."""
+    WINDOW = 50
+    GUESS = {False: 0.3, True: 10.0}  # first guesses, used only until that kind has been timed
+
+    def __init__(self, videos, photos):
+        self.left = {True: videos, False: photos}
+        self.recent = {True: collections.deque(maxlen=self.WINDOW), False: collections.deque(maxlen=self.WINDOW)}
+
+    def done(self, is_vid, seconds):
+        """One file of that kind is behind us; seconds is how long it took, or None (a skip or copy)."""
+        self.left[is_vid] = max(0, self.left[is_vid] - 1)
+        if seconds is not None:
+            self.recent[is_vid].append(seconds)
+
+    def rate(self, is_vid):
+        r = self.recent[is_vid]
+        return (sum(r) / len(r), True) if r else (self.GUESS[is_vid], False)
+
+    def seconds_left(self):
+        return sum(self.left[k] * self.rate(k)[0] for k in (False, True))
+
+    def line(self):
+        parts, guessed = [], False
+        for k, noun in ((False, "photos"), (True, "videos")):
+            if self.left[k] or self.recent[k]:
+                r, timed = self.rate(k)
+                guessed |= not timed and self.left[k] > 0
+                parts.append(f"{noun} {r:.2f} s each{'' if timed else ' (guess)'}, {self.left[k]} left")
+        s = round(self.seconds_left())
+        left = f"{s // 3600} h {s % 3600 // 60:02d} min" if s >= 3600 else f"{max(1, round(s / 60)) if s else 0} min"
+        return "; ".join(parts) + f": about {left} left" + (" (rough: videos not timed yet)" if guessed else "")
 
 
 # ---------------------------------------------------------------- clustering (numpy only)

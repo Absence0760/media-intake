@@ -43,6 +43,12 @@ media-intake people ignore 5          # strangers, posters, statues: never tagge
 media-intake people tag               # write People|Ann into the sidecars (--dry-run first)
 ```
 
+`scan` says up front how many photos and videos it will look at, then every 50
+files how long each kind takes and the time left. Photos and videos are timed
+apart (a video takes many times a photo's time, and the library's photos come
+first), from the last 50 of each; until the first video is done its time is a
+guess and the line says "rough".
+
 Later, after new photos: `scan`, then `cluster`. Faces that join a cluster
 you named are suggested, not named:
 

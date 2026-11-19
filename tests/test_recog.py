@@ -874,6 +874,47 @@ class EraseCoverage(Base):
 
 
 @unittest.skipUnless(os.path.exists(REAL_VENV_PY), "setup.sh not run (no venv)")
+class ScanEta(unittest.TestCase):
+    """The scan's "about N min left" keeps photos and videos apart, so the videos at the end don't make it grow."""
+
+    def test_photos_first_then_videos_estimates_the_videos(self):
+        e = recog.Eta(videos=100, photos=1000)
+        for _ in range(1000):
+            e.done(False, 0.2)
+        # every photo done, no video timed yet: the guess is used and the line says it is rough
+        self.assertAlmostEqual(e.seconds_left(), 100 * recog.Eta.GUESS[True])
+        self.assertIn("rough: videos not timed yet", e.line())
+        for _ in range(10):
+            e.done(True, 6.0)
+        self.assertAlmostEqual(e.seconds_left(), 90 * 6.0)
+        self.assertNotIn("rough", e.line())
+        self.assertIn("videos 6.00 s each, 90 left", e.line())
+        self.assertIn("about 9 min left", e.line())
+
+    def test_recent_files_count_more_than_the_first(self):
+        e = recog.Eta(videos=0, photos=500)
+        for _ in range(200):
+            e.done(False, 0.1)
+        for _ in range(recog.Eta.WINDOW):
+            e.done(False, 1.0)  # the machine got busy: the last WINDOW files set the rate
+        self.assertAlmostEqual(e.rate(False)[0], 1.0)
+
+    def test_skips_and_copies_count_down_without_a_time(self):
+        e = recog.Eta(videos=1, photos=2)
+        e.done(False, None)
+        e.done(True, None)
+        self.assertEqual(e.left, {True: 0, False: 1})
+        self.assertEqual(e.rate(False), (recog.Eta.GUESS[False], False))
+
+    def test_hours_and_nothing_left(self):
+        e = recog.Eta(videos=1000, photos=0)
+        e.done(True, 8.0)
+        self.assertIn("about 2 h 13 min left", e.line())
+        f = recog.Eta(videos=0, photos=1)
+        f.done(False, 0.2)
+        self.assertIn("about 0 min left", f.line())
+
+
 class RealModels(unittest.TestCase):
     """YuNet + SFace through the venv's cv2, on a synthetic image: loads, checks the sha256, runs."""
 
