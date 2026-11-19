@@ -49,6 +49,7 @@ Library
   share-copy FILE --out D   copy without GPS or metadata (or social-copy)
   calibrate                 test content labels on your marks; changes nothing
   people                    name the people in photos (venv; off by default)
+  pets                      name your pets in photos (venv; off by default)
   migrate-tags              one-off: rename an older tool tag in your sidecars
   proxies                   make the gallery's video copies now, so they play
   prune-cache               DELETES gallery thumbnails nothing shows any more
@@ -73,9 +74,9 @@ import config  # noqa: E402
 
 VENV_SCRIPTS = {"index": ("semantic.py", ["index"]), "search": ("semantic.py", ["search"]),
                 "similar": ("semantic.py", ["similar"]), "vlm-trash": ("vlm_trash.py", []),
-                "people": ("people.py", [])}
+                "people": ("people.py", []), "pets": ("pets.py", [])}
 # Recognition kinds (recog.py's core): module -> what doctor calls it. Optional: off until setup.sh --recognition.
-RECOGNITION = {"people": "people recognition"}
+RECOGNITION = {"people": "people recognition", "pets": "pets recognition"}
 # Each thing doctor checks, with the Fedora package that provides it: the one source for the
 # `sudo dnf install ...` lines doctor prints. Required unless listed in OPTIONAL.
 SYSTEM_TOOLS = {"exiftool": "perl-Image-ExifTool", "tesseract": "tesseract", "ffmpeg": "ffmpeg-free",
@@ -321,8 +322,9 @@ def _check_models(probe, report):
 
 
 def _check_recognition(probe, report):
-    """Each recognition kind's models (people.py: YuNet + SFace) against media_intake/pins.json. Optional:
-    absent models only mean the command is off; a present file with the wrong sha256 fails."""
+    """Each recognition kind's models (people.py: YuNet + SFace; pets.py: YOLOX + DINOv2) against
+    media_intake/pins.json. Optional: absent models only mean the command is off; a present file with the
+    wrong sha256 fails."""
     ok = True
     for mod, what in RECOGNITION.items():
         if not os.path.isfile(os.path.join(HERE, mod + ".py")):

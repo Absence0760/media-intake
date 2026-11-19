@@ -20,7 +20,8 @@ beside them; no other keyword is added or removed. Videos: 3 sampled frames (few
 for a clip under about 4 s), trash only when most of them (2 of 3) say TRASH >= 0.7
 (conf: the lowest of those).
 Skipped, never sent or tagged: files you decided on (owner.decided: Owner|keep,
-Owner|not-trash or its legacy spelling, Owner|trash, a digiKam pick label, a favorite: xmp:Rating >= 5). Files tagged
+Owner|not-trash or its legacy spelling, Owner|trash, a digiKam pick label, a favorite: xmp:Rating >= 5), and
+files with a person or pet you named (owner.named: People|<Name>, Pets|<Name>). Files tagged
 Used|* or a protected project's Project|<name> (config.toml) are not sent either and get .../keep (never trash).
 Nothing else is stored: no description, no model text. Output is counts only.
 
@@ -273,10 +274,11 @@ def read_tags(paths):
 
 
 def owner_decided(t):
-    """t: read_tags() output, where a pick label shows as digiKam|pick/<n> and a favorite as xmp|rating/<n>."""
+    """t: read_tags() output, where a pick label shows as digiKam|pick/<n> and a favorite as xmp|rating/<n>.
+    A person or pet you named in it (owner.named) counts as decided too: never judged."""
     pick = next((x.split("/", 1)[1] for x in t if x.startswith("digiKam|pick/")), "")
     stars = next((x.split("/", 1)[1] for x in t if x.startswith("xmp|rating/")), None)
-    return owner.decided(t, pick, stars)
+    return owner.decided(t, pick, stars) or owner.named(t)
 
 
 def protected(t):
@@ -295,7 +297,8 @@ def candidates():
         v = row.get("HierarchicalSubject")
         tags = [] if v is None else [str(x) for x in (v if isinstance(v, list) else [v])]
         media = row["SourceFile"][:-4]
-        if "Review|maybe-trash" in tags and not owner.kept(tags, "", row.get("Rating")) and os.path.isfile(media):
+        if "Review|maybe-trash" in tags and not owner.kept(tags, "", row.get("Rating")) and not owner.named(tags) \
+                and os.path.isfile(media):
             out.append(media)
     return sorted(out)
 

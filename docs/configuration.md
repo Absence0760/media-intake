@@ -21,6 +21,8 @@ Paths take `~` and `$VARS`.
 | `projects.<key>` | none | See below. |
 | `plugins.paths`, `plugins.modules` | none | Plugin modules and where to import them from: [plugins.md](plugins.md). |
 | `recognition.dir` | `<state>/recognition` | People and pets recognition data (detections, vectors, names, crops; biometric). Kept `0700`, its files `0600`; refused inside the library, videos or a project folder, never backed up: [recognition.md](recognition.md). |
+| `recognition.pet_classes` | `["cat", "dog"]` | The animals `media-intake pets` looks for, from the detector's COCO animals: `bird`, `cat`, `dog`, `horse`, `sheep`, `cow`, `elephant`, `bear`, `zebra`, `giraffe`. A cat is never grouped with a dog. |
+| `recognition.pet_min_frames` | `3` | A video gets `Pets\|<Name>` only when that pet is in at least this many of its sampled frames (1 to 100). Photos need one. |
 
 `state`, `library`, `videos` and every project's `folder` (as resolved, env
 vars included) are never accepted as a laptop folder source, nor any folder
@@ -89,8 +91,9 @@ The thresholds in [`media_intake/labels.yaml`](../media_intake/labels.yaml)
 machine: it reads stored numbers and sidecar tags only, opens no photo or
 video, and writes nothing (not `labels.yaml`, not this config, not a sidecar).
 Changing a threshold stays your edit to `labels.yaml`.
-`Calibrate|people|<Name>` tags are not labels: `media-intake people eval`
-reads them ([recognition.md](recognition.md)) and `calibrate` ignores them.
+`Calibrate|people|<Name>` and `Calibrate|pets|<Name>` tags are not labels:
+`media-intake people eval` and `pets eval` read them
+([recognition.md](recognition.md)) and `calibrate` ignores them.
 
 1. **Build or update the search index**: `media-intake index`. Without it,
    calibrate stops with `calibrate: no search index yet. Build it first:

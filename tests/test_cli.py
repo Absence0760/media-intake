@@ -14,6 +14,7 @@ import support  # noqa: E402,F401  (hermetic config)
 import cli  # noqa: E402
 import label  # noqa: E402
 import people  # noqa: E402
+import pets  # noqa: E402
 import semantic  # noqa: E402
 import vlm_trash  # noqa: E402
 
@@ -39,7 +40,8 @@ class FakeProbe:
         self.files = {VISION: FILES["onnx/vision_model_quantized.onnx"], TEXT: FILES["onnx/text_model.onnx"],
                       TOKENIZER: FILES["tokenizer.json"], cli.venv_python(): None, cli.MTP_BACKEND: None,
                       os.path.join(os.environ["MEDIA_INTAKE_STATE"], "geo", "cities1000.zip"): None,
-                      **{path: sha for _, path, sha in people.model_files(os.environ["MEDIA_INTAKE_STATE"])}}
+                      **{path: sha for mod in (people, pets)
+                         for _, path, sha in mod.model_files(os.environ["MEDIA_INTAKE_STATE"])}}
         self.tags = {"models": [{"name": PINS["ollama"]["model"], "model": PINS["ollama"]["model"],
                                  "digest": PINS["ollama"]["digest"]}]}
         self.hashed = []
@@ -110,11 +112,11 @@ class Doctor(unittest.TestCase):
         self.assertEqual(sorted(self.p.hashed), sorted([VISION, TEXT, TOKENIZER, *self.recognition()]))
         self.assertTrue(self.line(lines, "YuNet face detector").startswith("ok "))
 
-    def recognition(self):
-        return [path for _, path, _ in people.model_files(os.environ["MEDIA_INTAKE_STATE"])]
+    def recognition(self, mods=(people, pets)):
+        return [path for mod in mods for _, path, _ in mod.model_files(os.environ["MEDIA_INTAKE_STATE"])]
 
     def test_recognition_models_absent_is_optional_half_missing_or_wrong_fails(self):
-        yunet, sface = self.recognition()
+        yunet, sface = self.recognition([people])
         del self.p.files[yunet], self.p.files[sface]
         code, lines = self.run_doctor()
         self.assertEqual(code, 0, lines)
@@ -129,6 +131,24 @@ class Doctor(unittest.TestCase):
         self.assertEqual(code, 1)
         self.assertTrue(self.line(lines, "YuNet face detector").startswith("BAD "))
         self.assertTrue(self.line(lines, "SFace face recogniser").startswith("ok "))
+        self.assertTrue(self.line(lines, "DINOv2 pet recogniser").startswith("ok "), "the other kind is its own")
+
+    def test_pets_models_absent_is_optional_half_missing_or_wrong_fails(self):
+        yolox, dino = self.recognition([pets])
+        del self.p.files[yolox], self.p.files[dino]
+        code, lines = self.run_doctor()
+        self.assertEqual(code, 0, lines)
+        self.assertTrue(self.line(lines, "pets recognition off").startswith("optional "))
+        self.assertTrue(self.line(lines, "YuNet face detector").startswith("ok "))
+        self.p.files[dino] = pets.model_files(os.environ["MEDIA_INTAKE_STATE"])[1][2]
+        code, lines = self.run_doctor()
+        self.assertEqual(code, 1)
+        self.assertTrue(self.line(lines, "YOLOX animal detector").startswith("MISSING "))
+        self.p.files[yolox] = OTHER
+        code, lines = self.run_doctor()
+        self.assertEqual(code, 1)
+        self.assertTrue(self.line(lines, "YOLOX animal detector").startswith("BAD "))
+        self.assertTrue(self.line(lines, "DINOv2 pet recogniser").startswith("ok "))
 
     def test_missing_required_prints_the_exact_dnf_line(self):
         self.p.tools -= {"exiftool", "ffmpeg", "ffprobe", "findmnt"}
@@ -602,7 +622,7 @@ class VenvCommands(unittest.TestCase):
         return code, out.getvalue(), err.getvalue()
 
     def test_help_without_the_venv(self):
-        for cmd in ("index", "search", "similar", "people"):
+        for cmd in ("index", "search", "similar", "people", "pets"):
             for flag in ("--help", "-h"):
                 with self.subTest(cmd=cmd, flag=flag):
                     code, out, err = self.run_main([cmd, flag])
@@ -643,14 +663,19 @@ class Pins(unittest.TestCase):
         self.assertEqual(label.MODEL_SHA, FILES["onnx/vision_model_quantized.onnx"])
         self.assertEqual((semantic.TEXT_SHA, semantic.TOK_SHA), (FILES["onnx/text_model.onnx"], FILES["tokenizer.json"]))
         self.assertEqual((vlm_trash.MODEL, vlm_trash.DIGEST), (PINS["ollama"]["model"], PINS["ollama"]["digest"]))
-        self.assertEqual([sha for _, _, sha in people.model_files()],
-                         [v["sha256"] for v in PINS["opencv_zoo"]["files"].values()])
+        zoo = PINS["opencv_zoo"]["files"]
+        self.assertEqual([sha for _, _, sha in people.model_files()], [zoo[people.YUNET_FILE]["sha256"],
+                                                                       zoo[people.SFACE_FILE]["sha256"]])
+        self.assertEqual([sha for _, _, sha in pets.model_files()], [zoo[pets.YOLOX_FILE]["sha256"],
+                                                                     PINS["dinov2"]["files"][pets.DINO_FILE]["sha256"]])
+        self.assertEqual(sorted(zoo), sorted([people.YUNET_FILE, people.SFACE_FILE, pets.YOLOX_FILE]))
 
     PREFIX = 12  # `ollama list` and doctor show 12 characters; a copied prefix goes stale like a full pin
 
     def test_no_pin_copied_elsewhere(self):
-        pins = set(FILES.values()) | {PINS["siglip"]["revision"], PINS["ollama"]["digest"], PINS["opencv_zoo"]["commit"]}
-        pins |= {v["sha256"] for v in PINS["opencv_zoo"]["files"].values()}
+        pins = set(FILES.values()) | {PINS["siglip"]["revision"], PINS["ollama"]["digest"], PINS["opencv_zoo"]["commit"],
+                                      PINS["dinov2"]["revision"]}
+        pins |= {v["sha256"] for k in ("opencv_zoo", "dinov2") for v in PINS[k]["files"].values()}
         prefixes = {pin[:self.PREFIX] for pin in pins}
         root = support.ROOT
         paths = [os.path.join(root, "setup.sh"), *glob.glob(os.path.join(support.PKG, "*.py")),

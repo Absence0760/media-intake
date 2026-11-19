@@ -227,6 +227,7 @@ def facts(it):
     it["ai_keep"] = any(t == "Review|vlm-keep" or (t.startswith("AI|vlm/") and "/keep" in t) for t in tags)
     it["kept"] = owner.kept(tags, it.get("pick", ""))  # your Keep (the tile's "Kept"); a favorite is it["fav"]
     it["fav"] = owner.favorite(it.get("rating"))
+    it["named"] = owner.named(tags)  # a person or pet you named (People|, Pets|): never Suggested junk
     it["trashed"] = owner.trashed(tags)  # a surviving copy of content you trashed
 
 
@@ -1288,11 +1289,13 @@ class App:
     def suggested(self, it, floor=SUGGEST_MIN):
         """Suggested junk: a copy of something you trashed, a content label's junk flag, or a vision-check trash
         verdict scoring at least `floor` (the view's Junk score; SUGGEST_MIN unless you lower it). Never a file you
-        kept or starred, one used in a post or one in a protected project, whatever the floor."""
+        kept or starred, one used in a post or one in a protected project, whatever the floor. A file with a person
+        or pet you named (People|, Pets|) is never suggested by a label or the vision check; a copy you trashed
+        still is (a name is no Keep)."""
         if it["kept"] or it["fav"] or it["used"] or f"Project|{it['project']}" in PROTECTED or PROTECTED.intersection(it["tags"]):
             return False
-        return it["trashed"] or "Review|maybe-trash" in it["tags"] or \
-            (it["ai_trash"] is not None and it["ai_trash"] >= floor)
+        return it["trashed"] or not it.get("named") and ("Review|maybe-trash" in it["tags"] or
+                                                         (it["ai_trash"] is not None and it["ai_trash"] >= floor))
 
     @staticmethod
     def junk_floor(f):

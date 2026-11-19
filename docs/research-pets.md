@@ -1,8 +1,12 @@
 # Research: recognising pets, and bringing people tags in
 
-Status: **decided, not built**. Researched 2026-11-19; the owner accepted the
-recommendations the same day ("Decisions" below). Nothing here changes the tool
-yet.
+Status: **decided; pets built** on the shared core (`media_intake/pets.py`,
+[recognition.md](recognition.md)). Researched 2026-11-19; the owner accepted the
+recommendations the same day ("Decisions" below). Built with them: a video is
+tagged only when the pet is in 3 or more of its frames
+(`recognition.pet_min_frames`); `pets eval` takes the owner's own names and
+`Pets|` tags as truth, plus `Calibrate|pets|<Name>` (not `Calibrate|pet|`).
+Date-aware propagation and the gallery view are not built.
 
 Goal: tag each of a household's own pets by name (`Pets|<Name>`), the same way a
 face pipeline tags people (`People|<Name>`), and move that face pipeline into

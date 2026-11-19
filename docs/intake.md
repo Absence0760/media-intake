@@ -1216,12 +1216,13 @@ own namespace; your tags win.
 | `Review\|child-in-shot` | SigLIP | added, never removed by a tool; only you clear it |
 | `AI\|vlm/<model>/...` (and the older `Review\|vlm-trash/*`, `Review\|vlm-keep`) | the VLM (`vlm_trash.py`) | its own; tagging never touches them |
 | `Used\|<slug>` | `mark-used` | never removed |
-| `People\|<Name>`, `Pets\|<Name>` | `people tag` (and `pets tag`, planned; [recognition.md](recognition.md)), only for names you gave or confirmed | removes only tags it wrote that no longer apply; never re-adds one you removed from the sidecar; your own `People\|` tags are never touched |
+| `People\|<Name>`, `Pets\|<Name>` | `people tag` and `pets tag` ([recognition.md](recognition.md)), only for names you gave or confirmed | removes only tags it wrote that no longer apply; never re-adds one you removed from the sidecar; your own `People\|` and `Pets\|` tags are never touched |
 | `Calibrate\|<label>\|yes`, `Calibrate\|<label>\|no` | you (the gallery's "+ tag") | never touched by a tool; only `calibrate` reads them ([configuration.md](configuration.md), "Calibrating label thresholds") |
 
 - `Review|maybe-trash` is never added to a file with `Owner|not-trash`,
   `Owner|keep`, `Owner|trash` (or the legacy `Review|not-trash`), digiKam
-  Accepted or a favorite (`xmp:Rating` >= 5).
+  Accepted, a favorite (`xmp:Rating` >= 5) or a person or pet you named
+  (`People|<Name>`, `Pets|<Name>`).
 
 #### Owner decisions
 
@@ -1238,6 +1239,12 @@ suggest-trash, vlm-trash, semantic `--clean`, the gallery and the review page.
   never suggested as trash, never judged by the VLM, never marked
   `Owner|trash` as a copy. No tag is written; four stars or fewer are no
   decision.
+- **A person or pet you named** (`People|<Name>`, `Pets|<Name>`: `people tag`
+  and `pets tag` write only names you gave or confirmed, never a suggestion,
+  and one you typed yourself counts too; `owner.named`): never Suggested junk
+  (the gallery, `suggest-trash`), never judged by the VLM, never
+  `Review|maybe-trash`. It is not a Keep: the tile doesn't say Kept, and a
+  trash decision on the file still stands.
 - **Trash** (`trash`, the review page's Trash, the gallery's Trash) deletes the
   file and its sidecar, so the decision can't live there. Its durable home is
   the sha256 in `<state>/trashed.json`, written before the delete: `plan`

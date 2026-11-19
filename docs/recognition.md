@@ -4,27 +4,30 @@
 alike and lets you name the groups. It never names anyone by itself: a face
 that later joins a group you named is a **suggestion** until you confirm it,
 and only names you gave or confirmed become tags (`People|<Name>` in the XMP
-sidecar). Pets are planned on the same core (`media-intake pets`,
-`Pets|<Name>`, cats and dogs by default; not in this version yet). Words: [words.md](words.md),
-"People and pets". Design and model choices: [research-pets.md](research-pets.md).
+sidecar). `media-intake pets` does the same for your own animals on the same
+core (`Pets|<Name>`, cats and dogs by default; [Pets](#pets) below). Words:
+[words.md](words.md), "People and pets". Design and model choices:
+[research-pets.md](research-pets.md).
 
 Everything runs on this laptop's CPU. Nothing is downloaded at run time and no
 photo, face or vector leaves the machine.
 
 ## Turning it on
 
-It is off by default: every `people` command refuses with one line until its
-models are installed.
+It is off by default: every `people` and `pets` command refuses with one line
+until its models are installed.
 
 ```sh
-bash setup.sh --recognition     # fetches YuNet + SFace (about 39 MB), sha256-checked
-media-intake doctor             # "YuNet face detector" and "SFace face recogniser": ok
+bash setup.sh --recognition     # fetches YuNet + SFace (39 MB) and YOLOX + DINOv2 (60 MB), sha256-checked
+media-intake doctor             # "YuNet face detector", "SFace face recogniser", "YOLOX animal
+                                # detector" and "DINOv2 pet recogniser": ok
 ```
 
-Both models come from OpenCV's model zoo at the commit pinned in
-`media_intake/pins.json`; `setup.sh --recognition` checks their sha256 on
-every run, `doctor` reports them (absent: optional; wrong checksum: BAD) and
-`people scan` checks them again before loading. Licences:
+YuNet, SFace and YOLOX come from OpenCV's model zoo at the commit pinned in
+`media_intake/pins.json`, DINOv2 from Hugging Face at the revision pinned
+there; `setup.sh --recognition` checks their sha256 on every run, `doctor`
+reports them (absent: optional; wrong checksum: BAD) and `people scan` /
+`pets scan` check them again before loading. Licences:
 [THIRD_PARTY_NOTICES.md](../THIRD_PARTY_NOTICES.md). The commands run in the
 venv `setup.sh` builds.
 
@@ -76,6 +79,53 @@ whose average pair passes 0.363. Two faces in one photo, or one video frame,
 are never one person; two different names are never joined. These thresholds
 are uncalibrated starting points.
 
+## Pets
+
+`media-intake pets` has the same commands as `people` (`scan`, `cluster`,
+`clusters`, `name`, `merge`, `ignore`, `unname`, `suggestions`, `confirm`,
+`reject`, `take-out`, `put-back`, `tag`, `find`, `eval`); `pets pets` lists
+names with file counts. Tags are `Pets|<Name>`.
+
+```sh
+media-intake pets scan                # cats and dogs in the library, videos and project folders
+media-intake pets cluster
+media-intake pets clusters            # number, pets, files, species (cat or dog), name
+media-intake pets name 2 "Rex"
+media-intake pets merge 2 9           # the same dog lying down, running, from behind
+media-intake pets tag --dry-run
+media-intake pets tag
+```
+
+Expect one pet to start as several clusters: a body changes with pose far
+more than a face does, so a dog lying down and the same dog running may not
+link. Merge them once; the merge is kept. Ignore strangers' dogs, toys,
+statues and pets on a TV. A kitten and the grown cat may need a merge too
+(preferring photos close in date when growing a name is not built yet).
+
+How it decides: YOLOX-s finds whole animals (from behind and the side too,
+where a face would be hidden), keeping the classes in
+`recognition.pet_classes` (default `cat`, `dog`; bird, horse and the other
+COCO animals by config, [configuration.md](configuration.md)), scored 0.5 or
+more and at least 96 px on the short side in the photo decoded at 1600 px.
+Each animal is cut out with a 10 % margin and padded to a square (no tail or
+ear cut off), and DINOv2 ViT-S/14 turns it into a 384-number vector. `cluster`
+links animals whose cosine is at least 0.8 and merges groups whose average
+pair passes 0.75. These are uncalibrated first guesses that lean towards
+splitting (an extra cluster costs a merge; a wrong merge would tag the wrong
+pet); `pets eval` measures them. A cat is never in a cluster with a dog, two
+animals in one photo (or one video frame) are never one pet, and two
+different names are never joined. Littermates or two black dogs may stay one
+cluster: name it "the dogs", ignore it, or tag by hand.
+
+Videos are scanned through a few sampled frames each (Videos, below). A
+video gets `Pets|<Name>` only when that pet
+is in at least `recognition.pet_min_frames` (default 3) of its sampled
+frames, so one passing glimpse doesn't tag it.
+
+A file with a person or pet you named (`People|<Name>`, `Pets|<Name>`) is
+never suggested as junk and never judged by the vision check
+([intake.md](intake.md), "Owner decisions").
+
 ## Checking how well it works
 
 `media-intake people eval` reads only: tag some photos `Calibrate|people|<Name>`
@@ -86,15 +136,33 @@ threshold how many clusters each person splits into and how many clusters
 mix two people. Numbers only; no image is shown or copied. (`calibrate`
 counts these tags as naming no label and ignores them.)
 
+`media-intake pets eval` reads only, too, and uses your own names as truth:
+every pet in a cluster you named or a suggestion you confirmed, plus
+`Pets|<Name>` and `Calibrate|pets|<Name>` tags on files with one pet in them
+(a pet given two different names is left out). It compares the two vector
+models `pets scan` stores side by side: DINOv2 (what `cluster` uses) and
+SigLIP on the same crop (the model the tool already has, no extra download).
+DINOv2 is scored at the link threshold (or `--link`), SigLIP at its own equal
+error threshold, since its cosines sit on another scale. Names you gave to
+DINOv2's clusters favour DINOv2 a little: for a fair comparison, tag a few
+dozen photos per pet `Calibrate|pets|<Name>` by hand, spread over years and
+poses. If SigLIP scores as well and mixes nothing, DINOv2 is not earning its
+download; if DINOv2 mixes two of your pets at every usable threshold, the
+stock model is not enough ([research-pets.md](research-pets.md), Evaluation
+plan). At most 300 pets per name are scored (evenly spread), so it stays
+quick on a large library.
+
 ## Your data: where it is and what removes it
 
-Faces, vectors and names are biometric data. They stay on this laptop.
+Faces, vectors and names are biometric data. Pets' are treated the same:
+the crops often show people too, and with the dates they describe your home
+life. They stay on this laptop.
 
 | What | Where | Kept |
 | --- | --- | --- |
-| Store: files (path, sha256, size, mtime), detections (box, score, kind, frame time), vectors, names, merges, rejections, the tags it wrote | `recognition.dir/recognition.db` (default `<state>/recognition/`; [configuration.md](configuration.md)) | folder `0700`, file `0600` |
+| Store: files (path, sha256, size, mtime), detections (box, score, kind, species, frame time), vectors (DINOv2 and SigLIP for pets), names, merges, rejections, the tags it wrote | `recognition.dir/recognition.db` (default `<state>/recognition/`; [configuration.md](configuration.md)) | folder `0700`, file `0600` |
 | 160 px crops for the naming page | `recognition.dir/crops/`, made only when a page asks for one | `0600` |
-| Names you confirmed | your sidecars, as `People\|<Name>` | as your sidecars |
+| Names you confirmed | your sidecars, as `People\|<Name>` and `Pets\|<Name>` | as your sidecars |
 
 - Never in git, never in a backup: `backup` never enters the state folder or
   `recognition.dir`, and the tool refuses a `recognition.dir` inside the
@@ -104,7 +172,7 @@ Faces, vectors and names are biometric data. They stay on this laptop.
   coverage report counts them ("people and pets recognition data").
   `verify-gone` fails while any of them is left.
 - To turn it off and drop everything: delete `recognition.dir`. The
-  `People|` tags already written stay in your sidecars.
+  `People|` and `Pets|` tags already written stay in your sidecars.
 
 ## For lane authors: the core
 
@@ -112,7 +180,8 @@ Faces, vectors and names are biometric data. They stay on this laptop.
 docstring documents the plug-in interface: a detector
 (`detect(image) -> [(box, score, species[, crop])]`), an embedder
 (`embed(crop) -> vector`), a `recog.Kind` naming the command, tag prefix,
-thresholds and models, and frame sources for videos
+thresholds and models (optionally `min_frames` for videos and `eval_labels`,
+eval's truth), and frame sources for videos
 (`frames.sample(path) -> iterator of (t_seconds, RGB array)`). The gallery
 calls `clusters`, `suggestions`, `cluster_hints`, `confirm`, `reject`,
 `name_cluster`, `merge_clusters`, `name_cluster(..., recog.IGNORED)`,
@@ -168,6 +237,10 @@ decoder.
 **Refused.** Anything under the state folder, and any file `scan` flagged,
 quarantined or erased (`label.refused`), raises `frames.Refused` before
 anything is decoded. A clip nothing can decode raises `frames.FramesError`.
+`people scan` and `pets scan` count such a video as unreadable (rows from the
+frames it read before failing are dropped) and go on with the next file; the
+sampler is always opened in a `with`, so its decoder is closed even when a
+crop for the naming view stops at the one frame it needs.
 
 Needs numpy (Fedora's `python3-numpy`, which the system Python has and the
 venv reuses); no OpenCV.

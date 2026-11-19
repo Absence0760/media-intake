@@ -449,6 +449,22 @@ class GalleryTest(unittest.TestCase):
         for p, h0 in self.originals.items():
             self.assertEqual(sha(p), h0, p)  # originals never written
 
+    def test_named_person_or_pet_never_suggested(self):
+        """A People|<Name> or Pets|<Name> tag (recognition writes only names you gave or confirmed) keeps a file
+        out of Suggested junk at any Junk score; it is not shown as Kept."""
+        write_tags(self.a, ["Project|Personal", "Review|maybe-trash", "AI|vlm/m1/trash/blurry", "AI|vlm/m1/conf/0.9",
+                            "Pets|Rex"])
+        write_tags(self.lo, ["Project|Personal", "AI|vlm/m1/trash/dark", "AI|vlm/m1/conf/0.5", "People|Ann"])
+        s = self.start()
+        for f in ({}, {"jmin": "0"}):
+            self.assertNotIn("a.jpg", self.names(s, view="suggest", **f)[0], f)
+            self.assertNotIn("lo.jpg", self.names(s, view="suggest", **f)[0], f)
+        item = next(i for i in self.names(s)[1]["items"] if i["n"] == "a.jpg")
+        self.assertFalse(item.get("kept"), "a name is no Keep")
+        write_tags(self.a, ["Project|Personal", "Owner|trash", "Pets|Rex"])  # a copy you trashed: still offered
+        s2 = self.start()
+        self.assertIn("a.jpg", self.names(s2, view="suggest")[0])
+
     def test_favorites(self):
         """The star: xmp:Rating 5 in the sidecar and nothing else; a favorite (also five stars from digiKam) is
         never Suggested junk; the Favorites view (review=favorite) and its count; four stars are no favorite."""
