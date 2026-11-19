@@ -20,7 +20,8 @@ job). A left sidebar holds the views with counts (/api/facets): Library, Trash
 suggestions, any tab a plugin adds (plugins.py gallery_views(), docs/plugins.md),
 the quick views Recently added, Possible child, Untagged, and the Events (Event|
 tags; rename and merge rewrite only those, in the sidecars that have them); then
-search and the filters. Bursts (bursts.py over the plan entries intake wrote) show in
+search, the filters and Keyboard shortcuts; its right edge drags (or arrow keys) to a
+width kept per browser. Bursts (bursts.py over the plan entries intake wrote) show in
 the timeline as one stack per burst: a cover with a count badge, X opens or closes it,
 and on a closed stack every action acts on the cover only.
 Selection actions sit in a bottom bar shown only while something is selected; Select all
@@ -1819,7 +1820,7 @@ PAGE = r"""<!doctype html>
 <style>
 :root{--bg:#f5f6f8;--panel:#fff;--fg:#16181d;--mut:#5d6470;--line:#e2e5ea;--card:#e9ecf0;--hover:#eef0f4;--acc:#2456d3;--acc-soft:rgba(36,86,211,.10);
  --keep:#1b7a33;--trash:#8a5a00;--erase:#b3261e;--shadow:0 6px 24px rgba(16,24,40,.14);
- --on-acc:#fff;--sbw:280px;--ml:280px;--hh:56px;--tile:168px}
+ --on-acc:#fff;--sbw:300px;--ml:300px;--hh:56px;--tile:168px}
 @media (prefers-color-scheme: dark){:root{--bg:#0f1013;--panel:#17191d;--fg:#e8eaed;--mut:#9aa1ad;--line:#2a2d34;--card:#22252b;--hover:#1f2228;--acc:#8ab0ff;--acc-soft:rgba(138,176,255,.14);
  --keep:#4cc26a;--trash:#e0a030;--erase:#ff6b5e;--shadow:0 6px 24px rgba(0,0,0,.5);--on-acc:#0b1020}}
 *{box-sizing:border-box}
@@ -1867,12 +1868,13 @@ kbd{font:600 11px/1 ui-monospace,monospace;border:1px solid currentColor;border-
 .brand{font-weight:650;font-size:15px;white-space:nowrap}
 #views{padding:4px 10px 8px;display:flex;flex-direction:column;gap:2px}
 #ptabs{display:contents}
-.nvhead{font-size:11px;font-weight:650;letter-spacing:.06em;text-transform:uppercase;color:var(--mut);padding:12px 10px 4px}
-.nv{display:flex;align-items:center;gap:10px;height:36px;padding:0 10px;border:0;border-radius:8px;background:none;text-align:left;width:100%;color:var(--fg)}
+/* a section's heading: a rule above it, so Quick views and Events read as groups of their own */
+.nvhead{font-size:12px;font-weight:650;letter-spacing:.06em;text-transform:uppercase;color:var(--mut);padding:14px 10px 6px;margin-top:6px;border-top:1px solid var(--line)}
+.nv{display:flex;align-items:center;gap:10px;height:38px;padding:0 10px;border:0;border-radius:8px;background:none;text-align:left;width:100%;color:var(--fg)}
 .nv:hover{background:var(--hover)}
 .nv[aria-current=page]{background:var(--acc-soft);color:var(--acc);font-weight:600}
 .nv .lbl{flex:1;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
-.ct{color:var(--mut);font-size:12px;font-variant-numeric:tabular-nums;font-weight:400}
+.ct{color:var(--mut);font-size:13px;font-variant-numeric:tabular-nums;font-weight:400}
 .nv[aria-current=page] .ct{color:var(--acc)}
 .railonly{display:none}
 .rl{display:none}
@@ -1882,7 +1884,8 @@ kbd{font:600 11px/1 ui-monospace,monospace;border:1px solid currentColor;border-
 #evbar .evt{font-weight:600;margin-right:4px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;max-width:100%}
 #mfieldp label{display:block;font-size:13px;color:var(--mut);margin-bottom:4px}
 #mfield{width:100%}
-.sb-search{padding:8px 16px 4px;border-top:1px solid var(--line)}
+/* search and filters: apart from the views above by a heavier rule */
+.sb-search{padding:12px 16px 4px;border-top:4px solid var(--line)}
 .field{position:relative}
 .field .ic{position:absolute;left:10px;top:50%;transform:translateY(-50%);color:var(--mut);pointer-events:none}
 #q{width:100%;height:36px;padding:0 10px 0 34px;border:1px solid var(--line);border-radius:8px;background:var(--bg)}
@@ -1892,9 +1895,18 @@ kbd{font:600 11px/1 ui-monospace,monospace;border:1px solid currentColor;border-
 .hint summary::-webkit-details-marker{display:none}
 .hint summary::after{content:" (why)";color:var(--acc)}
 .hint .why{margin-top:4px;word-break:break-word;font-family:ui-monospace,monospace;font-size:11px}
-#filters{padding:6px 0 24px}
+#filters{padding:6px 0 16px}
+/* the foot: page help, not a view; pushed to the bottom when the sidebar is short */
+.sb-foot{margin-top:auto;padding:8px 10px;border-top:1px solid var(--line)}
+/* the drag handle on the sidebar's right edge (desktop, expanded only) */
+#sbresize{position:fixed;top:0;bottom:0;left:calc(var(--sbw) - 4px);width:8px;z-index:16;cursor:col-resize;touch-action:none;background:none}
+#sbresize::after{content:"";position:absolute;top:0;bottom:0;left:3px;width:2px;background:transparent;transition:background .1s}
+#sbresize:hover::after,#sbresize:focus-visible::after,.sbdrag #sbresize::after{background:var(--acc)}
+#sbresize:focus-visible{outline:none}
+#sbresize:focus-visible::after{left:2px;width:4px}
+.sbdrag,.sbdrag *{cursor:col-resize!important;user-select:none}
 .fhead{display:flex;align-items:baseline;justify-content:space-between;padding:10px 16px 4px}
-.fhead b{font-size:11px;font-weight:650;letter-spacing:.06em;text-transform:uppercase;color:var(--mut)}
+.fhead b{font-size:12px;font-weight:650;letter-spacing:.06em;text-transform:uppercase;color:var(--mut)}
 .fs{border-top:1px solid var(--line)}
 .fs:first-of-type{border-top:0}
 .fs h3{margin:0;font-size:inherit}
@@ -1906,7 +1918,7 @@ kbd{font:600 11px/1 ui-monospace,monospace;border:1px solid currentColor;border-
 .fs-h[aria-expanded=true] .chev{transform:rotate(180deg)}
 .fs-b{padding:0 12px 12px}
 .olist{display:flex;flex-direction:column;gap:1px;max-height:232px;overflow-y:auto}
-.opt{display:flex;align-items:center;gap:8px;width:100%;min-height:30px;padding:4px 8px;border:0;border-radius:6px;background:none;text-align:left;font-size:14px;color:var(--fg)}
+.opt{display:flex;align-items:center;gap:8px;width:100%;min-height:32px;padding:4px 8px;border:0;border-radius:6px;background:none;text-align:left;font-size:14px;color:var(--fg)}
 .opt:hover{background:var(--hover)}
 .opt .on{flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
 .opt[aria-pressed=true]{background:var(--acc-soft);color:var(--acc);font-weight:600}
@@ -1932,7 +1944,8 @@ output{font-variant-numeric:tabular-nums;color:var(--fg);font-weight:600}
 /* collapsed to an icon rail */
 .collapsed{--sbw:60px;--ml:60px}
 .collapsed #sidebar .lbl,.collapsed #sidebar .nv .ct,.collapsed #sidebar .brand,.collapsed #sidebar .nvhead,
-.collapsed .sb-search,.collapsed #filters,.collapsed #evsec{display:none}
+.collapsed .sb-search,.collapsed #filters,.collapsed #evsec,.collapsed #sbresize,.overlay #sbresize{display:none}
+.collapsed .sb-foot{padding:4px 8px}
 .collapsed #views{padding:4px 8px}
 .collapsed .nv{justify-content:center;padding:0;height:40px}
 /* the rail names each icon in a word under it (the full name stays the button's title and accessible name) */
@@ -2138,7 +2151,7 @@ dl.dt dd{margin:0;word-break:break-word}
 }
 /* no keyboard: the shortcut list and key hints go; the burst help says "tap" */
 @media (hover:none){
- #bkeys,.kbonly{display:none!important}
+ .sb-foot,.kbonly{display:none!important}
  #helpb .hshort .kb{display:none}
 }
 @media (hover:hover){#helpb .hshort .tch{display:none}}
@@ -2174,19 +2187,22 @@ dl.dt dd{margin:0;word-break:break-word}
   <button type="button" class="nv" data-v="child" title="Possible child"><svg class="ic"><use href="#i-child"/></svg><span class="lbl">Possible child</span><span class="rl" aria-hidden="true">Child</span><span class="ct" id="c-child"></span></button>
   <button type="button" class="nv" data-v="untagged" title="Untagged"><svg class="ic"><use href="#i-tag"/></svg><span class="lbl">Untagged</span><span class="rl" aria-hidden="true">No tags</span><span class="ct" id="c-untagged"></span></button>
   <div id="evsec"><div class="nvhead">Events</div><div id="evlist"></div></div>
-  <button type="button" class="nv" id="bkeys" title="Keyboard shortcuts (?)" aria-keyshortcuts="?" aria-haspopup="dialog"><svg class="ic"><use href="#i-keys"/></svg><span class="lbl">Keyboard shortcuts</span><span class="ct"><kbd>?</kbd></span></button>
   <button type="button" class="nv railonly" id="rsearch" title="Search (/)"><svg class="ic"><use href="#i-search"/></svg><span class="vh">Search</span><span class="rl" aria-hidden="true">Search</span></button>
   <button type="button" class="nv railonly icon" id="rfilter" title="Filters" style="width:100%"><svg class="ic"><use href="#i-filter"/></svg><span class="vh">Filters</span><span class="rl" aria-hidden="true">Filters</span><span class="badge-n" id="rbadge" hidden></span></button>
  </nav>
  <div class="sb-search">
-  <div class="field"><svg class="ic"><use href="#i-search"/></svg><input id="q" type="search" placeholder="Search photos and videos" aria-label="Search" autocomplete="off"></div>
+  <div class="field"><svg class="ic"><use href="#i-search"/></svg><input id="q" type="search" placeholder="Search photos &amp; videos" aria-label="Search" autocomplete="off"></div>
   <div id="qhint" class="hint" hidden></div>
  </div>
  <div id="filters" role="region" aria-label="Filters">
   <div class="fhead"><b>Filters</b><button type="button" class="link" id="clear" hidden></button></div>
   <div id="fsecs"></div>
  </div>
+ <div class="sb-foot">
+  <button type="button" class="nv" id="bkeys" title="Keyboard shortcuts (?)" aria-keyshortcuts="?" aria-haspopup="dialog"><svg class="ic"><use href="#i-keys"/></svg><span class="lbl">Keyboard shortcuts</span><span class="ct"><kbd>?</kbd></span></button>
+ </div>
 </aside>
+<div id="sbresize" role="separator" aria-orientation="vertical" aria-controls="sidebar" aria-label="Sidebar width" tabindex="0" title="Drag to resize the sidebar (or Left and Right arrows); double-click for the default width"></div>
 <div id="scrim"></div>
 <div id="app">
  <header id="top">
@@ -2235,6 +2251,9 @@ dl.dt dd{margin:0;word-break:break-word}
   <dt><kbd>Ctrl</kbd>+<kbd>Z</kbd> / <kbd>Cmd</kbd>+<kbd>Z</kbd></dt><dd>Undo the last Keep, tag, Rotate or Set event while its message shows</dd>
   <dt><kbd>?</kbd></dt><dd>This list</dd>
  </dl>
+ <h4>Sidebar</h4><dl>
+  <dt><kbd>←</kbd> <kbd>→</kbd></dt><dd>On the sidebar's edge (Tab to it): narrower / wider; with <kbd>Shift</kbd>, in bigger steps; <kbd>Home</kbd> / <kbd>End</kbd> the narrowest / widest. A double-click on the edge puts the default width back</dd>
+ </dl>
  <h4>Bursts</h4><dl>
   <dt><kbd>X</kbd></dt><dd>Open or close the focused tile's burst stack (focus goes back to the cover)</dd>
  </dl>
@@ -2262,7 +2281,7 @@ const CSRF=document.querySelector('meta[name=csrf]').content;
 const $=s=>document.querySelector(s),$$=s=>[...document.querySelectorAll(s)];
 function el(t,c,x){const e=document.createElement(t);if(c)e.className=c;if(x!=null)e.textContent=x;return e}
 const fmt=n=>(+n||0).toLocaleString();
-// per-browser conveniences only (sidebar rail, open sections, tile size); the page works without them
+// per-browser conveniences only (sidebar rail and width, open sections, tile size); the page works without them
 const LS={get(k,d){try{const v=localStorage.getItem("gallery."+k);return v===null?d:v}catch(e){return d}},set(k,v){try{localStorage.setItem("gallery."+k,v)}catch(e){}}};
 let view="lib",items=[],total=0,loading=false,done=false,sel=new Set(),last=null,cur=-1,ranked=false,simId=null,simName="",dec={},vi=-1,facets=null,gen=0,lastFocus=null,openB={},allSel=null;
 let F={aimin:"0.7"};
@@ -2309,6 +2328,32 @@ helpMore(LS.get("helpmore","0")==="1");
 $("#hmore").onclick=()=>{const on=!$("#helpb").classList.contains("more");helpMore(on);LS.set("helpmore",on?"1":"0")};
 mqPhone.addEventListener("change",()=>{drawer=false;layout()});
 $("#rsearch").onclick=()=>{expandSidebar();$("#q").focus()};
+// ---------------------------------------------------------------- sidebar: width (its right edge; desktop, expanded only)
+// drag the edge, or Left / Right arrows on it (Shift: bigger steps, Home / End: the ends); a double-click puts the default back.
+// Clamped to 240 px .. min(560 px, half the window), again when the window resizes; the chosen width is kept per browser.
+const SBW0=300,SBWMIN=240,sbMax=()=>Math.max(SBWMIN,Math.min(560,Math.floor(innerWidth/2)));
+let sbwPref=+LS.get("sbw",String(SBW0));if(!(sbwPref>=SBWMIN&&sbwPref<=2000))sbwPref=SBW0;
+function sbWidth(w,save){const h=$("#sbresize"),mx=sbMax(),v=Math.round(Math.min(mx,Math.max(SBWMIN,w))),r=document.documentElement.style;
+ r.setProperty("--sbw",v+"px");r.setProperty("--ml",v+"px");
+ h.setAttribute("aria-valuemin",String(SBWMIN));h.setAttribute("aria-valuemax",String(mx));h.setAttribute("aria-valuenow",String(v));h.setAttribute("aria-valuetext",v+" pixels");
+ if(save){sbwPref=v;LS.set("sbw",String(v))}return v}
+sbWidth(sbwPref,false);
+addEventListener("resize",()=>sbWidth(sbwPref,false));
+{const h=$("#sbresize");let drag=null,raf=0,nx=0;
+ h.addEventListener("pointerdown",ev=>{if(ev.button!==0)return;ev.preventDefault();h.setPointerCapture(ev.pointerId);
+  drag={x:ev.clientX,w:parseFloat(h.getAttribute("aria-valuenow"))||SBW0,id:ev.pointerId};document.body.classList.add("sbdrag")});
+ // one width per frame, however many pointer events arrive: the grid reflows at most once a frame
+ h.addEventListener("pointermove",ev=>{if(!drag||ev.pointerId!==drag.id)return;nx=ev.clientX;
+  if(!raf)raf=requestAnimationFrame(()=>{raf=0;if(drag)sbWidth(drag.w+nx-drag.x,false)})});
+ const end=ev=>{if(!drag||ev.pointerId!==drag.id)return;if(raf){cancelAnimationFrame(raf);raf=0}
+  if(ev.type!=="pointercancel")sbWidth(drag.w+ev.clientX-drag.x,true);else sbWidth(drag.w,true);
+  drag=null;document.body.classList.remove("sbdrag")};
+ h.addEventListener("pointerup",end);h.addEventListener("pointercancel",end);
+ h.addEventListener("lostpointercapture",ev=>{if(drag&&ev.pointerId===drag.id){sbWidth(parseFloat(h.getAttribute("aria-valuenow"))||SBW0,true);drag=null;document.body.classList.remove("sbdrag")}});
+ h.addEventListener("dblclick",()=>sbWidth(SBW0,true));
+ h.addEventListener("keydown",ev=>{const now=parseFloat(h.getAttribute("aria-valuenow"))||SBW0,step=ev.shiftKey?64:16;let w=null;
+  if(ev.key==="ArrowLeft")w=now-step;else if(ev.key==="ArrowRight")w=now+step;else if(ev.key==="Home")w=SBWMIN;else if(ev.key==="End")w=sbMax();
+  if(w===null||ev.ctrlKey||ev.metaKey||ev.altKey)return;ev.preventDefault();ev.stopPropagation();sbWidth(w,true)})}
 $("#rfilter").onclick=()=>{expandSidebar();const f=$("#filters");if(!f.hidden){f.scrollIntoView({block:"start"});const h=f.querySelector(".fs-h");if(h)h.focus()}};
 // ---------------------------------------------------------------- sidebar: filter sections
 const SECS=[["kind","Kind","1"],["when","When","1"],["project","Project","1"],["source","Source","1"],["place","Place","0"],["event","Event","0"],

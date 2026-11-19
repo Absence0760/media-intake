@@ -11,6 +11,12 @@ row of tiles reachable above the selection bar; the burst help one line on a pho
 the large view's close button pinned at the top right of a 390x844 phone however far the view is
 scrolled, and a downward swipe on the photo closing it (not a sideways or short one, nor one while scrolled down); and every
 label on an accent colour, the key hints and the placeholders at 4.5:1 or more in both colour schemes.
+The sidebar's width: its right edge (role=separator named "Sidebar width") dragged wider and narrower with the
+grid following, clamped to 240 px .. min(560 px, half the window) and again when the window shrinks, kept
+across a reload, a double-click putting the default 300 px back, Left / Right / Shift / Home / End on it, a
+visible focus line in both schemes, working with localStorage throwing, and no edge in the collapsed rail or
+at phone width (rail or drawer); Keyboard shortcuts at the sidebar's foot, not in the Views nav among the
+events; the search placeholder fitting its box at the default width, a tenth to spare.
 Review page: the burst badge, a pressed Keep and Submit at 4.5:1 or more in both schemes.
 
 The gallery's library is tests/test_gallery_bursts.py's BURST_LIBRARY in a throwaway HOME (a stack of three
@@ -32,6 +38,15 @@ PHONE = dict(viewport={"width": 390, "height": 844}, is_mobile=True, has_touch=T
 NARROW = dict(viewport={"width": 800, "height": 700})
 DESKTOP = dict(viewport={"width": 1440, "height": 900})
 SCHEMES = ("light", "dark")
+SBW0, SBWMIN, SBWMAX = 300, 240, 560  # the sidebar's default and its clamp at 1440 px (min(560, 1440 / 2))
+# The sidebar's and the main column's left edges and the first tile's, in CSS px.
+SIDEBAR = """() => ({sidebar: document.querySelector('#sidebar').getBoundingClientRect().width,
+  app: document.querySelector('#app').getBoundingClientRect().left,
+  tile: document.querySelector('[data-item]').getBoundingClientRect().left})"""
+# How wide the search box's placeholder is drawn, and the room its content box has.
+PLACEHOLDER = """q => { const cs = getComputedStyle(q), c = document.createElement('canvas').getContext('2d');
+  c.font = cs.font; return {text: c.measureText(q.placeholder).width,
+  room: q.clientWidth - parseFloat(cs.paddingLeft) - parseFloat(cs.paddingRight)} }"""
 
 # Boxes of the header's children and the page's scroll width, in CSS px.
 GEOMETRY = """() => {
@@ -288,6 +303,145 @@ class GalleryLayoutBrowserTest(LayoutCase):
         page.locator("#viewer").evaluate("v => { v.scrollTop = 200 }")
         page.evaluate(swipe, [10, 160])
         B.expect(viewer).to_be_visible()
+
+    # ------------------------------------------------------------ the sidebar's width
+    def edge(self, page):
+        return page.get_by_role("separator", name="Sidebar width")
+
+    def drag_edge(self, page, to_x, up=True):
+        box = self.edge(page).bounding_box()
+        y = box["y"] + box["height"] / 2
+        page.mouse.move(box["x"] + box["width"] / 2, y)
+        page.mouse.down()
+        page.mouse.move(to_x, y, steps=6)
+        if up:
+            page.mouse.up()
+
+    def assert_width(self, page, w, what):
+        B.expect(self.edge(page)).to_have_attribute("aria-valuenow", str(w))
+        g = page.evaluate(SIDEBAR)
+        self.assertAlmostEqual(g["sidebar"], w, delta=0.5, msg=f"{what}: the sidebar is {g['sidebar']} px")
+        self.assertAlmostEqual(g["app"], w, delta=0.5, msg=f"{what}: the main column starts at {g['app']} px")
+        self.assertGreaterEqual(g["tile"], w, f"{what}: the first tile at {g['tile']} px is under the sidebar")
+        self.assert_no_hscroll(page, what)
+
+    def test_sidebar_edge_drags_clamps_and_is_remembered(self):
+        page = self.page(DESKTOP)
+        edge = self.edge(page)
+        B.expect(edge).to_be_visible()
+        B.expect(edge).to_have_attribute("aria-orientation", "vertical")
+        B.expect(edge).to_have_attribute("aria-valuemin", str(SBWMIN))
+        B.expect(edge).to_have_attribute("aria-valuemax", str(SBWMAX))
+        self.assertEqual(edge.evaluate("e => getComputedStyle(e).cursor"), "col-resize")
+        self.assert_width(page, SBW0, "default")
+        # mid-drag the sidebar and the grid follow the pointer, before the button is let go
+        self.drag_edge(page, 420, up=False)
+        B.expect(page.locator("body")).to_have_class(re.compile(r"(^|\s)sbdrag(\s|$)"))
+        self.assert_width(page, 420, "mid-drag")
+        page.mouse.up()
+        B.expect(page.locator("body")).not_to_have_class(re.compile(r"(^|\s)sbdrag(\s|$)"))
+        self.assert_width(page, 420, "dragged wider")
+        self.drag_edge(page, 1300)
+        self.assert_width(page, SBWMAX, "dragged past the widest")
+        self.drag_edge(page, 40)
+        self.assert_width(page, SBWMIN, "dragged past the narrowest")
+        self.drag_edge(page, 380)
+        self.assert_width(page, 380, "dragged back")
+        page.reload()  # remembered in the browser
+        B.expect(page.locator("body")).to_have_attribute("data-ready", "1")
+        self.assert_width(page, 380, "after a reload")
+        # a smaller window clamps it to half its width; a bigger one gives the chosen width back
+        self.drag_edge(page, SBWMAX)
+        self.assert_width(page, SBWMAX, "widest")
+        page.set_viewport_size({"width": 1000, "height": 900})
+        B.expect(edge).to_have_attribute("aria-valuemax", "500")
+        self.assert_width(page, 500, "a 1000 px window")
+        page.set_viewport_size(DESKTOP["viewport"])
+        self.assert_width(page, SBWMAX, "the window wide again")
+        # a double-click puts the default back, remembered too
+        edge.dblclick()
+        self.assert_width(page, SBW0, "double-clicked")
+        page.reload()
+        B.expect(page.locator("body")).to_have_attribute("data-ready", "1")
+        self.assert_width(page, SBW0, "default after a reload")
+
+    def test_sidebar_edge_keys_and_focus_line(self):
+        for scheme in SCHEMES:
+            with self.subTest(scheme=scheme):
+                page = self.page(DESKTOP, scheme)
+                edge = self.edge(page)
+                # the line's colour once its fade-in (a CSS transition) has finished: a real signal, no sleep
+                line = ("async e => { await Promise.all(e.getAnimations({subtree: true}).map(a => a.finished));"
+                        " return getComputedStyle(e, '::after').backgroundColor }")
+                self.assertEqual(edge.evaluate(line), "rgba(0, 0, 0, 0)", "the line shows before hover or focus")
+                edge.focus()
+                for key, w in (("ArrowRight", 316), ("Shift+ArrowRight", 380), ("ArrowLeft", 364),
+                               ("Home", SBWMIN), ("ArrowLeft", SBWMIN), ("End", SBWMAX), ("ArrowRight", SBWMAX)):
+                    page.keyboard.press(key)
+                    self.assert_width(page, w, f"{scheme}: {key}")
+                B.expect(edge).to_be_focused()  # the keys resized, not moved the grid's focus
+                B.expect(page.get_by_role("dialog", name="Item")).to_be_hidden()
+                acc = page.evaluate("() => { const d = document.createElement('div'); d.style.color = 'var(--acc)';"
+                                    " document.body.append(d); const c = getComputedStyle(d).color; d.remove(); return c }")
+                self.assertEqual(edge.evaluate(line), acc, f"{scheme}: no accent focus line on the edge")
+                self.assertGreaterEqual(edge.evaluate("e => parseFloat(getComputedStyle(e, '::after').width)"), 3)
+                page.reload()
+                B.expect(page.locator("body")).to_have_attribute("data-ready", "1")
+                self.assert_width(page, SBWMAX, f"{scheme}: kept after a reload")
+                edge.dblclick()
+                self.assert_width(page, SBW0, f"{scheme}: reset")
+
+    def test_sidebar_edge_without_storage(self):
+        ctx = self.browser.new_context(**DESKTOP)
+        ctx.set_default_timeout(B.STEP_MS)
+        self.addCleanup(ctx.close)
+        ctx.add_init_script("Object.defineProperty(window, 'localStorage', {get() { throw new Error('storage blocked') }})")
+        page = ctx.new_page()
+        page.on("pageerror", lambda e: self.errors.append(str(e)))
+        self.open(page, self.server)
+        self.assert_width(page, SBW0, "no storage")
+        self.drag_edge(page, 450)
+        self.assert_width(page, 450, "no storage, dragged")
+        page.reload()
+        B.expect(page.locator("body")).to_have_attribute("data-ready", "1")
+        self.assert_width(page, SBW0, "no storage, after a reload")
+
+    def test_sidebar_edge_absent_in_the_rail_and_on_a_phone(self):
+        page = self.page(DESKTOP)
+        edge = self.edge(page)
+        B.expect(edge).to_be_visible()
+        page.locator("#rail").click()  # collapsed to the rail
+        B.expect(page.locator("#rail")).to_have_attribute("aria-expanded", "false")
+        B.expect(edge).to_be_hidden()
+        self.assertAlmostEqual(page.evaluate(SIDEBAR)["sidebar"], 60, delta=0.5)
+        page.locator("#rail").click()
+        B.expect(edge).to_be_visible()
+        phone = self.page(PHONE)
+        B.expect(self.edge(phone)).to_be_hidden()  # the phone's rail
+        phone.locator("#rail").tap()
+        B.expect(phone.locator("#rail")).to_have_attribute("aria-expanded", "true")
+        B.expect(self.edge(phone)).to_be_hidden()  # the phone's drawer
+
+    def test_keyboard_shortcuts_at_the_sidebar_foot(self):
+        page = self.page(DESKTOP)
+        entry = page.get_by_role("button", name="Keyboard shortcuts")
+        B.expect(entry).to_be_visible()
+        B.expect(page.get_by_role("navigation", name="Views").get_by_role("button", name="Keyboard shortcuts")).to_have_count(0)
+        B.expect(page.locator("#evsec #bkeys")).to_have_count(0)
+        # after the search box and the filters, at the bottom of the sidebar
+        self.assertTrue(entry.evaluate("b => !!(document.querySelector('#filters').compareDocumentPosition(b)"
+                                       " & Node.DOCUMENT_POSITION_FOLLOWING) && b.closest('#sidebar') !== null"))
+        page.locator("#rail").click()  # the rail keeps its icon
+        B.expect(entry).to_be_visible()
+
+    def test_search_placeholder_fits_at_the_default_width(self):
+        for size in (DESKTOP, NARROW):
+            with self.subTest(width=size["viewport"]["width"]):
+                page = self.page(size)
+                self.assert_width(page, SBW0, "default")
+                m = page.locator("#q").evaluate(PLACEHOLDER)
+                # with a tenth to spare: a wider system font (a Flatpak browser's own) must not cut it either
+                self.assertLessEqual(m["text"], 0.9 * m["room"], f"the placeholder is cut, or nearly: {m}")
 
     def test_label_contrast_in_both_schemes(self):
         for scheme in SCHEMES:

@@ -155,7 +155,10 @@ close the PR.
   downward swipe closing it; the desktop keeping the full burst labels; and
   4.5:1 contrast for the labels on the accent colour, key hints and
   placeholders in light and dark, on the gallery and the review page (with
-  its `color-scheme`). They skip with a reason
+  its `color-scheme`); and the sidebar's width (its edge dragged, clamped,
+  remembered, reset by a double-click, resized by keys, absent in the rail
+  and on a phone), Keyboard shortcuts at the sidebar's foot and the search
+  placeholder fitting. They skip with a reason
   when Playwright or its Chromium is missing, so the commands above are
   unaffected; the `browser` job in `ci.yml` runs them (and fails, not skips,
   through `MEDIA_INTAKE_BROWSER_REQUIRED=1`). Locally, once:
