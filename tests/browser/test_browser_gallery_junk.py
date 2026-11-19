@@ -7,10 +7,14 @@ and the Junk check's Judged junk count following its slider.
 
 Hooks: body[data-ready], #junkbar, #jwhy, #jmin, #jlower, #count, #c-sug, [data-item] tiles and their .flag,
 the Junk check filter's .opt[data-val=trash] and #aimin. Synthetic images in a throwaway HOME, sidecars written
-as plain XMP; originals are compared by sha256 at the end. Nothing is marked or applied here (the marking
-itself is test_browser_gallery_grid.py's), and every test fails on an uncaught page error.
+as plain XMP; originals are compared by sha256 at the end. Marks with the view's filters: bulk marks then a
+narrower Why or a higher Junk score (what Apply sends, and "N more not listed now"), a mark taken off by a star
+and not back on unstar, and Suggested junk's tiles carrying no star or Share (a Share asked from Library
+leaving the marks as they were). Apply's /api/decide is answered by the test (page.route), so nothing is
+written or deleted by it; the server side of Apply is tests/test_gallery.py's. Every test fails on an uncaught
+page error.
 """
-import os, shutil, sys, tempfile
+import json, os, shutil, sys, tempfile
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import browser_support as B  # noqa: E402  (puts tests/ on sys.path, hermetic config)
@@ -131,6 +135,99 @@ class GalleryJunkBrowserTest(B.BrowserCase):
         B.expect(self.shown(page)).to_have_count(1)
         B.expect(page.locator("#count")).to_have_text("2 suggested, 1 shown with your filters")
         B.expect(page.locator("#chips")).to_contain_text("Junk check")
+
+    # ------------------------------------------------------------ marks and the view's filters
+    def ids(self, page):
+        return dict(page.evaluate("() => items.map(i => [i.n, i.id])"))
+
+    def apply_sends(self, page):
+        """Press Apply and confirm; the /api/decide body the page sent (answered here: nothing is trashed)."""
+        page.route("**/api/decide", lambda r: r.fulfill(
+            status=200, content_type="application/json", body=json.dumps({"result": "ok", "trashed": []})))
+        page.get_by_role("button", name="Apply…").click()
+        with page.expect_request(lambda r: r.url.endswith("/api/decide")) as rq:
+            page.locator("#mgo").click()
+        page.unroute("**/api/decide")
+        return rq.value.post_data_json
+
+    def test_marks_hidden_by_the_filters_are_not_applied(self):
+        page = self.page(DESKTOP)
+        self.junk_view(page)
+        bar = page.get_by_role("group", name="Narrow the suggestions")
+        bar.get_by_role("button", name="Show 1 more with a lower junk score").click()
+        B.expect(self.shown(page)).to_have_count(3)
+        ids = self.ids(page)
+        page.get_by_role("button", name="Mark all shown as Trash").click()
+        sugn = page.locator("#sugn")
+        B.expect(sugn).to_have_text("0 keep / 3 trash marked")
+        bar.get_by_label("Why").select_option("blurry")  # only hi.jpg listed: the other two wait
+        B.expect(self.shown(page)).to_have_count(1)
+        B.expect(sugn).to_have_text("0 keep / 1 trash marked (2 more not listed now)")
+        bar.get_by_label("Why").select_option("")
+        B.expect(sugn).to_have_text("0 keep / 3 trash marked")
+        bar.get_by_label("Junk score").select_option("0.7")  # lo.jpg (0.4) drops out of the list
+        B.expect(self.shown(page)).to_have_count(2)
+        B.expect(sugn).to_have_text("0 keep / 2 trash marked (1 more not listed now)")
+        body = self.apply_sends(page)
+        self.assertEqual((body["keep"], sorted(body["trash"])), ([], sorted([ids["hi.jpg"], ids["lab.jpg"]])))
+        self.assertNotIn(ids["lo.jpg"], body["trash"])
+
+    def test_a_star_takes_the_trash_mark_off_and_unstarring_leaves_it_off(self):
+        page = self.page(DESKTOP)
+        self.junk_view(page)
+        B.expect(self.shown(page)).to_have_count(2)
+        ids = self.ids(page)
+        hi = page.locator('[data-item="hi.jpg"]')
+        hi.locator("[data-dec=trash]").click()
+        B.expect(hi.locator(".mark")).to_have_text("Trash")
+        hi.locator("img").click()  # the large view: F stars it
+        viewer = page.get_by_role("dialog", name="Item", exact=True)
+        B.expect(viewer).to_have_attribute("data-current", "hi.jpg")
+        with page.expect_response(lambda r: r.url.endswith("/api/favorite")) as resp:
+            page.keyboard.press("f")
+        self.assertEqual(resp.value.status, 200)
+        page.keyboard.press("Escape")
+        B.expect(viewer).to_be_hidden()
+        B.expect(hi.locator(".mark")).to_have_count(0)
+        B.expect(page.locator("#sugn")).to_have_text("0 keep / 0 trash marked")
+        nav = page.get_by_role("navigation", name="Views")
+        nav.get_by_role("button", name="Library").click()
+        star = page.locator('[data-item="hi.jpg"] .star')
+        B.expect(star).to_have_attribute("aria-pressed", "true")
+        page.locator('[data-item="hi.jpg"]').hover()
+        with page.expect_response(lambda r: r.url.endswith("/api/favorite")):
+            star.click()  # unstarred: a suggestion again, with no mark
+        B.expect(star).to_have_attribute("aria-pressed", "false")
+        self.junk_view(page)
+        B.expect(hi).to_be_visible()
+        B.expect(hi.locator(".mark")).to_have_count(0)
+        page.locator('[data-item="lab.jpg"] [data-dec=trash]').click()
+        body = self.apply_sends(page)
+        self.assertEqual(body["trash"], [ids["lab.jpg"]])
+
+    def test_junk_tiles_carry_no_star_or_share_and_a_share_leaves_marks(self):
+        page = self.page(DESKTOP)
+        self.junk_view(page)
+        B.expect(self.shown(page)).to_have_count(2)
+        for sel in (".star", ".tshare"):  # Keep and Trash are a junk tile's only buttons
+            B.expect(page.locator(f"#list [data-item] {sel}")).to_have_count(0)
+        page.locator('[data-item="hi.jpg"] [data-dec=trash]').click()
+        page.locator('[data-item="lab.jpg"] [data-dec=keep]').click()
+        marks = lambda: dict(page.locator("[data-item] .mark").evaluate_all(  # noqa: E731
+            "els => els.map(m => [m.closest('[data-item]').dataset.item, m.textContent])"))
+        self.assertEqual(marks(), {"hi.jpg": "Trash", "lab.jpg": "Keep"})
+        page.get_by_role("navigation", name="Views").get_by_role("button", name="Library").click()
+        t = page.locator('[data-item="hi.jpg"]')
+        B.expect(t.locator(".star")).to_have_count(1)
+        t.hover()
+        t.get_by_role("button", name="Share hi.jpg").click()  # asks; cancelled, nothing made
+        dlg = page.locator("#modal")
+        B.expect(dlg.get_by_role("heading")).to_have_text("Share 1 item?")
+        dlg.get_by_role("button", name="Cancel").click()
+        self.junk_view(page)
+        B.expect(page.locator('[data-item="hi.jpg"] .mark')).to_have_text("Trash")
+        self.assertEqual(marks(), {"hi.jpg": "Trash", "lab.jpg": "Keep"})
+        B.expect(page.locator("#sugn")).to_have_text("1 keep / 1 trash marked")
 
     def test_phone_bar_fits(self):
         page = self.page(PHONE)

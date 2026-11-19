@@ -866,7 +866,7 @@ def busy_text(holder=None):
     return f"{what} is still running; wait for it to finish, then try again"
 
 
-# ---------------------------------------------------------------- event display names (docs/gallery.md, "Events")
+# ---------------------------------------------------------------- event display names (docs/gallery.md, Events)
 # The name the sidebar and the title show for an event, in place of its slug. One small file in the state folder,
 # never the sidecars: a display name belongs to the event, not to each of its files, so it is one atomic write
 # (never one per file, never two files disagreeing) and other XMP readers never see it.
@@ -927,6 +927,28 @@ def save_event_names(names, state=None, roots=None):
     os.makedirs(state, mode=0o700, exist_ok=True)
     write_private_bytes(os.path.join(state, EVENT_NAMES),
                         json.dumps({"version": 1, "libraries": libs}, ensure_ascii=False, indent=1).encode())
+
+
+def prune_event_names(live, state=None, roots=None):
+    """Drop this library's display names for events not in live (no file of the library is in them any more), so
+    a name you typed never outlives its event, and an event made again later (apply, tag-files, Set event) starts
+    with its default name. Returns the events dropped. An unreadable file is left alone (nothing is written)."""
+    state = state or STATE
+    libs = read_event_names(state)
+    if not libs:
+        return set()
+    key = library_key(roots)
+    mine = libs.get(key) or {}
+    stale = {e for e in mine if e not in live}
+    if stale:
+        names = {e: n for e, n in mine.items() if e not in stale}
+        if names:
+            libs[key] = names
+        else:
+            libs.pop(key)
+        write_private_bytes(os.path.join(state, EVENT_NAMES),
+                            json.dumps({"version": 1, "libraries": libs}, ensure_ascii=False, indent=1).encode())
+    return stale
 
 
 def check_display_name(name):
@@ -1615,6 +1637,24 @@ class App:
     def event_names(self):
         return {e for it in self.items if not it["gone"] for e in self.events_of(it)}
 
+    def prune_names(self, emptied=None):
+        """(With self.lock held.) Display names of events this server saw lose their last file (Trash, Erase,
+        Set event "", Undo), or with emptied=None of every event no listed file is in (at start, only when every
+        library folder is there and no file was left out as flagged: an unmounted drive's events aren't gone).
+        Never raises: a name that can't be dropped now is dropped the next time."""
+        live = self.event_names()
+        if emptied is None:
+            gone = None
+        else:
+            gone = {e for e in emptied if e not in live}
+            if not gone:
+                return
+        try:
+            names = (read_event_names() or {}).get(library_key(), {})
+            prune_event_names(live if gone is None else live | (set(names) - gone))
+        except OSError:
+            pass
+
     def event_block(self, it, new, drop):
         """The block that moves one item out of the events in drop (all of its events when drop is None) and
         into new ("" = no event): Event| tags through tag_block, and XMP-iptcExt:Event kept in step. Only
@@ -1651,10 +1691,12 @@ class App:
         with self.writing("set event"), self.lock:
             ids = self.targets(ids)
             before = self.snapshots(ids)
-            new = event and event not in self.event_names()
+            had = self.event_names()
+            new = event and event not in had
             blocks = [b for b in (self.event_block(self.items[i], event, None) for i in ids) if b]
             self.run_exiftool(blocks)
             self.refresh(ids)
+            self.prune_names(had - self.event_names())  # moved or cleared out of an event's last file
             if new and blocks:  # a new event never picks up a display name left from one emptied earlier
                 names = load_event_names()
                 if names.pop(event, None) is not None:
@@ -1859,8 +1901,10 @@ class App:
             blocks = [self.undo_block(kind, old, new, intake.sidecar(self.items[i]["path"]))
                       for i, (old, new, _) in rec["items"].items()]
             del self.undos[token]
+            had = self.event_names()
             self.run_exiftool(blocks)
             self.refresh(ids)
+            self.prune_names(had - self.event_names())  # an undone Set event can empty the event it made
             if kind == "rotate":
                 for i in ids:
                     self.drop_thumb(self.items[i])
@@ -1923,6 +1967,7 @@ class App:
                 self.mark_busy(st)
             elif st.get("id") != self.reconciled:
                 self.reconciled = st.get("id")
+                had = self.event_names()
                 sizes = set()
                 for i in self.job_items(st):
                     it = self.items[i]
@@ -1932,6 +1977,7 @@ class App:
                         sizes.add(it["size"])
                 self.reread_copies(sizes)
                 self.search_cache.clear()
+                self.prune_names(had - self.event_names())  # a Trash or Erase took an event's last file
         return st
 
     def drop_gone(self, it):
@@ -2115,17 +2161,30 @@ class App:
         return f"opened {os.path.basename(p)} in the system player"
 
     def decide(self, keep, trash, confirm):
-        """Trash suggestions: Keep (sidecar, now) then Trash (job)."""
-        msg = []
+        """Suggested junk's Apply: Keep (sidecar, now) then Trash (job). A file marked Trash that is a favorite or
+        kept by the time Apply runs (starred or kept since the mark, on this page, another one or in digiKam:
+        its sidecar is re-read here) is skipped, never trashed, and the reply says so ("trashed": the ids the
+        job got). Plain Trash (/api/trash) isn't held back: it is asked for item by item and confirmed."""
+        if trash and confirm is not True:
+            raise ValueError("confirm the trash")
+        msg, sent = [], []
         if keep:
             r = self.keep(keep)
             msg.append(r["result"] if isinstance(r, dict) else r)  # Apply offers no Undo (it may trash too)
         if trash:
-            self.trash(trash, confirm)
-            msg.append(f"Trashing {len(set(trash))}.")
+            with self.lock:
+                ids = self.targets(trash)
+                self.refresh(ids)
+                skipped = [i for i in ids if self.items[i]["fav"] or self.items[i]["kept"]]
+                sent = [i for i in ids if i not in skipped]
+                if sent:
+                    self.trash(sent, confirm)  # under the same lock: no star lands between the check and the job
+                    msg.append(f"Trashing {len(sent)}.")
+                if skipped:
+                    msg.append(f"Skipped {len(skipped)}: favorite/kept.")
         if not msg:
             raise ValueError("nothing decided")
-        return " ".join(msg)
+        return dict(result=" ".join(msg), trashed=sent)
 
 def view_list(views):
     """Plugin tab dicts, checked: id a slug, title text, script a string."""
@@ -2426,6 +2485,9 @@ def main(argv=None):
     items, skipped = scan_library()
     views = view_list([v for vs in plugins.call("gallery_views") for v in vs])
     app = App(items, os.path.abspath(a.drive) if a.drive else None, views, a.share_out)
+    if not skipped and all(os.path.isdir(r) for r in ROOTS):  # names of events emptied while no gallery ran
+        with app.lock:
+            app.prune_names()
     running = app.sync()  # a trash/erase started before a restart: its files stay busy until it ends
     threading.Thread(target=app.check_text, daemon=True).start()
     try:
@@ -3293,7 +3355,8 @@ function starBtn(it){const b=el("button","star");b.type="button";b.tabIndex=-1;b
  b.onclick=ev=>{ev.stopPropagation();const cur=items.find(i=>i.id===it.id)||it;doFav([it.id],!cur.fav)};return b}
 const isFav=id=>{const it=items.find(i=>i.id===id);return !!(it&&it.fav)};
 function favToggle(ids){if(ids.length)doFav(ids,!ids.every(isFav))}
-async function doFav(ids,on){try{const j=await api("/api/favorite",{ids,on});toast(j.result,j.undo);refreshAfter(ids,false,j.items);loadFacets()}catch(e){refused(on?"Favorite":"Unfavorite",e)}}
+// a star takes the item's pending Keep / Trash mark off (a favorite is never junk); unstarring doesn't bring it back
+async function doFav(ids,on){try{const j=await api("/api/favorite",{ids,on});if(on)ids.forEach(id=>delete dec[id]);toast(j.result,j.undo);refreshAfter(ids,false,j.items);loadFacets()}catch(e){refused(on?"Favorite":"Unfavorite",e)}}
 function pick(n,range){if(view==="sug")return;allSel=null;if(range&&last!==null){const [a,b]=[Math.min(last,n),Math.max(last,n)];for(let i=a;i<=b;i++)if(!hiddenAt(i))sel.add(items[i].id)}
  else{const id=items[n].id;sel.has(id)?sel.delete(id):sel.add(id)}last=n;paintSel()}
 function paintSel(){const sugOn=view==="sug";$$(".tile").forEach(t=>{const id=+t.id.slice(1),n=+t.dataset.n,d=sugOn?dec[id]:undefined;t.classList.toggle("sel",sel.has(id));const cb=t.querySelector("input.ck");if(cb)cb.checked=sel.has(id);
@@ -3533,7 +3596,9 @@ $("#bmarkall").onclick=markAll;$("#bclearm").onclick=clearMarks;
 $("#sugapply").onclick=()=>{const {keep,trash}=sugMarks();
  const nk=keep.length,nt=trash.length;
  confirmBox(`Apply: ${nk} keep, ${nt} trash?`,[nk?`Keep ${plural(nk,"item")}: ${nk===1?"it":"they"} won't be suggested as junk again.`:"",...(nt?[thumbs(trash),names(trash),"Trash: "+trashText(nt)]:[])].filter(Boolean),false,
-  async()=>{const j=await api("/api/decide",{keep,trash,confirm:true});keep.concat(trash).forEach(id=>delete dec[id]);if(nt){jobDest="";startJob("trash",trash,j.result+"\n")}else{closeModal();toast(j.result);loadFacets();reset()}},nt?"Apply and trash "+plural(nt,"file"):"Apply")};
+  async()=>{const j=await api("/api/decide",{keep,trash,confirm:true});keep.concat(trash).forEach(id=>delete dec[id]);
+   // a file starred or kept since its mark is skipped by the server (j.trashed: what the job got)
+   const sent=j.trashed||[];if(sent.length){jobDest="";startJob("trash",sent,j.result+"\n")}else{closeModal();toast(j.result);loadFacets();reset()}},nt?"Apply and trash "+plural(nt,"file"):"Apply")};
 // ---------------------------------------------------------------- large view
 function curVideo(){return $("#media video")}
 function stopVideo(){const v=curVideo();if(v){v.pause();v.removeAttribute("src");v.load()}}  // releases the file

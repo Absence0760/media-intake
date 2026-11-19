@@ -555,6 +555,72 @@ class GalleryTest(unittest.TestCase):
             self.assertIn("STILL PRESENT: 1 copies: gallery thumbnails (~/.cache/media-intake/thumbs) 1", r.stdout)
             os.remove(left)
 
+    def test_apply_skips_a_trash_mark_starred_or_kept_since(self):
+        """Suggested junk's Apply (/api/decide) re-reads each sidecar marked Trash: one starred (this page) or kept
+        (another tool) since the mark is skipped and said so, the rest trashed. Plain Trash on a favorite stays
+        allowed: it is asked for item by item and confirmed."""
+        s = self.start()
+        ida, idb, idlo = self.id_of(s, "a.jpg"), self.id_of(s, "b.jpg"), self.id_of(s, "lo.jpg")
+        code, j = s.post("/api/favorite", {"ids": [ida], "on": True})
+        self.assertEqual(code, 200, j)
+        write_tags(self.b, ["Owner|keep"])  # kept elsewhere (digiKam, the CLI) after the page loaded
+        code, j = s.post("/api/decide", {"keep": [], "trash": [ida, idb, idlo]})
+        self.assertEqual(code, 400, j)  # Apply's trash still needs its confirm
+        code, j = s.post("/api/decide", {"keep": [], "trash": [ida, idb, idlo], "confirm": True})
+        self.assertEqual(code, 200, j)
+        self.assertEqual((j["result"], j["trashed"]), ("Trashing 1. Skipped 2: favorite/kept.", [idlo]))
+        self.assertTrue(self.wait_job(s)["ok"])
+        self.assertFalse(os.path.exists(self.lo))
+        self.assertTrue(os.path.exists(self.a) and os.path.exists(self.b))
+        # every mark skipped: no job at all
+        code, j = s.post("/api/decide", {"keep": [], "trash": [ida], "confirm": True})
+        self.assertEqual((code, j["result"], j["trashed"]), (200, "Skipped 1: favorite/kept.", []), j)
+        self.assertEqual(s.get("/api/job")["ids"], [idlo])  # still the last job
+        # plain Trash of a favorite: allowed (its own confirm already says what goes)
+        code, j = s.post("/api/trash", {"ids": [ida], "confirm": True})
+        self.assertEqual(code, 200, j)
+        self.assertTrue(self.wait_job(s)["ok"])
+        self.assertFalse(os.path.exists(self.a))
+
+    def test_display_name_goes_with_the_last_file_of_its_event(self):
+        """Erase or Trash of an event's last file, or Set event moving the last one out, drops the display name
+        you typed from event-names.json; the event made again later shows its default; Undo bringing an
+        event back brings it back with its default name. Another event's name stays."""
+        names = os.path.join(self.state, "event-names.json")
+        def stored():
+            with open(names) as f:
+                return next(iter(json.load(f)["libraries"].values()), {})
+        write_tags(self.b, ["Event|beach"])
+        write_tags(self.lo, ["Project|Personal", "Event|hike"])
+        s = self.start()
+        for ev, n in (("city-expo", "The expo"), ("beach", "Sea days"), ("hike", "Mountain walk")):
+            code, j = s.post("/api/event/name", {"event": ev, "name": n})
+            self.assertEqual(code, 200, j)
+        idclip, idb, idlo = self.id_of(s, "clip.mp4"), self.id_of(s, "b.jpg"), self.id_of(s, "lo.jpg")
+        code, j = s.post("/api/erase", {"ids": [idclip], "confirm": "ERASE"})
+        self.assertEqual(code, 200, j)
+        self.assertTrue(self.wait_job(s)["ok"])
+        s.get("/api/facets")  # any request after the job reconciles it
+        self.assertEqual(stored(), {"beach": "Sea days", "hike": "Mountain walk"})
+        with open(names) as f:
+            self.assertNotIn("The expo", f.read())  # the typed text is gone from the file
+        code, j = s.post("/api/trash", {"ids": [idb], "confirm": True})
+        self.assertEqual(code, 200, j)
+        self.assertTrue(self.wait_job(s)["ok"])
+        s.get("/api/facets")
+        self.assertEqual(stored(), {"hike": "Mountain walk"})
+        # Set event "" on the last file: the name goes; Undo makes the event again, with its default name
+        code, j = s.post("/api/event/set", {"ids": [idlo], "event": ""})
+        self.assertEqual(code, 200, j)
+        self.assertEqual(stored(), {})
+        code, u = s.post("/api/undo", {"undo": j["undo"]})
+        self.assertEqual(code, 200, u)
+        self.assertEqual(s.get("/api/facets")["event_names"]["hike"], {"label": "Hike", "name": ""})
+        # an event made again by another path (Set event here; apply or tag-files the same) starts plain
+        code, j = s.post("/api/event/set", {"ids": [self.id_of(s, "k.jpg")], "event": "city-expo"})
+        self.assertEqual(code, 200, j)
+        self.assertEqual(s.get("/api/facets")["event_names"]["city-expo"], {"label": "City expo", "name": ""})
+
     def test_twins_keep_their_own_rotation(self):
         """Byte-identical copies share a thumbnail only while turned alike: rotating one copy (its sidecar) shows
         the new turn at once and leaves its twin upright; a copy turned the same way reuses that thumbnail; Trash
@@ -1161,6 +1227,26 @@ class ViewsEndpointsTest(unittest.TestCase):
                 "/api/share": {"ids": [ida]},
                 "/api/favorite": {"ids": [ida, idb], "on": True},
                 "/api/undo": {"undo": "not-a-token"}}
+
+    def test_display_names_of_emptied_events_dropped_at_start(self):
+        """An event emptied while no gallery ran (a CLI erase): the next gallery drops its display name at start,
+        but only when every library folder is there and nothing was left out as flagged."""
+        s = self.start()
+        code, j = s.post("/api/event/name", {"event": "beach", "name": "Sea days"})
+        self.assertEqual(code, 200, j)
+        s.stop()
+        names = os.path.join(self.state, "event-names.json")
+        def stored():
+            with open(names) as f:
+                return next(iter(json.load(f)["libraries"].values()), {})
+        os.remove(self.a)
+        os.remove(self.a + ".xmp")
+        self.start().stop()  # the videos and project folders are missing (an unmounted drive): kept
+        self.assertEqual(stored(), {"beach": "Sea days"})
+        os.makedirs(self.env["PERSONAL_FOOTAGE"])
+        os.makedirs(os.path.join(self.home, "Videos/demo-footage/originals"))
+        self.start().stop()
+        self.assertEqual(stored(), {})
 
     def test_events_listed_and_filtered(self):
         s = self.start()

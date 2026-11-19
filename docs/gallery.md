@@ -248,7 +248,14 @@ page's own handlers and fails when the list leaves one out.
   they survive the grid reloading, a filter, and a trip to another view and
   back; only the tiles listed show them and only those reach Apply (the bar
   says how many more are marked but not listed now). Reloading or closing the
-  tab while marks wait makes the browser ask first.
+  tab while marks wait makes the browser ask first. Starring an item takes
+  its mark off (a favorite is never junk), and unstarring doesn't put it
+  back. Apply (`POST /api/decide`) re-reads each sidecar marked Trash first:
+  one that is a favorite or kept by then (starred or kept since the mark, on
+  this page, another one or in digiKam) is skipped, never trashed, and the
+  message says "Skipped N: favorite/kept." (the reply's `trashed` lists the
+  ids the Trash job got). Plain **Trash** on a favorite stays allowed: you
+  ask for it item by item, and its confirm shows what goes.
 - **Favorites**: below ("Favorites").
 - **Events**: every event in the library, from the sidecars' `Event|<slug>`
   tags (or `XMP-iptcExt:Event` on a file with no `Event|` tag), with its count;
@@ -287,6 +294,17 @@ page's own handlers and fails when the list leaves one out.
   `dc:Subject` leaf only when no other tag uses it. A later `tag` or
   `tag-files` with an event replaces `Event|` again ([intake.md](intake.md),
   "Tags: who writes what").
+
+  A display name lasts only as long as its event: when Trash or Erase takes
+  an event's last file, or Set event moves the last one out, the name you
+  typed is deleted from `event-names.json` (Erase leaves no text of yours
+  behind), so the event made again later by any path (`apply`, `tag-files`,
+  Set event) shows its default name. Undo bringing an emptied event back
+  (Undo of a Set event) brings it back with its default name: set it again.
+  An event emptied while no gallery ran (a CLI `erase` or `trash`) loses its
+  name when the gallery next starts, but only when every library folder is
+  there and no file was left out as flagged (an unmounted drive's events
+  aren't gone); until then it would show the old name if made again.
 - **Plugin tabs**: any view a plugin adds through `gallery_views()`, with its
   routes under `/plugin/<id>/` ([plugins.md](plugins.md)).
 
@@ -909,7 +927,21 @@ the facets' `suggest:lower` and `ai_scores`.
 with its counts, Junk score, Show N more with a lower junk score, back to
 the default line on re-entering), the tile's "Junk score 0.90 (blurry)", the
 header's "N suggested, M shown with your filters", the Judged junk count
-following its slider, and the bar at 390 px (44 px tall, no sideways scroll).
+following its slider, and the bar at 390 px (44 px tall, no sideways scroll);
+marks with the filters (Mark all shown as Trash, then a narrower Why and a
+higher Junk score: "(N more not listed now)" and only the listed marks in
+Apply's request), a star taking a Trash mark off (unstarring leaves it off,
+Apply sends only the other mark), and junk tiles with no star or Share (a
+Share asked and cancelled from Library leaving the marks as they were).
+Apply's `/api/decide` is answered by the test there; `test_gallery.py`'s
+`test_apply_skips_a_trash_mark_starred_or_kept_since` runs the server side
+(a starred and a kept mark skipped, the rest trashed, no job when all are
+skipped, plain Trash on a favorite allowed), and
+`test_display_name_goes_with_the_last_file_of_its_event` /
+`test_display_names_of_emptied_events_dropped_at_start` the display names
+(dropped after Erase, Trash and Set event "" empty an event, an Undo and a
+Set event making it again with the default, at start only with every library
+folder there).
 `tests/browser/test_browser_gallery_grid.py`: Suggested junk by tap on a
 390 px touch phone (Keep and Trash pressed and unpressed, the mark in words,
 a tap on the photo opening it, no checkboxes or selection bar, the view's
@@ -986,8 +1018,13 @@ deleting the proxy; and `trash`, `forget` and `verify-gone` on planted
 proxies. `media-intake proxies` through the real `cli.py`: `--dry-run`
 counts (a duplicate is one proxy, an erased clip is left out and never named),
 a run makes the plain proxy once, a second run finds it made, the gallery then
-serves it at once with Range, a failing tool exits 1 leaving nothing, and its
-help says what it touches and deletes. In-process: `App.playable` with
+serves it at once with Range, a starred clip is proxied like any other, a
+failing tool exits 1 leaving nothing, and its help says what it touches and
+deletes. `ProxiesRunTest` runs it in-process with the plan and `make_proxy`
+stood in for: a video trashed, erased or flagged while its proxy is made
+leaves no proxy ("gone meanwhile", exit 0), and one `still_shown` refuses
+before its turn (a symlink, a file under the state folder, an erased one) gets
+none made. In-process: `App.playable` with
 `make_proxy` held on an event (requests for the same content follow one
 transcode, another video gets its original while one is watched, an
 unwatched one is cancelled for the next, a failed one isn't tried again, one

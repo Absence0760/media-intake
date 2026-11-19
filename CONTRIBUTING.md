@@ -155,8 +155,9 @@ close the PR.
   item-gone and load-error states, and the phone's sidebar rail with a word
   under each icon. `test_browser_gallery_junk.py` runs Suggested junk's bar
   (Why, Junk score, Show N more with a lower junk score), the tile's score and
-  reason, the header with Library filters still set and the Judged junk count
-  following its slider. `test_browser_gallery_layout.py` checks the
+  reason, the header with Library filters still set, the Judged junk count
+  following its slider, and marks with the filters and stars (what Apply
+  sends; a star taking a mark off). `test_browser_gallery_layout.py` checks the
   gallery at 390 px and 800 px: no sideways scroll, the header fitting, a burst
   badge clear of its tile's checkbox, and the last row above the selection
   bar; at 390 px the compact "×N" burst button (opening and closing the

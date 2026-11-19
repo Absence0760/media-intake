@@ -2562,10 +2562,6 @@ def read_sidecar_tags(paths):
     return out
 
 
-def owner_kept(tags, pick):
-    return owner.kept(tags, pick)
-
-
 def merge_tags(old, new, pick="", relabelled=True, owner_leaves=(), stars=None):
     """(hier to add, tags to remove, dc:Subject leaves to remove) for a re-tag.
 
