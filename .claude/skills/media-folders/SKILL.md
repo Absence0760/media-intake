@@ -22,7 +22,10 @@ nested call would wait on its own lock forever.
   erase, no trash, no offload, no deleting a source folder. The run stops
   before every decision that is the user's; it never makes one.
 - **Every review request carries its open command** (absolute path or URL) in
-  its own fenced block: `xdg-open <absolute path or url>`.
+  its own fenced block: `xdg-open <absolute path or url>`. `xdg-open` opens a
+  normal browser window: never pair it with "a private window keeps it out of
+  your history". For a private window, give the browser's own command
+  (`docs/gallery.md`).
 - Only the exact folder the user names. Never `ls`, `find` or `du` above it,
   never widen it to its parent, and never the backup drive.
 

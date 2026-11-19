@@ -10,7 +10,8 @@ Pass-throughs to `erase`: `--keep-phone-thumbnails`, `--no-wipe-free`.
 `--drive` the backup drive (the folder it is mounted on); the words are in
 [words.md](words.md). `--port 0` (a random free port) is the default. It prints one `xdg-open
 'http://127.0.0.1:<port>/?t=<token>'` line; open it in a private browser
-window to keep it out of your history. If the batch has no quarantined or
+window to keep it out of your history (`xdg-open` opens a normal one; the
+private-window command is in [gallery.md](gallery.md)). If the batch has no quarantined or
 review files it prints `nothing to review for BATCH` and exits 0.
 
 - **Quarantine** tab: `quarantine/BATCH` and every level of its near-copy

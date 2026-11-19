@@ -13,7 +13,11 @@ where share-safe copies go (below).
 It prints exactly one `xdg-open 'http://127.0.0.1:<port>/?t=<token>'` line,
 then a note with the item count, the start-up time, how many flagged or erased
 files were left out and any plugin tabs. A private browser window keeps the
-page out of your history. It runs until Ctrl-C or the page's **Stop server** button.
+page out of your history, but `xdg-open` opens a normal window of your default
+browser. For a private one, give the URL to the browser yourself with its
+private-window flag: `--incognito` for Chrome, Chromium and Brave,
+`--private-window` for Firefox. A Flatpak browser runs as
+`flatpak run <app-id> --incognito '<url>'`. It runs until Ctrl-C or the page's **Stop server** button.
 An assistant may start it and hand you the line; only you open the page and
 click.
 

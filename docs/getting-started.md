@@ -118,7 +118,8 @@ media-intake tag first-test
 | `review` | Starts a local review page for what `apply` set aside. | One `xdg-open 'http://127.0.0.1:<port>/?t=<token>'` line, or `nothing to review for first-test`. |
 | `tag` | Writes XMP sidecar tags (source, date, place, content labels) for the filed files. | Counts. `--no-labels` skips the content labels if you want it faster. |
 
-On the review page (open the printed link in a private browser window):
+On the review page (open the printed link in a private browser window;
+`xdg-open` opens a normal one, see [gallery.md](gallery.md)):
 the **Quarantine** tab holds what the detectors flagged, with **Keep** (it was
 a false positive) or **Erase** only; the **Review** tab holds the review
 folder's near-duplicates and junk, with **Keep**, **Delete this copy** or
@@ -179,7 +180,8 @@ media-intake gallery
 ```
 
 It prints one `xdg-open 'http://127.0.0.1:<port>/?t=<token>'` line; open it in
-a private browser window. It runs until Ctrl-C or the page's **Stop server**
+a private browser window (`xdg-open` opens a normal one; the private-window
+command is in [gallery.md](gallery.md)). It runs until Ctrl-C or the page's **Stop server**
 button. Flagged and quarantined files are never shown there.
 [gallery.md](gallery.md).
 
