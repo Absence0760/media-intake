@@ -9,7 +9,9 @@ views, the confirm dialogs (Trash; Erase with ERASE typed; the Stop server butto
 the lightbox video playing by itself, Space pausing and resuming it, HTTP Range while the video
 loads and seeks, the detached-job dialog, including re-attaching to a running job after a reload,
 and the Events list (filter, Rename), Set event on a selection and a Share-safe copy (the real
-intake.py share-copy, which only reads the originals).
+intake.py share-copy, which only reads the originals); Favorites (the tile's star, F on a focused tile, a
+selection and in the large view, the bar's Favorite / Unfavorite, the Favorites view and its count, Undo) and
+the When list's recent years with "All years (N)" remembered across a reload.
 
 Trash and Erase run a fake intake.py (MEDIA_REVIEW_INTAKE, tests/test_gallery.py's GATED) that
 deletes the files it is given; with a FIFO at FAKE_GATE it first waits until the test opens it,
@@ -24,7 +26,8 @@ output as its <pre>; the textbox named "Type ERASE"; the selection bar as role=t
 named "Selection actions"; the event bar as role=toolbar named "Event"; each sidebar event as
 #evlist [data-ev=<name>]; the dialog's text field by its label; buttons by their names (Confirm,
 Cancel, Trash N file(s), Erase N file(s), Hide (it keeps running), Close, Apply…, Suggested junk, Possible
-child, Library, Clear selection, Stop server, Rename…, Set event…, Share-safe copy).
+child, Library, Clear selection, Stop server, Rename…, Set event…, Share-safe copy, Favorites); a tile's star
+as .star (aria-pressed, named "Favorite <name>"), the bar's #bfav / #bunfav, the large view's .favb.
 """
 import json, os, re, shutil, signal, sys, tempfile, unittest
 
@@ -213,6 +216,131 @@ class GalleryBrowserTest(B.BrowserCase):
         B.expect(page.get_by_role("button", name="Remove Flags: Possible child")).to_be_visible()
         page.get_by_role("button", name="Library").click()
         B.expect(page.locator("[data-item]")).to_have_count(4)
+
+    # ------------------------------------------------------------ favorites
+    def rating(self, p):
+        return G.gallery_read(p).get("rating")
+
+    def test_favorites_star_keys_bar_and_view(self):
+        s = self.start()
+        page = self.new_page()
+        self.open(page, s)
+        views = page.get_by_role("navigation", name="Views")
+        fav_view = views.get_by_role("button", name="Favorites")
+        B.expect(fav_view.locator(".ct")).to_have_text("0")
+        star = lambda n: self.tile(page, n).locator(".star")  # noqa: E731
+        # the star shows on hover (and focus), not on an idle tile
+        page.mouse.move(1, 1)
+        B.expect(star("b.jpg")).to_have_css("opacity", "0")
+        self.tile(page, "b.jpg").hover()
+        B.expect(star("b.jpg")).to_have_css("opacity", "1")
+        B.expect(star("b.jpg")).to_have_attribute("aria-pressed", "false")
+        # a click stars it (xmp:Rating 5 in the sidecar only; the large view stays shut), and it stays shown
+        before = G.sha(self.b)
+        with page.expect_response(lambda r: r.url.endswith("/api/favorite")) as resp:
+            star("b.jpg").click()
+        self.assertEqual(resp.value.status, 200)
+        B.expect(star("b.jpg")).to_have_attribute("aria-pressed", "true")
+        B.expect(page.get_by_role("dialog", name="Item")).to_be_hidden()
+        self.assertEqual(self.rating(self.b), "5")
+        self.assertEqual(G.sha(self.b), before)
+        page.mouse.move(1, 1)
+        B.expect(star("b.jpg")).to_have_css("opacity", "1")
+        B.expect(fav_view.locator(".ct")).to_have_text("1")
+        # Undo on its message (Ctrl+Z) puts the sidecar back
+        B.expect(page.locator("#tundo")).to_be_visible()
+        with page.expect_response(lambda r: r.url.endswith("/api/undo")) as resp:
+            page.keyboard.press("Control+z")
+        self.assertEqual(resp.value.status, 200)
+        B.expect(star("b.jpg")).to_have_attribute("aria-pressed", "false")
+        self.assertIsNone(self.rating(self.b))
+        # F on the focused tile toggles it; F on a selection stars them all, again unstars them all
+        self.tile(page, "c.png").focus()
+        with page.expect_response(lambda r: r.url.endswith("/api/favorite")):
+            page.keyboard.press("f")
+        B.expect(star("c.png")).to_have_attribute("aria-pressed", "true")
+        box = lambda n: page.get_by_role("checkbox", name=f"select {n}")  # noqa: E731
+        box("c.png").click()
+        box("d.jpg").click()
+        with page.expect_response(lambda r: r.url.endswith("/api/favorite")):
+            page.keyboard.press("f")  # c is one already, d isn't: both starred
+        B.expect(star("d.jpg")).to_have_attribute("aria-pressed", "true")
+        self.assertEqual((self.rating(self.c), self.rating(self.d)), ("5", "5"))
+        with page.expect_response(lambda r: r.url.endswith("/api/favorite")):
+            page.keyboard.press("F")  # every one is: both unstarred
+        B.expect(star("c.png")).to_have_attribute("aria-pressed", "false")
+        B.expect(star("d.jpg")).to_have_attribute("aria-pressed", "false")
+        # the bar's buttons
+        bar = page.get_by_role("toolbar", name="Selection actions")
+        with page.expect_response(lambda r: r.url.endswith("/api/favorite")):
+            bar.locator("#bfav").click()
+        B.expect(star("d.jpg")).to_have_attribute("aria-pressed", "true")
+        with page.expect_response(lambda r: r.url.endswith("/api/favorite")):
+            bar.locator("#bunfav").click()
+        B.expect(star("d.jpg")).to_have_attribute("aria-pressed", "false")
+        self.assertIsNone(self.rating(self.d))
+        page.keyboard.press("Escape")
+        # the large view: its Favorite button and F
+        viewer = page.get_by_role("dialog", name="Item")
+        self.tile(page, "a.jpg").click()
+        B.expect(viewer).to_have_attribute("data-current", "a.jpg")
+        fb = viewer.locator(".favb")
+        B.expect(fb).to_have_attribute("aria-pressed", "false")
+        with page.expect_response(lambda r: r.url.endswith("/api/favorite")):
+            page.keyboard.press("f")
+        B.expect(viewer.locator(".favb")).to_have_attribute("aria-pressed", "true")
+        self.assertEqual(self.rating(self.a), "5")
+        with page.expect_response(lambda r: r.url.endswith("/api/favorite")):
+            viewer.locator(".favb").click()
+        B.expect(viewer.locator(".favb")).to_have_attribute("aria-pressed", "false")
+        with page.expect_response(lambda r: r.url.endswith("/api/favorite")):
+            page.keyboard.press("f")
+        B.expect(viewer.locator(".favb")).to_have_attribute("aria-pressed", "true")
+        page.keyboard.press("Escape")
+        # a.jpg was Suggested junk; as a favorite it isn't any more. The Favorites view lists it, with a chip
+        B.expect(views.get_by_role("button", name="Suggested junk").locator(".ct")).to_have_text("0")
+        fav_view.click()
+        B.expect(page.locator("[data-item]")).to_have_count(1)
+        B.expect(page.locator("[data-item]")).to_have_attribute("data-item", "a.jpg")
+        B.expect(page.locator("#vtitle")).to_have_text("Favorites")
+        B.expect(fav_view).to_have_attribute("aria-current", "page")
+        B.expect(page.get_by_role("button", name="Remove Flags: Favorite")).to_be_visible()
+        # Trash asks as always, and says it is a favorite
+        page.get_by_role("checkbox", name="select a.jpg").click()
+        page.get_by_role("toolbar", name="Selection actions").get_by_role("button", name="Trash").click()
+        B.expect(self.confirm(page)).to_contain_text("This one is a favorite.")
+        self.confirm(page).get_by_role("button", name="Cancel").click()
+        self.assertTrue(os.path.exists(self.a))
+        # Added in the last 30 days: its name says the window
+        B.expect(views.get_by_role("button", name="Added in the last 30 days")).to_be_visible()
+
+    def test_when_lists_recent_years_then_all(self):
+        for y in range(2018, 2026):  # eight more years, 2018-2025, beside 2026's
+            G.img(os.path.join(self.lib, f"{y}/{y}-06/y{y}.jpg"), (y % 255, 90, 90))
+        s = self.start()
+        page = self.new_page()
+        self.open(page, s)
+        when = page.locator("#when")
+        if when.is_hidden():
+            page.locator('.fs[data-s=when] .fs-h').click()
+        years = lambda: when.locator(".yr .opt").evaluate_all("els => els.map(e => e.dataset.val)")  # noqa: E731
+        B.expect(when.locator(".yr")).to_have_count(5)
+        self.assertEqual(years(), ["2026", "2025", "2024", "2023", "2022"])
+        more = when.get_by_role("button", name="All years (9)")
+        B.expect(more).to_have_attribute("aria-expanded", "false")
+        more.click()
+        B.expect(when.locator(".yr")).to_have_count(9)
+        B.expect(when.get_by_role("button", name="Fewer years")).to_be_focused()
+        # remembered per browser: a reload keeps every year shown
+        self.open(page, s)
+        if when.is_hidden():
+            page.locator('.fs[data-s=when] .fs-h').click()
+        B.expect(when.locator(".yr")).to_have_count(9)
+        # an older year chosen stays listed when the list is short again
+        when.locator('.yr .opt[data-val="2018"]').click()
+        when.get_by_role("button", name="Fewer years").click()
+        B.expect(when.locator(".yr")).to_have_count(6)
+        B.expect(page.locator("[data-item]")).to_have_count(1)
 
     # ------------------------------------------------------------ confirm dialogs
     def test_trash_and_erase_dialogs(self):

@@ -27,8 +27,9 @@ without one" (`/api/facets` gives `drive`, the mount or null).
 - **Left sidebar** (its own scroll; the menu button collapses it to an icon
   rail, remembered per browser; at phone width it is a rail by default and
   opens as a drawer): the views with counts (Library, Suggested junk, any
-  plugin tab; quick views Recently added = filed in the last 30 days, by the
-  file's inode change time, Possible child = `Review|child-in-shot`,
+  plugin tab; quick views **Favorites** (below), **Added in the last 30
+  days** = filed into the library in the last 30 days, by the file's inode
+  change time, Possible child = `Review|child-in-shot`,
   Untagged; then **Events** with counts, the eight largest and "All N events"),
   the search box (a one-line hint when semantic search is off, the
   full reason under "why"), then the filters as collapsible sections with
@@ -39,7 +40,7 @@ without one" (`/api/facets` gives `drive`, the mount or null).
   search and filters.
   Counts are for the whole library, not narrowed by the other filters.
   Collapsed to the rail, each icon has a short word under it (Library, Junk,
-  Recent, Child, No tags, Search, Filters); the full name stays its tooltip
+  Favorites, Recent, Child, No tags, Search, Filters); the full name stays its tooltip
   and the name a screen reader reads.
 - **Sidebar width**: 300 px by default; on a desktop, with the sidebar
   expanded, drag its right edge to make it wider or narrower (the grid
@@ -133,6 +134,7 @@ without one" (`/api/facets` gives `drive`, the mount or null).
   | `Review\|maybe-trash`, the old Trash suggestions view | Suggested junk (view, Flags filter, tile flag) |
   | `Review\|child-in-shot` | Possible child (quick view, Flags filter, tile flag) |
   | `Owner\|keep` (tile flag "kept") | Kept on the tile; "Marked Keep" in the large view's Details; the large view lists no `Owner\|` tag |
+  | `xmp:Rating` >= 5 (`fav` in the grid's summary) | Favorite: the star (pressed), the Favorites view, Flags: Favorite |
   | `Owner\|trash` on a copy (flag "trashed copy") | Copy of a trashed photo |
   | `Used\|*` (flag "used") | Used in a post |
   | an AI trash verdict's confidence | Junk score (tile "Junk score 0.9", the filter's "Junk score at least", the chip "Junk score ≥ 0.70") |
@@ -140,8 +142,9 @@ without one" (`/api/facets` gives `drive`, the mount or null).
   | a tool's tag in the large view | "Project: Personal", "Looks like: food", "Junk check: Judged junk (blurry)" under "Added by the tools", apart from "Your tags" |
   | a 409 (library or job lock) | "a Trash is still running; wait for it to finish, then try again" (or an Erase, a Share-safe copy, a run from the review page, the media-intake apply command, ...) |
 
-The sidebar rail and width, open sections and tile size live in the browser's
-`localStorage` (a per-browser convenience; the page works without it).
+The sidebar rail and width, open sections, the When list's "All years" and tile
+size live in the browser's `localStorage` (a per-browser convenience; the page
+works without it).
 
 ## Keys
 
@@ -152,14 +155,16 @@ closes it, and no other key acts while it is open.
 - **Grid**: Enter opens the focused tile; Space ticks it (Shift+Space the
   range from the last one); Shift-click a range, Ctrl-click one tile; Ctrl+A /
   Cmd+A selects every tile shown; K / T / E Keep, Trash, Erase the selection;
+  F stars the selection as favorites, or unstars it when every one already
+  is (with nothing selected, the focused tile);
   Esc clears it (or closes the drawer at phone width; in the search box it
   clears the search); `/` jumps to the search box; Ctrl+Z / Cmd+Z undoes the
-  last Keep, tag, Rotate or Set event while its message shows.
+  last Keep, Favorite, tag, Rotate or Set event while its message shows.
 - **Sidebar**: on its right edge (Tab to it), ← / → narrower / wider
   (Shift: bigger steps), Home / End narrowest / widest.
 - **Bursts**: X opens or closes the focused tile's stack.
 - **Large view**: ← / → previous / next, Space plays / pauses, K / T / E,
-  R / Shift+R rotate, Esc closes.
+  F favorite / unfavorite, R / Shift+R rotate, Esc closes.
 - **Suggested junk**: arrows (and J) move the outline, K / T mark it (as its
   Keep and Trash buttons do), Enter opens it.
 - **Dialogs**: Esc cancels, Enter in the text field confirms, Tab stays inside.
@@ -184,7 +189,7 @@ page's own handlers and fails when the list leaves one out.
   `AI|vlm/<model>/trash/*` verdict with that model's `conf` >= 0.7 (or the
   older `Review|vlm-trash/*`), or `Owner|trash` (a copy of content you trashed
   elsewhere, flag "Copy of a trashed photo"); never a file with `Owner|not-trash` (or the legacy
-  `Review|not-trash`), `Owner|keep`, digiKam Accepted,
+  `Review|not-trash`), `Owner|keep`, digiKam Accepted, a favorite (`xmp:Rating` >= 5),
   `Used|*` or a protected project's `Project|<name>`. Most confident first,
   big tiles, with a line under the title saying what the view is and that
   nothing changes until Apply. Every tile has **Keep** and **Trash** buttons
@@ -195,6 +200,7 @@ page's own handlers and fails when the list leaves one out.
   outlined tile, arrows move, Enter opens it. Nothing changes until **Apply**, which shows the counts (and the thumbnails
   and names of what it trashes) and needs a confirm ("Apply", or "Apply and
   trash N files").
+- **Favorites**: below ("Favorites").
 - **Events**: every event in the library, from the sidecars' `Event|<slug>`
   tags (or `XMP-iptcExt:Event` on a file with no `Event|` tag), with its count;
   an item in two events counts and shows in both. A click shows that event's
@@ -264,18 +270,68 @@ with a **more** link ("Layout" above).
   since their order is not time. A burst's shots sit together at the place
   of the newest one, in time order.
 
+## Favorites
+
+A star marks a photo or video you love. On a tile it sits at the bottom
+right: with a mouse it shows while the pointer or focus is on the tile, and
+always once the item is a favorite (filled, gold); on a touch screen it
+always shows (a 44 x 44 px tap). Not in Suggested junk, whose tiles carry
+only Keep and Trash. The large view has a **★ Favorite (F)** button (a
+toggle: pressed when it is one), the selection bar **★ Favorite** and
+**☆ Unfavorite**, and **F** toggles the selection (with none, the focused
+tile; it unstars only when every one is a favorite already) or the item in
+the large view. The **Favorites** quick view lists them, with its count, and
+**Flags: Favorite** is the same filter, combinable with the others
+(`review=favorite` on `/api/list`).
+
+- **Stored as** `XMP-xmp:Rating = 5` in the sidecar
+  (`POST /api/favorite`, `{"ids": [...], "on": true|false}`), and nothing
+  else: the standard rating field digiKam shows as five stars and reads from
+  the sidecar (digiKam set to "Write to XMP sidecar only",
+  [intake.md](intake.md), "Browsing with digiKam"), so a star set in either
+  shows in the other. A rating of 5 or more is a favorite, from the gallery or
+  digiKam (`owner.FAVORITE`); four stars or fewer are not. Unstarring deletes
+  the rating, whatever it was; starring a file digiKam already rated 5
+  writes nothing. Not an `Owner|` tag: the rating needs no new tag namespace
+  and stays meaningful outside this tool.
+- **Never Suggested junk**: a favorite counts as kept everywhere
+  (`owner.kept`): the gallery's Suggested junk and its count,
+  `suggest-trash`, the re-tag never adding `Review|maybe-trash`, `vlm-trash`
+  never judging it (owner-decided), a copy of trashed content never marked
+  `Owner|trash`, `semantic --clean` keeping it, and a negative for
+  `calibrate`'s maybe-trash. The tile keeps
+  no "Kept" flag for it: Keep stays its own decision.
+- **Undo** works as for Keep: the message has **Undo** (Ctrl+Z), and it puts
+  each item's rating back as it was (four stars back as four, none as none),
+  refusing after a later change.
+
 ## Filters (all combinable)
 
 Project, Source, Event, Place, year or month, Looks like (any `Label|*`), my
 tags, Flags (Suggested junk = `Review|maybe-trash`, Possible child =
-`Review|child-in-shot`, Untagged = `Review|untagged-*` or no tags), Junk check
+`Review|child-in-shot`, Untagged = `Review|untagged-*` or no tags, Favorite =
+`xmp:Rating` >= 5), Junk check
 (Judged junk with a junk score >= N, Judged fine, Not checked), Used (in a
 post; or not in the last N days, blank = never), photos / videos, and added
-in the last N days (`added=N` on `/api/list`, what Recently added sets).
+in the last N days (`added=N` on `/api/list`, what Added in the last 30 days
+sets).
+
+**When** lists the five most recent years (each opens to its months), then
+**All years (N)** for the rest (**Fewer years** shuts it; remembered per
+browser); a year or month you picked stays listed either way.
+
+**Added in the last 30 days** (was "Recently added") is named by its window.
+It counts files whose inode changed in the last 30 days (`RECENT_DAYS`): the
+copy or move into the library, since a file's own dates say when it was
+taken, not filed. Right after a first import it holds the whole library, and
+the name says why. A "last import" view was not chosen: the gallery knows a
+file's batch only through `plan.json`, the batch folders' times change with
+later commands (review, purge-review), and one big first import would equal
+the library just the same.
 
 `GET /api/facets` gives the sidebar its options and counts: `facets` (per
 project, source, event, place, label, month and year, my tag), `counts`
-(`kind:photo`, `kind:video`, `review:<flag>`, `ai:trash|keep|none`,
+(`kind:photo`, `kind:video`, `review:<flag>` (`review:favorite` too), `ai:trash|keep|none`,
 `used:used|unused`, `suggest`, `recent`), `recent_days`, the search
 status, `share_out` and `drive` (the backup drive Erase includes, or null). Like every route it needs the session cookie or token.
 
@@ -326,6 +382,7 @@ loading turns the line back into a plain count. Esc clears.
 
 | Action | What it writes |
 |---|---|
+| Favorite | sidecar `XMP-xmp:Rating` = 5, or deleted to unstar (Favorites, above). Nothing else. |
 | Keep | sidecar: `Owner\|keep` and `Owner\|not-trash` added; `Review\|maybe-trash`, an older `Owner\|trash` and the legacy `Review\|not-trash` removed (each leaf only when no other tag uses it). Nothing else. The same rule as the review page's Keep (`intake.keep_args`). |
 | Trash | `media-intake trash FILE... --yes` (the page has already asked): plain delete of the file, its sidecar, thumbnails (freedesktop and the gallery's) and index entry; the sha goes in `trashed.json` (the durable `Owner\|trash`) so intake never takes it in again, and library copies of it left on disk get `Owner\|trash` in their sidecar. The same command the review page's Trash runs. Summary + confirm. |
 | Erase | `media-intake forget FILE... --yes [--drive]`: the erase-everywhere path (quarantine, sweep of HOME, sidecars, thumbnails, recent files, erase log, verify-gone). Summary + type ERASE. For anything private. |
@@ -333,13 +390,14 @@ loading turns the line back into a plain count. Esc clears.
 | Rotate | sidecar `XMP-tiff:Orientation` only (1/6/3/8), each item from its own orientation. The original is never re-encoded or written; digiKam reads the same field. |
 | Set event | `POST /api/event/set` (`{"ids": [...], "event": slug}`): sidecar `Event\|<slug>` (and `XMP-iptcExt:Event`), replacing the item's other `Event\|` tags; `"event": ""` takes the items out of every event. Nothing else. |
 | Share-safe copy | nothing in the library: `media-intake share-copy` into a new folder (below). |
-| Undo | `POST /api/undo` (`{"undo": token}`): puts back what one Keep, my tag + / -, Rotate or Set event changed, below. Never offered for Trash, Erase, Share-safe copy, Suggested junk's Apply, Rename or Merge. |
+| Undo | `POST /api/undo` (`{"undo": token}`): puts back what one Keep, Favorite, my tag + / -, Rotate or Set event changed, below. Never offered for Trash, Erase, Share-safe copy, Suggested junk's Apply, Rename or Merge. |
 | Open in the system player | nothing: `POST /api/open` with one id (`{"ids": [id]}`) runs `xdg-open <file>` (an argument list, no shell, detached) for the one item, only on that button's POST, and only for a regular file inside a library root after resolving links, not in a running job and not flagged, quarantined or erased (else 400). |
 
 ### Undo
 
-The message after **Keep**, a tag of yours added or removed (bar or large
-view), **Rotate** and **Set event** has an **Undo** button (or Ctrl+Z / Cmd+Z
+The message after **Keep**, **Favorite** / **Unfavorite**, a tag of yours
+added or removed (bar or large view), **Rotate** and **Set event** has an
+**Undo** button (or Ctrl+Z / Cmd+Z
 while it shows). Trash, Erase and Share-safe copy never offer it: a deleted
 file can't come back, and a copy made is out of the library.
 
@@ -347,8 +405,9 @@ file can't come back, and a copy made is out of the library.
   as it was and as it is after, and keeps the difference (the last 50
   actions, in memory, until the gallery stops); the reply carries a token.
   Undo applies the reverse: the same tags (`HierarchicalSubject`) and
-  `dc:Subject` leaves as before, `XMP-tiff:Orientation` and
-  `XMP-iptcExt:Event` set back, or deleted when there were none. For Keep
+  `dc:Subject` leaves as before, `XMP-tiff:Orientation`,
+  `XMP-iptcExt:Event` and `XMP-xmp:Rating` set back, or deleted when there
+  were none. For Keep
   that means `Owner|keep` / `Owner|not-trash` off again (unless they were
   there) and `Review|maybe-trash`, an older `Owner|trash` and the legacy
   `Review|not-trash` back with their leaves, exactly as each item had them.
@@ -359,7 +418,8 @@ file can't come back, and a copy made is out of the library.
   page's, and an undo refuses (400, nothing written) a difference outside
   what that action writes: Keep only its `Owner|` / `Review|` tags, my tags
   only tags of yours (never the tools' namespaces), Set event only `Event|`
-  tags and `XMP-iptcExt:Event`, Rotate only the orientation.
+  tags and `XMP-iptcExt:Event`, Rotate only the orientation, Favorite only
+  the rating.
 - **Never over a later change**: it holds the library lock like the action
   (409 while a job, a review run or the CLI holds it; the token stays good),
   and it refuses with 409, writing nothing, when any of the items' sidecars
@@ -368,7 +428,7 @@ file can't come back, and a copy made is out of the library.
 - The reply carries the items' grid summaries, like the action's own.
 
 Every action holds the library lock ([intake.md](intake.md), "One writer at
-a time"): Keep, my tags, Rotate, Set event, Undo, Rename, Merge and a plugin view's
+a time"): Keep, Favorite, my tags, Rotate, Set event, Undo, Rename, Merge and a plugin view's
 POST for the write ([plugins.md](plugins.md)), Trash, Erase and Share-safe copy
 for their whole job. While a CLI command (`apply`, `erase`, ...), a review run or
 another gallery's job holds it, the action gets 409 (`{"error": ..., "busy":
@@ -386,8 +446,9 @@ go to the desktop Trash, and this can't be undone. If the same photo is
 imported again, it is skipped."; Erase "Erases every copy of these 2 files: in
 your library and the rest of your home folder, with their thumbnails and
 recent-file entries", and whether the backup drive is in, then "This can't be
-undone." It warns when any were used in a post or marked Keep earlier ("2 of
-these were marked Keep earlier."). The button names the action: **Trash 2
+undone." It warns when any were used in a post, marked Keep earlier ("2 of
+these were marked Keep earlier.") or are favorites ("1 of these is a
+favorite."). The button names the action: **Trash 2
 files**, **Erase 2 files** (after ERASE is typed). Trash and Erase run one at
 a time with their output streamed into the dialog.
 
@@ -611,7 +672,9 @@ the server or the worker mid-job, and a plugin POST gets 409 while such a job
 holds the library lock (a view declared `post_read_only` does not), every 409 then reading "a Trash is still
 running; wait for it to finish, then try again" with `"busy": true`; `busy_text` naming each holder plainly
 (no PID or path) and `WORDS` holding no tool namespace (`PlainWordsTest`). Also: the sidebar counts against their
-filters, the added-in-N-days filter, a trashed file's copy showing as
+filters, the added-in-N-days filter, Favorites (`test_favorites`: the rating written and deleted and
+nothing else, digiKam's five stars read as a favorite and four not, a favorite
+never in Suggested junk, the Favorites filter and its count, the refusals), a trashed file's copy showing as
 flagged `trashed copy` at once, and Open in the system player through a fake
 `xdg-open` on PATH (its refusals included). Events: the sidebar counts, the
 filter, rename and merge (and their refusals) with `Owner|` and other tags
@@ -628,7 +691,8 @@ share-safe copy (Pillow's re-encode when exiftool is missing) into its own
 0700 folder, with its refusals.
 
 `tests/test_gallery_undo.py`: Undo of Keep (every tag and leaf it removed back,
-a file that had no sidecar), a tag added and removed, Rotate (an orientation
+a file that had no sidecar), Favorite and Unfavorite (each rating back: four
+stars, none, five), a tag added and removed, Rotate (an orientation
 back, and none where there was none) and Set event (both fields, two events,
 cleared), each compared field by field with the sidecar before; refused (409,
 nothing written) after another action or another tool changed an item, and
@@ -744,7 +808,14 @@ after a reload, its end (Done, the status line, Close) and crash message,
 Erase's status line shown while its output is still empty (a
 fake `intake.py` that prints nothing until the test opens a FIFO), and the
 Events list (filter, Rename with a refused name first), Set event on a
-selection and a Share-safe copy ending in "Done: share-safe copies in ...".
+selection and a Share-safe copy ending in "Done: share-safe copies in ...";
+Favorites (the star on hover and kept shown once pressed, a click starring
+with the sidecar's rating 5 and the original unchanged, Undo by Ctrl+Z, F on
+a focused tile and on a selection both ways, the bar's Favorite and
+Unfavorite, the large view's button and F, a starred suggestion leaving
+Suggested junk, the Favorites view with its chip, and the Added in the last
+30 days name); the When list's five recent years, All years (N), kept across
+a reload, and a picked older year staying listed.
 
 ## Not verified
 

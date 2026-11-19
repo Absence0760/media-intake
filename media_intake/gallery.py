@@ -18,7 +18,7 @@ only), Set event, all on one item or a selection, and Share-safe copy (intake.py
 share-copy into a new folder under --share-out, default ~/Pictures/share-safe, as a
 job). A left sidebar holds the views with counts (/api/facets): Library, Trash
 suggestions, any tab a plugin adds (plugins.py gallery_views(), docs/plugins.md),
-the quick views Recently added, Possible child, Untagged, and the Events (Event|
+the quick views Favorites, Added in the last 30 days, Possible child, Untagged, and the Events (Event|
 tags; rename and merge rewrite only those, in the sidecars that have them); then
 search, the filters and Keyboard shortcuts; its right edge drags (or arrow keys) to a
 width kept per browser. Bursts (bursts.py over the plan entries intake wrote) show in
@@ -32,7 +32,9 @@ job (jobs.py, key "gallery", one at a time): closing the page or stopping the
 server never stops one, and a restarted server or another page shows it again.
 The paths go to the worker on a pipe; the status file names the files only by
 (device, inode), and an Erase's output is scrubbed of names when it ends.
-Keep, my tags, Rotate and Set event can be undone (/api/undo: the server records each sidecar's
+Favorites: a star on each tile and in the large view (F), xmp:Rating = 5 in the sidecar (digiKam's five
+stars; owner.favorite: rating >= 5 is a favorite, kept from Suggested junk like Keep), and a Favorites quick view.
+Keep, Favorite, my tags, Rotate and Set event can be undone (/api/undo: the server records each sidecar's
 fields before and after and puts back exactly that change, refusing once a sidecar changed
 again); Trash, Erase and Share-safe copy can't. No native alert/confirm/prompt: in-page
 dialogs, an error message that stays until dismissed, and a "?" list of every key.
@@ -80,8 +82,8 @@ AI_TRASH = re.compile(r"^AI\|vlm/([^/]+)/trash(?:/|$)")
 AI_CONF = re.compile(r"^AI\|vlm/([^/]+)/conf/([0-9.]+)$")
 SUGGEST_MIN = 0.7
 OPENER = "xdg-open"  # the desktop's default app, for media the browser can't decode (found on PATH)
-RECENT_DAYS = 30  # "Recently added": filed into the library in the last N days
-UNDO_KEEP = 50  # the last N undoable actions (Keep, my tags, Rotate, Set event) this server can still undo
+RECENT_DAYS = 30  # "Added in the last 30 days": filed into the library in the last N days (inode change time)
+UNDO_KEEP = 50  # the last N undoable actions (Keep, Favorite, my tags, Rotate, Set event) this server can still undo
 # Share-safe export (intake.py share-copy --out): each export gets a new dated folder under this one.
 SHARE_OUT = os.path.join(HOME, "Pictures", "share-safe")
 
@@ -96,6 +98,7 @@ XMP_WANT = {
     ("http://ns.adobe.com/tiff/1.0/", "Orientation"): "orient",
     ("http://iptc.org/std/Iptc4xmpExt/2008-02-29/", "Event"): "event",
     ("http://www.digikam.org/ns/1.0/", "PickLabel"): "pick",
+    ("http://ns.adobe.com/xap/1.0/", "Rating"): "rating",  # XMP-xmp:Rating, 0-5 stars: >= 5 a favorite (owner.py)
     ("http://www.digikam.org/ns/1.0/", "TagsList"): "tagslist",
     ("http://ns.google.com/photos/1.0/camera/", "BurstID"): "burst_id",  # XMP-GCamera:BurstID, if a tool wrote it
 }
@@ -115,7 +118,7 @@ def _split(tag):
 
 
 def read_xmp(path):
-    """{tags, subject, tagslist, city, state, country, date, orient, event, pick} from an XMP sidecar (a path, or
+    """{tags, subject, tagslist, city, state, country, date, orient, event, pick, rating} from an XMP sidecar (a path, or
     a binary file object)."""
     try:
         root = ET.parse(path).getroot()
@@ -195,7 +198,8 @@ def facts(it):
         ai = max(ai or 0.0, SUGGEST_MIN)
     it["ai_trash"] = ai
     it["ai_keep"] = any(t == "Review|vlm-keep" or (t.startswith("AI|vlm/") and "/keep" in t) for t in tags)
-    it["kept"] = owner.kept(tags, it.get("pick", ""))
+    it["kept"] = owner.kept(tags, it.get("pick", ""))  # your Keep (the tile's "Kept"); a favorite is it["fav"]
+    it["fav"] = owner.favorite(it.get("rating"))
     it["trashed"] = owner.trashed(tags)  # a surviving copy of content you trashed
 
 
@@ -336,6 +340,7 @@ def load_sidecar(it):
     it["tags"] = [t for t in x.get("tags", []) if t]
     it["tagslist"] = x.get("tagslist", [])
     it["pick"] = str(x.get("pick", "")).strip()
+    it["rating"] = str(x.get("rating", "")).strip()
     it["xevent"] = x.get("event") or ""
     it["xdate"] = x.get("date") or ""  # with its seconds, for burst grouping (it["date"] keeps minutes)
     it["xburst"] = x.get("burst_id") or ""
@@ -571,22 +576,26 @@ def sidecar_state(path):
         with open(path, "rb") as f:
             data = f.read()
     except FileNotFoundError:
-        return None, dict(tags=frozenset(), subject=frozenset(), orient=None, xevent="")
+        return None, dict(tags=frozenset(), subject=frozenset(), orient=None, xevent="", rating=None)
     x = read_xmp(io.BytesIO(data))
     return hashlib.sha256(data).hexdigest(), dict(
         tags=frozenset(t for t in x.get("tags", []) if t), subject=frozenset(t for t in x.get("subject", []) if t),
-        orient=(x.get("orient") or "").strip() or None, xevent=(x.get("event") or "").strip())
+        orient=(x.get("orient") or "").strip() or None, xevent=(x.get("event") or "").strip(),
+        rating=(x.get("rating") or "").strip() or None)
 
 
 # What each undoable action may change in a sidecar, so an undo can only reverse that (see App.undo): Keep its
-# Owner| / Review| tags, my tags only tags of yours, Set event only Event| tags, Rotate no tag at all.
+# Owner| / Review| tags, my tags only tags of yours, Set event only Event| tags, Rotate no tag at all, Favorite
+# only xmp:Rating.
 KEEP_TAGS = frozenset(("Review|maybe-trash", owner.TRASH, *owner.LEGACY, owner.KEEP, owner.NOT_TRASH))
 UNDO_SCOPE = {
-    "keep": dict(tags=lambda t: t in KEEP_TAGS, orient=False, xevent=False),
-    "tag": dict(tags=owner_tag, orient=False, xevent=False),
-    "event": dict(tags=lambda t: t.startswith("Event|"), orient=False, xevent=True),
-    "rotate": dict(tags=lambda t: False, orient=True, xevent=False),
+    "keep": dict(tags=lambda t: t in KEEP_TAGS, orient=False, xevent=False, rating=False),
+    "tag": dict(tags=owner_tag, orient=False, xevent=False, rating=False),
+    "event": dict(tags=lambda t: t.startswith("Event|"), orient=False, xevent=True, rating=False),
+    "rotate": dict(tags=lambda t: False, orient=True, xevent=False, rating=False),
+    "favorite": dict(tags=lambda t: False, orient=False, xevent=False, rating=True),
 }
+RATING_RE = re.compile(r"^-?\d{1,2}(?:\.\d{1,3})?$")  # an xmp:Rating an undo may write back
 
 
 # Internal names -> the words a user reads. The one place: the page gets it as WORDS (page()), and the server's
@@ -595,7 +604,8 @@ UNDO_SCOPE = {
 WORDS = {
     # tile flags (summary()["f"]) and the Flags filter's values (?review=)
     "flag": {"maybe-trash": "Suggested junk", "child-in-shot": "Possible child", "untagged": "Untagged",
-             "kept": "Kept", "trashed copy": "Copy of a trashed photo", "used": "Used in a post"},
+             "favorite": "Favorite", "kept": "Kept", "trashed copy": "Copy of a trashed photo",
+             "used": "Used in a post"},
     # the Junk check filter's values (?ai=), and the AI| / Review|vlm-* verdict tags in the large view
     "ai": {"trash": "Judged junk", "keep": "Judged fine", "none": "Not checked"},
     "score": "Junk score",  # an AI trash verdict's confidence, 0-1
@@ -616,8 +626,8 @@ WORDS = {
     "job": {"trash": "Trash", "erase": "Erase", "share": "Share-safe copy",
             "forget": "Erase", "share-copy": "Share-safe copy"},
     # the sidebar views
-    "view": {"lib": "Library", "sug": "Suggested junk", "recent": "Recently added", "child": "Possible child",
-             "untagged": "Untagged"},
+    "view": {"lib": "Library", "sug": "Suggested junk", "fav": "Favorites",
+             "recent": f"Added in the last {RECENT_DAYS} days", "child": "Possible child", "untagged": "Untagged"},
 }
 
 
@@ -777,7 +787,7 @@ class App:
         return dict(id=i, m=it["media"], d=it["date"], mo=it["date"][:7], n=os.path.basename(it["path"]),
                     c=it["ai_trash"], f=[t[7:] for t in it["tags"] if t in ("Review|maybe-trash", "Review|child-in-shot")]
                     + (["kept"] if it["kept"] else []) + (["trashed copy"] if it["trashed"] else [])
-                    + (["used"] if it["used"] else []))
+                    + (["used"] if it["used"] else []), fav=it["fav"])
 
     def detail(self, i):
         it = self.items[i]
@@ -794,7 +804,7 @@ class App:
                     video=it["show"] == "video", date=it["date"], place=it["place"], event=it["event"],
                     project=it["project"], source=it["source"], folder=folder, res=it["res"],
                     size=R.human(it["size"]), tags=it["tags"], mine=it["mine"], rot=rot, ai=it["ai_trash"],
-                    used=it["used"], kept=it["kept"], has_xmp=it["has_xmp"])
+                    used=it["used"], kept=it["kept"], fav=it["fav"], has_xmp=it["has_xmp"])
 
     def facets(self):
         c = {k: collections.Counter() for k in ("project", "source", "event", "place", "label", "month", "mine")}
@@ -810,6 +820,7 @@ class App:
             for r in ("maybe-trash", "child-in-shot"):
                 counts[f"review:{r}"] += f"Review|{r}" in t
             counts["review:untagged"] += not t or any(x.startswith("Review|untagged-") for x in t)
+            counts["review:favorite"] += it["fav"]
             counts["ai:trash"] += it["ai_trash"] is not None
             counts["ai:keep"] += it["ai_keep"]
             counts["ai:none"] += not any(x.startswith("AI|") for x in t)
@@ -840,7 +851,7 @@ class App:
                     drive=drive)
 
     def suggested(self, it):
-        if it["kept"] or it["used"] or f"Project|{it['project']}" in PROTECTED or PROTECTED.intersection(it["tags"]):
+        if it["kept"] or it["fav"] or it["used"] or f"Project|{it['project']}" in PROTECTED or PROTECTED.intersection(it["tags"]):
             return False
         return it["trashed"] or "Review|maybe-trash" in it["tags"] or (it["ai_trash"] or 0) >= SUGGEST_MIN
 
@@ -876,6 +887,8 @@ class App:
         if rv == "child-in-shot" and "Review|child-in-shot" not in t:
             return False
         if rv == "untagged" and t and not any(x.startswith("Review|untagged-") for x in t):
+            return False
+        if rv == "favorite" and not it["fav"]:
             return False
         ai = f.get("ai")
         if ai == "trash":
@@ -1087,6 +1100,32 @@ class App:
             return self.journal("keep", before, f"Kept {n}. {'It' if n == 1 else 'They'} won't be suggested "
                                                 "as junk again.")
 
+    def favorite(self, ids, on):
+        """Star (on=True) or unstar items: XMP-xmp:Rating = owner.FAVORITE (5) in the sidecar, or the rating
+        deleted, and nothing else. An item already a favorite (rating >= 5, from digiKam too) isn't written
+        again on a star; unstarring deletes its rating, whatever it was. Undoable (/api/undo)."""
+        if not isinstance(on, bool):
+            raise ValueError("on is true or false")
+        with self.writing("favorite"), self.lock:
+            ids = self.targets(ids)
+            before = self.snapshots(ids)
+            blocks = []
+            for i in ids:
+                it = self.items[i]
+                if it["fav"] == on:
+                    continue
+                x = self.ensure_sidecar(it) if on else intake.sidecar(it["path"])
+                blocks.append(["-q", "-m", "-overwrite_original", "-n",
+                               f"-XMP-xmp:Rating={owner.FAVORITE if on else ''}", x])
+            self.run_exiftool(blocks)
+            self.refresh(ids)
+            n, word = len(blocks), WORDS["view"]["fav"]
+            if not n:
+                return f"{'Already' if on else 'Not'} in {word}: nothing changed."
+            msg = f"Added {n} to {word}. {'It' if n == 1 else 'They'} won't be suggested as junk." if on \
+                else f"Removed {n} from {word}."
+            return self.journal("favorite", before, msg)
+
     def tag_block(self, it, add=(), remove=(), extra=()):
         """One exiftool block for one sidecar: HierarchicalSubject tags added / removed with their dc:Subject
         leaves (a removed leaf only when no other tag still uses it), then extra arguments. The one place that
@@ -1245,7 +1284,7 @@ class App:
             return self.journal("rotate", before,
                                 f"rotated {len(ids)} (sidecar XMP-tiff:Orientation only; originals untouched)")
 
-    # ---------------------------------------------- undo (Keep, my tags, Rotate, Set event; never Trash or Erase)
+    # ---------------------------------------------- undo (Keep, Favorite, my tags, Rotate, Set event; never Trash or Erase)
     def snapshots(self, ids):
         """(Under the library lock.) Each item's sidecar as it is before an undoable action writes it."""
         return {i: sidecar_state(intake.sidecar(self.items[i]["path"])) for i in ids}
@@ -1275,8 +1314,9 @@ class App:
         (ValueError) anything outside what that kind of action may write (UNDO_SCOPE)."""
         scope = UNDO_SCOPE[kind]
         drop, add = new["tags"] - old["tags"], old["tags"] - new["tags"]
+        rating = old.get("rating") != new.get("rating")
         if not all(scope["tags"](t) for t in drop | add) or (old["orient"] != new["orient"] and not scope["orient"]) \
-                or (old["xevent"] != new["xevent"] and not scope["xevent"]):
+                or (old["xevent"] != new["xevent"] and not scope["xevent"]) or (rating and not scope.get("rating")):
             raise ValueError(f"that undo would write outside what {kind} writes; nothing was changed")
         back = set(drop | add | (new["subject"] ^ old["subject"]))
         if old["xevent"] != new["xevent"]:
@@ -1284,6 +1324,8 @@ class App:
         for v in back - {""}:
             if "@@sep@@" in v or v.startswith("-") or not TAG_RE.match(v):
                 raise ValueError("a value in that sidecar can't be written back here; nothing was changed")
+        if rating and old.get("rating") and not RATING_RE.match(old["rating"]):
+            raise ValueError("a value in that sidecar can't be written back here; nothing was changed")
         b = ["-q", "-m", "-overwrite_original", "-n", "-sep", "@@sep@@"]
         b += [f"-XMP-lr:HierarchicalSubject-={t}" for t in sorted(drop)]
         b += [f"-XMP-lr:HierarchicalSubject+={t}" for t in sorted(add)]
@@ -1293,6 +1335,8 @@ class App:
             b.append(f"-XMP-tiff:Orientation={old['orient'] or ''}")
         if old["xevent"] != new["xevent"]:
             b.append(f"-XMP-iptcExt:Event={old['xevent']}")
+        if rating:
+            b.append(f"-XMP-xmp:Rating={old.get('rating') or ''}")
         return b + [path]
 
     def undo(self, token):
@@ -1323,7 +1367,8 @@ class App:
             if kind == "rotate":
                 for i in ids:
                     self.drop_thumb(self.items[i])
-            what = {"keep": "Keep", "tag": "the tag", "rotate": "Rotate", "event": "Set event"}[kind]
+            what = {"keep": "Keep", "tag": "the tag", "rotate": "Rotate", "event": "Set event",
+                    "favorite": "Favorite"}[kind]
             return dict(result=f"undid {what} on {len(ids)}", ids=ids, kind=kind, thumbs=kind == "rotate")
 
     # ---------------------------------------------- trash / erase (a detached jobs.py job, one at a time)
@@ -1564,7 +1609,7 @@ def page(app):
 
 
 # Sidecar edits on a selection whose reply carries the items' new grid summaries ("items").
-REDRAW = ("/api/keep", "/api/tag", "/api/rotate", "/api/event/set")
+REDRAW = ("/api/keep", "/api/favorite", "/api/tag", "/api/rotate", "/api/event/set")
 
 
 class Handler(R.Handler):
@@ -1685,6 +1730,7 @@ class Handler(R.Handler):
             return
         acts = {
             "/api/keep": lambda: app.keep(body.get("ids")),
+            "/api/favorite": lambda: app.favorite(body.get("ids"), body.get("on")),
             "/api/tag": lambda: app.tag(body.get("ids"), body.get("tag"), body.get("op")),
             "/api/rotate": lambda: app.rotate(body.get("ids"), body.get("dir")),
             "/api/trash": lambda: app.trash(body.get("ids"), body.get("confirm")),
@@ -1880,6 +1926,7 @@ kbd{font:600 11px/1 ui-monospace,monospace;border:1px solid currentColor;border-
 .rl{display:none}
 #evlist{display:flex;flex-direction:column;gap:2px}
 .evmore{align-self:flex-start;margin:2px 10px}
+.yrmore{margin:4px 10px}
 #evbar{display:flex;flex-wrap:wrap;align-items:center;gap:8px;padding:12px 24px 0}
 #evbar .evt{font-weight:600;margin-right:4px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;max-width:100%}
 #mfieldp label{display:block;font-size:13px;color:var(--mut);margin-bottom:4px}
@@ -2002,6 +2049,14 @@ h2.month{position:sticky;top:var(--hh);z-index:2;margin:0;padding:16px 0 8px;fon
 [data-view=sug] .tile .flag{bottom:58px}
 .tile .mark{position:absolute;left:6px;top:6px;z-index:2;font-size:12px;font-weight:700;letter-spacing:.04em;border-radius:4px;padding:2px 8px;color:var(--on-acc)}
 .tile .mark.keep{background:var(--keep)}.tile .mark.trash{background:var(--trash)}
+/* Favorites: the tile's star (bottom right; shown on hover / focus, always when starred or with no hover), and
+   the large view's Favorite button (a toggle, aria-pressed) */
+.tile .star{position:absolute;right:4px;bottom:4px;z-index:2;width:34px;height:34px;padding:0;border:0;border-radius:50%;background:rgba(0,0,0,.55);color:#fff;font-size:19px;line-height:1;display:flex;align-items:center;justify-content:center;cursor:pointer}
+.tile .star[aria-pressed=true]{color:#ffc83d}
+@media (hover:hover){.tile .star{opacity:0;transition:opacity .1s}.tile:hover .star,.tile:focus-within .star,.tile .star[aria-pressed=true]{opacity:1}}
+@media (forced-colors:active){.tile .star{border:1px solid ButtonText}.tile .star[aria-pressed=true]{color:Highlight}}
+.acts .favb{grid-column:1/-1}
+#info .btn.favb[aria-pressed=true]{color:#ffc83d;border-color:#7a6220}
 .play{position:absolute;right:6px;top:6px;width:24px;height:24px;border-radius:50%;background:rgba(0,0,0,.55);color:#fff;font-size:10px;display:flex;align-items:center;justify-content:center;padding-left:2px}
 /* Burst stacks: the review page's look (a stacked card, a count badge, an X button) on a tile */
 .tile.stack{box-shadow:4px 4px 0 -1px var(--bg),4px 4px 0 0 var(--mut),8px 8px 0 -1px var(--bg),8px 8px 0 0 var(--mut)}
@@ -2141,6 +2196,7 @@ dl.dt dd{margin:0;word-break:break-word}
  #tsize{height:44px}
  .chip{height:44px}.chip .x{width:44px;height:44px}
  .tile .ckw{width:44px;height:44px}
+ .tile .star{width:44px;height:44px;right:0;bottom:0}
  .tile .bx{top:8px;right:8px}
  .tile .bx::after{content:"";position:absolute;inset:-8px}
  .link::after{content:"";position:absolute;inset:-11px -8px}
@@ -2163,6 +2219,7 @@ dl.dt dd{margin:0;word-break:break-word}
  <symbol id="i-lib" viewBox="0 0 24 24"><rect x="4" y="4" width="7" height="7" rx="1.5"/><rect x="13" y="4" width="7" height="7" rx="1.5"/><rect x="4" y="13" width="7" height="7" rx="1.5"/><rect x="13" y="13" width="7" height="7" rx="1.5"/></symbol>
  <symbol id="i-trash" viewBox="0 0 24 24"><path d="M4 7h16M9 7V4.5h6V7M6.5 7l1 13h9l1-13M10 11v5M14 11v5"/></symbol>
  <symbol id="i-plug" viewBox="0 0 24 24"><path d="M9 3v5M15 3v5M6 8h12v3a6 6 0 0 1-12 0zM12 17v4"/></symbol>
+ <symbol id="i-star" viewBox="0 0 24 24"><path d="M12 3.5l2.6 5.4 5.9.8-4.3 4.1 1 5.8-5.2-2.8-5.2 2.8 1-5.8-4.3-4.1 5.9-.8z"/></symbol>
  <symbol id="i-clock" viewBox="0 0 24 24"><circle cx="12" cy="12" r="8.5"/><path d="M12 7.5V12l3 2"/></symbol>
  <symbol id="i-child" viewBox="0 0 24 24"><circle cx="12" cy="6.5" r="2.5"/><path d="M8 21v-6l-2-1 2-5h8l2 5-2 1v6M12 15v6"/></symbol>
  <symbol id="i-tag" viewBox="0 0 24 24"><path d="M3.5 12.5V4h8.5l8.5 8.5-8.5 8.5z"/><circle cx="8" cy="8.5" r="1.4"/></symbol>
@@ -2185,7 +2242,8 @@ dl.dt dd{margin:0;word-break:break-word}
   <button type="button" class="nv" data-v="sug" title="Suggested junk"><svg class="ic"><use href="#i-trash"/></svg><span class="lbl">Suggested junk</span><span class="rl" aria-hidden="true">Junk</span><span class="ct" id="c-sug"></span></button>
   <div id="ptabs"></div>
   <div class="nvhead">Quick views</div>
-  <button type="button" class="nv" data-v="recent" title="Recently added"><svg class="ic"><use href="#i-clock"/></svg><span class="lbl">Recently added</span><span class="rl" aria-hidden="true">Recent</span><span class="ct" id="c-recent"></span></button>
+  <button type="button" class="nv" data-v="fav" title="Favorites"><svg class="ic"><use href="#i-star"/></svg><span class="lbl">Favorites</span><span class="rl" aria-hidden="true">Favorites</span><span class="ct" id="c-fav"></span></button>
+  <button type="button" class="nv" data-v="recent" title="Added in the last 30 days"><svg class="ic"><use href="#i-clock"/></svg><span class="lbl">Added in the last 30 days</span><span class="rl" aria-hidden="true">Recent</span><span class="ct" id="c-recent"></span></button>
   <button type="button" class="nv" data-v="child" title="Possible child"><svg class="ic"><use href="#i-child"/></svg><span class="lbl">Possible child</span><span class="rl" aria-hidden="true">Child</span><span class="ct" id="c-child"></span></button>
   <button type="button" class="nv" data-v="untagged" title="Untagged"><svg class="ic"><use href="#i-tag"/></svg><span class="lbl">Untagged</span><span class="rl" aria-hidden="true">No tags</span><span class="ct" id="c-untagged"></span></button>
   <div id="evsec"><div class="nvhead">Events</div><div id="evlist"></div></div>
@@ -2223,6 +2281,7 @@ dl.dt dd{margin:0;word-break:break-word}
   <div class="grp" id="selgrp" role="toolbar" aria-label="Selection actions" hidden><span id="seln"></span>
    <button type="button" class="btn keep" id="bkeep">Keep <kbd>K</kbd></button><button type="button" class="btn trash" id="btrash">Trash <kbd>T</kbd></button><button type="button" class="btn erase" id="berase">Erase <kbd>E</kbd></button>
    <span class="sep"></span>
+   <button type="button" class="btn" id="bfav" title="Star the selection as favorites (F toggles)">★ Favorite <kbd>F</kbd></button><button type="button" class="btn" id="bunfav" title="Take the selection out of Favorites">☆ Unfavorite</button>
    <button type="button" class="btn" id="btag">+ tag</button><button type="button" class="btn" id="buntag">− tag</button><button type="button" class="btn" id="bevent">Set event…</button><button type="button" class="btn" id="brot">Rotate ⟳</button><button type="button" class="btn" id="bshare">Share-safe copy</button><button type="button" class="btn" id="bnone">Clear selection <kbd>Esc</kbd></button>
   </div>
   <div class="grp" id="suggrp" role="group" aria-label="Decisions" hidden><span id="sugn"></span><span class="note" style="margin:0">Mark Keep or Trash on each, then Apply<span class="kbonly"> (keys: K, T, arrows)</span></span><button type="button" class="btn primary" id="sugapply">Apply…</button></div>
@@ -2248,9 +2307,10 @@ dl.dt dd{margin:0;word-break:break-word}
   <dt>Shift+click, Ctrl+click</dt><dd>Select a range; tick or untick one tile</dd>
   <dt><kbd>Ctrl</kbd>+<kbd>A</kbd> / <kbd>Cmd</kbd>+<kbd>A</kbd></dt><dd>Select every tile shown</dd>
   <dt><kbd>K</kbd> <kbd>T</kbd> <kbd>E</kbd></dt><dd>Keep, Trash (asks first), Erase (asks, ERASE typed) the selection</dd>
+  <dt><kbd>F</kbd></dt><dd>Favorite or unfavorite the selection (with none, the focused tile): unstars when every one is a favorite</dd>
   <dt><kbd>Esc</kbd></dt><dd>Clear the selection; close the sidebar drawer (phone); in the search box, clear the search</dd>
   <dt><kbd>/</kbd></dt><dd>Jump to the search box</dd>
-  <dt><kbd>Ctrl</kbd>+<kbd>Z</kbd> / <kbd>Cmd</kbd>+<kbd>Z</kbd></dt><dd>Undo the last Keep, tag, Rotate or Set event while its message shows</dd>
+  <dt><kbd>Ctrl</kbd>+<kbd>Z</kbd> / <kbd>Cmd</kbd>+<kbd>Z</kbd></dt><dd>Undo the last Keep, Favorite, tag, Rotate or Set event while its message shows</dd>
   <dt><kbd>?</kbd></dt><dd>This list</dd>
  </dl>
  <h4>Sidebar</h4><dl>
@@ -2263,6 +2323,7 @@ dl.dt dd{margin:0;word-break:break-word}
   <dt><kbd>←</kbd> <kbd>→</kbd></dt><dd>Previous / next item (over a closed stack's hidden shots)</dd>
   <dt><kbd>Space</kbd></dt><dd>Play / pause a video</dd>
   <dt><kbd>K</kbd> <kbd>T</kbd> <kbd>E</kbd></dt><dd>Keep, Trash, Erase the item shown</dd>
+  <dt><kbd>F</kbd></dt><dd>Favorite or unfavorite the item shown</dd>
   <dt><kbd>R</kbd> / <kbd>Shift</kbd>+<kbd>R</kbd></dt><dd>Rotate clockwise / anticlockwise (the sidecar only)</dd>
   <dt><kbd>Esc</kbd></dt><dd>Close the large view</dd>
  </dl>
@@ -2291,7 +2352,7 @@ const ACTIVE=["kind","ym","project","source","place","event","label","mine","rev
 // internal names -> the words shown: gallery.py WORDS, the one place (no Owner|, Review|, Label| in the page's text)
 const WORDS=__WORDS__;
 const NAMES=WORDS.filter;
-const REVIEW={"maybe-trash":WORDS.flag["maybe-trash"],"child-in-shot":WORDS.flag["child-in-shot"],untagged:WORDS.flag.untagged};
+const REVIEW={"maybe-trash":WORDS.flag["maybe-trash"],"child-in-shot":WORDS.flag["child-in-shot"],untagged:WORDS.flag.untagged,favorite:WORDS.flag.favorite};
 const AIV=WORDS.ai;
 const VIEWS=__VIEWS__;window.mediaIntakeViews=window.mediaIntakeViews||{};
 const TITLES=Object.assign({},WORDS.view);
@@ -2385,12 +2446,18 @@ function renderOpts(k,entries,lab){const box=$(`.opts[data-k=${k}]`);if(!box)ret
  entries.forEach(([v,c])=>ul.append(optBtn(k,v,lab?lab(v):v,c)));box.append(ul);applyFind(box,k)}
 function applyFind(box,k){const q=(finds[k]||"").trim().toLowerCase();box.querySelectorAll(".opt").forEach(b=>{b.hidden=!!q&&!b.textContent.toLowerCase().includes(q)&&F[k]!==b.dataset.val})}
 const openYears=new Set();
+// the most recent YRSHOW years, then "All years (N)" for the rest (open or not remembered per browser); the
+// chosen year always shows
+const YRSHOW=5;let yrAll=LS.get("whenall","0")==="1";
 function renderWhen(){const box=$("#when");box.replaceChildren();const ent=facets.facets.month||[],yrs=ent.filter(([n])=>n.length===4);
  if(!yrs.length)box.append(el("div","empty","No dates"));if(F.ym)openYears.add(F.ym.slice(0,4));
- yrs.forEach(([y,c])=>{const row=el("div","yr"),cb=el("button","caret","▶");cb.type="button";const mos=el("div","mos");
+ const show=yrAll?yrs.slice():yrs.slice(0,YRSHOW);if(F.ym&&!show.some(([y])=>y===F.ym.slice(0,4))){const x=yrs.find(([y])=>y===F.ym.slice(0,4));if(x)show.push(x)}
+ show.forEach(([y,c])=>{const row=el("div","yr"),cb=el("button","caret","▶");cb.type="button";const mos=el("div","mos");
   const setO=o=>{mos.hidden=!o;cb.setAttribute("aria-expanded",String(o));cb.setAttribute("aria-label",(o?"Hide":"Show")+" the months of "+y);o?openYears.add(y):openYears.delete(y)};
   ent.filter(([n])=>n.length===7&&n.startsWith(y)).forEach(([m,mc])=>mos.append(optBtn("ym",m,monthOnly(m),mc)));
-  setO(openYears.has(y));cb.onclick=()=>setO(mos.hidden);row.append(cb,optBtn("ym",y,y,c));box.append(row,mos)})}
+  setO(openYears.has(y));cb.onclick=()=>setO(mos.hidden);row.append(cb,optBtn("ym",y,y,c));box.append(row,mos)});
+ if(yrs.length>YRSHOW){const m=el("button","link yrmore",yrAll?"Fewer years":"All years ("+fmt(yrs.length)+")");m.type="button";m.setAttribute("aria-expanded",String(yrAll));
+  m.onclick=()=>{yrAll=!yrAll;LS.set("whenall",yrAll?"1":"0");renderWhen();syncUI();const b=$("#when .yrmore");if(b)b.focus()};box.append(m)}}
 async function loadFacets(tries){facets=await api("/api/facets");const fc=facets.facets,c=facets.counts||{};
  ["project","source","place","event","label","mine"].forEach(k=>renderOpts(k,fc[k]||[]));
  renderOpts("review",Object.keys(REVIEW).map(v=>[v,c["review:"+v]||0]),v=>REVIEW[v]);
@@ -2398,9 +2465,9 @@ async function loadFacets(tries){facets=await api("/api/facets");const fc=facets
  renderOpts("used",[["used",c["used:used"]||0],["unused",c["used:unused"]||0]],v=>v==="used"?WORDS.flag.used:"Not used");
  renderWhen();renderEvents();renderMyTags();
  $("#ck-all").textContent=fmt(facets.total);$("#ck-photo").textContent=fmt(c["kind:photo"]);$("#ck-video").textContent=fmt(c["kind:video"]);
- $("#c-lib").textContent=fmt(facets.total);$("#c-sug").textContent=fmt(c.suggest);$("#c-recent").textContent=fmt(c.recent);
+ $("#c-lib").textContent=fmt(facets.total);$("#c-sug").textContent=fmt(c.suggest);$("#c-recent").textContent=fmt(c.recent);$("#c-fav").textContent=fmt(c["review:favorite"]);
  $("#c-child").textContent=fmt(c["review:child-in-shot"]);$("#c-untagged").textContent=fmt(c["review:untagged"]);
- $('.nv[data-v=recent]').title="Recently added (filed in the last "+facets.recent_days+" days)";
+ $('.nv[data-v=recent]').title=WORDS.view.recent+" (by when each file was filed, not when it was taken)";
  const h=$("#qhint");h.replaceChildren();h.hidden=!facets.search;
  if(facets.search){const checking=/^checking/.test(facets.search);const d=el("details"),s=el("summary",null,checking?"Checking the search model…":"Semantic search off: tags and names only");
   d.append(s,el("div","why",facets.search));h.append(d);h.title=facets.search;if(checking&&(tries||0)<10)setTimeout(()=>loadFacets((tries||0)+1).catch(()=>{}),1500)}
@@ -2425,7 +2492,7 @@ $("#evmerge").onclick=()=>{const src=F.event;askField("Merge "+src+" into anothe
 // ---------------------------------------------------------------- filter state
 function setF(k,v){if(v)F[k]=v;else delete F[k];simId=null;if(plugView()){setView("lib");return}syncUI();reset()}
 function clearAll(){F={aimin:F.aimin||"0.7"};$("#q").value="";simId=null;syncUI();reset()}
-function navActive(){if(view!=="lib")return view;const a=activeKeys();if(a.length===1&&!$("#q").value.trim()&&simId===null){if(F.event)return "ev";if(F.added)return "recent";if(F.review==="child-in-shot")return "child";if(F.review==="untagged")return "untagged"}return "lib"}
+function navActive(){if(view!=="lib")return view;const a=activeKeys();if(a.length===1&&!$("#q").value.trim()&&simId===null){if(F.event)return "ev";if(F.added)return "recent";if(F.review==="favorite")return "fav";if(F.review==="child-in-shot")return "child";if(F.review==="untagged")return "untagged"}return "lib"}
 function syncUI(){$$("button[data-k]").forEach(b=>b.setAttribute("aria-pressed",String((F[b.dataset.k]||"")===b.dataset.val)));
  $$(".fs").forEach(s=>{const k=SECKEY[s.dataset.s]||s.dataset.s;s.querySelector(".fs-v").textContent=F[k]?chipVal(k):""});
  const n=activeKeys().length;$("#clear").hidden=!n;$("#clear").textContent=`Clear filters (${n})`;$("#rbadge").hidden=!n;$("#rbadge").textContent=n;
@@ -2455,7 +2522,7 @@ function listState(kind,head,o){o=o||{};const d=el("div","state"+(kind==="error"
  if(o.act){const b=el("button","btn",o.act.label);b.type="button";b.onclick=o.act.fn;d.append(b)}$("#list").replaceChildren(d);return d}
 function loadingState(){const d=listState("loading"),p=el("p"),sp=el("span","spin");sp.setAttribute("aria-hidden","true");p.append(sp,"Loading your library…");d.append(p);
  $("#main").setAttribute("aria-busy","true")}
-const QUICK=["recent","child","untagged","ev"];
+const QUICK=["fav","recent","child","untagged","ev"];
 function emptyState(note){const q=$("#q").value.trim(),nf=activeKeys().length,na=navActive();
  if(simId!==null)return listState("none",note||"No photos look like this one.",{act:{label:"Back to the "+TITLES.lib.toLowerCase(),fn:()=>{simId=null;syncUI();reset()}}});
  if(facets&&facets.total===0)return listState("none","Your library is empty.",{lines:["To add photos and videos, run these in a terminal, with the folder they are in:"],
@@ -2515,6 +2582,7 @@ function tile(it,n){const t=el("div","tile"),sug=view==="sug";t.id="t"+it.id;t.d
    const x=el("button","x",stackLabel(it));x.type="button";x.tabIndex=-1;x.onclick=ev=>{ev.stopPropagation();toggleStack(n)};t.append(x);if(!openB[it.b])t.classList.add("stack")}
   else t.hidden=hiddenAt(n)}
  const fl=flagsOf(it);if(fl)t.append(el("span","flag",fl));
+ if(!sug)t.append(starBtn(it));
  // Suggested junk: Keep and Trash on the tile (a tap marks it, a second tap unmarks; nothing changes until Apply)
  if(sug){const d=el("div","dec");d.setAttribute("role","group");d.setAttribute("aria-label","Mark "+it.n);
   [["keep","Keep"],["trash","Trash"]].forEach(([k,l])=>{const b=el("button","btn "+k,l);b.type="button";b.dataset.dec=k;b.setAttribute("aria-pressed","false");
@@ -2530,7 +2598,16 @@ function flagsOf(it){const fl=[];if(it.c!=null)fl.push(WORDS.score+" "+it.c.toFi
 // after an edit: the reply's summaries replace those items and their tiles' flags (kept, ...);
 // the tile, its focus and the selection stay
 function patchTiles(fresh){(fresh||[]).forEach(s=>{const n=items.findIndex(i=>i.id===s.id);if(n<0)return;const o=items[n];items[n]=o.b!=null?Object.assign(s,{b:o.b,bn:o.bn,bc:o.bc,mo:o.mo}):s;const t=$("#t"+s.id);if(!t)return;
-  const old=t.querySelector(".flag"),fl=flagsOf(s);if(old)old.remove();if(fl)t.append(el("span","flag",fl))})}
+  const old=t.querySelector(".flag"),fl=flagsOf(s);if(old)old.remove();if(fl)t.append(el("span","flag",fl));paintStar(t.querySelector(".star"),s)})}
+/* Favorites (xmp:Rating 5 in the sidecar): the tile's star toggles one item, F and the bar's Favorite / Unfavorite
+   the selection; F stars them all unless every one already is a favorite, then it unstars them */
+function paintStar(b,it){if(!b)return;b.setAttribute("aria-pressed",String(!!it.fav));b.textContent=it.fav?"★":"☆";
+ b.title=it.fav?"Favorite (F): click to unstar":"Add to "+WORDS.view.fav+" (F)"}
+function starBtn(it){const b=el("button","star");b.type="button";b.tabIndex=-1;b.setAttribute("aria-label","Favorite "+it.n);paintStar(b,it);
+ b.onclick=ev=>{ev.stopPropagation();const cur=items.find(i=>i.id===it.id)||it;doFav([it.id],!cur.fav)};return b}
+const isFav=id=>{const it=items.find(i=>i.id===id);return !!(it&&it.fav)};
+function favToggle(ids){if(ids.length)doFav(ids,!ids.every(isFav))}
+async function doFav(ids,on){try{const j=await api("/api/favorite",{ids,on});toast(j.result,j.undo);refreshAfter(ids,false,j.items);loadFacets()}catch(e){refused(on?"Favorite":"Unfavorite",e)}}
 function pick(n,range){if(view==="sug")return;allSel=null;if(range&&last!==null){const [a,b]=[Math.min(last,n),Math.max(last,n)];for(let i=a;i<=b;i++)if(!hiddenAt(i))sel.add(items[i].id)}
  else{const id=items[n].id;sel.has(id)?sel.delete(id):sel.add(id)}last=n;paintSel()}
 function paintSel(){$$(".tile").forEach(t=>{const id=+t.id.slice(1),n=+t.dataset.n,d=dec[id];t.classList.toggle("sel",sel.has(id));const cb=t.querySelector("input.ck");if(cb)cb.checked=sel.has(id);
@@ -2615,7 +2692,8 @@ function thumbs(ids){const d=el("div","mthumbs");d.setAttribute("aria-hidden","t
  if(ids.length>THUMBS)d.append(el("span",null,`and ${fmt(ids.length-THUMBS)} more`));return d}
 function warnings(ids){const its=ids.map(id=>items.find(i=>i.id===id)).filter(Boolean),w=[],one=ids.length===1;
  const u=its.filter(i=>i.f.includes("used")).length;if(u)w.push(one?"!This one was used in a post.":`!${fmt(u)} of these ${u===1?"was":"were"} used in a post.`);
- const k=its.filter(i=>i.f.includes("kept")).length;if(k)w.push(one?"!This one was marked Keep earlier.":`!${fmt(k)} of these ${k===1?"was":"were"} marked Keep earlier.`);return w}
+ const k=its.filter(i=>i.f.includes("kept")).length;if(k)w.push(one?"!This one was marked Keep earlier.":`!${fmt(k)} of these ${k===1?"was":"were"} marked Keep earlier.`);
+ const fv=its.filter(i=>i.fav).length;if(fv)w.push(one?"!This one is a favorite.":`!${fmt(fv)} of these ${fv===1?"is a favorite":"are favorites"}.`);return w}
 const these=n=>n===1?"this file":"these "+plural(n,"file");
 function trashText(n){return `Deletes ${these(n)} from this computer for good, with ${n===1?"its":"their"} tags and thumbnails. ${n===1?"It doesn't":"They don't"} go to the desktop Trash, and this can't be undone. If the same photo is imported again, it is skipped.`}
 function askTrash(ids){const n=ids.length;confirmBox(`Trash ${plural(n,"item")}?`,[thumbs(ids),names(ids),trashText(n)+" Use Erase for anything private.",...warnings(ids)],false,
@@ -2691,6 +2769,7 @@ async function rot(ids,dir){try{const j=await api("/api/rotate",{ids,dir});toast
 function refreshAfter(ids,thumbs,fresh){patchTiles(fresh);if(thumbs)ids.forEach(id=>{const t=$("#t"+id);if(t){const im=t.querySelector("img");if(im)im.src="/t/"+id+"?r="+Date.now()}});
  if(vi>=0)openViewer(vi,{keep:true});else if(view==="sug")reset()}
 $("#bkeep").onclick=()=>doKeep(selIds());$("#btrash").onclick=()=>askTrash(selIds());$("#berase").onclick=()=>askErase(selIds());
+$("#bfav").onclick=()=>doFav(selIds(),true);$("#bunfav").onclick=()=>doFav(selIds(),false);
 $("#btag").onclick=()=>tagAsk("add");$("#buntag").onclick=()=>tagAsk("remove");$("#brot").onclick=()=>rot(selIds(),"cw");
 $("#bshare").title=SHARE_TIP;$("#ball").onclick=selectAll;$("#bevent").onclick=()=>askSetEvent(selIds());$("#bshare").onclick=()=>askShare(selIds());$("#bnone").onclick=()=>{sel.clear();paintSel()};
 $("#sugapply").onclick=()=>{const keep=Object.keys(dec).filter(k=>dec[k]==="keep").map(Number),trash=Object.keys(dec).filter(k=>dec[k]==="trash").map(Number);
@@ -2736,6 +2815,7 @@ async function openViewer(n,opt){opt=opt||{};if(n<0||n>=items.length)return;if(v
  head.append(el("h2",null,d.name),x);s.append(head);
  const acts=el("div","acts"),mk=(box,t,f,c)=>{const b=el("button","btn"+(c?" "+c:""),t);b.type="button";b.onclick=f;box.append(b);return b};
  mk(acts,"Keep (K)",()=>doKeep([d.id]),"keep");mk(acts,"Trash (T)",()=>askTrash([d.id]),"trash");mk(acts,"Erase (E)",()=>askErase([d.id]),"erase");s.append(acts);
+ {const fb=mk(acts,"★ Favorite (F)",()=>doFav([d.id],!d.fav),"favb");fb.setAttribute("aria-pressed",String(!!d.fav));fb.setAttribute("aria-keyshortcuts","F");fb.title=d.fav?"A favorite: press to unstar":"Add to "+WORDS.view.fav}
  const tools=el("div","tools");mk(tools,"Rotate left (Shift+R)",()=>rot([d.id],"ccw")).setAttribute("aria-keyshortcuts","Shift+R");mk(tools,"Rotate right (R)",()=>rot([d.id],"cw")).setAttribute("aria-keyshortcuts","R");
  mk(tools,"Set event…",()=>askSetEvent([d.id]));mk(tools,"Share-safe copy",()=>askShare([d.id])).title=SHARE_TIP;
  mk(tools,"Find similar",()=>{simId=d.id;simName=d.name;closeViewer();$("#q").value="";syncUI();reset()}).title="Photos that look like this one";s.append(tools);
@@ -2787,12 +2867,15 @@ document.addEventListener("keydown",ev=>{const tg=ev.target,modal=isOn("#modal")
   if(k==="Escape")closeViewer();else if(k==="ArrowRight")openViewer(stepVis(vi,1));else if(k==="ArrowLeft")openViewer(stepVis(vi,-1));
   else if(k===" "){if(tg.tagName==="VIDEO"||tg.tagName==="BUTTON")return;const v=curVideo();if(!v)return;v.paused?v.play().catch(()=>{}):v.pause()}
   else if(k==="k"||k==="K")doKeep([id]);else if(k==="t"||k==="T")askTrash([id]);else if(k==="e"||k==="E")askErase([id]);
+  else if(k==="f"||k==="F")favToggle([id]);
   else if(k==="r")rot([id],"cw");else if(k==="R")rot([id],"ccw");else return;ev.preventDefault();return}
  if(k==="/"){ev.preventDefault();expandSidebar();$("#q").focus();return}
  if(view==="sug"){if((k==="Enter"||k===" ")&&tg.tagName==="BUTTON")return;if(k==="ArrowRight"||k==="ArrowDown"||k==="j"){cur=Math.min(items.length-1,cur+1)}else if(k==="ArrowLeft"||k==="ArrowUp"){cur=Math.max(0,cur-1)}
   else if((k==="k"||k==="K"||k==="t"||k==="T")&&cur>=0){dec[items[cur].id]=k.toLowerCase()==="k"?"keep":"trash";cur=Math.min(items.length-1,cur+1)}
   else if(k==="Enter"&&cur>=0){openViewer(cur)}else return;ev.preventDefault();paintSel();const t=$("#t"+(items[cur]||{}).id);if(t)t.scrollIntoView({block:"nearest"});if(cur>=items.length-10)more();return}
  if(k==="Escape"&&drawer){drawer=false;layout();return}
+ // F: the selection, or with none the focused tile
+ if(k==="f"||k==="F"){const t=sel.size?null:tg.closest&&tg.closest(".tile");const ids=sel.size?selIds():t&&!t.hidden?[+t.id.slice(1)]:[];if(!ids.length)return;ev.preventDefault();favToggle(ids);return}
  if(!sel.size)return;if(k==="k"||k==="K")doKeep(selIds());else if(k==="t"||k==="T")askTrash(selIds());else if(k==="e"||k==="E")askErase(selIds());else if(k==="Escape"){sel.clear();paintSel()}else return;ev.preventDefault()});
 // ---------------------------------------------------------------- views (plugin tabs go in the sidebar, after the built-in ones)
 VIEWS.forEach(v=>{const b=el("button","nv");b.type="button";b.dataset.v="p-"+v.id;b.title=v.title;b.insertAdjacentHTML("beforeend",'<svg class="ic"><use href="#i-plug"/></svg>');const rl=el("span","rl",v.title);rl.setAttribute("aria-hidden","true");b.append(el("span","lbl",v.title),rl);$("#ptabs").append(b)});
@@ -2803,9 +2886,9 @@ function setView(v){view=v;simId=null;document.body.dataset.view=v;const plug=pl
   pv.render(P,{el,api:(p,b)=>api("/plugin/"+id+"/"+p,b),media:p=>"/plugin/"+id+"/media/"+p})}
  else{syncUI();reset()}}
 $$(".nv[data-v]").forEach(b=>b.onclick=()=>{const v=b.dataset.v;
- if(v==="lib"){if(["recent","child","untagged","ev"].includes(navActive()))F={aimin:F.aimin};setView("lib")}
+ if(v==="lib"){if(QUICK.includes(navActive()))F={aimin:F.aimin};setView("lib")}
  else if(v==="sug"||v.startsWith("p-"))setView(v);
- else{F={aimin:F.aimin};if(v==="recent")F.added=String((facets&&facets.recent_days)||30);if(v==="child")F.review="child-in-shot";if(v==="untagged")F.review="untagged";$("#q").value="";setView("lib")}
+ else{F={aimin:F.aimin};if(v==="recent")F.added=String((facets&&facets.recent_days)||30);if(v==="child")F.review="child-in-shot";if(v==="untagged")F.review="untagged";if(v==="fav")F.review="favorite";$("#q").value="";setView("lib")}
  if(mqPhone.matches&&drawer){drawer=false;layout()}});
 let qt=null;$("#q").oninput=()=>{clearTimeout(qt);qt=setTimeout(()=>{simId=null;syncUI();reset()},500)};
 $("#close").onclick=()=>{confirmBox("Stop the gallery server?",["The page stops working until you run media-intake gallery again. A Trash, Erase or Share-safe copy that is already running keeps going on its own."],false,

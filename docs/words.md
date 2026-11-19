@@ -28,6 +28,7 @@ buttons are named in **bold**, as they appear on screen.
 | **exact duplicate** | A file whose content is already in the library. `apply` drops the staged copy. |
 | **near-duplicate** | A photo that looks like one already in the library or in the batch (a re-save, a resize, a burst shot). Set aside in the review folder. |
 | **review folder** | A batch's near-duplicates and junk (tiny or empty images), set aside by `apply` for a glance. `purge-review` deletes it. |
+| **Added in the last 30 days** | The gallery's view of files filed into the library in the last 30 days, whatever their date. Right after a first import it holds the whole library. Was "Recently added". |
 | **offload** | Delete a batch's files from the source (phone, camera or source drive) once each has a checked copy in the library. Never for a laptop folder: you delete that yourself. |
 
 ## Deciding
@@ -37,6 +38,7 @@ buttons are named in **bold**, as they appear on screen.
 | **review page** | `media-intake review BATCH`: a page on this computer only where you decide on what an import set aside. Its tabs are **Quarantine** (flagged files), **Review** (the review folder) and, with `--maybe-trash`, **Maybe trash** (Suggested junk). |
 | **mark** | On the review page, a choice is only a mark until you apply it. Pressing a pressed button again clears it. |
 | **Submit**, **Apply N decisions** | The review page's **Submit** opens the Apply dialog ("Apply 13 decisions?"); its **Apply N decisions** button runs every mark. When anything will be removed you type `ERASE` first. In the gallery's Suggested junk view, **Apply** does the same for its K / T marks. |
+| **Favorite** | A photo or video you starred: the gallery's star on a tile or in the large view, **F**, or five stars set in digiKam (the sidecar's rating). The gallery's **Favorites** view lists them. A favorite is never Suggested junk. **Unfavorite** takes the star off. |
 | **Keep** | Keep the file. In Quarantine: put it back in the library (`release`). In Review: leave it in the review folder for now. For Suggested junk: leave it in the library and never suggest it again (`not-trash`). In the gallery: mark it kept (the tile says "Kept"). |
 | **Trash** | Delete a file that is junk but not private: the file, its sidecar and thumbnails (and with `--phone` its original on the phone), and remember its content so the same photo is skipped if it is imported again. No search for other copies. Never offered for a quarantined file. Command: `trash`. |
 | **Erase** | Delete a private file for good with every copy the tool can reach: quarantine, the library, your whole home folder (your own photo folders included), thumbnails and caches, and the phone and backup drive when you name them. Ends with a check and a report of what it could not reach (cloud, chat apps, other devices). Asks you to type `ERASE`. Commands: `erase` (a batch's quarantine), `forget` (library files). |
@@ -47,7 +49,7 @@ buttons are named in **bold**, as they appear on screen.
 
 | Word | Means |
 | --- | --- |
-| **Suggested junk** | Library files the tool thinks may be junk (a content label, the optional vision-model check, or a copy of something you trashed). Never a file you kept. The gallery shows them in its **Suggested junk** view; `suggest-trash` opens them on the review page's **Maybe trash** tab. Nothing happens until you Keep or Trash them. |
+| **Suggested junk** | Library files the tool thinks may be junk (a content label, the optional vision-model check, or a copy of something you trashed). Never a file you kept or made a favorite. The gallery shows them in its **Suggested junk** view; `suggest-trash` opens them on the review page's **Maybe trash** tab. Nothing happens until you Keep or Trash them. |
 | **Junk score** | How sure the optional vision-model check is that a file is junk, from 0 to 1. |
 | **Junk check** | The gallery filter for the vision model's verdict: Judged junk, Judged fine or Not checked. |
 | **Possible child** | A content label for photos that may show a child. A hint only: it misses small or distant children. |

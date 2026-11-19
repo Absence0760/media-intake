@@ -1175,7 +1175,7 @@ doctor`; CPU, onnxruntime.
   (`AI|vlm/<model>/trash/*` with that model's confidence >= 0.7, or the older
   `Review|vlm-trash/*`), or with `Review|maybe-trash` and no VLM keep; never
   ones you kept (`Owner|not-trash`, `Owner|keep`, the legacy
-  `Review|not-trash`, digiKam Accepted), `Used|*` or a protected project's
+  `Review|not-trash`, digiKam Accepted, a favorite: `xmp:Rating` >= 5), `Used|*` or a protected project's
   `Project|<name>`; plus copies marked `Owner|trash`. They show in the review
   page's "Maybe trash" tab: Keep runs `not-trash` (`Owner|keep` +
   `Owner|not-trash` on; `Review|maybe-trash`, `Owner|trash` and the legacy
@@ -1194,7 +1194,7 @@ own namespace; your tags win.
 
 | Namespace | Written by | Re-tag behaviour |
 |---|---|---|
-| Your keywords (digiKam), digiKam pick labels, `Owner\|keep`, `Owner\|not-trash`, `Owner\|trash` | you (digiKam; Keep and Trash in the gallery and on the review page) | never touched by any tool except your next decision on the same file (Keep drops `Owner\|trash`); `trash --from-digikam` acts on Rejected (PickLabel 1) only when you run it |
+| Your keywords (digiKam), digiKam pick labels, `xmp:Rating` (stars; 5 = a favorite), `Owner\|keep`, `Owner\|not-trash`, `Owner\|trash` | you (digiKam; Keep, Trash and the Favorite star in the gallery, Keep and Trash on the review page) | never touched by any tool except your next decision on the same file (Keep drops `Owner\|trash`); `trash --from-digikam` acts on Rejected (PickLabel 1) only when you run it |
 | `Project\|`, `Source\|`, `Event\|`, `Place\|`, dates | `tag`, `tag-files` | a prefix is replaced only when the run has a value for it |
 | `Label\|*`, `Review\|maybe-trash`, `Review\|untagged-*` | SigLIP (`label.py` via `tag`/`tag-files`) | replaced as a set on every labelled run (`--no-labels` leaves them) |
 | `Review\|child-in-shot` | SigLIP | added, never removed by a tool; only you clear it |
@@ -1203,8 +1203,8 @@ own namespace; your tags win.
 | `Calibrate\|<label>\|yes`, `Calibrate\|<label>\|no` | you (the gallery's "+ tag") | never touched by a tool; only `calibrate` reads them ([configuration.md](configuration.md), "Calibrating label thresholds") |
 
 - `Review|maybe-trash` is never added to a file with `Owner|not-trash`,
-  `Owner|keep`, `Owner|trash` (or the legacy `Review|not-trash`) or digiKam
-  Accepted.
+  `Owner|keep`, `Owner|trash` (or the legacy `Review|not-trash`), digiKam
+  Accepted or a favorite (`xmp:Rating` >= 5).
 
 #### Owner decisions
 
@@ -1215,6 +1215,12 @@ suggest-trash, vlm-trash, semantic `--clean`, the gallery and the review page.
   `Owner|keep` + `Owner|not-trash` in the sidecar; removes `Review|maybe-trash`,
   an older `Owner|trash` and the legacy `Review|not-trash`. Never suggested as
   trash again; the VLM never judges it.
+- **Favorite** (the gallery's star, or five stars set in digiKam):
+  `XMP-xmp:Rating` >= 5 in the sidecar (`owner.FAVORITE`; the gallery writes
+  5, and unstarring deletes the rating). It counts as kept (`owner.kept`):
+  never suggested as trash, never judged by the VLM, never marked
+  `Owner|trash` as a copy. No tag is written; four stars or fewer are no
+  decision.
 - **Trash** (`trash`, the review page's Trash, the gallery's Trash) deletes the
   file and its sidecar, so the decision can't live there. Its durable home is
   the sha256 in `<state>/trashed.json`, written before the delete: `plan`

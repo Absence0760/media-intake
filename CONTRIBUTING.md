@@ -114,7 +114,9 @@ close the PR.
 - Real-browser tests (`tests/browser/`, Playwright + headless Chromium) drive
   the gallery and the review page: keys, selection and the bottom selection
   bar (every gallery view but Suggested junk, which has Keep and Trash on each
-  tile instead and no selection bar), the confirm dialogs (ERASE typed; the gallery's Close too), lightbox video autoplay and Space
+  tile instead and no selection bar), Favorites (the tile's star, F, the bar's
+  Favorite / Unfavorite, the large view's button, the Favorites view, Undo),
+  the When list's recent years and "All years (N)", the confirm dialogs (ERASE typed; the gallery's Close too), lightbox video autoplay and Space
   play / pause, Range seeking, and the detached job's
   progress, including re-attaching after a reload; on the review page also
   its keyboard and screen-reader hooks (`ReviewA11yBrowserTest`: the tablist,
@@ -143,7 +145,7 @@ close the PR.
   tag restoring the sidecars (refused after a later change, never offered after
   Trash, Erase or Share-safe copy). `test_browser_gallery_grid.py` runs the
   grid: Suggested junk marked by tap and click (Keep and Trash on each tile, a
-  second tap unmarking, Apply keeping what was marked), a 44 x 44 px target for
+  second tap unmarking, Apply keeping what was marked), a 44 x 44 px target (the tile's star too) for
   every control on a 390 px touch phone, the grid's loading, empty, no-results,
   item-gone and load-error states, and the phone's sidebar rail with a word
   under each icon. `test_browser_gallery_layout.py` checks the
