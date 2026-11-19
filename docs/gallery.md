@@ -168,8 +168,8 @@ without one" (`/api/facets` gives `drive`, the mount or null).
   | a tool's tag in the large view | "Project: Personal", "Looks like: food", "Junk check: Judged junk (blurry)" under "Added by the tools", apart from "Your tags" |
   | a 409 (library or job lock) | "a Trash is still running; wait for it to finish, then try again" (or an Erase, a Share, a run from the review page, the media-intake apply command, ...) |
 
-The sidebar rail and width, open sections, the When list's "All years" and tile
-size live in the browser's `localStorage` (a per-browser convenience; the page
+The sidebar rail and width, open sections, the When list's "All years", tile
+size and the naming view's crop size live in the browser's `localStorage` (a per-browser convenience; the page
 works without it).
 
 ## Keys
@@ -191,6 +191,9 @@ closes it, and no other key acts while it is open.
 - **Sidebar**: on its right edge (Tab to it), ← / → narrower / wider
   (Shift: bigger steps), Home / End narrowest / widest.
 - **Bursts**: X opens or closes the focused tile's stack.
+- **Name faces and pets**: Space / Enter on a crop takes it out or puts it
+  back (in Suggestions marks it "Not _Name_"); Z on a crop opens the zoom,
+  where ← / → step through the card's crops and Esc closes it.
 - **Large view**: ← / → previous / next, Space plays / pauses, K / T / E
   (in Suggested junk K / T mark and go to the next), F favorite / unfavorite,
   R / Shift+R rotate, Esc closes.
@@ -458,14 +461,26 @@ the gallery reads that store and never creates one. Words:
   (`People|<Name>` or `Pets|<Name>`). A click shows those items, by the tag
   (`who=People|<Name>` on `/api/list`), with the name as the title. A
   suggestion never counts or shows there. Then **Name new faces/pets**, its
-  count the clusters with no name yet (two or more faces or pets) plus the
-  suggestions waiting; collapsed to the rail it is the face icon with
+  count the clusters with no name yet (a face or pet seen once included)
+  plus the suggestions waiting; collapsed to the rail it is the face icon with
   "Names".
 - **Name faces and pets** (that entry; in the main column, not a separate
   server): People or Pets (when the store has both), then **To name**,
   **Suggestions**, **Named** and **Not a person** / **Not a pet**, each with
   its count. A cluster is a card with up to 24 crops, largest first, loaded
   as you scroll; 30 cards a page, **More clusters** for the next.
+  - **Crop size** (the header's slider, in place of the grid's thumbnail
+    size; remembered per browser): about 160 px on a desktop and two a row
+    on a phone by default, from 80 to 320 px, never wider than the card.
+    Crops are served at 320 px, so they stay sharp at the largest size.
+  - **Single photos (N)**: To name lists the clusters of two or more first,
+    then a heading and the faces or pets seen only once (one photo, or one
+    frame of a video), with the same Name, Merge into…, Not a person / Not
+    a pet and "Looks like Ann." hints. They count in the tab and in the
+    sidebar; once named (or marked Not a person / Not a pet) one shows under
+    Named (or Not a person / Not a pet) like any cluster. A section of their own rather than mixed in: a scan's singles
+    often outnumber its clusters and would push the clusters off the first
+    pages.
   - **To name**: type a name (the box suggests the names you gave) and press
     Enter or **Name**: every face of the cluster gets it, and its tag is
     written into the sidecars of the files it is in at once (under the
@@ -478,6 +493,14 @@ the gallery reads that store and never creates one. Words:
     the cluster's name (its tag comes off that file; the message has Undo),
     a second one puts it back. A taken-out crop is shown crossed out
     (`aria-pressed`).
+  - **Zoom**: the magnifier in a crop's corner (its own button, 32 px, 44 px
+    on a phone or touch screen), or Z on a focused crop, opens a dialog with
+    the crop large and the whole photo with the face or pet outlined (turned
+    as the large view shows it); for a video, the frame it was seen in and
+    the video's poster, with the second. Left / Right step through the card's
+    crops, its toggle takes that one out or puts it back (in Suggestions:
+    "Not Ann") exactly as a click on the crop, and Esc closes it with focus
+    back on the crop it showed.
   - **Suggestions**: one card per name, "Looks like Ann: 42", for faces that
     joined a cluster you named since. Click a crop that isn't Ann to mark it
     ("Not Ann"); **Confirm all 42** (or "Confirm 40, reject 2") and
@@ -499,9 +522,12 @@ the gallery reads that store and never creates one. Words:
   most) seeks the player. Each time is the second of the frame
   `media_intake/frames.py` sampled the face or pet in
   ([recognition.md](recognition.md), "Videos").
-- **Crops** are biometric: served only as `/r/<detection id>` (no path),
-  made on demand by `recog.crop_bytes` into the store's own `crops/` (folder
-  `0700`, files `0600`; never the thumbnail cache), with `no-store` like
+- **Crops** are biometric: served only as `/r/<detection id>` (no path) and
+  the zoom's whole picture as `/r/<detection id>/frame`, made on demand by
+  `recog.crop_bytes` and `recog.frame_bytes` into the store's own `crops/`
+  (folder `0700`, files `0600`, every name starting with the content's
+  sha256, so erase and verify-gone find them all; never the thumbnail
+  cache), with `no-store` like
   every response, and never for a file that is flagged, quarantined,
   erased, trashed, in a running Trash or Erase, or not in the library the
   gallery lists. Share copies never include them. A video's crop is cut
@@ -511,7 +537,11 @@ the gallery reads that store and never creates one. Words:
   `People|<Name>` or `Pets|<Name>` tag) is never suggested as junk by a
   label or the vision check (`owner.named`); a copy of something you
   trashed still is, since a name is no Keep.
-- API: `GET /api/rec?kind=face|pet&show=todo|sugg|named|ignored&after=<cluster>`;
+- API: `GET /api/rec?kind=face|pet&show=todo|sugg|named|ignored&after=<cluster>`
+  (`&single=1` when that cluster was seen once; each cluster says `single`,
+  and `counts.single` how many of To name were seen once);
+  `GET /api/rec/det/<detection id>` (the zoom: its item, file name, video
+  or not, second, and box on `/r/<id>/frame` as fractions);
   `POST /api/rec/name|ignore|unname|merge|out|back|answer` with
   `{"kind", "run", ...}` (`cluster`, `name`, `into` a cluster number or a
   name, `ids` detection ids, `confirm` / `reject` id lists); the token, Host,
