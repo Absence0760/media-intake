@@ -272,14 +272,18 @@ def on_terminal():
 
 # ---------------------------------------------------------------- query
 def sidecar_tags(paths):
+    """{media path: [HierarchicalSubject...]}; a favorite's xmp:Rating (owner.favorite) shows as "xmp|rating/<n>"."""
     xs = [p + ".xmp" for p in paths if os.path.isfile(p + ".xmp")]
     out = {}
     if xs and shutil.which("exiftool"):
-        r = subprocess.run(["exiftool", "-j", "-q", "-q", "-HierarchicalSubject", "-@", "-"],
+        r = subprocess.run(["exiftool", "-j", "-n", "-q", "-q", "-HierarchicalSubject", "-XMP-xmp:Rating", "-@", "-"],
                            input="\n".join(xs) + "\n", capture_output=True, text=True)
         for row in json.loads(r.stdout or "[]"):
             v = row.get("HierarchicalSubject")
-            out[row["SourceFile"][:-4]] = [] if v is None else [str(x) for x in (v if isinstance(v, list) else [v])]
+            t = [] if v is None else [str(x) for x in (v if isinstance(v, list) else [v])]
+            if owner.favorite(row.get("Rating")):
+                t.append(f"xmp|rating/{owner.rating(row['Rating'])}")
+            out[row["SourceFile"][:-4]] = t
     return out
 
 
@@ -292,7 +296,9 @@ def passes(tags, a, cutoff):
             m = POST_SLUG.match(t[5:]) if t.startswith("Used|") else None
             if m and datetime.date.fromisoformat(m.group(1)) >= cutoff:
                 return False
-    if a.clean and ("Review|child-in-shot" in tags or owner.trashed(tags) or not owner.kept(tags) and any(
+    stars = next((x.split("/", 1)[1] for x in tags if x.startswith("xmp|rating/")), None)  # a favorite: kept
+    if a.clean and ("Review|child-in-shot" in tags or (owner.trashed(tags) and not owner.favorite(stars))
+                    or not owner.kept(tags, "", stars) and any(
             t == "Review|maybe-trash" or re.match(r"AI\|vlm/[^/]+/trash/", t) for t in tags)):
         return False
     return True

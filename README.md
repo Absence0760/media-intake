@@ -146,7 +146,7 @@ media-intake offload phone-1 --phone <phone folder>   # after a backup: free the
 | `index`, `search`, `similar` | Local semantic search (SigLIP) |
 | `vlm-trash` | Local vision-model second opinion on Suggested junk |
 | `calibrate` | Report precision and recall of each label's threshold against your own marks; changes nothing |
-| `gallery` | Local web gallery: browse, Keep, Trash, Erase, tag, rotate, events, bulk edits, share-safe copies |
+| `gallery` | Local web gallery: browse, Keep, Favorite, Trash, Erase, tag, rotate, events, bulk edits, share-safe copies |
 | `prune-cache` | Delete gallery thumbnails and video proxies nothing in the library shows any more (`--dry-run` first) |
 | `backup` | Copy the library (photos, videos, sidecars) to the backup drive: incremental, never deletes there |
 | `queue add/run/status/offload` | Import a source drive or a big laptop folder in resumable chunks |

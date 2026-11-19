@@ -37,6 +37,18 @@ class OwnerRules(unittest.TestCase):
         self.assertFalse(owner.decided(["Review|maybe-trash", "AI|vlm/m/trash/dark", "Label|x"], "0"))
         self.assertEqual(owner.normalise(["a", "Review|not-trash"]), ["a", "Owner|not-trash"])
 
+    def test_a_favorite_counts_as_kept(self):
+        # xmp:Rating >= 5 (the gallery's star, digiKam's five stars), as exiftool prints it: number or text
+        for stars in (5, "5", "5.0", " 5 "):
+            self.assertTrue(owner.favorite(stars), stars)
+            self.assertTrue(owner.kept(["Review|maybe-trash"], "", stars), stars)
+            self.assertTrue(owner.decided(["Review|maybe-trash"], "", stars), stars)
+        for stars in (None, "", 0, 4, "4", -1, "x", "nan", "inf"):  # four stars or fewer, rejected, unset, junk
+            self.assertFalse(owner.favorite(stars), stars)
+            self.assertFalse(owner.kept(["Review|maybe-trash"], "", stars), stars)
+        self.assertEqual(owner.rating("4.0"), 4)
+        self.assertIsNone(owner.rating(None))
+
 
 class MergeTags(unittest.TestCase):
     """The re-tag (tag, tag-files): SigLIP replaces only its namespace, facts only their prefix."""
@@ -67,6 +79,10 @@ class MergeTags(unittest.TestCase):
             hier, _, _ = intake.merge_tags(old, ["Project|Personal", "Review|maybe-trash"], pick)
             self.assertNotIn("Review|maybe-trash", hier, old)
         hier, _, _ = intake.merge_tags([], ["Review|maybe-trash"], "2")  # digiKam Pending is not a decision
+        self.assertIn("Review|maybe-trash", hier)
+        hier, _, _ = intake.merge_tags([], ["Review|maybe-trash"], stars="5")  # a favorite
+        self.assertNotIn("Review|maybe-trash", hier)
+        hier, _, _ = intake.merge_tags([], ["Review|maybe-trash"], stars="4")  # four stars: no decision
         self.assertIn("Review|maybe-trash", hier)
 
     def test_legacy_rewritten_on_write(self):
@@ -103,6 +119,9 @@ class Semantic(unittest.TestCase):
         self.assertTrue(ok(["Review|maybe-trash", "Review|not-trash"]))  # legacy spelling too
         self.assertFalse(ok(["Owner|trash"]))
         self.assertFalse(ok(["Owner|keep", "Review|child-in-shot"]))  # a child flag is never cleared by a keep
+        self.assertTrue(ok(["Review|maybe-trash", "xmp|rating/5"]))  # a favorite (sidecar_tags' xmp:Rating)
+        self.assertTrue(ok(["Owner|trash", "xmp|rating/5"]))
+        self.assertFalse(ok(["Review|maybe-trash", "xmp|rating/4"]))
         self.assertTrue(ok(["Label|food"]))
 
 
@@ -169,21 +188,26 @@ class Sidecars(Base):
         a = self.photo("a.jpg", 22, ["Review|maybe-trash"])
         copy = os.path.join(self.lib, "2025/2025-01/a-copy.jpg")
         kept = os.path.join(self.lib, "2025/2025-02/a-kept.jpg")
-        for c in (copy, kept):
+        fav = os.path.join(self.lib, "2025/2025-03/a-fav.jpg")  # a favorite copy: kept too (owner.favorite)
+        for c in (copy, kept, fav):
             os.makedirs(os.path.dirname(c), exist_ok=True)
             shutil.copyfile(a, c)
         with open(kept + ".xmp", "w") as f:
             f.write(EMPTY)
         subprocess.run(["exiftool", "-q", "-overwrite_original", "-XMP-lr:HierarchicalSubject+=Owner|keep",
                         kept + ".xmp"], check=True)
+        with open(fav + ".xmp", "w") as f:
+            f.write(EMPTY)
+        subprocess.run(["exiftool", "-q", "-overwrite_original", "-XMP-xmp:Rating=5", fav + ".xmp"], check=True)
         s = intake.sha256(a)
         kept_sha = intake.sha256(kept)
         os.makedirs(self.state, mode=0o700)
         with open(os.path.join(self.state, "index.json"), "w") as f:
-            json.dump({p: {"sha": s, "size": os.path.getsize(a), "dhash": None} for p in (a, copy, kept)}, f)
+            json.dump({p: {"sha": s, "size": os.path.getsize(a), "dhash": None} for p in (a, copy, kept, fav)}, f)
         out = self.intake("trash", a, "--yes")
         self.assertIn("copies left on disk marked Owner|trash 1", out)
-        self.assertIn("copies you kept left alone 1", out)
+        self.assertIn("copies you kept left alone 2", out)
+        self.assertEqual(self.read(fav)[0], [])  # the favorite copy gets no Owner|trash
         self.assertFalse(os.path.exists(a) or os.path.exists(a + ".xmp"))
         self.assertEqual(jload(os.path.join(self.state, "trashed.json")), {s: os.path.getsize(copy)})
         self.assertEqual(self.read(copy), (["Owner|trash"], ["trash"]))
@@ -204,7 +228,10 @@ class Sidecars(Base):
             ("legacy", ["Review|not-trash"]), ("ai-kept", ["AI|vlm/m/trash/dark", "AI|vlm/m/conf/0.9",
                                                            "Owner|not-trash"])))}
         f["accepted"] = self.photo("accepted.jpg", 40, ["AI|vlm/m/trash/dark"], ["-XMP-digiKam:PickLabel=3"])
-        self.assertEqual(list(self.suggested()), [f["plain"]])
+        f["favorite"] = self.photo("favorite.jpg", 41, ["Review|maybe-trash", "AI|vlm/m/trash/dark",
+                                                        "AI|vlm/m/conf/0.9"], ["-XMP-xmp:Rating=5"])
+        f["four"] = self.photo("four.jpg", 42, ["Review|maybe-trash"], ["-XMP-xmp:Rating=4"])
+        self.assertEqual(sorted(self.suggested()), sorted([f["plain"], f["four"]]))
 
     def test_migrate_tags(self):
         leg = self.photo("leg.jpg", 23, ["Review|not-trash", "Review|maybe-trash", "Label|food", "pasta"],
@@ -240,8 +267,13 @@ class Sidecars(Base):
         k = self.photo("k.jpg", 26, ["Label|food", "Review|not-trash"] + mine)
         t = self.photo("t.jpg", 27, ["Label|food", "Owner|trash"])
         n = self.photo("n.jpg", 28, ["Label|food", "Review|maybe-trash", "mine"])
-        self.fake_venv({p: {"labels": {"kitchen": 0.3}, "review": ["maybe-trash"]} for p in (k, t, n)})
-        self.intake("tag-files", k, t, n)
+        fav = self.photo("fav.jpg", 29, ["Label|food"], ["-XMP-xmp:Rating=5"])  # a favorite (digiKam's 5 stars)
+        self.fake_venv({p: {"labels": {"kitchen": 0.3}, "review": ["maybe-trash"]} for p in (k, t, n, fav)})
+        self.intake("tag-files", k, t, n, fav)
+        self.assertNotIn("Review|maybe-trash", self.read(fav)[0])  # a favorite is never suggested as junk
+        r = subprocess.run(["exiftool", "-j", "-q", "-n", "-XMP-xmp:Rating", fav + ".xmp"], capture_output=True,
+                           text=True, check=True)
+        self.assertEqual(json.loads(r.stdout)[0].get("Rating"), 5)  # and its rating is left as it was
         hk, dk = self.read(k)
         for want in mine + ["Label|kitchen", "Project|Personal"]:
             self.assertIn(want, hk)

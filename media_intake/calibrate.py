@@ -24,7 +24,7 @@ Your marks (per content sha256; copies of one file pool their tags):
   Calibrate|<label>|yes / Calibrate|<label>|no   any label, a tag you add in the gallery ("+ tag", which
                                                  works on a selection); this wins over everything below
   maybe-trash, from your trash decisions:        negative: kept (owner.kept: Owner|keep, Owner|not-trash,
-                                                 digiKam Accepted); positive: Owner|trash on a copy, or the
+                                                 digiKam Accepted, a favorite); positive: Owner|trash on a copy, or the
                                                  sha256 in <state>/trashed.json (while its index vector is
                                                  still there: the next `media-intake index` drops it)
 An item marked both ways for a label is a conflict and is not counted for it.
@@ -62,19 +62,19 @@ def marks(tags, names):
 
 def truth(copies, names, trashed=False):
     """({label: True / False / "conflict"}, count of unusable Calibrate| tags) for one content: copies is
-    [(tags, pick)] of its library files, trashed whether its sha256 is in trashed.json. Labels without a mark
-    are left out."""
+    [(tags, pick[, rating])] of its library files (read_tags), trashed whether its sha256 is in trashed.json.
+    Labels without a mark are left out."""
     votes, unknown = {}, 0
-    for tags, _ in copies:
+    for tags, *_ in copies:
         m, u = marks(tags, names)
         unknown += u
         for n, v in m.items():
             votes.setdefault(n, set()).update(v)
     out = {n: (v.pop() if len(v) == 1 else "conflict") for n, v in votes.items()}
     if MAYBE_TRASH in names and MAYBE_TRASH not in out:
-        if any(owner.kept(tags, pick) for tags, pick in copies):
-            out[MAYBE_TRASH] = False  # a Keep wins over a trashed copy (owner.trashed)
-        elif trashed or any(owner.TRASH in tags for tags, _ in copies):
+        if any(owner.kept(*c) for c in copies):
+            out[MAYBE_TRASH] = False  # a Keep (or a favorite) wins over a trashed copy (owner.trashed)
+        elif trashed or any(owner.TRASH in c[0] for c in copies):
             out[MAYBE_TRASH] = True
     return out, unknown
 
@@ -176,10 +176,10 @@ def load_store(np, path):
 
 
 def read_tags(path):
-    """(HierarchicalSubject tags, digiKam PickLabel) of path's sidecar; ([], "") without one."""
+    """(HierarchicalSubject tags, digiKam PickLabel, xmp:Rating) of path's sidecar; ([], "", None) without one."""
     import gallery  # stdlib XMP reader; imported here so `--help` stays light
     x = gallery.read_xmp(path + ".xmp") if os.path.isfile(path + ".xmp") else {}
-    return owner.normalise(x.get("tags") or []), owner.pick_label(x.get("pick"))
+    return owner.normalise(x.get("tags") or []), owner.pick_label(x.get("pick")), x.get("rating")
 
 
 def collect(np, state, npz=None, with_videos=False):

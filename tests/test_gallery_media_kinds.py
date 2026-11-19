@@ -474,7 +474,8 @@ class MediaKindsTest(unittest.TestCase):
         os.remove(self.p1)  # a photo with one: its sidecar stays (as a CLI delete outside intake could leave it)
         x1 = G.sha(self.p1 + ".xmp")
         for path, body in (("/api/keep", {}), ("/api/tag", {"tag": "Trips|Spain", "op": "add"}),
-                           ("/api/rotate", {"dir": "cw"}), ("/api/event/set", {"event": "beach"})):
+                           ("/api/rotate", {"dir": "cw"}), ("/api/event/set", {"event": "beach"}),
+                           ("/api/favorite", {"on": True})):
             for gone in (self.v2, self.p1):
                 sel = [ids[self.p2], ids[gone], ids[self.v1]]
                 code, j = s.post(path, dict(body, ids=sel))

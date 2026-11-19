@@ -106,8 +106,8 @@ Changing a threshold stays your edit to `labels.yaml`.
    hundred items, with at least 20 yes and 20 no per label you want a
    suggestion for.
 3. **`maybe-trash` needs fewer marks**: your trash decisions count already.
-   A file you kept (Keep: `Owner|keep` / `Owner|not-trash`, or digiKam
-   Accepted) is a "no"; `Owner|trash` on a copy, or its sha256 in
+   A file you kept (Keep: `Owner|keep` / `Owner|not-trash`, digiKam
+   Accepted, or a favorite: `xmp:Rating` >= 5) is a "no"; `Owner|trash` on a copy, or its sha256 in
    `<state>/trashed.json`, is a "yes". Trash deletes the file, so a trashed
    item counts only until the next `media-intake index` drops its vector;
    run `calibrate` before re-indexing. A `Calibrate|maybe-trash|...` tag wins

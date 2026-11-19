@@ -117,7 +117,7 @@ class Maths(unittest.TestCase):
 
 class GroundTruth(unittest.TestCase):
     def truth(self, *copies, trashed=False):
-        return calibrate.truth([(list(t), p) for t, p in copies], NAMES, trashed)
+        return calibrate.truth([(list(c[0]), *c[1:]) for c in copies], NAMES, trashed)
 
     def test_calibrate_tags(self):
         t, unknown = self.truth((["Calibrate|dog|yes", "calibrate|Road Race|No", "Calibrate|child-in-shot| yes "], ""))
@@ -142,6 +142,8 @@ class GroundTruth(unittest.TestCase):
             ((["Owner|not-trash"], ""), False, False),
             ((["Review|not-trash"], ""), False, False),  # the legacy spelling
             (([], "3"), False, False),  # digiKam Accepted
+            (([], "", "5"), True, False),  # a favorite (xmp:Rating 5) is kept, over trashed.json too
+            (([], "", "4"), True, True),  # four stars: no decision
             ((["Owner|trash"], ""), False, True),
             (([], ""), True, True),  # trashed.json
             ((["Owner|keep", "Owner|trash"], ""), True, False),  # a Keep wins (owner.trashed)

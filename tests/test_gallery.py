@@ -62,6 +62,12 @@ def tags_of(p):
     return as_l(row.get("HierarchicalSubject")), as_l(row.get("Subject")), row.get("Orientation")
 
 
+def gallery_read(p):
+    """The gallery's own sidecar reader (stdlib XML) on p's sidecar, or {} without one."""
+    import gallery
+    return gallery.read_xmp(p + ".xmp") if os.path.exists(p + ".xmp") else {}
+
+
 def write_tags(p, hier, extra=()):
     x = p + ".xmp"
     with open(x, "w") as f:
@@ -443,6 +449,47 @@ class GalleryTest(unittest.TestCase):
         for p, h0 in self.originals.items():
             self.assertEqual(sha(p), h0, p)  # originals never written
 
+    def test_favorites(self):
+        """The star: xmp:Rating 5 in the sidecar and nothing else; a favorite (also five stars from digiKam) is
+        never Suggested junk; the Favorites view (review=favorite) and its count; four stars are no favorite."""
+        subprocess.run(["exiftool", "-q", "-overwrite_original", "-XMP-xmp:Rating=5", self.clip + ".xmp"], check=True)
+        subprocess.run(["exiftool", "-q", "-overwrite_original", "-XMP-xmp:Rating=4", self.lo + ".xmp"], check=True)
+        s = self.start()
+        ida, idb = self.id_of(s, "a.jpg"), self.id_of(s, "b.jpg")
+        rating = lambda p: gallery_read(p).get("rating")  # noqa: E731
+        self.assertEqual(self.names(s, review="favorite")[0], ["clip.mp4"])  # digiKam's five stars
+        self.assertEqual(s.get("/api/facets")["counts"]["review:favorite"], 1)
+        sug = self.names(s, view="suggest")[0]
+        self.assertNotIn("clip.mp4", sug)  # Review|maybe-trash, but a favorite
+        self.assertIn("a.jpg", sug)
+        before = tags_of(self.a)
+        code, j = s.post("/api/favorite", {"ids": [ida, idb], "on": True})
+        self.assertEqual(code, 200, j)
+        self.assertEqual(j["result"], "Added 2 to Favorites. They won't be suggested as junk.")
+        self.assertIn("undo", j)
+        self.assertEqual({i["id"]: i["fav"] for i in j["items"]}, {ida: True, idb: True})
+        self.assertEqual((rating(self.a), rating(self.b)), ("5", "5"))  # b's sidecar made for it
+        self.assertEqual(tags_of(self.a), before)  # no tag, leaf or orientation touched
+        self.assertNotIn("Owner|keep", tags_of(self.b)[0])
+        self.assertEqual(sorted(self.names(s, review="favorite")[0]), ["a.jpg", "b.jpg", "clip.mp4"])
+        self.assertNotIn("a.jpg", self.names(s, view="suggest")[0])
+        self.assertTrue(s.get(f"/api/item/{ida}")["fav"])
+        self.assertEqual(s.get("/api/facets")["counts"]["review:favorite"], 3)
+        # starring again changes nothing (no token); unstarring deletes the rating
+        code, j = s.post("/api/favorite", {"ids": [ida], "on": True})
+        self.assertEqual((code, j["result"]), (200, "Already in Favorites: nothing changed."))
+        self.assertNotIn("undo", j)
+        code, j = s.post("/api/favorite", {"ids": [ida], "on": False})
+        self.assertEqual((code, j["result"]), (200, "Removed 1 from Favorites."), j)
+        self.assertIsNone(rating(self.a))
+        self.assertIn("a.jpg", self.names(s, view="suggest")[0])  # a suggestion again
+        self.assertEqual(s.get(f"/api/item/{self.id_of(s, 'lo.jpg')}")["fav"], False)  # four stars
+        for bad in ({"ids": [ida], "on": "yes"}, {"ids": [ida]}, {"ids": [999], "on": True}):
+            code, _ = s.post("/api/favorite", bad)
+            self.assertEqual(code, 400, bad)
+        for p, h0 in self.originals.items():
+            self.assertEqual(sha(p), h0, p)  # originals never written
+
     # ------------------------------------------------------------ trash / erase and the thumbnail cache
     def test_trash_and_erase(self):
         s = self.start()
@@ -708,7 +755,8 @@ class GalleryTest(unittest.TestCase):
         self.assertEqual(r.status, 200)
         for needle in (b'<aside id="sidebar"', b'<nav id="views"', b'id="filters"', b'id="q"', b'id="chips"',
                        b'id="tsize"', b'id="actionbar" hidden', b'aria-label="Selection actions"', b'<aside id="info"',
-                       b'data-v="recent"', b'data-v="child"', b'data-v="untagged"', b'data-dialog="confirm"'):
+                       b'data-v="fav"', b'data-v="recent"', b'data-v="child"', b'data-v="untagged"',
+                       b'data-dialog="confirm"', b'id="bfav"', b'id="bunfav"'):
             self.assertIn(needle, b)
         self.assertNotIn(b"://", b)  # no URL of any kind, so nothing loads from anywhere else
         for bad in (b"<link", b"@import", b"url(", b"<iframe", b"@font-face"):
@@ -720,13 +768,15 @@ class GalleryTest(unittest.TestCase):
         self.assertEqual((c["kind:photo"], c["kind:video"]), (5, 2))
         self.assertEqual(c["review:maybe-trash"], 3)
         for k, flt in (("review:child-in-shot", dict(review="child-in-shot")),
-                       ("review:untagged", dict(review="untagged")),
+                       ("review:untagged", dict(review="untagged")), ("review:favorite", dict(review="favorite")),
                        ("ai:trash", dict(ai="trash", aimin="0")), ("ai:none", dict(ai="none")),
                        ("used:used", dict(used="used")), ("suggest", dict(view="suggest"))):
             self.assertEqual(c.get(k, 0), len(self.names(s, **flt)[0]), k)  # each count is what its filter lists
         self.assertEqual(c["used:used"] + c["used:unused"], f["total"])
-        # Recently added: every file in this fresh HOME was filed (its inode changed) just now
+        # Added in the last 30 days: every file in this fresh HOME was filed (its inode changed) just now, so it
+        # counts them all; its name says the window (WORDS)
         self.assertEqual(f["recent_days"], 30)
+        self.assertIn(b"Added in the last 30 days", b)
         self.assertEqual(c["recent"], f["total"])
         self.assertEqual(len(self.names(s, added=str(f["recent_days"]))[0]), f["total"])
         for bad in ("0", "-3", "x", ""):  # not a positive day count: no filter
@@ -1045,6 +1095,7 @@ class ViewsEndpointsTest(unittest.TestCase):
                 "/api/event/rename": {"from": "beach", "to": "coast"},
                 "/api/event/merge": {"from": ["hike"], "into": "beach"},
                 "/api/share": {"ids": [ida]},
+                "/api/favorite": {"ids": [ida, idb], "on": True},
                 "/api/undo": {"undo": "not-a-token"}}
 
     def test_events_listed_and_filtered(self):
@@ -1320,7 +1371,7 @@ class PlainWordsTest(unittest.TestCase):
         shown = json.dumps({k: v for k, v in gallery.WORDS.items() if k != "tag"})
         shown += json.dumps(list(gallery.WORDS["tag"].values()))
         self.assertNotRegex(shown, r"(Owner|Review|Label|AI|Used|Project|Source|Event|Place)\|")
-        for f in ("maybe-trash", "child-in-shot", "kept", "trashed copy", "used"):  # summary()'s flags
+        for f in ("maybe-trash", "child-in-shot", "kept", "trashed copy", "used", "favorite"):  # summary(), Flags
             self.assertIn(f, gallery.WORDS["flag"])
         for k in ("trash", "erase", "share", "forget", "share-copy"):  # a job by its spec and by its step
             self.assertIn(k, gallery.WORDS["job"])
