@@ -143,6 +143,8 @@ The goal: someone else can install it on Fedora, import a phone, and trust it.
       a newer Ollama than 0.21); licence check (commercial use) before adopting any model.
 - [ ] Optional local face grouping (off by default): face data counts as personal data,
       so erase/verify-gone must cover it; never names faces automatically.
+- [ ] Pet recognition (`Pet|<Name>`) alongside face grouping, sharing one scan, naming page
+      and erase path: proposal and model choices in docs/research-pets.md (awaiting approval).
 - [x] Video near-duplicates (perceptual video hash) for re-encoded or trimmed copies
       (`videohash.py`; docs/intake.md, Duplicates).
 - [x] Text search quality: prompt ensembles for queries (`--no-ensemble` to compare) and
