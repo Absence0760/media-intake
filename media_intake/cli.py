@@ -46,6 +46,7 @@ Library
   share-copy FILE --out D   copy without GPS or metadata (or social-copy)
   calibrate                 test content labels on your marks; changes nothing
   migrate-tags              one-off: rename an older tool tag in your sidecars
+  proxies                   make the gallery's video copies now, so they play
   prune-cache               DELETES gallery thumbnails nothing shows any more
 
 Backup drive
@@ -79,7 +80,9 @@ TESSERACT_ENG = "tesseract-langpack-eng"
 HEVC_DECODERS, HEVC_PACKAGE = ("vah265dec", "vulkanh265dec"), "gstreamer1-plugins-bad-free"
 # The gallery's H.264 proxy of an HEVC video (gallery.proxy_commands): a GStreamer H.264 encoder after the GPU
 # decoder, or ffmpeg alone when it has both an HEVC decoder and an H.264 encoder (not Fedora's ffmpeg-free).
-GST_H264_ENCODERS, H264_PACKAGE = ("x264enc", "openh264enc", "vah264enc"), "gstreamer1-plugin-openh264"
+# In the order the gallery tries them (gallery.GST_H264_HW + GST_H264_SW): the GPU's first, several times faster.
+GST_H264_ENCODERS, H264_PACKAGE = ("vah264enc", "x264enc", "openh264enc"), "gstreamer1-plugin-openh264"
+GPU_H264_ENCODERS = ("vah264enc",)
 FFMPEG_H264_ENCODERS = ("libx264", "libopenh264")
 MTP_BACKEND, MTP_PACKAGE = "/usr/libexec/gvfsd-mtp", "gvfs-mtp"
 XDG_OPEN, XDG_PACKAGE = "xdg-open", "xdg-utils"  # the gallery's "Open in the system player" and a Share's "Open folder"
@@ -232,8 +235,11 @@ def doctor(probe=None, out=print, colour=None):
             h264 = next((f"ffmpeg {e}" for e in FFMPEG_H264_ENCODERS if f" {e} " in encs), None)
     if not h264 and plugins is not None:
         h264 = next((e for e in GST_H264_ENCODERS if e in plugins), None)
-    if h264:
-        report("ok", f"H.264 encoder for the gallery's HEVC proxies ({h264})")
+    if h264 in GPU_H264_ENCODERS:
+        report("ok", f"H.264 encoder for the gallery's HEVC proxies ({h264}, on the GPU)")
+    elif h264:
+        cpu = "" if h264.startswith("ffmpeg ") else ", on the CPU: vah264enc on the GPU is faster"
+        report("ok", f"H.264 encoder for the gallery's HEVC proxies ({h264}{cpu})")
     else:
         missing(H264_PACKAGE, "H.264 encoder for the gallery's HEVC proxies (x264enc / openh264enc / vah264enc, "
                               "or ffmpeg with an HEVC decoder and libx264)")
@@ -343,6 +349,11 @@ def _gallery(rest):  # here, not in intake.py: gallery imports intake, so intake
     return gallery.main(rest)
 
 
+def _proxies(rest):  # cli.py's too: it reads the library as the gallery does (proxies imports gallery)
+    import proxies
+    return proxies.main(rest)
+
+
 def _prune_cache(rest):  # cli.py's too: it reads the library as the gallery does (cache_prune imports gallery)
     import cache_prune
     return cache_prune.main(rest)
@@ -350,7 +361,7 @@ def _prune_cache(rest):  # cli.py's too: it reads the library as the gallery doe
 
 # cli.py's own commands; VENV_SCRIPTS run in the venv; everything else goes to intake.py's parser.
 COMMANDS = {"doctor": lambda rest: doctor(), "queue": _queue, "review": _review, "backup": _backup,
-            "gallery": _gallery, "prune-cache": _prune_cache, "zip-check": _zip_check}
+            "gallery": _gallery, "proxies": _proxies, "prune-cache": _prune_cache, "zip-check": _zip_check}
 HELP = ("-h", "--help", "help")
 
 

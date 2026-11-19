@@ -191,6 +191,7 @@ media-intake tag-files FILE... [--event SLUG] [--no-labels]
 media-intake mark-used FILE... --post SLUG
 media-intake find [--tag T] [--event E] [--place P] [--project P] [--unused-since 30d] [--never-used]
 media-intake gallery [--drive DRIVE] [--share-out DIR]
+media-intake proxies [--dry-run] [--inhibit]  # make the gallery's HEVC video proxies ahead of time (gallery.md)
 media-intake prune-cache [--dry-run]          # gallery thumbnails and proxies nothing shows any more
 media-intake calibrate [--precision P] [--json]   # label thresholds vs your marks, report only (configuration.md)
 media-intake backup DRIVE [--verify] [--dry-run] [--skip PART]   # library, videos, sidecars to the backup drive (backup.md)

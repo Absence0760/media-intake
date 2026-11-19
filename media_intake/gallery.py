@@ -10,7 +10,8 @@ scan flagged, quarantined or erased: label.flagged()). Timeline grid by month,
 thumbnails made on demand (max 320 px JPEG, ~/.cache/media-intake/thumbs/<sha256>-r<turn>.jpg,
 dir 0700, files 0600; intake.py erase/forget/trash delete them by sha and
 verify-gone checks them), an H.264 proxy made on demand for a video the browser
-can't play (HEVC: ~/.cache/media-intake/proxies/<sha256>.mp4, cleaned the same way),
+can't play (HEVC: ~/.cache/media-intake/proxies/<sha256>.mp4, cleaned the same way; streamed to the
+player while it is made, and made ahead of time by proxies.py),
 filters, semantic search (semantic.py, local SigLIP),
 and your actions: Keep, Trash (intake.py trash), Erase (intake.py forget, the
 erase-everywhere path), my tags, Rotate (XMP-tiff:Orientation in the sidecar
@@ -45,8 +46,8 @@ random port, random token swapped for an HttpOnly SameSite=Strict cookie, Host
 check, CSRF value on every POST, no-store + strict CSP, media by opaque id only.
 Originals are never written: sidecars (<file>.<ext>.xmp) only. docs/gallery.md.
 """
-import argparse, collections, contextlib, datetime, hashlib, html, http.server, io, json, os, re, secrets, shutil, subprocess, sys, tempfile
-import threading, time, unicodedata
+import argparse, collections, contextlib, datetime, hashlib, html, http.server, io, json, os, re, secrets, select
+import shutil, subprocess, sys, tempfile, threading, time, unicodedata
 import xml.etree.ElementTree as ET
 
 HERE = os.path.dirname(os.path.abspath(__file__))
@@ -74,6 +75,10 @@ THUMB_PX, PREVIEW_PX = 320, 1600
 PROXY_CODECS = {"hevc"}
 PROXY_PX = 1920  # the proxy's longer side at most (never scaled up)
 PROXY_TIMEOUT = 3600  # one transcode, in seconds; past it the original is served as before
+PROXY_REMUX_TIMEOUT = 600  # rewriting a finished proxy as a plain MP4 (a copy, nothing re-encoded), in seconds
+PROXY_KBPS = 8000  # the proxy's video bitrate (H.264, longer side at most PROXY_PX)
+PROXY_FRAG_MS = 1000  # the proxy is written as fragments this long, so the player can start before it is done
+PROXY_POLL = 0.2  # seconds between looks at a proxy being written (its size, a cancel) while it is streamed
 # Namespaces "my tag" never writes or removes (docs/intake.md, "Tags: who writes what").
 TOOL_PREFIXES = ("project|", "source|", "event|", "place|", "label|", "review|", "ai|", "used|", "owner|")
 TAG_RE = re.compile(r"^[^\x00-\x1f\x7f]{1,64}$")
@@ -477,16 +482,35 @@ def video_jpeg(path, px, delta):
 
 
 # ---------------------------------------------------------------- H.264 proxies (HEVC in the browser)
-def video_codec(path):
-    """The first video stream's codec name (ffprobe: "h264", "hevc", ...), or None when it can't be read."""
+def video_info(path):
+    """dict(codec, width, height) of the first video stream (ffprobe: codec "h264", "hevc", ...; the stored size,
+    before any rotation the file asks for), or None when it can't be read. A size ffprobe doesn't give is 0."""
     try:
-        r = subprocess.run(["ffprobe", "-v", "error", "-select_streams", "v:0", "-show_entries", "stream=codec_name",
-                            "-of", "csv=p=0", "file:" + path], capture_output=True, text=True, timeout=60,
-                           stdin=subprocess.DEVNULL)
+        r = subprocess.run(["ffprobe", "-v", "error", "-select_streams", "v:0", "-show_entries",
+                            "stream=codec_name,width,height", "-of", "csv=p=0", "file:" + path], capture_output=True,
+                           text=True, timeout=60, stdin=subprocess.DEVNULL)
     except (OSError, subprocess.SubprocessError):
         return None
-    words = r.stdout.split() if r.returncode == 0 else []
-    return words[0].strip(",").lower() if words else None
+    lines = r.stdout.split() if r.returncode == 0 else []
+    if not lines:
+        return None
+    bits = lines[0].split(",")
+    dims = [int(b) if b.isdigit() else 0 for b in bits[1:3]] + [0, 0]
+    return dict(codec=bits[0].strip().lower(), width=dims[0], height=dims[1]) if bits[0].strip() else None
+
+
+def video_codec(path):
+    """The first video stream's codec name (ffprobe: "h264", "hevc", ...), or None when it can't be read."""
+    return (video_info(path) or {}).get("codec")
+
+
+def proxy_size(width, height):
+    """(width, height) of the proxy of a video stored at width x height: the longer side at most PROXY_PX, never
+    scaled up, both even (H.264 4:2:0). None when the size is unknown (the pipeline then keeps the original's)."""
+    if not (width and height and width > 0 and height > 0):
+        return None
+    k = min(1.0, PROXY_PX / max(width, height))
+    return max(2, int(width * k) // 2 * 2), max(2, int(height * k) // 2 * 2)
 
 
 def ffmpeg_encoder(names):
@@ -497,6 +521,16 @@ def ffmpeg_encoder(names):
     except (OSError, subprocess.SubprocessError):
         return None
     return next((n for n in names if f" {n} " in out), None)
+
+
+def ffmpeg_decodes_hevc():
+    """True when this ffmpeg has an HEVC decoder (Fedora's ffmpeg-free has none: its transcode would only fail)."""
+    try:
+        out = subprocess.run(["ffmpeg", "-hide_banner", "-decoders"], capture_output=True, text=True, timeout=60,
+                             stdin=subprocess.DEVNULL).stdout
+    except (OSError, subprocess.SubprocessError):
+        return False
+    return " hevc " in out
 
 
 def gst_element(names):
@@ -512,60 +546,228 @@ def gst_element(names):
 
 
 SAFE_GST_PATH = re.compile(r"[A-Za-z0-9._/+-]+")  # what may stand as a location= value in a gst-launch pipeline
+# GStreamer H.264 encoders for the proxy, in the order tried: on the GPU (VA-API, a few times faster than the
+# CPU ones on a 4K clip), then one on the CPU. cli.py's doctor reports the same names (GST_H264_ENCODERS).
+GST_H264_HW = ("vah264enc",)
+GST_H264_SW = ("x264enc", "openh264enc")
+GST_ENC_PROPS = {"vah264enc": [f"bitrate={PROXY_KBPS}", "key-int-max=60"],
+                 "x264enc": ["speed-preset=veryfast", f"bitrate={PROXY_KBPS}", "key-int-max=60"],
+                 "openh264enc": [f"bitrate={PROXY_KBPS * 1000}", "gop-size=60"]}
 
 
-def proxy_commands(src, work):
-    """Commands that each write an H.264 MP4 of src to <work>/out.mp4, in the order to try them. ffmpeg first
-    (where it has an HEVC decoder), src as a file: path; then GStreamer's GPU HEVC decoder (Fedora's ffmpeg-free
-    has none) into an H.264 encoder, with the sound when it is AAC, then without. gst-launch-1.0 re-parses its
-    arguments as one pipeline, so a file name with "!", quotes or spaces could add elements: it reads
-    <work>/in, a link to src that make_proxy makes, and both of its paths are checked against SAFE_GST_PATH
-    (else GStreamer is not tried, said once per folder on stderr). The argv is built as a list, never split
-    from a string. Nothing is fetched."""
+def proxy_commands(src, work, size=None):
+    """Commands that each write an H.264 MP4 of src to <work>/out.mp4, in the order to try them. The MP4 is
+    fragmented (a fragment every PROXY_FRAG_MS) so /m/ can stream it to the player while it is being written;
+    make_proxy then rewrites the finished file as a plain one (remux_proxy). size: the proxy's (width, height)
+    (proxy_size), or None to keep the original's.
+
+    ffmpeg first, only when it has an HEVC decoder (Fedora's ffmpeg-free has none), src as a file: path; then
+    GStreamer's GPU HEVC decoder into an H.264 encoder, the GPU's (vah264enc, scaled on the GPU) before one on the
+    CPU, each with the sound when it is AAC, then without. gst-launch-1.0 re-parses its arguments as one pipeline,
+    so a file name with "!", quotes or spaces could add elements: it reads <work>/in, a link to src that
+    make_proxy makes, and both of its paths are checked against SAFE_GST_PATH (else GStreamer is not tried, said
+    once per folder on stderr). The argv is built as a list, never split from a string. Nothing is fetched."""
     cmds, out, link = [], os.path.join(work, "out.mp4"), os.path.join(work, "in")
-    enc = ffmpeg_encoder(("libx264", "libopenh264"))
+    enc = ffmpeg_encoder(("libx264", "libopenh264")) if ffmpeg_decodes_hevc() else None
     if enc:
-        q = ["-preset", "veryfast", "-crf", "23"] if enc == "libx264" else ["-b:v", "6M"]
+        q = ["-preset", "veryfast", "-crf", "23"] if enc == "libx264" else ["-b:v", f"{PROXY_KBPS}k"]
         vf = (f"scale='min({PROXY_PX},iw)':'min({PROXY_PX},ih)':force_original_aspect_ratio=decrease:"
               "force_divisible_by=2,format=yuv420p")
         cmds.append(["ffmpeg", "-v", "error", "-nostdin", "-y", "-i", "file:" + src, "-map", "0:v:0", "-map", "0:a:0?",
-                     "-map_metadata", "-1", "-vf", vf, "-c:v", enc, *q, "-c:a", "aac", "-b:a", "160k",
-                     "-movflags", "+faststart", "-f", "mp4", "file:" + out])
+                     "-map_metadata", "-1", "-vf", vf, "-c:v", enc, *q, "-force_key_frames", "expr:gte(t,n_forced*1)",
+                     "-c:a", "aac", "-b:a", "160k", "-movflags", "+frag_keyframe+empty_moov+default_base_moof",
+                     "-frag_duration", str(PROXY_FRAG_MS * 1000), "-f", "mp4", "file:" + out])
     import scan_sensitive  # the GPU HEVC decoder thumbnails and scans use
     dec = scan_sensitive._gst_hevc_decoder()
-    if dec and not SAFE_GST_PATH.fullmatch(work):
+    if not dec:
+        return cmds
+    if not SAFE_GST_PATH.fullmatch(work):
         scan_sensitive.note_gst_skipped(os.path.dirname(work), "HEVC clips get no GStreamer proxy")
         return cmds
-    genc = gst_element(("x264enc", "openh264enc", "vah264enc")) if dec else None
-    if dec and genc:
-        post = ["vapostproc"] if dec == "vah265dec" else ["vulkandownload"]
+    encs = list(dict.fromkeys(e for e in (gst_element(GST_H264_HW), gst_element(GST_H264_SW)) if e))
+    wh = f",width={size[0]},height={size[1]}" if size else ""
+    for genc in encs:
+        if dec == "vah265dec" and genc in GST_H264_HW:  # decoded, scaled and encoded without leaving the GPU
+            conv = ["vapostproc", "!", *([f"video/x-raw(memory:VAMemory){wh}", "!"] if wh else [])]
+        elif dec == "vah265dec":
+            conv = ["vapostproc", "!", *([f"video/x-raw{wh}", "!"] if wh else []), "videoconvert", "!"]
+        else:  # Vulkan: frames come back to memory, scaled on the CPU
+            conv = ["vulkandownload", "!", "videoconvert", "!", "videoscale", "!",
+                    *([f"video/x-raw{wh}", "!"] if wh else [])]
         video = ["filesrc", "location=" + link, "!", "qtdemux", "name=d", "d.video_0", "!", "queue", "!", "h265parse",
-                 "!", dec, "!", *post, "!", "videoconvert", "!", genc, "!", "h264parse", "!", "mp4mux", "name=mux",
-                 "!", "filesink", "location=" + out]
+                 "!", dec, "!", *conv, genc, *GST_ENC_PROPS.get(genc, []), "!", "h264parse", "!", "mp4mux",
+                 "name=mux", f"fragment-duration={PROXY_FRAG_MS}", "streamable=true", "!", "filesink",
+                 "location=" + out]
         for sound in (["d.audio_0", "!", "queue", "!", "aacparse", "!", "mux."], []):
             cmds.append(["gst-launch-1.0", "-q", *video, *sound])
     return cmds
 
 
-def make_proxy(src, dst):
+def remux_proxy(src, dst):
+    """Rewrite the fragmented MP4 src as a plain MP4 with its index first (ffmpeg -c copy +faststart: no decoder,
+    nothing re-encoded) at dst, made 0600 before ffmpeg writes it. True when ffmpeg made a non-empty file."""
+    with contextlib.suppress(FileNotFoundError):
+        os.remove(dst)
+    os.close(os.open(dst, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600))
+    try:
+        r = subprocess.run(["ffmpeg", "-v", "error", "-nostdin", "-y", "-i", "file:" + src, "-map", "0", "-c", "copy",
+                            "-movflags", "+faststart", "-f", "mp4", "file:" + dst], capture_output=True,
+                           timeout=PROXY_REMUX_TIMEOUT, stdin=subprocess.DEVNULL)
+    except (OSError, subprocess.SubprocessError):
+        return False
+    return r.returncode == 0 and os.path.getsize(dst) > 0
+
+
+class ProxyJob:
+    """One video's proxy being made (App.playable starts it on a thread, make_proxy runs it). While an attempt
+    runs, its fragmented MP4 grows at .out and /m/ streams it (Handler.stream_proxy); .dst gets the finished
+    plain MP4. readers: the /m/ replies following it; a job nobody follows is cancelled when another video is
+    opened, and one whose video goes into a Trash or Erase job stops. Every field is read and written under
+    cond."""
+
+    def __init__(self, sha, it, dst):
+        self.sha, self.it, self.dst = sha, it, dst
+        self.cond = threading.Condition()
+        self.out = None  # the running attempt's growing file
+        self.attempt = -1  # which of proxy_commands is running (a reader of an earlier one stops)
+        self.size = 0  # bytes in .out so far
+        self.readers = 0
+        self.done = self.ok = False
+        self.written = False  # the last attempt's tool exited with its whole file written (remux may follow)
+        self.cancel = threading.Event()
+        self.thread = None
+
+    def started(self, attempt, out):
+        with self.cond:
+            self.attempt, self.out, self.size = attempt, out, 0
+            self.cond.notify_all()
+
+    def grew(self, size):
+        with self.cond:
+            if size > self.size:
+                self.size = size
+                self.cond.notify_all()
+
+    def wrote(self):
+        with self.cond:
+            self.written = True
+            self.cond.notify_all()
+
+    def end(self, ok):
+        with self.cond:
+            self.done, self.ok = True, ok
+            self.cond.notify_all()
+
+    def join(self):
+        """Take a reader's place (App.playable, under its lock): the job is not cancelled while one follows it."""
+        with self.cond:
+            self.readers += 1
+
+    def leave(self):
+        with self.cond:
+            self.readers -= 1
+
+    def stopped(self):
+        """Cancelled, or its video went into a Trash or Erase job (or is gone): the transcode stops."""
+        return self.cancel.is_set() or bool(self.it.get("busy") or self.it.get("gone"))
+
+    def idle(self):
+        with self.cond:
+            return self.readers == 0
+
+    def wait_done(self, timeout=None):
+        with self.cond:
+            self.cond.wait_for(lambda: self.done, timeout)
+            return self.done
+
+    def open_stream(self):
+        """(open file, attempt) of the running attempt once it has bytes; None when the job ended first (or its
+        file went before it could be opened: the caller waits for the end and serves what it made)."""
+        while True:
+            with self.cond:
+                self.cond.wait_for(lambda: self.done or self.size > 0)
+                if self.done:
+                    return None
+                attempt, path = self.attempt, self.out
+            try:
+                return open(path, "rb"), attempt
+            except OSError:  # that attempt failed and its file went: follow the next one, or the end
+                with self.cond:
+                    self.cond.wait_for(lambda: self.done or self.attempt != attempt)
+
+    def more(self, attempt):
+        """Wait up to PROXY_POLL for the attempt being read to grow or end. False once it is over (its tool exited
+        with the file written, the job ended, or that attempt failed and another began): what is left in its file
+        is then all there will be, so the reply ends without waiting for the remux."""
+        with self.cond:
+            if self.done or self.written or self.attempt != attempt:
+                return False
+            size = self.size
+            self.cond.wait_for(lambda: self.done or self.written or self.attempt != attempt or self.size > size,
+                               PROXY_POLL)
+            return not (self.done or self.written or self.attempt != attempt)
+
+
+def _run_watched(argv, out, job):
+    """Run one proxy command; while it runs, tell job how far out has grown. Its exit code, or None when it was
+    stopped: job cancelled, or past PROXY_TIMEOUT. The process never outlives this call."""
+    proc = subprocess.Popen(argv, stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+    deadline = time.monotonic() + PROXY_TIMEOUT
+    try:
+        while True:
+            try:
+                rc = proc.wait(timeout=PROXY_POLL)
+                break
+            except subprocess.TimeoutExpired:
+                pass
+            if job:
+                with contextlib.suppress(OSError):
+                    job.grew(os.path.getsize(out))
+            if (job and job.stopped()) or time.monotonic() > deadline:
+                return None
+        if job:
+            with contextlib.suppress(OSError):
+                job.grew(os.path.getsize(out))
+        return rc
+    finally:
+        if proc.poll() is None:
+            proc.kill()
+            proc.wait()
+
+
+def make_proxy(src, dst, job=None):
     """Write an H.264 MP4 of src to dst (0600, in the 0700 cache), trying each of proxy_commands in turn, in a
-    private work folder beside dst (the output, and the link GStreamer reads src through). True once one gave a
-    file ffprobe reads as H.264; False, with nothing left behind, when none did. The original is only read."""
+    private work folder beside dst (the output, and the link GStreamer reads src through). The command writes a
+    fragmented MP4 that job (a ProxyJob, when /m/ streams it) follows as it grows; the finished file is rewritten
+    as a plain MP4 (remux_proxy; the fragmented one is kept when that fails) and kept only when ffprobe reads it
+    as H.264. True once one did; False, with nothing left behind, when none did or job was cancelled. The
+    original is only read."""
     work = tempfile.mkdtemp(prefix=".work-", dir=os.path.dirname(dst))  # 0700
-    out = os.path.join(work, "out.mp4")
+    out, plain = os.path.join(work, "out.mp4"), os.path.join(work, "plain.mp4")
     try:
         os.symlink(os.path.abspath(src), os.path.join(work, "in"))
-        for argv in proxy_commands(src, work):
+        info = video_info(src) or {}
+        size = proxy_size(info.get("width"), info.get("height"))
+        for n, argv in enumerate(proxy_commands(src, work, size)):
+            if job and job.stopped():
+                return False
             with contextlib.suppress(FileNotFoundError):
-                os.remove(out)
+                os.remove(out)  # a reader of the last attempt keeps its own open copy
             os.close(os.open(out, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600))  # the tools keep its mode
+            if job:
+                job.started(n, out)
             try:
-                r = subprocess.run(argv, capture_output=True, timeout=PROXY_TIMEOUT, stdin=subprocess.DEVNULL)
+                rc = _run_watched(argv, out, job)
             except (OSError, subprocess.SubprocessError):
                 continue
-            if r.returncode == 0 and os.path.getsize(out) and video_codec(out) == "h264":
-                os.chmod(out, 0o600)
-                os.replace(out, dst)
+            if rc is None:
+                return False  # cancelled or timed out: the next command would take as long
+            if rc == 0 and os.path.getsize(out) and video_codec(out) == "h264":
+                if job:
+                    job.wrote()
+                keep = plain if remux_proxy(out, plain) and video_codec(plain) == "h264" else out
+                os.chmod(keep, 0o600)
+                os.replace(keep, dst)
                 return True
         return False
     finally:
@@ -796,8 +998,8 @@ class App:
         self.token, self.csrf = secrets.token_urlsafe(24), secrets.token_urlsafe(24)
         self.lock = threading.RLock()
         self.thumb_sem = threading.BoundedSemaphore(3)
-        self.proxy_lock = threading.Lock()  # guards proxy_making
-        self.proxy_making = {}  # sha -> Event set when its transcode ends; one transcode at a time (CPU)
+        self.proxy_lock = threading.Lock()  # guards proxy_job
+        self.proxy_job = None  # the ProxyJob being made: one transcode at a time
         self.port = None
         self.reconciled = None  # id of the last finished job whose results are applied to items
         self.tail = None  # the shown job's log, through an open descriptor (jobs.Tail)
@@ -870,53 +1072,93 @@ class App:
             write_private_bytes(dst, data)
         return dst
 
-    def playable(self, it):
-        """(path, mime) that /m/ serves: the original, or for a video whose codec browsers can't play (HEVC) an
-        H.264 proxy, made on demand and cached by sha256 in PROXIES. When no proxy can be made the original is
-        served as before (the page then says the browser can't play it) and this item isn't tried again.
-
-        One transcode at a time, for the CPU. A request for the sha being converted (the player's Range
-        requests, a second open) waits for that one transcode and then serves its proxy; a request for another
-        video while one is being made is not held for up to PROXY_TIMEOUT: it gets the original now, and a later
-        open, once the conversion is done, makes that video's proxy."""
-        orig = (it["path"], it["mime"])
+    def proxy_needed(self, it):
+        """The cache path of the H.264 proxy /m/ serves for this item (a video whose codec browsers can't play:
+        HEVC), or None when the original is served as it is (not such a video, or no proxy could be made)."""
         if it["media"] != "video" or it.get("noproxy"):
-            return orig
+            return None
         if "vcodec" not in it:
             it["vcodec"] = video_codec(it["path"])
         if it["vcodec"] not in PROXY_CODECS:
-            return orig
+            return None
         sha = self.sha_of(it)
-        if not re.fullmatch(r"[0-9a-f]{64}", sha):
+        return os.path.join(PROXIES, sha + ".mp4") if re.fullmatch(r"[0-9a-f]{64}", sha) else None
+
+    def proxy_state(self, it):
+        """What the large view says while it waits: "converting" when this video's proxy is still to be made or
+        being made (it plays as soon as the first seconds are), "waiting" when another video's is being made and
+        watched (so this one gets its original), else None."""
+        dst = self.proxy_needed(it)
+        if not dst or os.path.isfile(dst):
+            return None
+        with self.proxy_lock:
+            job = self.proxy_job
+            return "waiting" if job and job.dst != dst and not job.idle() else "converting"
+
+    def playable(self, it):
+        """What /m/ serves: (path, mime) of the original, or of the cached H.264 proxy of a video whose codec
+        browsers can't play (HEVC, cached by sha256 in PROXIES); or (ProxyJob, "video/mp4") while that proxy is
+        being made, with a reader's place taken in it (the caller streams it, Handler.stream_proxy, and leaves).
+        When no proxy can be made the original is served as before (the page then says the browser can't play
+        it) and this item isn't tried again.
+
+        One transcode at a time, on a thread of its own, so no request waits for a whole file: the player starts
+        on the first fragments. Requests for the sha being converted (the player's Range requests, a second
+        page, a duplicate file) follow that one transcode. Opening another video cancels a transcode nobody is
+        watching any more (you moved on) and starts its own; one still being watched elsewhere keeps going and
+        the other video gets its original now, and its proxy on a later open."""
+        orig = (it["path"], it["mime"])
+        dst = self.proxy_needed(it)
+        if not dst:
             return orig
-        dst = os.path.join(PROXIES, sha + ".mp4")
-        if not os.path.isfile(dst):
-            with self.proxy_lock:
-                done = self.proxy_making.get(sha)
-                mine = done is None and not self.proxy_making and not os.path.isfile(dst)
-                if mine:
-                    done = self.proxy_making[sha] = threading.Event()
-            if mine:
-                try:
-                    private_cache()
-                    made = make_proxy(it["path"], dst)
-                except OSError:
-                    made = False
-                finally:
-                    with self.proxy_lock:
-                        del self.proxy_making[sha]
-                    done.set()
-                if not made:
-                    it["noproxy"] = True
-                    return orig
-            elif done is not None:
-                done.wait()  # the same video's transcode: wait for it, then serve what it made
-            if not os.path.isfile(dst):
-                return orig  # another video's transcode is running, or this one's failed
-            if it.get("busy") or it["gone"] or not os.path.lexists(it["path"]):
-                intake.gallery_thumb_forget(sha)  # trashed or erased while it was being made: no copy stays
+        if os.path.isfile(dst):
+            return dst, "video/mp4"
+        with self.proxy_lock:
+            job = self.proxy_job
+            if job and job.dst == dst:
+                job.join()
+                return job, "video/mp4"
+            if os.path.isfile(dst):  # finished since the look above
+                return dst, "video/mp4"
+            if job and not job.idle():
                 return orig
-        return dst, "video/mp4"
+            if job:
+                job.cancel.set()  # nobody follows it any more: this video goes first
+            job = self.proxy_job = ProxyJob(os.path.basename(dst)[:-4], it, dst)
+            job.join()
+            job.thread = threading.Thread(target=self._make_proxy, args=(job,), daemon=True)
+            job.thread.start()
+        return job, "video/mp4"
+
+    def _make_proxy(self, job):
+        """Run job (App.playable's thread). A proxy finished after its video was trashed or erased, or while a
+        job holds it, is deleted at once: no copy of that content stays in the cache."""
+        made = False
+        try:
+            private_cache()
+            made = make_proxy(job.it["path"], job.dst, job)
+        except OSError:
+            made = False
+        finally:
+            it = job.it
+            if made and (it.get("busy") or it["gone"] or not os.path.lexists(it["path"])):
+                intake.gallery_thumb_forget(job.sha)
+                made = False
+            if not made and not job.stopped():
+                it["noproxy"] = True  # it failed: not tried again (a cancelled one is, on the next open)
+            with self.proxy_lock:
+                if self.proxy_job is job:
+                    self.proxy_job = None
+            job.end(made)
+
+    def close_proxies(self):
+        """Stop the transcode still running (the server is stopping): its process ends, its work folder goes."""
+        with self.proxy_lock:
+            job = self.proxy_job
+        if job:
+            job.cancel.set()
+            if job.thread:
+                job.thread.join(30)
 
     def drop_thumb(self, it):
         """After a rotate: the item's new turn has its own cache key, so its next /t/ request shows it at once.
@@ -1944,8 +2186,12 @@ class Handler(R.Handler):
             if not app.live(i):
                 self.reply(404, "404\n")
                 return
+            try:  # before the lock: it may probe the video once (ffprobe)
+                conv = app.proxy_state(app.items[i])
+            except OSError:
+                conv = None
             with app.lock:
-                self.json(200, app.detail(i))
+                self.json(200, dict(app.detail(i), conv=conv))
         elif m := re.fullmatch(r"/([tmp])/([0-9]{1,9})", path):
             i = int(m.group(2))
             if not app.servable(i):
@@ -1969,7 +2215,10 @@ class Handler(R.Handler):
                     src, mime = app.playable(it)
                 except OSError:
                     src, mime = it["path"], it["mime"]
-                self.media(dict(path=src, mime=mime))
+                if isinstance(src, ProxyJob):
+                    self.stream_proxy(src, it)
+                else:
+                    self.media(dict(path=src, mime=mime))
             else:
                 data = image_jpeg(it["path"], PREVIEW_PX, 0) if it["media"] == "photo" else None
                 if not data:
@@ -1993,6 +2242,54 @@ class Handler(R.Handler):
             self.json(*got)
         else:
             self.reply(404, "404\n")
+
+    def hung_up(self):
+        """True once the client closed its end (a readable socket with nothing to read), so a reply waiting on a
+        slow transcode lets go of it (App.playable then may cancel it for another video)."""
+        try:
+            r, _, _ = select.select([self.connection], [], [], 0)
+            return bool(r) and self.rfile.peek(1) == b""  # readable: peek won't block
+        except OSError:
+            return True
+
+    def stream_proxy(self, job, it):
+        """/m/ while job (holding a reader's place, App.playable) makes this video's proxy: the fragmented MP4 as
+        it is written, from its first byte, in a 200 with no length and no Range (the size isn't known yet; HTTP
+        1.0, so the reply ends when the connection closes), so the player starts within seconds instead of after
+        the whole transcode. It ends with the transcode, when that attempt fails, when the player hangs up, or
+        when the video goes into a Trash or Erase job. A job that ended before its first byte is answered as
+        /m/ answers after it: the finished proxy, or the original."""
+        try:
+            got = job.open_stream()
+            if got is None:
+                job.wait_done()
+                ok = job.ok and os.path.isfile(job.dst) and not (it.get("busy") or it["gone"])
+                self.media(dict(path=job.dst, mime="video/mp4") if ok else dict(path=it["path"], mime=it["mime"]))
+                return
+            f, attempt = got
+            with f:
+                self.send_response(200)
+                self.send_header("Content-Type", "video/mp4")
+                self.send_header("Accept-Ranges", "none")
+                self.send_header("Content-Disposition", "inline")
+                self.end_headers()
+                if self.command == "HEAD":
+                    return
+                try:
+                    while not (it.get("busy") or it["gone"]):
+                        b = f.read(R.CHUNK)
+                        if b:
+                            self.wfile.write(b)
+                        elif not job.more(attempt):
+                            while b := f.read(R.CHUNK):  # the rest of what that attempt wrote
+                                self.wfile.write(b)
+                            break
+                        elif self.hung_up():  # nothing new to write, so no failed write would tell
+                            break
+                except (BrokenPipeError, ConnectionResetError):
+                    pass  # the player closed it (the large view moved on, or it re-asked)
+        finally:
+            job.leave()
 
     def do_POST(self):
         g = self.guard()
@@ -2150,6 +2447,7 @@ def main(argv=None):
                            if st and not st["done"] else ""))
         return 130
     finally:
+        app.close_proxies()
         httpd.server_close()
     return 0
 
@@ -2428,6 +2726,7 @@ h2.month{position:sticky;top:var(--hh);z-index:2;margin:0;padding:16px 0 8px;fon
 .arrow{position:absolute;top:50%;transform:translateY(-50%);width:44px;height:64px;border:0;border-radius:10px;background:rgba(255,255,255,.08);color:#fff;font-size:28px;z-index:3}
 .arrow:hover{background:rgba(255,255,255,.18)}
 #vprev{left:12px}#vnext{right:12px}
+#conv{position:absolute;left:50%;bottom:72px;transform:translateX(-50%);z-index:3;max-width:calc(100% - 32px);border-radius:8px;background:rgba(0,0,0,.72);color:#fff;padding:8px 14px;font-size:14px;text-align:center;pointer-events:none}
 #unmute{position:absolute;left:16px;top:16px;z-index:3;border:0;border-radius:8px;background:rgba(0,0,0,.6);color:#fff;padding:6px 12px;font-size:14px}
 #info{width:360px;flex:none;overflow-y:auto;background:#16171b;border-left:1px solid #2a2b31;padding:16px 18px 24px;font-size:14px;display:flex;flex-direction:column;gap:16px}
 #info .ihead{display:flex;gap:8px;align-items:flex-start}
@@ -3157,14 +3456,18 @@ addEventListener("resize",fitMedia);
 function cantPlay(d,why){stopVideo();const M=$("#media");M.replaceChildren();const box=el("div","nop"),im=el("img");im.alt=d.name;im.src="/t/"+d.id;im.onerror=()=>im.remove();
  const c=el("div","cant");c.append(el("span",null,why));const o=el("button",null,"Open in the system player");o.type="button";
  o.onclick=async()=>{try{toast((await api("/api/open",{ids:[d.id]})).result)}catch(e){errorToast("Refused: "+e.message)}};c.append(o);
- box.append(im,c);M.append(box);const u=$("#unmute");if(u)u.remove()}
+ box.append(im,c);M.append(box);const u=$("#unmute");if(u)u.remove();dropConv()}
+// an HEVC video's H.264 copy is being made: say so until it plays (it starts on the first seconds converted)
+function dropConv(){const c=$("#conv");if(c)c.remove()}
+function converting(v){if(v.readyState>=3||curVideo()!==v)return;dropConv();const c=el("div",null,"Converting this video for the browser. It starts in a few seconds.");c.id="conv";c.setAttribute("role","status");
+ $("#stage").append(c);const end=()=>{if($("#conv")===c)c.remove()};["playing","canplay","error","emptied"].forEach(e=>v.addEventListener(e,end,{once:true}))}
 function startVideo(v){const ok=()=>{const u=$("#unmute");if(u)u.remove()};
  v.play().then(ok).catch(()=>{if(curVideo()!==v)return;v.muted=true;v.play().then(()=>{if(curVideo()!==v||$("#unmute"))return;const u=el("button",null,"Unmute");u.id="unmute";u.type="button";
   u.onclick=()=>{v.muted=false;u.remove()};$("#stage").append(u)}).catch(()=>{})})}
 async function openViewer(n,opt){opt=opt||{};if(n<0||n>=items.length)return;if(vi<0)lastFocus=document.activeElement;
  const v0=curVideo(),tKeep=opt.keep&&v0&&v0.dataset.id==items[n].id?v0.currentTime:null;stopVideo();vi=n;cur=n;
  const pend=api("/api/item/"+items[n].id);$("#viewer").classList.add("on");document.body.classList.add("noscroll");
- const M=$("#media");const u0=$("#unmute");if(u0)u0.remove();
+ const M=$("#media");const u0=$("#unmute");if(u0)u0.remove();dropConv();
  // a video is made and started inside the click's handler (the user gesture), before the details arrive
  if(items[n].m==="video"){const v=el("video");v.controls=true;v.preload="auto";v.playsInline=true;v.autoplay=true;v.poster="/t/"+items[n].id;v.dataset.id=items[n].id;
   v.src="/m/"+items[n].id;M.replaceChildren(v);fitMedia();startVideo(v);if(tKeep)v.currentTime=tKeep}
@@ -3174,7 +3477,8 @@ async function openViewer(n,opt){opt=opt||{};if(n<0||n>=items.length)return;if(v
  if(vi!==n)return;
  const v=curVideo();
  if(d.video&&d.src&&v){v.dataset.rot=d.rot;fitMedia();
-  const bad=()=>{if(curVideo()===v)cantPlay(d,"This browser can't play this video (HEVC, most likely).")};
+  const bad=()=>{if(curVideo()===v)cantPlay(d,d.conv==="waiting"?"Another video is being converted for this browser. Open this one again once that one plays, or open it in the system player.":"This browser can't play this video (HEVC, most likely).")};
+  if(d.conv==="converting")converting(v);
   const nopic=()=>{if(curVideo()===v&&v.readyState>=1&&!v.videoWidth)bad()};
   v.addEventListener("error",bad);v.addEventListener("loadedmetadata",nopic);if(v.error)bad();else nopic()}
  else if(d.kind==="video")cantPlay(d,"No browser preview for this format.");
@@ -3211,7 +3515,7 @@ async function openViewer(n,opt){opt=opt||{};if(n<0||n>=items.length)return;if(v
  $("#viewer").dataset.current=d.name;  // last: the keys (Space, arrows) act on this item from here on
  if(n>=items.length-20)more()}
 function closeViewer(){if(vi<0)return;const id=items[vi]&&items[vi].id;stopVideo();vi=-1;$("#viewer").scrollTop=0;$("#viewer").classList.remove("on");document.body.classList.remove("noscroll");$("#media").replaceChildren();
- delete $("#viewer").dataset.current;const u=$("#unmute");if(u)u.remove();paintSel();const t=$("#t"+id)||lastFocus;if(t&&t.focus)t.focus({preventScroll:true})}
+ delete $("#viewer").dataset.current;const u=$("#unmute");if(u)u.remove();dropConv();paintSel();const t=$("#t"+id)||lastFocus;if(t&&t.focus)t.focus({preventScroll:true})}
 // swipe down on the photo or video closes the large view (phone); Esc and the close button still do
 let swipe=null;
 $("#stage").addEventListener("touchstart",ev=>{swipe=ev.touches.length===1&&$("#viewer").scrollTop<=0?[ev.touches[0].clientX,ev.touches[0].clientY]:null},{passive:true});

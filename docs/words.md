@@ -59,6 +59,7 @@ buttons are named in **bold**, as they appear on screen.
 | **Possible child** | A content label for photos that may show a child. A hint only: it misses small or distant children. |
 | **Looks like** | A content label (dog, beach, food, ...) from the local SigLIP model. |
 | **Flags** | The gallery filter for Tagged as junk, Possible child and Untagged. |
+| **video proxy**, **converting** | The gallery's H.264 copy of a video this browser can't play (HEVC, most phones), made on this computer and kept in the cache. While one is made the large view says **Converting this video for the browser** and starts playing within seconds; `media-intake proxies` makes them ahead of time. |
 
 ## Events
 
