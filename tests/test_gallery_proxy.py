@@ -7,7 +7,8 @@ Synthetic clips in a throwaway HOME (tests/support.py): an HEVC .MOV with AAC so
 ffmpeg's libx265 (the HEVC cases skip, naming the reason, when this ffmpeg has no libx265 or no
 H.264 encoder) and an H.264 .mp4. The real gallery server serves them; trash, forget and
 verify-gone run the real intake.py. Failure paths put fake ffmpeg / GStreamer tools first on the
-server's PATH (ffprobe stays the real one), which record their arguments and fail. PlayableTest
+server's PATH (ffprobe stays the real one), which record their arguments and fail. ProxiesRunTest runs
+proxies.main in-process (a video trashed, erased or flagged mid-make; still_shown's refusals). PlayableTest
 runs App.playable in-process with make_proxy held on an event (who waits for which transcode).
 """
 import contextlib, glob, http.client, io, json, os, shutil, stat, subprocess, sys, tempfile, threading, unittest
@@ -631,6 +632,18 @@ class ProxiesCommandTest(ProxyBase):
         r, part = s.req("GET", f"/m/{i}", headers={"Range": "bytes=0-99"})
         self.assertEqual((r.status, r.getheader("Content-Range")), (206, f"bytes 0-99/{os.path.getsize(px)}"))
 
+    def test_a_favorite_is_proxied_like_any_video(self):
+        """A starred HEVC clip (xmp:Rating 5 in its sidecar) gets its proxy too: favorites are shown, not held back."""
+        self.need_hevc()
+        hv, _, _ = self.clips()
+        with open(hv + ".xmp", "w") as f:
+            f.write(G.EMPTY)
+        subprocess.run(["exiftool", "-q", "-overwrite_original", "-XMP-xmp:Rating=5", hv + ".xmp"], check=True)
+        r = self.run_cli()
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+        self.assertIn("done: 1 made, 0 failed, 0 gone meanwhile, 0 made already", r.stdout)
+        self.assertTrue(os.path.isfile(self.proxy_of(hv)))
+
     def test_a_failed_proxy_says_so_and_leaves_nothing(self):
         self.need_hevc(proxy=False)
         self.clips()
@@ -649,6 +662,97 @@ class ProxiesCommandTest(ProxyBase):
         self.assertIn("\nDeletes: ", r.stdout)
         for line in r.stdout.splitlines():
             self.assertLessEqual(len(line), 80, line)
+
+
+class ProxiesRunTest(unittest.TestCase):
+    """proxies.main in-process with the library scan, the plan and make_proxy stood in for (no tool runs): a video
+    trashed, erased or flagged while its proxy is made leaves no proxy and counts as gone meanwhile; one that
+    still_shown refuses before its turn (a symlink, a file under the state folder, label.refused) gets none
+    made at all."""
+
+    def setUp(self):
+        import gallery
+        import proxies
+        self.g, self.px = gallery, proxies
+        self.tmp = tempfile.mkdtemp(prefix="gallery-proxies-run-")
+        self.addCleanup(shutil.rmtree, self.tmp, True)
+        self.state = os.path.join(self.tmp, "state")
+        self.lib = os.path.join(self.tmp, "lib")
+        self.cache = os.path.join(self.tmp, "proxies")
+        for d in (self.state, self.lib, self.cache):
+            os.makedirs(d)
+        self.made = []
+        for target, name, value in ((gallery, "STATE", self.state), (gallery, "private_cache", lambda: None),
+                                    (gallery, "scan_library", lambda: ([], 0))):
+            p = mock.patch.object(target, name, value)
+            p.start()
+            self.addCleanup(p.stop)
+
+    def clip(self, path, data=b"an HEVC clip, as far as this test goes"):
+        os.makedirs(os.path.dirname(path), exist_ok=True)
+        with open(path, "wb") as f:
+            f.write(data)
+        return dict(path=path, media="video", show="video")
+
+    def erase_log(self, path):
+        with open(os.path.join(self.state, "erase-log.txt"), "a") as f:
+            f.write(f"2026-11-01 10:00 b1 sha256:{G.sha(path)} size:{os.path.getsize(path)}\n")
+
+    def run_main(self, todo, meanwhile=None):
+        """main() over todo [(item, proxy path)]; make_proxy writes the proxy, then meanwhile(src) runs (as if
+        the video were trashed / erased while it was made). Returns (exit code, output)."""
+        def make(src, dst, job=None):
+            self.made.append(src)
+            with open(dst, "wb") as f:
+                f.write(b"proxy")
+            if meanwhile:
+                meanwhile(src)
+            return True
+        out = io.StringIO()
+        with mock.patch.object(self.px, "plan", lambda items: (todo, 0, 0)), \
+                mock.patch.object(self.g, "make_proxy", make), contextlib.redirect_stdout(out):
+            code = self.px.main([])
+        return code, out.getvalue()
+
+    def test_a_video_gone_while_its_proxy_is_made_leaves_no_proxy(self):
+        def flag(src):  # scan flagged it meanwhile (a batch's scan.json names it)
+            b = os.path.join(self.state, "batches", "b1")
+            os.makedirs(b, exist_ok=True)
+            with open(os.path.join(b, "plan.json"), "w") as f:
+                json.dump([{"rel": "x", "sha": G.sha(src), "size": os.path.getsize(src)}], f)
+            with open(os.path.join(b, "scan.json"), "w") as f:
+                json.dump({"x": ["nudity"]}, f)
+        for why, meanwhile in (("trashed", os.remove), ("erased", self.erase_log), ("flagged", flag)):
+            with self.subTest(why=why):
+                shutil.rmtree(os.path.join(self.state, "batches"), True)
+                with contextlib.suppress(FileNotFoundError):
+                    os.remove(os.path.join(self.state, "erase-log.txt"))
+                it = self.clip(os.path.join(self.lib, f"{why}.MOV"), why.encode())
+                dst = os.path.join(self.cache, why + ".mp4")
+                code, out = self.run_main([(it, dst)], meanwhile)
+                self.assertEqual(code, 0, out)
+                self.assertIn("gone meanwhile, copy deleted", out)
+                self.assertIn("done: 0 made, 0 failed, 1 gone meanwhile, 0 made already", out)
+                self.assertFalse(os.path.exists(dst), "a proxy of a video that went stays")
+
+    def test_still_shown_refusals_make_no_proxy(self):
+        real = self.clip(os.path.join(self.tmp, "outside", "real.MOV"))
+        link = os.path.join(self.lib, "link.MOV")
+        os.symlink(real["path"], link)
+        under = self.clip(os.path.join(self.state, "batches", "b1", "raw", "u.MOV"))
+        erased = self.clip(os.path.join(self.lib, "erased.MOV"), b"erased before its turn")
+        self.erase_log(erased["path"])
+        for name, it in (("a symlink", dict(real, path=link)), ("under the state folder", under),
+                         ("label.refused (erased)", erased)):
+            with self.subTest(refused=name):
+                self.assertFalse(self.px.still_shown(it["path"]))
+                dst = os.path.join(self.cache, "x.mp4")
+                code, out = self.run_main([(it, dst)])
+                self.assertEqual(code, 0, out)
+                self.assertIn("done: 0 made, 0 failed, 1 gone meanwhile, 0 made already", out)
+                self.assertFalse(os.path.exists(dst))
+        self.assertEqual(self.made, [])  # never even started
+        self.assertTrue(self.px.still_shown(self.clip(os.path.join(self.lib, "plain.MOV"))["path"]))
 
 
 class PlayableTest(unittest.TestCase):
