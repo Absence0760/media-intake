@@ -141,7 +141,10 @@ class Doctor(unittest.TestCase):
         """An H.264 encoder for the gallery's HEVC proxies is optional: GStreamer's, or ffmpeg's only when that
         ffmpeg can also decode HEVC (Fedora's ffmpeg-free can't)."""
         what = "H.264 encoder for the gallery's HEVC proxies"
-        self.assertEqual(self.line(self.run_doctor()[1], what), f"ok       {what} (openh264enc)")
+        self.assertEqual(self.line(self.run_doctor()[1], what),
+                         f"ok       {what} (openh264enc, on the CPU: vah264enc on the GPU is faster)")
+        self.p.plugins += "va:  vah264enc: VA-API H.264 Encoder\n"  # the GPU's, which the gallery tries first
+        self.assertEqual(self.line(self.run_doctor()[1], what), f"ok       {what} (vah264enc, on the GPU)")
         self.p.plugins = "va:  vah265dec: VA-API H.265 Decoder\n"  # no GStreamer encoder
         code, lines = self.run_doctor()
         self.assertEqual(code, 0, lines)
@@ -157,6 +160,11 @@ class Doctor(unittest.TestCase):
             self.p.tools |= {"gst-inspect-1.0"}
             self.p.plugins = x264
             self.assertTrue(self.line(self.run_doctor()[1], what).startswith("ok "))
+
+    def test_doctor_reports_the_encoders_in_the_gallerys_order(self):
+        import gallery
+        self.assertEqual(cli.GST_H264_ENCODERS, gallery.GST_H264_HW + gallery.GST_H264_SW)
+        self.assertEqual(cli.GPU_H264_ENCODERS, gallery.GST_H264_HW)
 
     def test_no_gst_inspect_is_optional(self):
         self.p.tools.discard("gst-inspect-1.0")

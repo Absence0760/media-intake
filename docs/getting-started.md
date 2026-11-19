@@ -248,6 +248,7 @@ Use a LUKS-encrypted drive. [backup.md](backup.md).
 | A command waits, then exits 75 | Another command or job holds the library lock; it names the holder. Try again when it ends, or set `MEDIA_INTAKE_LOCK_WAIT` ([intake.md](intake.md), "One writer at a time"). |
 | A review run shows `crashed` | Run `media-intake review <batch>` again; it shows what is left ([review-ui.md](review-ui.md), "The run is a detached job"). |
 | A video won't play in the gallery | It may be HEVC: install an H.264 encoder (`doctor`'s optional line), or use **Open in the system player** ([gallery.md](gallery.md), "Video proxies"). |
+| An HEVC video says **Converting this video for the browser** | Its H.264 copy is being made; it starts within seconds. To skip the wait for good, run `media-intake proxies --inhibit` once (it makes every copy ahead of time; run it again after an import). |
 | `search` says the text model is missing | `bash setup.sh --build-labels`. |
 | The queue stopped | `media-intake queue status` shows the error and the log; `media-intake queue run` resumes at that step ([queue.md](queue.md), "What `run` does"). |
 | `backup` says `is the drive mounted?` | Mount the drive and pass its mount point ([backup.md](backup.md), "Rules"). |

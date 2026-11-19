@@ -106,7 +106,7 @@ close the PR.
   and fails if any test skips except the real-Ollama one (`VLM_REAL`, which
   needs a GPU; run it locally), the browser tests (the `browser` job in
   `ci.yml` runs those) and the HEVC proxy cases that need ffmpeg's libx265
-  (Fedora has no HEVC encoder; `ci.yml`'s `test` job runs those). It is not a required check and doesn't run on
+  (Fedora has no software HEVC encoder, only VA-API's on a GPU; `ci.yml`'s `test` job runs those). It is not a required check and doesn't run on
   pull requests: run it on your branch to model-test a pin bump, and on
   `main` before a release.
 - When a test fails, fix the test if it is wrong, or the code if it is; never
@@ -155,7 +155,9 @@ close the PR.
   downward swipe closing it; the desktop keeping the full burst labels; and
   4.5:1 contrast for the labels on the accent colour, key hints and
   placeholders in light and dark, on the gallery and the review page (with
-  its `color-scheme`). They skip with a reason
+  its `color-scheme`). `test_browser_gallery_proxy.py` plays an HEVC clip
+  while its H.264 proxy is still being made (the transcode held on a FIFO),
+  with the "converting" note, then from the cache with Range. They skip with a reason
   when Playwright or its Chromium is missing, so the commands above are
   unaffected; the `browser` job in `ci.yml` runs them (and fails, not skips,
   through `MEDIA_INTAKE_BROWSER_REQUIRED=1`). Locally, once:

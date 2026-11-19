@@ -88,7 +88,8 @@ without one" (`/api/facets` gives `drive`, the mount or null).
   A video starts playing on open (muted, with an Unmute button, if the
   browser refuses sound), Space plays / pauses, Prev / Next play the next one,
   Esc stops it and releases the file. An HEVC video plays from an H.264 proxy
-  made on first open ("Video proxies" below). When the browser still can't
+  made on first open, starting within seconds while it is converted
+  ("Video proxies" below; `media-intake proxies` makes them ahead of time). When the browser still can't
   decode it (no proxy could be made, or another codec), the thumbnail shows
   large with **Open in the system player**, which
   runs `xdg-open` on that one file (below; `xdg-open` comes from Fedora's
@@ -528,22 +529,50 @@ phones and GoPros record. When the large view asks for a video whose first
 video stream ffprobe reports as `hevc`, the gallery makes an H.264 MP4 proxy
 and serves that instead; every other video is served as it is.
 
-- **Made on demand**, on the first open, one transcode at a time (for the
-  CPU). The request waits for the transcode, so a long clip shows its poster
-  for a while the first time; the player's Range requests, another page, or
-  a duplicate file with the same content wait for that same transcode and
-  then get its proxy (it is made once). Opening a *different* HEVC video
-  while one is being converted doesn't wait behind it (that could be an
-  hour): the original is served at once, so the page says the browser can't
-  play it, and opening it again once the first conversion is done makes its
-  proxy. Longer side at most 1920 px (never scaled up), sound re-encoded to
-  AAC, no metadata copied.
-- **How**: ffmpeg first (`libx264`, else `libopenh264`), which needs an HEVC
-  decoder; Fedora's `ffmpeg-free` has none, so then GStreamer's GPU decoder
-  (`vah265dec` or Vulkan, as for thumbnails) into `x264enc`, `openh264enc` or
-  `vah264enc`, with the sound when it is AAC, then without. `media-intake
-  doctor` lists an H.264 encoder as optional (`gstreamer1-plugin-openh264`).
-  Nothing is fetched; the original is only read.
+- **Made on demand**, on the first open, one transcode at a time, on a
+  thread of its own. The page doesn't wait for the whole file: the proxy is
+  written as 1 s MP4 fragments, and `/m/` streams them to the player as they
+  are written (a `200` with no length and `Accept-Ranges: none`, since the
+  size isn't known yet), so playback starts after a second or two while the
+  large view says **Converting this video for the browser**; seeking past
+  what has arrived works once the proxy is done. The player's other
+  requests, another page, or a duplicate file with the same content follow
+  that same transcode (it is made once). Opening a *different* HEVC video
+  cancels a transcode nobody is watching any more (you moved on; its next
+  open starts it again) and converts this one; while another page still
+  watches one, the video you opened gets its original at once and the page
+  says another video is being converted. Longer side at most 1920 px (never
+  scaled up, rotation kept), sound re-encoded to AAC (ffmpeg) or copied
+  (GStreamer), no metadata copied. When the transcode ends, the fragments are
+  rewritten as a plain MP4 with its index first (`ffmpeg -c copy -movflags
+  +faststart`, nothing re-encoded), which is what the cache keeps and what
+  every later open gets, with Range. The stream ends as soon as the tool
+  has written its last fragment (not after that rewrite). If an attempt fails
+  after its first bytes were sent (the GPU encoder giving up mid-file, say),
+  that reply simply ends early; the next open follows the next attempt. A
+  paused player that stops reading keeps its reply (and so its transcode)
+  open, as a watched one.
+- **Ahead of time**: `media-intake proxies [--dry-run] [--inhibit]` makes
+  every missing proxy now, one at a time, with the same commands and cache,
+  so the gallery never converts. It reads the library as the gallery does
+  (never the state folder, never a flagged, quarantined or erased file),
+  checks each video again just before and after its turn, deletes a proxy
+  whose video was trashed or erased meanwhile, prints counts and the path of
+  each video it converts, and exits 1 when one failed. Stop it any time
+  (Ctrl-C loses only the one in progress) and run it again to go on;
+  `--inhibit` keeps the laptop awake (`systemd-inhibit`).
+- **How**: ffmpeg first, only when it has an HEVC decoder (`libx264`, else
+  `libopenh264`); Fedora's `ffmpeg-free` has none, so it isn't run there.
+  Then GStreamer's GPU decoder (`vah265dec` or Vulkan, as for thumbnails)
+  into `vah264enc` (VA-API: decoded, scaled and encoded on the GPU) and then
+  one CPU encoder (`x264enc`, else `openh264enc`), each with the sound when it
+  is AAC, then without. `media-intake doctor` lists an H.264 encoder as
+  optional (`gstreamer1-plugin-openh264`) and says whether it runs on the
+  GPU. Measured on a synthetic 25 s 4K/60 HEVC clip (AMD iGPU, VA-API): the
+  first bytes reached the player after 1.7 s, against 77 s before (the whole
+  transcode, `openh264enc` at 4K, was waited for); the whole proxy took 27 s
+  (`vah264enc`, 1080p) against 77 s. Nothing is fetched; the original is
+  only read.
 - **File names never reach a pipeline.** ffmpeg gets the original as a
   `file:` path. `gst-launch-1.0` re-parses its arguments as one pipeline, so a
   name holding `!`, quotes or spaces could add elements: it reads the
@@ -556,12 +585,15 @@ and serves that instead; every other video is served as it is.
   files 0600), written in the work folder first (removed afterwards) and kept
   only when ffprobe reads it back as H.264. They are copies of video content, so
   `trash`, `forget` and `erase` delete them by sha256 with the thumbnail,
-  `verify-gone` reports one that is still there as STILL PRESENT, and one
-  finished after its video was trashed or erased mid-transcode is deleted.
+  `verify-gone` reports one that is still there as STILL PRESENT. A
+  transcode whose video goes into a Trash or Erase job stops (its process
+  ends, its stream to the page ends, nothing of it is kept), and one finished
+  just after its video was trashed or erased is deleted. Stopping the
+  gallery (the page's button) stops its transcode too.
 - **When it fails** (no H.264 encoder, no decoder, a timeout after an hour),
   the original is served as before and the page says the browser can't play
   it, with **Open in the system player**; that video isn't tried again until
-  the gallery restarts.
+  the gallery restarts (`media-intake proxies` tries it again).
 - Safe to delete the whole folder at any time; proxies are made again.
 - The review page ([review-ui.md](review-ui.md)) serves a batch's quarantine
   and review files as they are, with no proxy: quarantined files can hold
@@ -682,30 +714,51 @@ a shift-click after the grid reloads, + tag / − tag, Set event, Rotate (the
 thumbnails made again turned) and Trash on a mixed selection, and the large
 view playing an .mp4 and a .MOV and rotating a video.
 
-`tests/test_gallery_proxy.py` (skips, naming why, when ffmpeg has no `libx265`
-or no H.264 encoder): a synthetic HEVC .MOV with AAC sound served as an H.264 +
-AAC proxy, 0600 in a 0700 folder, with Range, made once (a second request and a
-restarted server reuse it), an H.264 .mp4 served as it is with no proxy, and
-the originals unchanged; a failing ffmpeg (a fake first on PATH) serves the
-original, tries once, leaves no partial file, and Keep still works; the
-GStreamer fallback's two `gst-launch-1.0` runs (with and without sound) for a
-file named with `!`, spaces and double quotes: two `location=` arguments, the
-work folder's link (resolving to the original) and output, and no part of the
-name in any argument; `proxy_commands` in-process with a hostile name, and
-skipping GStreamer for an unsafe work path (one stderr note per folder, none
-when no GPU decoder would have been tried); the race where a video is trashed
-while its proxy is made (a gated ffmpeg that has written the proxy waits on a
-FIFO): with the trash job still running the fresh proxy is deleted and the
-original served, and after the trash ends it is deleted and nothing served,
-leaving the cache empty either way; while one video's transcode is held,
-another HEVC video is served as its original at once, and gets its own
-proxy on the next open after; Trash from the gallery deleting the
-proxy; and `trash`, `forget` and `verify-gone` on planted proxies.
-`App.playable` in-process with `make_proxy` held on an event: a second
-request (and a same-content duplicate) for the video being converted waits
-and gets the one proxy (one transcode), another video gets its original at
-once and isn't marked as failed, and a failed transcode answers its waiters
-with the original and frees the slot.
+`tests/test_gallery_proxy.py` (the HEVC cases skip, naming why, when no
+synthetic HEVC clip can be made: ffmpeg's `libx265`, else VA-API's
+`hevc_vaapi`; or no real proxy: ffmpeg with an HEVC decoder, else GStreamer's
+GPU decoder and an H.264 encoder): a synthetic HEVC .MOV with AAC sound
+served as an H.264 + AAC proxy, the cached copy a plain MP4 (moov before
+mdat, no fragments) 0600 in a 0700 folder, with Range, made once (a second
+request and a restarted server reuse it), `/api/item`'s `conv` saying
+`converting` until then, an H.264 .mp4 served as it is with no proxy, and the
+originals unchanged; a failing ffmpeg (a fake first on PATH) serves the
+original, tries once, leaves no partial file, and Keep still works; no ffmpeg
+transcode at all where ffmpeg has no HEVC decoder; the GStreamer fallback's two
+`gst-launch-1.0` runs (with and without sound) for a file named with `!`,
+spaces and double quotes: two `location=` arguments, the work folder's link
+(resolving to the original) and output, no part of the name in any argument,
+and the clip's own size in the caps. With the real transcode held by a gated
+tool once it has written everything (a FIFO): the reply's headers (`200`, no
+length, `Accept-Ranges: none`) and first bytes arrive before the transcode
+ends and before any proxy is cached, the whole reply is a fragmented H.264 +
+AAC MP4, and afterwards the cache holds the plain one, served with Range;
+another HEVC video opened while one is watched is served as its original at
+once (`conv` `waiting`) and gets its own proxy on the next open after; a
+player that hangs up lets the next video's open cancel that transcode
+(nothing of it kept, not marked as failed); a video put in a Trash job (held
+by a gated `intake.py`) or trashed for real mid-transcode ends the reply,
+stops the transcode and leaves the cache empty; Trash from the gallery
+deleting the proxy; and `trash`, `forget` and `verify-gone` on planted
+proxies. `media-intake proxies` through the real `cli.py`: `--dry-run`
+counts (a duplicate is one proxy, an erased clip is left out and never named),
+a run makes the plain proxy once, a second run finds it made, the gallery then
+serves it at once with Range, a failing tool exits 1 leaving nothing, and its
+help says what it touches and deletes. In-process: `App.playable` with
+`make_proxy` held on an event (requests for the same content follow one
+transcode, another video gets its original while one is watched, an
+unwatched one is cancelled for the next, a failed one isn't tried again, one
+finished after its video went into a job or went is deleted); `ProxyJob`
+driven by hand (a reader waits for the first bytes, follows its attempt and
+stops when another begins or the job ends; readers keep it from being idle;
+a cancel or a busy video stops it); `proxy_commands` with the lookups patched
+(a hostile name kept out, fragments in every command, `vah264enc` first and
+scaled on the GPU, Vulkan frames scaled on the CPU, an unsafe work path
+skipping GStreamer with one note per folder) and `proxy_size`.
+`tests/browser/test_browser_gallery_proxy.py`: in headless Chromium, the
+large view saying **Converting this video for the browser** (role
+`status`) and playing the HEVC clip while its transcode is still held, then,
+after it ends, playing it again from the cache with its duration and Range.
 
 In headless Chromium (`tests/browser/test_browser_gallery.py`, see
 CONTRIBUTING.md, Tests): keys, click and shift-click selection, the bottom
@@ -736,8 +789,10 @@ selection and a Share-safe copy ending in "Done: share-safe copies in ...".
   JPEGs, an .mp4 and a .MOV), the other operations on an HEVC video (only the
   proxy tests make an HEVC clip), and Rename / Merge on a real digiKam-written
   library.
-- Video proxies from a real iPhone or GoPro file, in a real browser (the
-  tests check the bytes served, not playback), and the GStreamer proxy path
-  for real (CI has no GStreamer; the test checks the commands it runs with
-  fakes): `vah265dec` / Vulkan into `x264enc`, `openh264enc` or `vah264enc`,
-  non-AAC sound falling back to no sound, and transcode time on a long 4K clip.
+- Video proxies from a real iPhone or GoPro file (only synthetic clips, up to
+  a 25 s 4K/60 one, were timed), and the GStreamer proxy path on CI (it has
+  no GStreamer; there the tests run ffmpeg's path, and the GStreamer one only
+  where a VA-API GPU is: `vah265dec` into `vah264enc` was run that way;
+  Vulkan, `x264enc` and `openh264enc` only as commands with fakes), non-AAC
+  sound falling back to no sound, a portrait clip's rotation in a browser
+  (ffprobe shows the rotation kept), and a long clip streamed for minutes.
