@@ -220,6 +220,10 @@ AI|vlm/qwen3-vl-2b/conf/<0.0-1.0>     the model's confidence, one decimal
   files; a file is skipped when that record matches and its sidecar has this
   model's verdict tag. A kill loses at most 25 judgements.
 - `--inhibit` re-execs under `systemd-inhibit --what=sleep:idle`.
+- A file whose `.xmp` sidecar can't be written (a read-only folder or
+  sidecar) is skipped before anything is sent and counted as `unwritable`,
+  so one such folder no longer stops the run. Fix the permissions and run
+  again to judge it.
 - Progress on stderr, counts only, never a file name: a start line
   (`vlm-trash: N files to judge`), then `vlm-trash: done/total files (pct),
   rate, about <time> left` every 100 files or 10 s (on a terminal one line
@@ -228,7 +232,7 @@ AI|vlm/qwen3-vl-2b/conf/<0.0-1.0>     the model's confidence, one decimal
   written every 25 files.
 - A summary line on stderr at the end: `vlm-trash: judged N (T trash, L
   low-confidence trash, K keep), skipped M (already judged, your decision,
-  refused)`, plus protected, undecodable and a GPU stop when they happen,
+  refused, sidecar not writable)`, plus protected, undecodable and a GPU stop when they happen,
   and the time taken; `--dry-run` says `would judge N`. stdout still ends
   with the counts as one JSON line (the machine form).
 
