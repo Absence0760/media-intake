@@ -7,7 +7,7 @@ Keep, Favorite (xmp:Rating), my tags, Rotate and Set event reply with an undo to
 changed in each sidecar (tags, dc:Subject leaves, XMP-tiff:Orientation, XMP-iptcExt:Event, XMP-xmp:Rating), under the library
 lock, and refuses (409, nothing written) once an item's sidecar changed again or the item left the library
 (removed or renamed); a token older than the last UNDO_KEEP actions is refused too (400). Trash, Erase,
-Share-safe copy and Trash suggestions' Apply never carry a token. Sidecars are written and read with exiftool (the server's own
+Share and Trash suggestions' Apply never carry a token. Sidecars are written and read with exiftool (the server's own
 writer); UndoBlockTest runs in-process and needs none.
 """
 import os, shutil, subprocess, sys, tempfile, unittest

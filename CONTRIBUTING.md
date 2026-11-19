@@ -143,7 +143,7 @@ close the PR.
   a 409 while a job holds the library lock, the `?` shortcut list against the
   keys the page's handlers check, and Undo of Rotate, Keep, Set event and a
   tag restoring the sidecars (refused after a later change, never offered after
-  Trash, Erase or Share-safe copy). `test_browser_gallery_grid.py` runs the
+  Trash, Erase or Share). `test_browser_gallery_grid.py` runs the
   grid: Suggested junk marked by tap and click (Keep and Trash on each tile, a
   second tap unmarking, Apply keeping what was marked), a 44 x 44 px target (the tile's star too) for
   every control on a 390 px touch phone, the grid's loading, empty, no-results,

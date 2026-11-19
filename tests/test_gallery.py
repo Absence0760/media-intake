@@ -1330,7 +1330,7 @@ class ViewsEndpointsTest(unittest.TestCase):
         self.assertFalse(os.path.exists(self.share_root))
         code, j = s.post("/api/share", {"ids": [ida, idb]})
         self.assertEqual(code, 200, j)
-        self.assertEqual(set(j), {"result", "dest"})  # the destination folder, nothing of the copies
+        self.assertEqual(set(j), {"result", "dest", "job"})  # the folder and the job, nothing of the copies
         self.assertRegex(j["dest"], r"^~/Pictures/share-safe/\d{4}-\d\d-\d\d-\d{6}$")
         out = os.path.join(self.home, j["dest"][2:])
         self.assertEqual(stat.S_IMODE(os.stat(out).st_mode), 0o700)
@@ -1357,6 +1357,115 @@ class ViewsEndpointsTest(unittest.TestCase):
             f.write(f"2026-11-02 10:00 b0 sha256:{sha(self.b)} size:{os.path.getsize(self.b)}\n")
         code, _ = s.post("/api/share", {"ids": [idb]})
         self.assertEqual(code, 400)
+
+    def test_share_opens_its_own_folder(self):
+        """Open folder (POST /api/share/open) names a job, never a path: it runs xdg-open (a fake here, which only
+        records its arguments) on the folder this server made for that Share, and refuses anything else."""
+        fdir = os.path.join(self.tmp, "fakebin")
+        os.makedirs(fdir)
+        opener = os.path.join(fdir, "xdg-open")
+        with open(opener, "w") as f:
+            f.write(FAKE_OPENER)
+        os.chmod(opener, 0o700)
+        log = os.path.join(self.tmp, "opened.json")
+        self.env.update(PATH=fdir + os.pathsep + self.env["PATH"], FAKE_OPEN_LOG=log)
+        s = self.start()
+        ida = self.ids(s)[("a.jpg", "2026-11")]
+        os.makedirs(os.path.join(self.share_root, "planted"))
+        for body in ({}, {"job": None}, {"job": 1}, {"job": ["x"]}, {"job": "x"}, {"job": "../../.."},
+                     {"job": os.path.join(self.share_root, "planted")}, {"path": os.path.join(self.share_root, "planted")}):
+            code, j = s.post("/api/share/open", body)
+            self.assertEqual(code, 400, (body, j))  # no Share of this server's: nothing to open
+        code, j = s.post("/api/share", {"ids": [ida]})
+        self.assertEqual(code, 200, j)
+        out = os.path.join(self.home, j["dest"][2:])
+        job = self.wait_job(s)
+        self.assertTrue(job["ok"], job)
+        self.assertEqual((job["dest"], job["id"]), (j["dest"], j["job"]))  # a page that re-attached finds it too
+        self.assertFalse(os.path.exists(log))  # the server never opens it by itself
+        # only from the page: no CSRF value, or another Origin, never runs it
+        r, _ = s.req("POST", "/api/share/open", body={"job": j["job"]})
+        self.assertEqual(r.status, 403)
+        r, _ = s.req("POST", "/api/share/open", headers={"X-CSRF": s.csrf(), "Origin": "http://evil.example"},
+                     body={"job": j["job"]})
+        self.assertEqual(r.status, 403)
+        self.assertFalse(os.path.exists(log))
+        code, o = s.post("/api/share/open", {"job": j["job"]})
+        self.assertEqual(code, 200, o)
+        self.assertEqual(o["dest"], j["dest"])
+
+        def opened():
+            if not os.path.exists(log):
+                return None
+            with open(log) as f:
+                return json.load(f)
+        self.assertEqual(until(opened, "the fake opener to record its arguments"), [out])
+        os.remove(log)
+        # the folder swapped for a symlink that leads elsewhere, then gone: refused, nothing opened
+        shutil.rmtree(out)
+        os.symlink(self.lib, out)
+        code, o = s.post("/api/share/open", {"job": j["job"]})
+        self.assertEqual(code, 400, o)
+        os.remove(out)
+        code, o = s.post("/api/share/open", {"job": j["job"]})
+        self.assertEqual(code, 400, o)
+        self.assertFalse(os.path.exists(log))
+
+
+class ShareOpenGuardTest(unittest.TestCase):
+    """App.open_share in-process, with jobs.status, shutil.which and Popen mocked (nothing is launched): only the
+    folder this server made for that job, directly inside --share-out after resolving links, once the job ended."""
+
+    def setUp(self):
+        import gallery
+        self.g = gallery
+        self.tmp = tempfile.mkdtemp(prefix="gallery-share-open-")
+        self.addCleanup(shutil.rmtree, self.tmp, True)
+        self.root = os.path.join(self.tmp, "share-out")
+        self.app = gallery.App([], share_out=self.root)
+        self.d = os.path.join(self.root, "2026-01-02-030405")
+        os.makedirs(self.d)
+        self.app.shares["j1"] = self.d
+        self.status = {"id": "j1", "done": True}
+        for target, attr, kw in ((gallery.jobs, "status", dict(side_effect=lambda key: self.status)),
+                                 (gallery.shutil, "which", dict(return_value="/usr/bin/xdg-open")),
+                                 (gallery.subprocess, "Popen", {})):
+            m = mock.patch.object(target, attr, **kw)
+            setattr(self, attr, m.start())
+            self.addCleanup(m.stop)
+
+    def test_opens_that_folder_only(self):
+        r = self.app.open_share("j1")
+        self.assertEqual(r["dest"], self.d)
+        (args, kw), = self.Popen.call_args_list
+        self.assertEqual(args, ([self.g.OPENER, self.d],))  # an argument list: no shell, the folder as one argument
+        self.assertNotIn("shell", kw)
+        self.assertTrue(kw["start_new_session"])
+        self.assertIs(kw["stdin"], subprocess.DEVNULL)
+
+    def test_refusals(self):
+        elsewhere = os.path.join(self.tmp, "elsewhere")
+        os.makedirs(elsewhere)
+        nested = os.path.join(self.root, "a", "b")
+        os.makedirs(nested)
+        link = os.path.join(self.root, "2026-01-02-030406")
+        os.symlink(elsewhere, link)
+        self.app.shares.update(out=elsewhere, nested=nested, dots=os.path.join(self.root, "x", "..", "..", "elsewhere"),
+                               root=os.path.join(self.root, "a", ".."), link=link,
+                               gone=os.path.join(self.root, "2026-01-02-030407"))
+        for jid in ("j2", None, 1, ["j1"], self.d, "out", "nested", "dots", "root", "link", "gone"):
+            with self.assertRaises(ValueError, msg=jid):
+                self.app.open_share(jid)
+        self.status = {"id": "j1", "done": False}  # still copying
+        with self.assertRaisesRegex(ValueError, "still being made"):
+            self.app.open_share("j1")
+        self.Popen.assert_not_called()
+
+    def test_no_xdg_open(self):
+        self.which.return_value = None
+        with self.assertRaisesRegex(RuntimeError, "xdg-open is not installed.*xdg-utils.*doctor"):
+            self.app.open_share("j1")
+        self.Popen.assert_not_called()
 
 
 class EventBlockTest(unittest.TestCase):
@@ -1549,13 +1658,13 @@ class PlainWordsTest(unittest.TestCase):
 
     def test_busy_text_names_what_runs(self):
         tail = " is still running; wait for it to finish, then try again"
-        for label, what in (("trash", "a Trash"), ("erase", "an Erase"), ("share", "a Share-safe copy")):
+        for label, what in (("trash", "a Trash"), ("erase", "an Erase"), ("share", "a Share")):
             st = dict(done=False, spec=dict(label=label), label="")
             self.assertEqual(self.busy(st, {"what": "job gallery", "pid": 510}), what + tail)
         done = dict(done=True, spec=dict(label="trash"))
         for holder, what in (({"what": "job review-phone-1", "pid": 7}, "a run from the review page"),
                              ({"what": "job maybe-trash"}, "a run from the review page"),
-                             ({"what": "job gallery"}, "a Trash, Erase or Share-safe copy from another gallery"),
+                             ({"what": "job gallery"}, "a Trash, Erase or Share from another gallery"),
                              ({"what": "gallery keep", "pid": 9}, "a change from another gallery page"),
                              ({"what": "intake.py apply", "pid": 3}, "the media-intake apply command"),
                              ({"what": "intake.py /tmp/x (PID"}, "another media-intake command"),

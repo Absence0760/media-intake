@@ -115,7 +115,7 @@ def plain_holder(h):
     if w.startswith("job review-") or w == "job maybe-trash":
         return "a run from the review page"
     if w.startswith("job "):
-        return "a Trash, Erase or Share-safe copy from another gallery"
+        return "a Trash, Erase or Share from another gallery"
     if w.startswith("gallery "):
         return "a change from another gallery page"
     if re.fullmatch(r"intake\.py [a-z-]{1,32}", w):

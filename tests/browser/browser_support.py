@@ -79,6 +79,28 @@ def until(pred, what, timeout=30):
     raise AssertionError(f"timed out waiting for {what}")
 
 
+def fake_opener(tmp, env, script):
+    """Put a fake xdg-open (script: tests/test_gallery.py's FAKE_OPENER, which only records its arguments) first on
+    env's PATH, so a Share's Open folder never launches the desktop's file manager. Returns the log it writes."""
+    fdir = os.path.join(tmp, "fakebin")
+    os.makedirs(fdir, exist_ok=True)
+    opener = os.path.join(fdir, "xdg-open")
+    with open(opener, "w") as f:
+        f.write(script)
+    os.chmod(opener, 0o700)
+    log = os.path.join(tmp, "opened.json")
+    env.update(PATH=fdir + os.pathsep + env["PATH"], FAKE_OPEN_LOG=log)
+    return log
+
+
+def opened(log):
+    """What the fake xdg-open was last given (its argument list), or None before it ran."""
+    if not os.path.exists(log):
+        return None
+    with open(log) as f:
+        return __import__("json").load(f)
+
+
 def open_gate(gate):
     """Release a fake intake.py that waits on the FIFO `gate` (once it has opened it)."""
     def w():
