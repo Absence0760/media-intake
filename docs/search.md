@@ -146,7 +146,7 @@ A second opinion on Suggested junk from a local vision model; its verdict
 shows in the gallery as the Junk check and Junk score ([words.md](words.md)).
 
 ```
-media-intake vlm-trash                    # Suggested junk (files tagged Review|maybe-trash)
+media-intake vlm-trash                    # files Tagged as junk (`Review|maybe-trash`)
 media-intake vlm-trash FILE...            # an explicit list
 media-intake vlm-trash --all --dry-run    # how many an overnight run would judge
 media-intake vlm-trash --all --inhibit    # the whole library, holding a sleep inhibitor

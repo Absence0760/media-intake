@@ -36,7 +36,7 @@ review files it prints `nothing to review for BATCH` and exits 0.
   place (`FLAG`, `GROUP`, `plain()` in the page script): scanner flags
   (`nudity` is "Possible nudity", `id-barcode` "Looks like an ID card",
   `secret-words:banking` "Private text: banking"), tag groups
-  (`Review|maybe-trash` is "Suggested junk", `Label|food` "Looks like:
+  (`Review|maybe-trash` is "Tagged as junk", `Label|food` "Looks like:
   food"; any other `Group|value` shows as "Group: value"), and the plan's
   `why` ("Tiny or empty image", "Near-copy of ..."). A card shows its path in
   the batch without the sub-batch prefix (`near-BATCH`, `xcheck-BATCH`), and

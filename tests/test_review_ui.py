@@ -706,7 +706,7 @@ class ReviewUITest(unittest.TestCase):
         s = self.start()
         _, page = s.req("GET", "/")
         for text in (b"Decide ${left} more to submit", b'aria-describedby="done"', b"Apply ${N} decision${s(N)}?",
-                     b'"Review|maybe-trash":"Suggested junk"', b'Label:"Looks like"', b'"nudity":"Possible nudity"',
+                     b'"Review|maybe-trash":"Tagged as junk"', b'Label:"Looks like"', b'"nudity":"Possible nudity"',
                      b"Another action is using the library", b'replace(/\\s*\\(PID \\d+\\)/g,"")',
                      b"Press a pressed button again to clear it."):
             self.assertIn(text, page)
