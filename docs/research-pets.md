@@ -294,7 +294,11 @@ Later, by the owner, on the laptop:
 
 ## Videos
 
-Research only; nothing built. One pass serves pets, people and the roadmap's
+Sampling is built: `media_intake/frames.py` ([recognition.md](recognition.md),
+Videos), with ffmpeg first where it decodes the codec (no `vah264dec` path
+yet), analysis at 4 frames a second and 160 px, frames handed out at 1280 px,
+a frame every 4 s in a stretch without cuts, at most 48. The rest of this
+section is still research. One pass serves pets, people and the roadmap's
 "search across video frames by the best-matching frame" item: the same sampled
 frames give per-frame SigLIP vectors for that index.
 
