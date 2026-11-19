@@ -110,6 +110,14 @@ class Probe:
         except ImportError:
             return False
 
+    def venv_importable(self, venv_py, module):
+        """MODULE imports in the venv's python (a subprocess: this python may be the system one)."""
+        try:
+            return subprocess.run([venv_py, "-I", "-c", f"import {module}"], capture_output=True,
+                                  timeout=60).returncode == 0
+        except (OSError, subprocess.TimeoutExpired):
+            return False
+
     def exists(self, path):
         return os.path.exists(path)
 
@@ -257,6 +265,14 @@ def doctor(probe=None, out=print, colour=None):
     have = probe.exists(vp)
     report("ok" if have else "MISSING", f"venv {vp}" + ("" if have else " (bash setup.sh)"))
     ok &= have
+    # The gallery and review page re-run under the venv for HEIC; without pillow-heif there, HEIC photos show
+    # only as a small preview (gallery) or "no preview" (review page).
+    if have:
+        heif = probe.venv_importable(vp, "pillow_heif")
+        report("ok" if heif else "MISSING", "pillow-heif in the venv (HEIC photos full size in the gallery and the "
+                                            "review page)" + ("" if heif else "; without it a small preview only "
+                                                                              "(bash setup.sh)"))
+        ok &= heif
     ok &= _check_models(probe, report)
     geo = os.path.join(cfg["state"], "geo", "cities1000.zip")
     have = probe.exists(geo)

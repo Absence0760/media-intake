@@ -1720,6 +1720,121 @@ class SemanticArgvTest(unittest.TestCase):
             self.assertEqual(argv[-2:], ["--format", "machine"], argv)
 
 
+class VenvReexecTest(unittest.TestCase):
+    """The system python has no pillow-heif, so HEIC would show only as its thumbnail: the gallery re-runs itself
+    under setup.sh's venv (review_ui.venv_reexec, as the review page does), with every argument, before it prints
+    anything. Not when already in the venv, when MEDIA_REVIEW_NO_VENV=1, or when there is no venv. os.execv is
+    mocked: nothing is exec'd."""
+
+    class Stop(Exception):
+        pass
+
+    def setUp(self):
+        import gallery
+        self.g = gallery
+        self.tmp = tempfile.mkdtemp(prefix="gallery-venv-test-")
+        self.addCleanup(shutil.rmtree, self.tmp, True)
+        self.venv_py = os.path.join(self.tmp, "venv", "bin", "python")
+        os.makedirs(os.path.dirname(self.venv_py))
+        with open(self.venv_py, "w") as f:
+            f.write("#!/bin/false\n")
+        os.chmod(self.venv_py, 0o700)
+        self.drive, self.share = os.path.join(self.tmp, "drive"), os.path.join(self.tmp, "share")
+        os.makedirs(self.drive)
+        self.args = ["--drive", self.drive, "--port", "0", "--share-out", self.share]
+        for target, attr, value in ((gallery.R, "HEIF", False), (gallery.R, "VENV_PY", self.venv_py)):
+            p = mock.patch.object(target, attr, value)
+            p.start()
+            self.addCleanup(p.stop)
+        env = mock.patch.dict(os.environ)
+        env.start()
+        self.addCleanup(env.stop)
+        os.environ.pop("MEDIA_REVIEW_NO_VENV", None)
+
+    def run_main(self, argv):
+        """gallery.main up to its exec, or up to jobs.sweep (the first step after it) when it doesn't exec."""
+        out = io.StringIO()
+        seen = []
+
+        def execv(path, args):
+            seen.append(out.getvalue())  # what had been printed by the time of the exec
+            raise self.Stop
+
+        with mock.patch.object(self.g.R.os, "execv", side_effect=execv) as ex, \
+                mock.patch.object(self.g.jobs, "sweep", side_effect=self.Stop) as sweep, \
+                mock.patch("sys.stdout", out), self.assertRaises(self.Stop):
+            self.g.main(argv)
+        return ex, sweep, seen
+
+    def test_reexecs_under_the_venv_with_every_argument(self):
+        ex, sweep, seen = self.run_main(list(self.args))
+        ex.assert_called_once_with(self.venv_py, [self.venv_py, "-I", GALLERY, *self.args])
+        sweep.assert_not_called()
+        self.assertEqual(seen, [""], "nothing printed before the exec: the xdg-open line comes once, from the venv")
+
+    def test_argv_none_takes_the_command_line(self):
+        with mock.patch.object(sys, "argv", [GALLERY, *self.args]):
+            ex, _, _ = self.run_main(None)
+        ex.assert_called_once_with(self.venv_py, [self.venv_py, "-I", GALLERY, *self.args])
+
+    def test_not_when_opted_out_in_the_venv_or_without_one(self):
+        venv_root = os.path.dirname(os.path.dirname(self.venv_py))
+        cases = (("MEDIA_REVIEW_NO_VENV=1", mock.patch.dict(os.environ, MEDIA_REVIEW_NO_VENV="1")),
+                 ("already the venv", mock.patch.object(sys, "prefix", venv_root)),
+                 ("no venv", mock.patch.object(self.g.R, "VENV_PY", os.path.join(self.tmp, "none", "python"))),
+                 ("pillow-heif here", mock.patch.object(self.g.R, "HEIF", True)))
+        for why, patch in cases:
+            with self.subTest(why), patch:
+                ex, sweep, _ = self.run_main(list(self.args))
+                ex.assert_not_called()
+                sweep.assert_called_once()  # it went on to serve under this python
+
+    def test_review_page_still_reexecs_itself(self):
+        with mock.patch.object(self.g.R.os, "execv") as ex:
+            self.g.R.venv_reexec(["b1", "--port", "0"])
+        ex.assert_called_once_with(self.venv_py, [self.venv_py, "-I", os.path.join(HERE, "review_ui.py"),
+                                                  "b1", "--port", "0"])
+
+
+class HeicWithoutPillowHeifTest(unittest.TestCase):
+    """Without pillow-heif (and no venv to re-run under), a HEIC's large view can only show its thumbnail: the
+    item says so (heic), /p/ is a 404, and the page's words are honest about the small preview."""
+
+    def setUp(self):
+        import review_ui
+        if review_ui.HEIF:
+            self.skipTest("this python has pillow-heif: HEIC shows full size")
+        self.tmp = tempfile.mkdtemp(prefix="gallery-heic-test-")
+        self.addCleanup(shutil.rmtree, self.tmp, True)
+        home = os.path.join(self.tmp, "home")
+        state = os.path.join(home, ".local/share/media-intake")
+        self.lib = os.path.join(home, "Pictures/library")
+        os.makedirs(state)
+        self.env = dict(os.environ, HOME=home, MEDIA_INTAKE_STATE=state, PHOTO_LIBRARY=self.lib,
+                        PERSONAL_FOOTAGE=os.path.join(home, "Videos/personal"),
+                        MEDIA_INTAKE_CONFIG=support.write_config(os.path.join(home, "Videos/demo-footage")))
+        self.env.pop("MEDIA_REVIEW_NO_VENV", None)  # no venv in this HOME: the gallery runs under this python
+        os.makedirs(os.path.join(self.lib, "2026/2026-11"))
+        with open(os.path.join(self.lib, "2026/2026-11/h.heic"), "wb") as f:
+            f.write(b"\0\0\0\x18ftypheic\0\0\0\0mif1heic" + b"\0" * 64)  # not decodable here
+        img(os.path.join(self.lib, "2026/2026-11/j.jpg"), (10, 20, 30))
+
+    def test_item_says_heic_and_the_full_size_is_refused(self):
+        s = Server(self.env)
+        self.addCleanup(s.stop)
+        ids = {i["n"]: i["id"] for i in s.get("/api/list?limit=50")["items"]}
+        h, j = s.get(f"/api/item/{ids['h.heic']}"), s.get(f"/api/item/{ids['j.jpg']}")
+        self.assertTrue(h["heic"])
+        self.assertEqual(h["src"], f"/p/{ids['h.heic']}")
+        self.assertFalse(j["heic"])
+        r, _ = s.req("GET", h["src"])
+        self.assertEqual(r.status, 404)
+        _, page = s.req("GET", "/")
+        self.assertIn(b"This is a small preview: HEIC photos need setup.sh's venv (pillow-heif) to show full size.",
+                      page)
+        self.assertNotIn(b'cantPlay(d,"This browser can\'t show this picture.")', page)
+
+
 class AddedFilterTest(unittest.TestCase):
     """The "added in the last N days" filter on items whose inode changed long ago (no test can set a ctime)."""
 

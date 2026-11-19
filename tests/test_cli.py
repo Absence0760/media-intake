@@ -41,6 +41,7 @@ class FakeProbe:
         self.tags = {"models": [{"name": PINS["ollama"]["model"], "model": PINS["ollama"]["model"],
                                  "digest": PINS["ollama"]["digest"]}]}
         self.hashed = []
+        self.venv_modules = {"pillow_heif"}
 
     def which(self, tool):
         return f"/usr/bin/{tool}" if tool in self.tools else None
@@ -52,6 +53,10 @@ class FakeProbe:
 
     def importable(self, module):
         return module in self.modules
+
+    def venv_importable(self, venv_py, module):
+        assert venv_py == cli.venv_python() and venv_py in self.files, "asked only of the venv, once it exists"
+        return module in self.venv_modules
 
     def exists(self, path):
         return path in self.files
@@ -354,6 +359,29 @@ class Doctor(unittest.TestCase):
         _, lines = self.run_doctor()
         self.assertEqual(self.summary(lines)[1:], ["Install the required packages:", "sudo dnf install -y python3-pillow",
                                                    "Then run: bash setup.sh   (venv, SigLIP model, GeoNames data)"])
+
+    def test_pillow_heif_missing_from_the_venv_fails(self):
+        """The gallery and review page re-run under the venv for HEIC; without pillow-heif there, a HEIC shows as
+        a small preview only. Without a venv at all only the venv line is reported."""
+        self.assertTrue(self.line(self.run_doctor()[1], "pillow-heif in the venv").startswith("ok "))
+        self.p.venv_modules.clear()
+        code, lines = self.run_doctor()
+        self.assertEqual(code, 1)
+        self.assertEqual(self.line(lines, "pillow-heif in the venv"),
+                         "MISSING  pillow-heif in the venv (HEIC photos full size in the gallery and the review page); "
+                         "without it a small preview only (bash setup.sh)")
+        self.assertEqual(self.summary(lines), ["1 problem, no optional items not available",
+                                               "Run: bash setup.sh   (venv, SigLIP model, GeoNames data)"])
+        del self.p.files[cli.venv_python()]
+        _, lines = self.run_doctor()
+        self.assertFalse([ln for ln in lines if "pillow-heif" in ln], lines)
+
+    def test_real_probe_runs_the_venv_python_isolated(self):
+        with mock.patch.object(cli.subprocess, "run", return_value=mock.Mock(returncode=0)) as run:
+            self.assertTrue(cli.Probe().venv_importable("/v/bin/python", "pillow_heif"))
+        self.assertEqual(run.call_args[0][0], ["/v/bin/python", "-I", "-c", "import pillow_heif"])
+        with mock.patch.object(cli.subprocess, "run", side_effect=OSError):
+            self.assertFalse(cli.Probe().venv_importable("/v/bin/python", "pillow_heif"))
 
     def test_no_run_setup_line_for_packages_or_optional_only(self):
         self.p.modules -= {"PIL"}

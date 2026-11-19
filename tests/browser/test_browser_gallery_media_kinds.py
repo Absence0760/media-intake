@@ -9,7 +9,9 @@ upper-case .MOV, QuickTime). The real intake.py runs Trash. Each test checks the
 the bar, the tiles' flags, the dialog) and what really changed on disk: the XMP sidecars
 (<file>.<ext>.xmp), the files, the thumbnail cache and the originals' sha256 (never written). Every
 test also fails on an uncaught page error. Hooks: as tests/browser/test_browser_gallery.py, plus each
-tile's flag text (.flag) and image.
+tile's flag text (.flag) and image, and the large view's card for a file it can't show (#media .nop: the
+thumbnail img and the .cant words). A HEIC without pillow-heif is a stand-in file with its thumbnail put in
+the cache, as a venv step would have made it.
 """
 import os, re, shutil, subprocess, sys, tempfile, unittest
 
@@ -266,6 +268,42 @@ class GalleryMediaKindsBrowserTest(B.BrowserCase):
         self.assert_originals()
 
     # ------------------------------------------------------------ the large view: each kind
+    def test_large_view_heic_without_pillow_heif_says_small_preview(self):
+        """No pillow-heif in the page's python (and no venv to re-run under): a HEIC's large view shows its
+        thumbnail (made earlier by a venv step: put in the cache here) and says it is a small preview and why,
+        never "can't show" over a picture it shows. One with no thumbnail either says there is no preview."""
+        import review_ui
+        if review_ui.HEIF:
+            self.skipTest("this python has pillow-heif: HEIC shows full size")
+        for n in ("h.heic", "n.heic"):  # stand-ins nothing here can decode (no pillow-heif, ffmpeg can't)
+            p = self.path[n] = os.path.join(self.lib, "2026/2026-09", n)
+            os.makedirs(os.path.dirname(p), exist_ok=True)
+            with open(p, "wb") as f:
+                f.write(b"\0\0\0\x18ftypheic\0\0\0\0mif1heic" + n.encode() * 16)
+        self.orig.update({n: G.sha(self.path[n]) for n in ("h.heic", "n.heic")})
+        G.img(os.path.join(self.thumbs, G.sha(self.path["h.heic"]) + "-r0.jpg"), (200, 120, 30), (320, 240))
+        s = self.start()
+        page = self.page_for(s)
+        viewer = page.get_by_role("dialog", name="Item")
+        self.tile(page, "h.heic").click()
+        B.expect(viewer).to_have_attribute("data-current", "h.heic")
+        card = viewer.locator("#media .cant")
+        B.expect(card).to_contain_text("This is a small preview: HEIC photos need setup.sh's venv (pillow-heif) "
+                                       "to show full size.")
+        thumb = viewer.locator("#media .nop img")
+        B.expect(thumb).to_have_attribute("src", re.compile(r"^/t/\d+$"))
+        page.wait_for_function("() => { const i = document.querySelector('#media .nop img'); "
+                               "return i && i.complete && i.naturalWidth === 320 }")
+        B.expect(card).not_to_contain_text("can't show")
+        B.expect(card.get_by_role("button", name="Open in the system player")).to_be_visible()
+        page.keyboard.press("Escape")
+        B.expect(viewer).to_be_hidden()
+        self.tile(page, "n.heic").click()
+        B.expect(viewer).to_have_attribute("data-current", "n.heic")
+        B.expect(card).to_have_text(re.compile(r"^No preview: HEIC photos need setup\.sh's venv \(pillow-heif\)\."))
+        B.expect(viewer.locator("#media .nop img")).to_have_count(0)
+        self.assert_originals()
+
     def test_large_view_plays_mp4_and_mov_and_rotates_a_video(self):
         s = self.start()
         page = self.page_for(s)
