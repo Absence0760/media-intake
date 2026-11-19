@@ -444,6 +444,53 @@ class NamesAndTags(Base):
         with self.assertRaises(ValueError):
             recog.confirm(self.c, "face", [999999])
 
+    def test_prune_keeps_an_unplugged_library_and_drops_a_gone_file(self):
+        """An unmounted library folder (a drive) is not a deletion: names, rejects and take-outs stay. A file
+        missing while its folder is there is gone."""
+        new = self.grow("other", self.s_ann)
+        (d,) = self.det_of(new)
+        recog.reject(self.c, "face", [d["id"]])
+        out_id = self.det_of(self.p[1])[0]["id"]
+        recog.take_out(self.c, "face", [out_id])
+        before = sorted(tuple(r) for r in self.c.execute("SELECT id, sha, name, how FROM detections"))
+        files = self.c.execute("SELECT COUNT(*) FROM files").fetchone()[0]
+        away = os.path.join(self.tmp, "unplugged")
+        os.rename(self.lib, away)  # the library's drive is not mounted
+        self.assertEqual(recog.prune(self.c, state=self.state)["gone or moved"], 0)
+        self.assertEqual(sorted(tuple(r) for r in self.c.execute("SELECT id, sha, name, how FROM detections")), before)
+        self.assertEqual(self.c.execute("SELECT COUNT(*) FROM files").fetchone()[0], files)
+        os.rename(away, self.lib)  # back again
+        recog.recluster(self.c, self.spec)
+        self.assertEqual(self.det_of(self.p[0])[0]["name"], "Ann")
+        self.assertEqual(self.det_of(self.p[1])[0]["how"], "out", "the take-out survived")
+        self.assertIsNone(self.det_of(new)[0]["how"], "the reject survived: not suggested again")
+        sha = sha_of(new)
+        os.remove(new)  # truly gone, its folder there
+        self.assertEqual(recog.prune(self.c, state=self.state)["gone or moved"], 1)
+        self.assertEqual(self.c.execute("SELECT COUNT(*) FROM detections WHERE sha=?", (sha,)).fetchone()[0], 0)
+        self.assertEqual(self.det_of(self.p[0])[0]["name"], "Ann")
+
+    def test_an_unread_sidecar_is_not_the_owner_removing_a_name(self):
+        """A sidecar that is missing, or there but unreadable, never turns a name into how='out'."""
+        import intake
+        self.tag()
+        p0, p1 = self.p
+        del self.side.tags[p0]  # the sidecar was deleted
+        del self.side.tags[p1]  # ...and this one is there, but exiftool could not read it
+        with open(intake.sidecar(p1), "w") as f:
+            f.write("not xmp")
+        cnt = self.tag()
+        self.assertNotIn("left off: the owner removed it", cnt)
+        self.assertEqual(cnt["left alone: sidecar unreadable"], 1)
+        self.assertEqual([d["how"] for p in self.p for d in self.det_of(p)], ["cluster", "cluster"])
+        self.assertEqual(self.side.tags[p0], ["People|Ann"], "a missing sidecar gets the name again")
+        self.assertNotIn(p1, self.side.tags, "an unreadable one is not written")
+        self.assertEqual(self.c.execute("SELECT state FROM written WHERE path=?", (p1,)).fetchall()[0][0], "on")
+        os.remove(intake.sidecar(p1))  # readable again (here: gone, so written anew)
+        self.tag()
+        self.assertEqual(self.side.tags[p1], ["People|Ann"])
+        self.assertEqual(self.det_of(p1)[0]["name"], "Ann")
+
     def test_owner_removed_tag_never_re_added(self):
         self.tag()
         self.side.tags[self.p[0]] = ["Owner|keep"]  # the owner deleted People|Ann in digiKam
@@ -615,20 +662,76 @@ class EraseCoverage(Base):
         self.assertIn("STILL PRESENT", out)
         self.assertIn("people and pets recognition data", out)
 
+    def test_one_erase_clears_detections_place_and_date_records(self):
+        """ONE file with detections, a place record and a date fix: forget clears all three stores (and a
+        check-dates finding that names it), the coverage report counts them, verify-gone passes, and a record put
+        back by hand fails it with a count, never the name."""
+        add_place = ("import sys, intake, places; st = places.Store(intake.STATE, intake.LIB_ROOTS); "
+                     "pid = st.add('Home', 1.0, 2.0); [st.tagged[pid].add(p) for p in sys.argv[1:]]; st.save()")
+        r = subprocess.run([PY, "-I", "-c", f"import sys; sys.path.insert(0, {support.PKG!r}); " + add_place,
+                            self.p, self.keep], env=dict(os.environ, **self.env), capture_output=True, text=True)
+        self.assertEqual(r.returncode, 0, r.stderr)
+        self.intake("fix-dates", "--set", "2024-05-12T10:00", self.p, self.keep, "--yes")
+        rp = os.path.join(self.state, "datecheck.json")
+        with open(rp, "w") as f:
+            json.dump(dict(version=1, id="r1", checked="2026-11-19T10:00:00", files=2, findings=[
+                dict(path=self.p, kind="reset", confidence="high", reason="x", date="2016-01-01T00:00:00"),
+                dict(path=self.keep, kind="duplicate", confidence="medium", reason="the same content is in the "
+                     "library as a.png dated 2016-01-01 00:00", date="2024-05-12T10:00:00")]), f)
+        name = os.path.basename(self.p)
+
+        def stores():
+            out = ""
+            for x in ("places.json", "date-fixes.json", "datecheck.json"):
+                with open(os.path.join(self.state, x)) as f:
+                    out += f.read()
+            return out
+        self.assertIn(name, stores())
+        self.intake("forget", self.p, "--yes")
+        self.assertEqual(recog.leftovers({self.sha}), {})
+        self.assertNotIn(name, stores(), "no record of it in places.json, date-fixes.json or datecheck.json")
+        self.assertIn(os.path.basename(self.keep), stores(), "the other file's records stay")
+        reached = self.coverage()["reached"]
+        self.assertEqual(reached["date records: erased files dropped (state folder, datecheck.json and "
+                                 "date-fixes.json)"], 3, "its fix entry, its finding, the copy's naming it")
+        self.assertEqual(reached["your places' records: erased files dropped (state folder, places.json)"], 1)
+        self.assertNotIn("DATE RECORDS", self.intake("verify-gone"))
+        with open(rp) as f:
+            rep = json.load(f)
+        rep["findings"].append(dict(path=self.p, kind="reset", confidence="high", reason="x", date="2016"))
+        with open(rp, "w") as f:
+            json.dump(rep, f)
+        out = self.intake("verify-gone", code=1)
+        self.assertIn("DATE RECORDS: 1 entries", out)
+        self.assertNotIn(name, out, "counts only")
+
+    def date_records(self):
+        p = os.path.join(self.state, "date-fixes.json")
+        with open(p) as f:
+            return f.read()
+
     def test_trash_drops_rows(self):
+        self.intake("fix-dates", "--set", "2024-05-12T10:00", self.p, "--yes")
         self.intake("trash", self.p)  # a dry run without --yes: nothing goes
         self.assertEqual(recog.leftovers({self.sha})["detections"], 1)
+        self.assertIn(os.path.basename(self.p), self.date_records())
         out = self.intake("trash", self.p, "--yes")
         self.assertIn("recognition rows and crops 4", out)
         self.assertEqual(recog.leftovers({self.sha}), {})
+        self.assertNotIn(os.path.basename(self.p), self.date_records(), "its date fix record went too")
 
     def test_sweep_erased_drops_rows(self):
+        self.intake("fix-dates", "--set", "2024-05-12T10:00", self.p, "--yes")
         with open(os.path.join(self.state, "erase-log.txt"), "w") as f:
             f.write(f"2026-11-19 10:00 b1 sha256:{self.sha} size:{os.path.getsize(self.p)}\n")
+        copy = self.photo("2026/2026-10/copy.png", 9)
+        shutil.copy(self.p, copy)  # a copy erase missed, which sweep-erased deletes
         os.remove(self.p)
         out = self.intake("sweep-erased", "--yes")
         self.assertIn("recognition rows and crops", out)
+        self.assertIn("date records", out)
         self.assertEqual(recog.leftovers({self.sha}), {})
+        self.assertNotIn(os.path.basename(self.p), self.date_records(), "the gone file's date fix record went")
 
     def test_backup_never_walks_the_store(self):
         import backup

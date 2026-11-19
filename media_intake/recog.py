@@ -276,11 +276,28 @@ def trashed_shas(state=None):
         return set()
 
 
-def prune(c, state=None, d=None, flagged=None):
+def gone_from_disk(path, roots):
+    """True when path is no longer there: missing while the library folder holding it (roots: the library
+    folders) is present. A file under a folder that is not there (an unplugged drive, an unmounted videos
+    folder) is not gone; one under no library folder (a file scanned by name) is gone once its own folder is
+    there without it."""
+    if os.path.isfile(path):
+        return False
+    rp = os.path.realpath(path)
+    under = [r for r in roots if rp.startswith(os.path.realpath(r) + os.sep)]
+    if not under:
+        return os.path.isdir(os.path.dirname(path))
+    return os.path.isdir(max(under, key=lambda r: len(os.path.realpath(r))))  # the innermost: a project drive
+
+
+def prune(c, state=None, d=None, flagged=None, roots=None):
     """Drop content flagged, quarantined, erased or trashed since, and file rows gone from disk or now under
-    quarantine/ or batches/. Returns {reason: count}."""
+    quarantine/ or batches/. A file whose library folder is not there (roots: the library folders, by default
+    config.library_roots()) is kept with its names, rejects and take-outs: it comes back with the drive.
+    Returns {reason: count}."""
     import label
     state = state or state_dir()
+    roots = config.library_roots() if roots is None else list(roots)
     flagged = label.flagged(state) if flagged is None else flagged
     gone = set(flagged) | trashed_shas(state)
     out = collections.Counter()
@@ -289,10 +306,10 @@ def prune(c, state=None, d=None, flagged=None):
         if sha in gone:
             forget_sha(c, sha, d)
             out["flagged, erased, private or trashed"] += 1
-    roots = [os.path.realpath(os.path.join(state, x)) + os.sep for x in ("quarantine", "batches")]
+    private = [os.path.realpath(os.path.join(state, x)) + os.sep for x in ("quarantine", "batches")]
     for r in c.execute("SELECT path FROM files").fetchall():
         rp = os.path.realpath(r["path"])
-        if any(rp.startswith(x) for x in roots) or not os.path.isfile(r["path"]):
+        if any(rp.startswith(x) for x in private) or gone_from_disk(r["path"], roots):
             c.execute("DELETE FROM files WHERE path=?", (r["path"],))
             c.execute("DELETE FROM written WHERE path=?", (r["path"],))
             out["gone or moved"] += 1
@@ -890,7 +907,9 @@ def write_tags(c, spec, dry=False, reader=None, writer=None, state=None, only=No
 
     Adds an owner name's tag (suggestions are never tags); removes only tags this tool wrote earlier (table
     `written`) that no longer apply; never re-adds a tag the owner removed from the sidecar (those
-    detections become how=out); never removes a tag it didn't write (the owner's, digiKam's)."""
+    detections become how=out); never removes a tag it didn't write (the owner's, digiKam's). A sidecar that
+    could not be read is never taken as the owner removing anything: one that is missing gets the names
+    again, one that is there but unreadable (exiftool failed) is left alone until a run can read it."""
     import intake, label
     state = state or state_dir()
     reader = reader or intake.read_sidecar_tags
@@ -905,6 +924,10 @@ def write_tags(c, spec, dry=False, reader=None, writer=None, state=None, only=No
     existing = reader(paths) if paths else {}
     entries, cnt, record = [], collections.Counter(), []
     for p in paths:
+        known = p in existing  # its sidecar was read: a tag missing from it was taken off by the owner
+        if not known and os.path.isfile(intake.sidecar(p)):
+            cnt["left alone: sidecar unreadable"] += 1
+            continue  # there, but exiftool could not read it: nothing inferred, nothing written, rows kept
         got = existing.get(p) or ([], "", set())
         old, oleaves = got[0], (got[2] if len(got) > 2 else set())
         oldset = set(old)
@@ -914,7 +937,7 @@ def write_tags(c, spec, dry=False, reader=None, writer=None, state=None, only=No
             st = mine.get(t)
             if t in oldset:
                 continue  # already there: ours ("on") or the owner's own, which is never recorded or removed
-            if st == "on":  # written, and the sidecar lost it: the owner removed it, i.e. "not them"
+            if st == "on" and known:  # written, and the sidecar lost it: the owner removed it, i.e. "not them"
                 record.append((p, t, "owner-removed"))
                 if not dry:
                     c.execute("UPDATE detections SET name=NULL, how='out' WHERE kind=? AND name=? AND sha IN "

@@ -55,7 +55,9 @@ media-intake people tag
 
 `take-out ID` takes one face out of a name for good (`put-back ID` undoes it);
 removing a `People|` tag the tool wrote from a sidecar (in digiKam, say) does
-the same, and `tag` never adds it back. `unname N` undoes `name` or `ignore`.
+the same, and `tag` never adds it back. A sidecar it could not read is never
+taken as that: a missing one gets the names again, one exiftool failed on is
+left as it is until a run can read it. `unname N` undoes `name` or `ignore`.
 `tag` writes `People|<Name>` into `lr:HierarchicalSubject` and the leaf into
 `dc:Subject`, and removes only tags it wrote itself; your own `People|` tags
 are never touched. Cluster numbers change on every `cluster` run.
@@ -181,6 +183,9 @@ life. They stay on this laptop.
   detections, vectors, file rows and crops, for people and pets; erase's
   coverage report counts them ("people and pets recognition data").
   `verify-gone` fails while any of them is left.
+- Every command first drops the rows of files gone from disk, but only when
+  the library folder holding them is there: with a drive or the videos
+  folder unplugged, its files keep their names, rejections and take-outs.
 - To turn it off and drop everything: delete `recognition.dir`. The
   `People|` and `Pets|` tags already written stay in your sidecars.
 
