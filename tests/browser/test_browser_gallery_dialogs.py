@@ -12,7 +12,7 @@ the time the ordinary message fades (Playwright's clock, no sleep); the "?" shor
 and by the sidebar's Keyboard shortcuts, listing every key the page's handlers check (read from the served
 page's own source); Undo of Rotate, Keep (by Ctrl+Z), a tag added in the large view and Set event, each
 putting the sidecar back as it was, an Undo refused once the item changed again, and none offered after Trash,
-Erase or a Share-safe copy. Plain words: the job dialog's end state (Hide while it runs, the header's pill,
+Erase or a Share. Plain words: the job dialog's end state (Hide while it runs, the header's pill,
 Close and a role=status line when it ends, a message when it ends while hidden), the busy refusal naming what
 runs (no PID, no lock path) with Show progress, the Keep message, and no tool namespace (Owner|, Review|,
 Label|) in any text the page shows; on a phone the message sits above the action bar.
@@ -45,6 +45,7 @@ class GalleryDialogsBrowserTest(B.BrowserCase):
                         PERSONAL_FOOTAGE=os.path.join(self.home, "Videos/personal"),
                         MEDIA_INTAKE_CONFIG=B.write_config(os.path.join(self.home, "Videos/demo-footage")))
         self.env.pop("MEDIA_REVIEW_INTAKE", None)  # the real intake.py
+        B.fake_opener(self.tmp, self.env, G.FAKE_OPENER)  # a Share's folder: never really opened
         L = lambda *p: os.path.join(self.lib, *p)  # noqa: E731
         self.path = {"a.jpg": L("2026/2026-11/a.jpg"), "b.jpg": L("2026/2026-11/b.jpg"),
                      "c.png": L("2026/2026-11/c.png"), "d.jpg": L("2026/2026-10/d.jpg")}
@@ -385,9 +386,9 @@ class GalleryDialogsBrowserTest(B.BrowserCase):
         undo = page.get_by_role("button", name="Undo")
         replies = []
         page.on("response", lambda r: replies.append(r) if r.request.method == "POST" else None)
-        # Share-safe copy
+        # Share
         self.box(page, "d.jpg").click()
-        bar.get_by_role("button", name="Share-safe copy").click()
+        bar.get_by_role("button", name="Share", exact=True).click()
         dlg.get_by_role("button", name="Confirm").click()
         B.expect(dlg).to_have_attribute("data-job", "done")
         B.expect(undo).to_have_count(0)
@@ -467,7 +468,7 @@ class GalleryDialogsBrowserTest(B.BrowserCase):
             B.expect(viewer.get_by_role("button", name=name, exact=True)).to_be_visible()
         scan("large view")
         page.keyboard.press("Escape")
-        # Keep's message, then the Trash, Erase, tag, Set event and Share-safe copy dialogs
+        # Keep's message, then the Trash, Erase, tag, Set event and Share dialogs
         self.box(page, "a.jpg").click()
         with page.expect_response(lambda r: r.url.endswith("/api/keep")):
             page.keyboard.press("k")
@@ -481,8 +482,8 @@ class GalleryDialogsBrowserTest(B.BrowserCase):
             B.expect(dlg).to_contain_text("This can't be undone." if key == "e" else "this can't be undone")
             scan(title)
             page.keyboard.press("Escape")
-        for button in ("+ tag", "Set event…", "Share-safe copy"):
-            self.bar(page).get_by_role("button", name=button).click()
+        for button in ("+ tag", "Set event…", "Share"):
+            self.bar(page).get_by_role("button", name=button, exact=True).click()
             B.expect(dlg).to_be_visible()
             scan(button)
             page.keyboard.press("Escape")

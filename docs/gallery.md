@@ -53,7 +53,7 @@ without one" (`/api/facets` gives `drive`, the mount or null).
   width from before it; no edge key acts while a dialog is open.
 - **Main area**: a slim header (view, item count, **Select all**,
   thumbnail-size slider, **Stop server**, and while a Trash, Erase or
-  Share-safe copy runs with its dialog hidden, a "Trash running… Show" button
+  Share runs with its dialog hidden, a "Trash running… Show" button
   that brings the dialog back; at phone width the item count is left out and
   Stop server is an icon, so the header fits beside a long title, which
   shortens with an ellipsis), the active filters as removable chips (in an
@@ -138,7 +138,7 @@ without one" (`/api/facets` gives `drive`, the mount or null).
   | an AI trash verdict's confidence | Junk score (tile "Junk score 0.9", the filter's "Junk score at least", the chip "Junk score ≥ 0.70") |
   | filters Review, AI, Label | Flags; Junk check (Judged junk / Judged fine / Not checked); Looks like |
   | a tool's tag in the large view | "Project: Personal", "Looks like: food", "Junk check: Judged junk (blurry)" under "Added by the tools", apart from "Your tags" |
-  | a 409 (library or job lock) | "a Trash is still running; wait for it to finish, then try again" (or an Erase, a Share-safe copy, a run from the review page, the media-intake apply command, ...) |
+  | a 409 (library or job lock) | "a Trash is still running; wait for it to finish, then try again" (or an Erase, a Share, a run from the review page, the media-intake apply command, ...) |
 
 The sidebar rail and width, open sections and tile size live in the browser's
 `localStorage` (a per-browser convenience; the page works without it).
@@ -297,7 +297,7 @@ suggests your tags as you type, from `/api/facets`' My tags, and refuses the
 tools' namespaces before anything is sent, as the server does; it is also how
 you add `Calibrate|<label>|yes` or `|no` marks for `media-intake calibrate`,
 [configuration.md](configuration.md), "Calibrating label thresholds"), **Set event…**,
-**Rotate ⟳**, **Share-safe copy**; Esc or **Clear selection** clears it. Each
+**Rotate ⟳**, **Share**; Esc or **Clear selection** clears it. Each
 applies to every selected item through the same endpoint as one item, photos
 and videos alike (one unknown or removed id refuses the whole request, and so
 does a file deleted since the gallery scanned, by a CLI `trash` say: 400,
@@ -307,8 +307,11 @@ items' new grid summaries (`"items"`), so the tiles' flags ("Kept", ...)
 change at once; the selection stays for the next action. Keep's message is
 "Kept 3. They won't be suggested as junk again." In the large view the keys
 act on the item shown; **R** / **Shift+R** rotate (its buttons **Rotate left
-(Shift+R)** and **Rotate right (R)**), and its buttons include Set event,
-Share-safe copy and **Find similar**.
+(Shift+R)** and **Rotate right (R)**), and its buttons include Set event
+and **Find similar**; **Share** sits in its header, beside the name. Each tile
+(not in Suggested junk) also has a **Share** button at its bottom right, shown
+on hover or focus (always on a touch screen), for that one item without
+selecting it first.
 
 **Select all** ticks every tile the grid shows now: the current view, filters
 and search, and only the pages loaded so far (the grid loads 240 at a time as
@@ -332,15 +335,16 @@ loading turns the line back into a plain count. Esc clears.
 | My tag + / - | sidecar `HierarchicalSubject` + its `dc:Subject` leaf. Refused for the tools' namespaces (`Project\|`, `Source\|`, `Event\|`, `Place\|`, `Label\|`, `Review\|`, `AI\|`, `Used\|`, `Owner\|`); removal only touches your tags, and keeps a leaf another tag still uses. |
 | Rotate | sidecar `XMP-tiff:Orientation` only (1/6/3/8), each item from its own orientation. The original is never re-encoded or written; digiKam reads the same field. |
 | Set event | `POST /api/event/set` (`{"ids": [...], "event": slug}`): sidecar `Event\|<slug>` (and `XMP-iptcExt:Event`), replacing the item's other `Event\|` tags; `"event": ""` takes the items out of every event. Nothing else. |
-| Share-safe copy | nothing in the library: `media-intake share-copy` into a new folder (below). |
-| Undo | `POST /api/undo` (`{"undo": token}`): puts back what one Keep, my tag + / -, Rotate or Set event changed, below. Never offered for Trash, Erase, Share-safe copy, Suggested junk's Apply, Rename or Merge. |
+| Share | nothing in the library: `media-intake share-copy` into a new folder (below), then that folder opened in the file manager. |
+| Open folder | nothing: `POST /api/share/open` (`{"job": id}`) runs `xdg-open <folder>` (an argument list, no shell, detached) on the folder this server made for that Share job, after it ended (below). |
+| Undo | `POST /api/undo` (`{"undo": token}`): puts back what one Keep, my tag + / -, Rotate or Set event changed, below. Never offered for Trash, Erase, Share, Suggested junk's Apply, Rename or Merge. |
 | Open in the system player | nothing: `POST /api/open` with one id (`{"ids": [id]}`) runs `xdg-open <file>` (an argument list, no shell, detached) for the one item, only on that button's POST, and only for a regular file inside a library root after resolving links, not in a running job and not flagged, quarantined or erased (else 400). |
 
 ### Undo
 
 The message after **Keep**, a tag of yours added or removed (bar or large
 view), **Rotate** and **Set event** has an **Undo** button (or Ctrl+Z / Cmd+Z
-while it shows). Trash, Erase and Share-safe copy never offer it: a deleted
+while it shows). Trash, Erase and Share never offer it: a deleted
 file can't come back, and a copy made is out of the library.
 
 - **What it restores**: when the action writes, the server reads each sidecar
@@ -369,12 +373,12 @@ file can't come back, and a copy made is out of the library.
 
 Every action holds the library lock ([intake.md](intake.md), "One writer at
 a time"): Keep, my tags, Rotate, Set event, Undo, Rename, Merge and a plugin view's
-POST for the write ([plugins.md](plugins.md)), Trash, Erase and Share-safe copy
+POST for the write ([plugins.md](plugins.md)), Trash, Erase and Share
 for their whole job. While a CLI command (`apply`, `erase`, ...), a review run or
 another gallery's job holds it, the action gets 409 (`{"error": ..., "busy":
 true}`) and nothing is written; browsing is never locked. The error says in
 plain words what is running and what to do ("a Trash is still running; wait
-for it to finish, then try again"; or an Erase, a Share-safe copy, a run from
+for it to finish, then try again"; or an Erase, a Share, a run from
 the review page, "the media-intake apply command", ...), never a PID or the
 lock file's path, and while a gallery job runs the alert has **Show
 progress**.
@@ -391,7 +395,7 @@ these were marked Keep earlier."). The button names the action: **Trash 2
 files**, **Erase 2 files** (after ERASE is typed). Trash and Erase run one at
 a time with their output streamed into the dialog.
 
-Trash, Erase and Share-safe copy run as a detached job (`media_intake/jobs.py`, the same module
+Trash, Erase and Share run as a detached job (`media_intake/jobs.py`, the same module
 as the review page), so closing the page or stopping the server never stops
 one that has started:
 
@@ -412,7 +416,7 @@ one that has started:
   dialog on the running job; the files it acts on stay hidden from thumbnails
   and media until it ends.
 - One at a time across every gallery page and server: an `flock` on
-  `<state>/jobs/gallery.lock`, so a second Trash, Erase or Share-safe copy gets 409 and the
+  `<state>/jobs/gallery.lock`, so a second Trash, Erase or Share gets 409 and the
   page shows the running one. The job also holds the library lock, so it
   can't start while a review run or a CLI command is changing the library
   (409, naming it), and they can't start while it runs.
@@ -437,13 +441,15 @@ watching still has the whole output; a page opened later sees the scrubbed
 log. Trash is for junk that isn't private and keeps its output, names
 included, until the next job.
 
-## Share-safe copy
+## Share
 
-**Share-safe copy** (bottom bar, or the large view; its tooltip "Make a copy
-without location and camera info, to send to someone") asks first, with the
-thumbnails, names and folder ("Makes copies without location (GPS) or other
-hidden info, in a new folder under ~/Pictures/share-safe. Your originals are
-not changed."), then runs `media-intake share-copy FILE... --out DIR`
+**Share** (bottom bar, a tile's own button, or the large view's header; its
+tooltip "Share: make copies without location (GPS) or other hidden info, in a
+new folder you can send from. Your originals don't change.") makes share-safe
+copies. It asks first ("Share 1 item?"), with the thumbnails, names and folder
+("Makes copies without location (GPS) or other hidden info, in a new folder
+under ~/Pictures/share-safe, then opens that folder so you can drag them into
+a chat or an email. Your originals are not changed."), then runs `media-intake share-copy FILE... --out DIR`
 as a job (`POST /api/share`, `{"ids": [...]}`): every metadata field and the
 GPS stripped (exiftool `-all=` for images, keeping orientation and ICC; an
 ffmpeg stream copy without data streams for videos, which also drops a video's
@@ -473,6 +479,24 @@ problems". The gallery's side:
   rewrites a file mid-copy; the items stay viewable meanwhile. The job's last
   line is jobs.py's summary, `done: 0 of N gone from the library`. Sidecars are
   not copied.
+- **Open folder.** When the job that Share click started ends cleanly (ok, and
+  no `gps=STILL PRESENT` line), the page asks the server to open the new
+  folder in the desktop's file manager, so the copies can be dragged into a
+  chat or an email: automatic, because the click was yours, and once. The
+  dialog (or, when it was hidden, the message) then says "Opened
+  ~/Pictures/share-safe/... in the file manager" and offers **Open folder**
+  again; a page that re-attached to the job (a reload, another tab) only
+  offers the button. `POST /api/share/open` takes the job id, never a path:
+  the server keeps the folder it made for each of its last 20 Share jobs and
+  opens only that one, only once the job has ended, and only while it is
+  still a real folder directly inside `--share-out` after resolving links (a
+  symlink swapped in, a moved or deleted folder, an unknown job: 400). It runs
+  `xdg-open <folder>` as Open in the system player does (argument list, no
+  shell, detached). Without `xdg-open` (Fedora's `xdg-utils`, which
+  `media-intake doctor` lists as optional) the reply is 409 "can't open the
+  folder: xdg-open is not installed ...", and the page says so with where the
+  copies are. A server restarted since the Share has no folder to open: open
+  it yourself.
 
 **No crop.** The original's sha256 drives dedupe and erase, so it is never
 edited; make a crop as a copy in another editor.
@@ -625,7 +649,12 @@ writes its sidecars as plain XMP, so it runs without exiftool: every new POST
 refused without the token, with a wrong CSRF value, another Origin or Host
 (403) or a non-JSON type (415), 409 while a job holds the library lock, and a
 share-safe copy (Pillow's re-encode when exiftool is missing) into its own
-0700 folder, with its refusals.
+0700 folder, with its refusals, and Open folder through a fake `xdg-open` on
+PATH (only that job's folder; an unknown job, a path in the body, a symlink
+swapped in, a deleted folder, no CSRF value or another Origin refused).
+`ShareOpenGuardTest` runs `open_share` in-process with Popen, `shutil.which`
+and the job status mocked: the argument list, a folder outside or nested
+under `--share-out`, `..` in it, a running job, and no `xdg-open`.
 
 `tests/test_gallery_undo.py`: Undo of Keep (every tag and leaf it removed back,
 a file that had no sidecar), a tag added and removed, Rotate (an orientation
@@ -633,7 +662,7 @@ back, and none where there was none) and Set event (both fields, two events,
 cleared), each compared field by field with the sidecar before; refused (409,
 nothing written) after another action or another tool changed an item, and
 while a job holds the library lock (then working once it ends); a token used
-once; no token from Trash, Erase, Share-safe copy, Apply or an action that
+once; no token from Trash, Erase, Share, Apply or an action that
 changed nothing; `undo_block` refusing a difference outside the action's
 namespaces. `tests/browser/test_browser_gallery_dialogs.py` does it on the
 page with a listener that fails on any native dialog: the tag field's
@@ -647,7 +676,7 @@ the large view, every dialog), the message above the action bar at phone
 width, the `?` list naming
 every key the handlers check, Undo of Rotate, Keep (Ctrl+Z), Set event and a
 tag added in the large view restoring the sidecars, Undo refused after the
-item changed, and none after Trash, Erase or a Share-safe copy.
+item changed, and none after Trash, Erase or a Share.
 
 `tests/test_gallery_bursts.py`: which files stack (planned shots in time
 order, a camera burst id over the clock, a near-copy of the same second, a
@@ -699,7 +728,7 @@ a mixed selection (JPEG, PNG, H.264 in .mp4 and an upper-case .MOV): the
 listing, kind filter and counts, item detail, media with Range, the photo-only
 preview, thumbnails, Keep, my tags, Rotate, events (set, rename, merge, clear),
 Trash and Erase (the real `intake.py`), Suggested junk's Apply both ways,
-Share-safe copy (the copies' title and GPS gone, the video a stream copy),
+Share (the copies' title and GPS gone, the video a stream copy),
 Open in the system player, and the refusal of a selection holding a file
 deleted since the scan. `tests/browser/test_browser_gallery_media_kinds.py`
 does it on the page: a mixed selection by Space, a shift-click range and
@@ -744,7 +773,11 @@ after a reload, its end (Done, the status line, Close) and crash message,
 Erase's status line shown while its output is still empty (a
 fake `intake.py` that prints nothing until the test opens a FIFO), and the
 Events list (filter, Rename with a refused name first), Set event on a
-selection and a Share-safe copy ending in "Done: share-safe copies in ...".
+selection and a Share ending in "Done: share-safe copies in ..." with the
+folder opened (a fake `xdg-open` on PATH in every test there), and Share from
+a tile (shown on hover, selecting nothing) and from the large view's header,
+the message after a hidden job with Open folder, and a 409 from the open
+shown in the dialog with where the copies are.
 
 ## Not verified
 
@@ -758,7 +791,7 @@ selection and a Share-safe copy ending in "Done: share-safe copies in ...".
 - Semantic search and Find similar through the venv: tested only as "unavailable,
   falls back", not with the real model.
 - Start-up time on a large real library read from disk.
-- Share-safe copy of HEIC and DNG from the gallery (the gallery tests copy
+- Share of HEIC and DNG from the gallery (the gallery tests copy
   JPEGs, an .mp4 and a .MOV), the other operations on an HEVC video (only the
   proxy tests make an HEVC clip), and Rename / Merge on a real digiKam-written
   library.

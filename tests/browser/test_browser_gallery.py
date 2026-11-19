@@ -8,8 +8,10 @@ shift-click), the bottom selection bar (shown only while something is selected),
 views, the confirm dialogs (Trash; Erase with ERASE typed; the Stop server button's in-page confirm),
 the lightbox video playing by itself, Space pausing and resuming it, HTTP Range while the video
 loads and seeks, the detached-job dialog, including re-attaching to a running job after a reload,
-and the Events list (filter, Rename), Set event on a selection and a Share-safe copy (the real
-intake.py share-copy, which only reads the originals).
+and the Events list (filter, Rename), Set event on a selection and a Share (the real
+intake.py share-copy, which only reads the originals), and Share from a tile and from the large view: its
+dialog, the folder opened when the job ends (a fake xdg-open on PATH that only records its arguments, in every
+test here), Open folder again from the dialog and from the message, and a refused open saying why.
 
 Trash and Erase run a fake intake.py (MEDIA_REVIEW_INTAKE, tests/test_gallery.py's GATED) that
 deletes the files it is given; with a FIFO at FAKE_GATE it first waits until the test opens it,
@@ -24,7 +26,8 @@ output as its <pre>; the textbox named "Type ERASE"; the selection bar as role=t
 named "Selection actions"; the event bar as role=toolbar named "Event"; each sidebar event as
 #evlist [data-ev=<name>]; the dialog's text field by its label; buttons by their names (Confirm,
 Cancel, Trash N file(s), Erase N file(s), Hide (it keeps running), Close, Apply…, Suggested junk, Possible
-child, Library, Clear selection, Stop server, Rename…, Set event…, Share-safe copy).
+child, Library, Clear selection, Stop server, Rename…, Set event…, Share, Open folder); a tile's Share button
+named "Share <name>"; the job dialog's Open folder result as #mopened (role=status).
 """
 import json, os, re, shutil, signal, sys, tempfile, unittest
 
@@ -45,6 +48,21 @@ with open(os.environ["FAKE_GATE2"]) as f:
 for p in sys.argv[2:]:
     if os.path.isabs(p) and os.path.lexists(p):
         os.remove(p)
+'''
+
+
+# A share-copy that waits until the test opens FAKE_GATE, then copies each file into --out and prints its line as
+# the real one does (no metadata stripped here: the HTTP tests and test_events_rename_bulk_event_and_share run the
+# real one). It only reads the files it is given.
+GATED_SHARE = r'''
+import os, shutil, sys
+args = sys.argv[2:]
+out = args[args.index("--out") + 1]
+with open(os.environ["FAKE_GATE"]) as f:
+    f.read()
+for p in args[:args.index("--out")]:
+    shutil.copyfile(p, os.path.join(out, os.path.basename(p)))
+    print(f"  {os.path.join(out, os.path.basename(p))}  gps=none", flush=True)
 '''
 
 
@@ -80,6 +98,7 @@ class GalleryBrowserTest(B.BrowserCase):
         G.img(self.c, (30, 30, 200))
         G.img(self.d, (90, 90, 90))
         G.write_tags(self.a, ["Project|Personal", "Review|maybe-trash"])  # a trash suggestion
+        self.opened = B.fake_opener(self.tmp, self.env, G.FAKE_OPENER)  # a Share's folder: never really opened
         self.servers = []
 
     def tearDown(self):
@@ -439,12 +458,13 @@ class GalleryBrowserTest(B.BrowserCase):
         for p in (self.a, self.d):
             self.assertIn("Event|park-day", G.tags_of(p)[0], p)
         self.assertIn("Review|maybe-trash", G.tags_of(self.a)[0])  # every other tag stays
-        # a share-safe copy: the dialog names the destination folder and shows share-copy's own lines
+        # Share: the dialog names the destination folder and shows share-copy's own lines; the folder opens
         before = G.sha(self.d)
         page.get_by_role("checkbox", name="select d.jpg").click()
-        bar.get_by_role("button", name="Share-safe copy").click()
-        B.expect(dlg.get_by_role("heading")).to_have_text("Make share-safe copies of 1 item?")
+        bar.get_by_role("button", name="Share", exact=True).click()
+        B.expect(dlg.get_by_role("heading")).to_have_text("Share 1 item?")
         B.expect(dlg).to_contain_text("~/Pictures/share-safe")
+        B.expect(dlg).to_contain_text("opens that folder")
         dlg.get_by_role("button", name="Confirm").click()
         B.expect(dlg).to_have_attribute("data-job", "done")
         B.expect(dlg.get_by_role("heading")).to_have_text(
@@ -454,6 +474,92 @@ class GalleryBrowserTest(B.BrowserCase):
         (sub,) = os.listdir(share)
         self.assertEqual(os.listdir(os.path.join(share, sub)), ["d.jpg"])
         self.assertEqual(G.sha(self.d), before)  # the original is only read
+        B.expect(dlg.locator("#mopened")).to_have_text(re.compile(
+            r"^Opened ~/Pictures/share-safe/\d{4}-\d\d-\d\d-\d{6} in the file manager: drag the copies"))
+        self.assertEqual(B.opened(self.opened), [os.path.join(share, sub)])  # that folder, once, by itself
+
+    # ------------------------------------------------------------ Share from a tile and from the large view
+    def test_share_from_a_tile_and_the_large_view(self):
+        os.mkfifo(self.gate)
+        fake = os.path.join(self.tmp, "share_intake.py")
+        with open(fake, "w") as f:
+            f.write(GATED_SHARE)
+        self.env["MEDIA_REVIEW_INTAKE"] = fake
+        s = self.start()
+        page = self.new_page()
+        errors = []
+        page.on("pageerror", lambda e: errors.append(str(e)))
+        self.addCleanup(lambda: self.assertEqual(errors, [], "uncaught errors on the page"))
+        self.open(page, s)
+        dlg = self.confirm(page)
+        share = os.path.join(self.home, "Pictures/share-safe")
+        # a tile's Share: shown on hover, asks about that one item, selects nothing and opens nothing else
+        t = self.tile(page, "d.jpg")
+        btn = t.get_by_role("button", name="Share d.jpg")
+        B.expect(btn).to_have_css("opacity", "0")
+        t.hover()
+        B.expect(btn).to_have_css("opacity", "1")
+        B.expect(btn).to_have_attribute("title", re.compile(r"without location \(GPS\) or other hidden info.*"
+                                                             r"originals don't change"))
+        btn.click()
+        B.expect(dlg.get_by_role("heading")).to_have_text("Share 1 item?")
+        B.expect(dlg.locator(".mnames")).to_have_text("d.jpg")
+        B.expect(page.get_by_role("dialog", name="Item", exact=True)).to_be_hidden()
+        self.assertEqual(self.tiles_selected(page), 0)
+        dlg.get_by_role("button", name="Cancel").click()
+        B.expect(dlg).to_be_hidden()
+        self.assertFalse(os.path.exists(share))  # nothing made on Cancel
+        # the large view: Share in its header, the tools row without it
+        self.tile(page, "b.jpg").click()
+        viewer = page.get_by_role("dialog", name="Item", exact=True)
+        B.expect(viewer).to_have_attribute("data-current", "b.jpg")
+        vs = viewer.locator(".ihead").get_by_role("button", name="Share", exact=True)
+        B.expect(vs).to_be_visible()
+        B.expect(viewer.locator(".tools").get_by_role("button", name=re.compile("Share"))).to_have_count(0)
+        vs.click()
+        B.expect(dlg.get_by_role("heading")).to_have_text("Share 1 item?")
+        B.expect(dlg.locator(".mnames")).to_have_text("b.jpg")
+        dlg.get_by_role("button", name="Confirm").click()
+        B.expect(dlg).to_have_attribute("data-job", "running")
+        dlg.get_by_role("button", name="Hide (it keeps running)").click()
+        B.expect(dlg).to_be_hidden()
+        # it ends while hidden: the folder opens by itself, and the message names it and offers Open folder
+        B.open_gate(self.gate)
+        toast = page.locator("#toast")
+        B.expect(toast).to_contain_text(re.compile(r"^Opened ~/Pictures/share-safe/\d{4}-\d\d-\d\d-\d{6} in the file "
+                                                   r"manager: drag the copies into a chat or an email\."))
+        (sub,) = os.listdir(share)
+        out = os.path.join(share, sub)
+        self.assertEqual(os.listdir(out), ["b.jpg"])
+        B.until(lambda: B.opened(self.opened) == [out], "the folder to open after the Share click")
+        os.remove(self.opened)
+        with page.expect_response(lambda r: r.url.endswith("/api/share/open")) as resp:
+            toast.get_by_role("button", name="Open folder").click()
+        self.assertEqual(resp.value.status, 200)
+        B.expect(toast).to_contain_text("Opened ~/Pictures/share-safe/" + sub + " in the file manager")
+        B.until(lambda: B.opened(self.opened) == [out], "Open folder to open it again")
+        os.remove(self.opened)
+        # no xdg-open on the server (its 409, the server's words): a Share watched to its end says so in the
+        # dialog with where the copies are, and Open folder there asks again
+        missing = ("can't open the folder: xdg-open is not installed (Fedora package xdg-utils; "
+                   "media-intake doctor checks it)")
+        asked = []
+        page.route("**/api/share/open", lambda r: (asked.append(r.request.post_data_json), r.fulfill(
+            status=409, content_type="application/json", body=json.dumps({"error": missing}))))
+        page.keyboard.press("Escape")  # the large view closed when the job ended; nothing else open
+        self.tile(page, "c.png").hover()
+        self.tile(page, "c.png").get_by_role("button", name="Share c.png").click()
+        dlg.get_by_role("button", name="Confirm").click()
+        B.open_gate(self.gate)
+        B.expect(dlg).to_have_attribute("data-job", "done")
+        dest = dlg.locator("#mdest").inner_text().removeprefix("Destination: ")
+        self.assertRegex(dest, r"^~/Pictures/share-safe/\d{4}-")
+        B.expect(dlg.locator("#mopened")).to_have_text(f"Couldn't open the folder: {missing} The copies are in {dest}.")
+        dlg.get_by_role("button", name="Open folder").click()
+        B.expect(dlg.locator("#mopened")).to_have_text(f"Couldn't open the folder: {missing}")
+        self.assertEqual(len(asked), 2)
+        self.assertEqual(set(asked[0]), {"job"})  # the page names the job, never a folder
+        self.assertIsNone(B.opened(self.opened))
 
     def test_crashed_job_is_shown(self):
         os.mkfifo(self.gate)

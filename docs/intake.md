@@ -379,7 +379,7 @@ run and a CLI `apply` never interleave (`media_intake/library_lock.py`):
   `media-intake zip-check` is cli.py's and read-only, so it takes no lock
   either (Cloud exports, below).
   `vlm-trash` takes it around each batch of verdicts it writes.
-- **Jobs** (the review page's run, the gallery's Trash, Erase and Share-safe copy) take it with
+- **Jobs** (the review page's run, the gallery's Trash, Erase and Share) take it with
   their job lock at submit and hold it until their last step is over; each
   `intake.py` step inherits it from the worker (descriptor plus
   `MEDIA_INTAKE_LIBRARY_LOCK_FD`) and checks it really is this library's lock,
@@ -394,7 +394,7 @@ run and a CLI `apply` never interleave (`media_intake/library_lock.py`):
   `MEDIA_INTAKE_LOCK_WAIT` seconds (default 10, `0` refuses at once), printing
   that it waits, then exits 75 (try again later); 10 s covers a gallery Keep,
   and a job can run for an hour, so waiting longer is opt-in. The pages never
-  wait: Submit, Trash, Erase, Share-safe copy, Keep, a tag, Rotate, Set event,
+  wait: Submit, Trash, Erase, Share, Keep, a tag, Rotate, Set event,
   Rename or Merge get 409 with the holder.
 
 `share-copy` writes copies with no GPS or metadata, for sending or posting:
@@ -411,7 +411,7 @@ so an Ultra HDR photo's gain map goes too: the copy shows as a plain SDR
 photo. A copy that would still carry a video
 is removed and share-copy stops with an error (copies made before it stay). It checks
 everything before copying anything, and refuses (writing nothing) when `--out`
-is inside a library root or the state folder (the gallery's Share-safe copy
+is inside a library root or the state folder (the gallery's Share
 has the same rule: a copy there would be taken for a library file, and could
 replace an original of the same name), when a copy would land on its own
 source, when two files share a name (the second copy would replace the

@@ -40,6 +40,8 @@ buttons are named in **bold**, as they appear on screen.
 | **Keep** | Keep the file. In Quarantine: put it back in the library (`release`). In Review: leave it in the review folder for now. For Suggested junk: leave it in the library and never suggest it again (`not-trash`). In the gallery: mark it kept (the tile says "Kept"). |
 | **Trash** | Delete a file that is junk but not private: the file, its sidecar and thumbnails (and with `--phone` its original on the phone), and remember its content so the same photo is skipped if it is imported again. No search for other copies. Never offered for a quarantined file. Command: `trash`. |
 | **Erase** | Delete a private file for good with every copy the tool can reach: quarantine, the library, your whole home folder (your own photo folders included), thumbnails and caches, and the phone and backup drive when you name them. Ends with a check and a report of what it could not reach (cloud, chat apps, other devices). Asks you to type `ERASE`. Commands: `erase` (a batch's quarantine), `forget` (library files). |
+| **Share** | In the gallery: make share-safe copies (no location or other hidden info) in a new folder under `~/Pictures/share-safe`, then open that folder so you can drag them into a chat or an email. Your originals and their tags don't change. Command: `share-copy`. |
+| **Open folder** | After a Share: open its new folder in the desktop's file manager again. |
 | **Delete this copy** | Review tab only: delete just this file from the review folder. Nothing is remembered and no other copy is touched. |
 | **DELETES** | In `media-intake --help` and a command's summary: this command removes files. Its `--help` has a `Deletes:` line saying what. |
 

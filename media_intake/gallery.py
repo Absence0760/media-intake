@@ -14,9 +14,9 @@ can't play (HEVC: ~/.cache/media-intake/proxies/<sha256>.mp4, cleaned the same w
 filters, semantic search (semantic.py, local SigLIP),
 and your actions: Keep, Trash (intake.py trash), Erase (intake.py forget, the
 erase-everywhere path), my tags, Rotate (XMP-tiff:Orientation in the sidecar
-only), Set event, all on one item or a selection, and Share-safe copy (intake.py
+only), Set event, all on one item or a selection, and Share (share-safe copies: intake.py
 share-copy into a new folder under --share-out, default ~/Pictures/share-safe, as a
-job). A left sidebar holds the views with counts (/api/facets): Library, Trash
+job, then that folder opened in the file manager; also on each tile and in the large view). A left sidebar holds the views with counts (/api/facets): Library, Trash
 suggestions, any tab a plugin adds (plugins.py gallery_views(), docs/plugins.md),
 the quick views Recently added, Possible child, Untagged, and the Events (Event|
 tags; rename and merge rewrite only those, in the sidecars that have them); then
@@ -34,7 +34,7 @@ The paths go to the worker on a pipe; the status file names the files only by
 (device, inode), and an Erase's output is scrubbed of names when it ends.
 Keep, my tags, Rotate and Set event can be undone (/api/undo: the server records each sidecar's
 fields before and after and puts back exactly that change, refusing once a sidecar changed
-again); Trash, Erase and Share-safe copy can't. No native alert/confirm/prompt: in-page
+again); Trash, Erase and Share can't. No native alert/confirm/prompt: in-page
 dialogs, an error message that stays until dismissed, and a "?" list of every key.
 
 Server security is review_ui.py's: stdlib only, everything inline, 127.0.0.1 on a
@@ -79,11 +79,12 @@ ORIENT = {0: 1, 90: 6, 180: 3, 270: 8}
 AI_TRASH = re.compile(r"^AI\|vlm/([^/]+)/trash(?:/|$)")
 AI_CONF = re.compile(r"^AI\|vlm/([^/]+)/conf/([0-9.]+)$")
 SUGGEST_MIN = 0.7
-OPENER = "xdg-open"  # the desktop's default app, for media the browser can't decode (found on PATH)
+OPENER = "xdg-open"  # the desktop's default app (found on PATH): media the browser can't decode, a Share's folder
 RECENT_DAYS = 30  # "Recently added": filed into the library in the last N days
 UNDO_KEEP = 50  # the last N undoable actions (Keep, my tags, Rotate, Set event) this server can still undo
 # Share-safe export (intake.py share-copy --out): each export gets a new dated folder under this one.
 SHARE_OUT = os.path.join(HOME, "Pictures", "share-safe")
+SHARE_KEEP = 20  # the last N Share folders this server made, by job id, that Open folder may still open
 
 NS_RDF = "http://www.w3.org/1999/02/22-rdf-syntax-ns#"
 XMP_WANT = {
@@ -612,9 +613,11 @@ WORDS = {
             "Review|vlm-keep": "Junk check: Judged fine"},
     # tool namespaces "my tag" refuses, as a user reads them (the refusal and the tag dialog)
     "tools": "Project, Source, Event, Place, Label, Review, AI, Used and Owner",
+    # a finished Share's button: its folder in the file manager (POST /api/share/open)
+    "openFolder": "Open folder",
     # a job, by what started it (its spec's label) and by its step (intake.py's subcommand)
-    "job": {"trash": "Trash", "erase": "Erase", "share": "Share-safe copy",
-            "forget": "Erase", "share-copy": "Share-safe copy"},
+    "job": {"trash": "Trash", "erase": "Erase", "share": "Share",
+            "forget": "Erase", "share-copy": "Share"},
     # the sidebar views
     "view": {"lib": "Library", "sug": "Suggested junk", "recent": "Recently added", "child": "Possible child",
              "untagged": "Untagged"},
@@ -653,6 +656,7 @@ class App:
         self.tail = None  # the shown job's log, through an open descriptor (jobs.Tail)
         self.search_cache = {}
         self.undos = collections.OrderedDict()  # token -> what an undoable action changed (App.journal)
+        self.shares = collections.OrderedDict()  # job id -> the folder its Share made (share_dir), for Open folder
         self.text_why = None
         self.text_checked = threading.Event()
         self.stop = threading.Event()
@@ -1347,6 +1351,7 @@ class App:
                                  redact=redact)
             self._follow(st["id"], claim.tail)
             self.mark_busy(st)
+            return st["id"]
 
     def _follow(self, jid, tail=None):
         """Point self.tail at job jid's log (with self.lock held)."""
@@ -1418,8 +1423,13 @@ class App:
             self._follow(st["id"])
             tail = self.tail
         ls, nxt = tail.lines(since, st["done"])  # read after the status: a finished job has written every line
-        return dict(jobs.public(st), lines=ls, next=nxt, ids=self.job_items(st),
-                    kind=(st.get("spec") or {}).get("label"))  # trash, erase or share: what started it
+        out = dict(jobs.public(st), lines=ls, next=nxt, ids=self.job_items(st),
+                   kind=(st.get("spec") or {}).get("label"))  # trash, erase or share: what started it
+        with self.lock:
+            d = self.shares.get(st["id"])
+        if d:
+            out["dest"] = self.shown(d)  # a Share this server started: its folder, for a page that re-attached
+        return out
 
     def trash(self, ids, confirm):
         if confirm is not True:
@@ -1484,13 +1494,53 @@ class App:
                 raise ValueError("two of these have the same file name; share them one at a time")
         out = self.share_dir()
         try:
-            self.start_job("share", [["share-copy", *paths, "--out", out]], ids, hold=False)
+            jid = self.start_job("share", [["share-copy", *paths, "--out", out]], ids, hold=False)
         except Exception:
             with contextlib.suppress(OSError):  # nothing was started: drop the empty folder (kept if not empty)
                 os.rmdir(out)
             raise
-        shown = "~/" + os.path.relpath(out, HOME) if out.startswith(HOME + os.sep) else out
-        return dict(result=f"making {len(ids)} share-safe copies in {shown}", dest=shown)
+        with self.lock:
+            self.shares[jid] = out
+            while len(self.shares) > SHARE_KEEP:
+                self.shares.popitem(last=False)
+        shown = self.shown(out)
+        return dict(result=f"making {len(ids)} share-safe copies in {shown}", dest=shown, job=jid)
+
+    @staticmethod
+    def shown(path):
+        """A path as the page shows it: ~/... under HOME."""
+        return "~/" + os.path.relpath(path, HOME) if path.startswith(HOME + os.sep) else path
+
+    def open_share(self, jid):
+        """Open the folder one finished Share made in the desktop's file manager (xdg-open), so the copies can be
+        dragged into a chat or an email. The page names the job, never a path: the folder is the one this server
+        made for that job (share_dir), and it must still be a real folder directly inside --share-out after
+        resolving links (not a symlink swapped in since, nor anything else), and the job must have ended."""
+        with self.lock:
+            d = self.shares.get(jid) if isinstance(jid, str) else None
+        if not d:
+            raise ValueError("no Share folder for that job here (only one this gallery started can be opened)")
+        st = jobs.status(JOB_KEY)
+        if st and st.get("id") == jid and not st["done"]:
+            raise ValueError("the copies are still being made")
+        base = os.path.realpath(self.share_out)
+        if os.path.islink(d) or not os.path.isdir(d) or os.path.dirname(os.path.realpath(d)) != base:
+            raise ValueError("that Share folder is gone or was moved")
+        self.launch(d, "the folder")
+        return dict(result=f"opened {self.shown(d)}", dest=self.shown(d))
+
+    @staticmethod
+    def launch(path, what):
+        """xdg-open PATH: an argument list (no shell), detached, its output dropped, reaped in the background."""
+        if not shutil.which(OPENER):
+            raise RuntimeError(f"can't open {what}: {OPENER} is not installed (Fedora package xdg-utils; "
+                               "media-intake doctor checks it)")
+        try:
+            proc = subprocess.Popen([OPENER, path], stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL,
+                                    stderr=subprocess.DEVNULL, close_fds=True, start_new_session=True)
+        except OSError as e:
+            raise RuntimeError(f"{OPENER} failed: {e.strerror or type(e).__name__}") from None
+        threading.Thread(target=proc.wait, daemon=True).start()  # reap it; xdg-open hands off and exits
 
     def servable(self, i):
         """The path of item i when the media routes may serve it: live, not in a running job, a regular file
@@ -1523,12 +1573,7 @@ class App:
             p = self.library_file(i)
             if not p:
                 raise ValueError("not a library file")
-        try:
-            proc = subprocess.Popen([OPENER, p], stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL,
-                                    stderr=subprocess.DEVNULL, close_fds=True, start_new_session=True)
-        except OSError as e:
-            raise RuntimeError(f"{OPENER} failed: {e.strerror or type(e).__name__}") from None
-        threading.Thread(target=proc.wait, daemon=True).start()  # reap it; xdg-open hands off and exits
+        self.launch(p, "it")
         return f"opened {os.path.basename(p)} in the system player"
 
     def decide(self, keep, trash, confirm):
@@ -1691,6 +1736,7 @@ class Handler(R.Handler):
             "/api/erase": lambda: app.erase(body.get("ids"), body.get("confirm")),
             "/api/open": lambda: app.open_external(body.get("ids")),
             "/api/share": lambda: app.share(body.get("ids")),
+            "/api/share/open": lambda: app.open_share(body.get("job")),
             "/api/event/set": lambda: app.set_event(body.get("ids"), body.get("event")),
             "/api/event/rename": lambda: app.rename_event(body.get("from"), body.get("to")),
             "/api/event/merge": lambda: app.merge_events(body.get("from"), body.get("into")),
@@ -1770,7 +1816,7 @@ def main(argv=None):
                     "prints). Keep, Trash, Erase, tag, rotate, set events and make share-safe copies,\n"
                     "on one photo or a selection. Quarantined and flagged files are never shown.\n\n"
                     "Touches: reads the library; Keep, tags, Rotate and events write sidecars (never\n"
-                    "  the photos); Share-safe copy writes to --share-out.\n"
+                    "  the photos); Share writes share-safe copies to --share-out.\n"
                     "Deletes: only what you Trash or Erase on the page, after you confirm.")
     ap.add_argument("--drive", metavar="DRIVE", help="the backup drive: the folder it is mounted on, e.g. "
                     "/run/media/$USER/<label>. Erase in the gallery then deletes the copies there too")
@@ -2023,6 +2069,12 @@ h2.month{position:sticky;top:var(--hh);z-index:2;margin:0;padding:16px 0 8px;fon
  .tile .badge[data-pos]::before{content:attr(data-pos) "/" attr(data-count)}
  .tile .bx.open{background:var(--panel);color:var(--fg);border:1px solid var(--acc)}
 }
+/* a tile's Share button (bottom right): on hover or focus with a mouse, always on a touch screen */
+.tile .tshare{position:absolute;right:4px;bottom:4px;z-index:2;width:34px;height:34px;padding:0;display:flex;align-items:center;justify-content:center;border:0;border-radius:999px;background:rgba(0,0,0,.62);color:#fff;cursor:pointer}
+.tile .tshare:hover{background:rgba(0,0,0,.82)}
+.tile:has(.tshare) .flag{max-width:calc(100% - 50px)}
+@media (hover:hover){.tile .tshare{opacity:0;transition:opacity .1s}.tile:hover .tshare,.tile:focus-within .tshare{opacity:1}}
+@media (forced-colors:active){.tile .tshare{border:1px solid ButtonText}}
 .flag{position:absolute;left:6px;bottom:6px;width:max-content;max-width:calc(100% - 12px);background:rgba(0,0,0,.62);color:#fff;font-size:11px;border-radius:4px;padding:1px 6px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
 #sentinel{height:40px}
 /* bottom action bar: only while something is selected (or the Trash suggestions view's Apply) */
@@ -2069,6 +2121,8 @@ h2.month{position:sticky;top:var(--hh);z-index:2;margin:0;padding:16px 0 8px;fon
 #info .icon{color:#bbb}#info .icon:hover{background:#26272d;color:#fff}
 #info .btn{background:#202127;border-color:#34353c;color:#e9e9ec;height:32px}
 #info .btn:hover{background:#2a2b31}
+#info .btn.share{flex:none;gap:6px;background:#2456d3;border-color:#2456d3;color:#fff;font-weight:600}#info .btn.share:hover{background:#1d47b0}
+#modal .mopenp{display:flex;flex-wrap:wrap;gap:8px;align-items:center}
 #info .btn.keep{color:#5fd07c;border-color:#2f6b40}#info .btn.trash{color:#e8ad3c;border-color:#6e5420}#info .btn.erase{color:#ff7a6e;border-color:#7a2e29}
 .acts{display:grid;grid-template-columns:repeat(3,1fr);gap:6px}
 .acts .btn{justify-content:center;padding:0 6px}
@@ -2141,6 +2195,7 @@ dl.dt dd{margin:0;word-break:break-word}
  #tsize{height:44px}
  .chip{height:44px}.chip .x{width:44px;height:44px}
  .tile .ckw{width:44px;height:44px}
+ .tile .tshare{width:44px;height:44px}
  .tile .bx{top:8px;right:8px}
  .tile .bx::after{content:"";position:absolute;inset:-8px}
  .link::after{content:"";position:absolute;inset:-11px -8px}
@@ -2173,6 +2228,7 @@ dl.dt dd{margin:0;word-break:break-word}
  <symbol id="i-power" viewBox="0 0 24 24"><path d="M12 3.5v8M7 6.5a7.5 7.5 0 1 0 10 0"/></symbol>
  <symbol id="i-cal" viewBox="0 0 24 24"><rect x="4" y="5.5" width="16" height="14.5" rx="2"/><path d="M4 10h16M8.5 3.5v4M15.5 3.5v4"/></symbol>
  <symbol id="i-x" viewBox="0 0 24 24"><path d="M6 6l12 12M18 6L6 18"/></symbol>
+ <symbol id="i-share" viewBox="0 0 24 24"><path d="M12 15V4M8 8l4-4 4 4M5 12v7.5h14V12"/></symbol>
  <symbol id="i-keys" viewBox="0 0 24 24"><rect x="2.5" y="6" width="19" height="12" rx="2"/><path d="M6 10h.01M10 10h.01M14 10h.01M18 10h.01M7 14h10"/></symbol>
 </svg>
 <aside id="sidebar" aria-label="Views and filters">
@@ -2217,13 +2273,13 @@ dl.dt dd{margin:0;word-break:break-word}
  <div id="chips" aria-label="Active filters" hidden></div>
  <div id="evbar" role="toolbar" aria-label="Event" hidden><span class="evt" id="evname"></span><button type="button" class="btn" id="evren">Rename…</button><button type="button" class="btn" id="evmerge">Merge into…</button></div>
  <p id="note" class="note" hidden></p>
- <p id="helpb" class="note" hidden><span class="hshort"><span class="kb">Bursts are stacked; X opens one.</span><span class="tch">Burst stacks: tap ×N to open one.</span></span><span class="hfull">A stack is a burst (shots from one camera a moment apart): its Show all button (×N on a small tile) or the X key opens or closes it; the shots of an open stack share a coloured ring. On a closed stack, selecting and every action (Keep, Trash, Erase, tags, Rotate, Set event, Share-safe copy) act on the cover shot only; open the stack to act on the others.</span><button type="button" class="link" id="hmore" aria-controls="helpb" aria-expanded="false">more</button></p>
+ <p id="helpb" class="note" hidden><span class="hshort"><span class="kb">Bursts are stacked; X opens one.</span><span class="tch">Burst stacks: tap ×N to open one.</span></span><span class="hfull">A stack is a burst (shots from one camera a moment apart): its Show all button (×N on a small tile) or the X key opens or closes it; the shots of an open stack share a coloured ring. On a closed stack, selecting and every action (Keep, Trash, Erase, tags, Rotate, Set event, Share) act on the cover shot only; open the stack to act on the others.</span><button type="button" class="link" id="hmore" aria-controls="helpb" aria-expanded="false">more</button></p>
  <main id="main" aria-busy="true"><div id="list"><div class="state" role="status"><p><span class="spin" aria-hidden="true"></span>Loading your library…</p></div></div><div id="sentinel"></div><div id="plugin" hidden></div></main>
  <div id="actionbar" hidden>
   <div class="grp" id="selgrp" role="toolbar" aria-label="Selection actions" hidden><span id="seln"></span>
    <button type="button" class="btn keep" id="bkeep">Keep <kbd>K</kbd></button><button type="button" class="btn trash" id="btrash">Trash <kbd>T</kbd></button><button type="button" class="btn erase" id="berase">Erase <kbd>E</kbd></button>
    <span class="sep"></span>
-   <button type="button" class="btn" id="btag">+ tag</button><button type="button" class="btn" id="buntag">− tag</button><button type="button" class="btn" id="bevent">Set event…</button><button type="button" class="btn" id="brot">Rotate ⟳</button><button type="button" class="btn" id="bshare">Share-safe copy</button><button type="button" class="btn" id="bnone">Clear selection <kbd>Esc</kbd></button>
+   <button type="button" class="btn" id="btag">+ tag</button><button type="button" class="btn" id="buntag">− tag</button><button type="button" class="btn" id="bevent">Set event…</button><button type="button" class="btn" id="brot">Rotate ⟳</button><button type="button" class="btn" id="bshare">Share</button><button type="button" class="btn" id="bnone">Clear selection <kbd>Esc</kbd></button>
   </div>
   <div class="grp" id="suggrp" role="group" aria-label="Decisions" hidden><span id="sugn"></span><span class="note" style="margin:0">Mark Keep or Trash on each, then Apply<span class="kbonly"> (keys: K, T, arrows)</span></span><button type="button" class="btn primary" id="sugapply">Apply…</button></div>
  </div>
@@ -2272,7 +2328,7 @@ dl.dt dd{margin:0;word-break:break-word}
   <dt><kbd>Enter</kbd></dt><dd>Open the outlined tile (a click on the photo does too)</dd>
  </dl>
  <h4>Dialogs</h4><dl>
-  <dt><kbd>Esc</kbd></dt><dd>Cancel and close (a running Trash, Erase or Share-safe copy keeps going)</dd>
+  <dt><kbd>Esc</kbd></dt><dd>Cancel and close (a running Trash, Erase or Share keeps going)</dd>
   <dt><kbd>Enter</kbd></dt><dd>Confirm, in a dialog's text field</dd>
   <dt><kbd>Tab</kbd></dt><dd>Move between the dialog's controls (focus stays in the dialog)</dd>
  </dl>
@@ -2515,6 +2571,9 @@ function tile(it,n){const t=el("div","tile"),sug=view==="sug";t.id="t"+it.id;t.d
    const x=el("button","x",stackLabel(it));x.type="button";x.tabIndex=-1;x.onclick=ev=>{ev.stopPropagation();toggleStack(n)};t.append(x);if(!openB[it.b])t.classList.add("stack")}
   else t.hidden=hiddenAt(n)}
  const fl=flagsOf(it);if(fl)t.append(el("span","flag",fl));
+ // Share this one item without selecting it first (shown on hover or focus, always on a touch screen)
+ if(!sug){const sh=el("button","tshare");sh.type="button";sh.tabIndex=-1;sh.title=SHARE_TIP;sh.setAttribute("aria-label","Share "+it.n);
+  sh.insertAdjacentHTML("beforeend",'<svg class="ic"><use href="#i-share"/></svg>');sh.onclick=ev=>{ev.stopPropagation();askShare([it.id])};t.append(sh)}
  // Suggested junk: Keep and Trash on the tile (a tap marks it, a second tap unmarks; nothing changes until Apply)
  if(sug){const d=el("div","dec");d.setAttribute("role","group");d.setAttribute("aria-label","Mark "+it.n);
   [["keep","Keep"],["trash","Trash"]].forEach(([k,l])=>{const b=el("button","btn "+k,l);b.type="button";b.dataset.dec=k;b.setAttribute("aria-pressed","false");
@@ -2567,7 +2626,7 @@ new ResizeObserver(placeToast).observe($("#actionbar"));addEventListener("resize
 addEventListener("scroll",()=>{if(isOn("#toast"))placeToast()},{passive:true});
 function hideToast(){const t=$("#toast");if(t.matches(":hover,:focus-within")){tt=setTimeout(hideToast,1500);return}
  t.classList.remove("on");undoTok=null;const b=$("#tundo");if(b)b.remove()}
-// act: {label, fn}, a button before Dismiss (e.g. "Show progress" when a Trash, Erase or Share-safe copy is running)
+// act: {label, fn}, a button before Dismiss (e.g. "Show progress" when a Trash, Erase or Share is running)
 function errorToast(s,act){const t=$("#etoast"),x=el("button",null,"Dismiss"),off=()=>{t.classList.remove("on");t.replaceChildren()};x.type="button";x.setAttribute("aria-label","Dismiss error");
  x.onclick=off;t.replaceChildren(el("span",null,s));if(act){const a=el("button","act",act.label);a.type="button";a.onclick=()=>{off();act.fn()};t.append(a)}t.append(x);t.classList.add("on")}
 /* A refusal: the server's own words. A 409 "busy" (the library lock or the gallery's job) already says in plain words
@@ -2576,7 +2635,7 @@ async function refused(what,e){let act=null;if(e.busy){try{const j=await api("/a
  errorToast((what?what+" refused: ":"Refused: ")+e.message,act)}
 /* Undo: the server recorded what Keep, a tag, Rotate or Set event changed and answers with a token; /api/undo puts
    exactly that back, under the library lock, and refuses (nothing written) when those items changed again since.
-   Trash, Erase and Share-safe copy never offer it. */
+   Trash, Erase and Share never offer it. */
 async function doUndo(){const tok=undoTok;if(!tok)return;undoTok=null;const b=$("#tundo");if(b)b.remove();
  try{const j=await api("/api/undo",{undo:tok});toast(j.result);loadFacets();if(j.kind==="event"&&vi<0){patchTiles(j.items);reset()}else refreshAfter(j.ids,j.thumbs,j.items)}
  catch(e){refused("Undo",e)}}
@@ -2627,19 +2686,31 @@ function askErase(ids){const n=ids.length,dr=facets&&facets.drive;confirmBox(`Er
  ()=>runJob("/api/erase",{ids,confirm:$("#mtyped").value},ids),"Erase "+plural(n,"file"))}
 function askSetEvent(ids){if(!ids.length)return;askField("Set the event on "+plural(ids.length,"item")+"?",[names(ids),"Each one goes into this event and out of any other. The photos and your other tags don't change. Leave it empty to take them out of every event."],"Event name (lowercase letters, digits and dashes, like summer-2026)",F.event||"",
  async()=>{const ev=$("#mfield").value.trim(),j=await api("/api/event/set",{ids,event:ev});if(vi>=0){closeModal();toast(j.result,j.undo);loadFacets();openViewer(vi,{keep:true})}else afterEvent(j)})}
-/* Share-safe copies: intake.py share-copy as a job (one at a time, with Trash and Erase), into a new folder; the page
-   shows the folder and share-copy's own lines (each copy's path and "gps=none"), never the copies themselves. */
-function askShare(ids){if(!ids.length)return;confirmBox("Make share-safe copies of "+plural(ids.length,"item")+"?",[thumbs(ids),names(ids),"Makes copies without location (GPS) or other hidden info, in a new folder under "+((facets&&facets.share_out)||"the share-safe folder")+". Your originals are not changed."],false,
+/* Share: share-safe copies (intake.py share-copy as a job, one at a time with Trash and Erase) into a new folder; the
+   page shows the folder and share-copy's own lines (each copy's path and "gps=none"), never the copies themselves.
+   When the job this click started ends cleanly, the server opens that folder in the file manager (POST
+   /api/share/open names the job, never a path), so the copies can be dragged into a chat or an email; the dialog and
+   the message offer Open folder again, also on a page that re-attached (no automatic open there: not its click). */
+function askShare(ids){if(!ids.length)return;confirmBox("Share "+plural(ids.length,"item")+"?",[thumbs(ids),names(ids),"Makes copies without location (GPS) or other hidden info, in a new folder under "+((facets&&facets.share_out)||"the share-safe folder")+", then opens that folder so you can drag them into a chat or an email. Your originals are not changed."],false,
  ()=>runShare(ids))}
 async function runShare(ids){let j;try{j=await api("/api/share",{ids})}catch(e){if(e.busy&&await attachJob())return;throw e}
- jobDest=j.dest;startJob("share",ids)}
-/* Trash, Erase and Share-safe copy run as a detached job (jobs.py): closing the page or stopping the server never
+ jobDest=j.dest;startJob("share",ids);job.sid=j.job;job.auto=true}
+const shareReady=()=>!!job&&job.kind==="share"&&job.state==="done"&&!!job.sid&&!/gps=STILL PRESENT/.test(job.log);
+// Open folder: the button (in the job dialog and in the message), and the line saying what happened
+function openBtn(id,cls){const b=el("button",cls||null,WORDS.openFolder);b.type="button";b.id=id;b.title="Open "+jobDest+" in the file manager";b.onclick=()=>openShare(false);return b}
+function shareBits(){const b=$("#mb");if(!shareReady()||!jobInDialog()||$("#mopen"))return;const p=el("p","mopenp");p.append(openBtn("mopen","btn"));const m=el("span",null,"");m.id="mopened";m.setAttribute("role","status");p.append(m);b.append(p)}
+// the message for a finished Share (the dialog hidden): what happened, and Open folder (it stays 10 s, and while hovered)
+function shareToast(s){toast(s);$("#toast").append(openBtn("topen"));clearTimeout(tt);tt=setTimeout(hideToast,10000)}
+async function openShare(auto){const me=job;if(!shareReady())return;const say=(s,bad)=>{const m=$("#mopened");if(m&&jobInDialog()&&job===me){m.textContent=s;m.classList.toggle("warn",!!bad)}else if(bad)errorToast(s);else shareToast(s)};
+ try{const j=await api("/api/share/open",{job:me.sid});say("Opened "+j.dest+" in the file manager: drag the copies into a chat or an email.")}
+ catch(e){say((auto&&!jobInDialog()?me.status+" ":"")+"Couldn't open the folder: "+e.message+(auto?" The copies are in "+jobDest+".":""),true)}}
+/* Trash, Erase and Share run as a detached job (jobs.py): closing the page or stopping the server never
    stops them, and any page (a reload, a second tab, a restarted server) shows the running one from its status file.
    There is no stop (a half-done erase must finish), so the dialog's button says what it does: "Hide (it keeps
    running)", then "Close" once the job has ended. While it is hidden the header's pill brings it back, and its end
    is announced: a message (role=status) when it went well, an alert with Details when it did not. */
 let job=null,jobDest="";
-const SHARE_TIP="Make a copy without location and camera info, to send to someone";
+const SHARE_TIP="Share: make copies without location (GPS) or other hidden info, in a new folder you can send from. Your originals don't change.";
 const JOBRUN={erase:"Erasing… looking for copies in your home folder. This can take a few minutes; you can close this page, it keeps running.",
  trash:"Trashing… you can close this page, it keeps running.",
  share:"Copying without location or hidden info… you can close this page, it keeps running."};
@@ -2651,7 +2722,7 @@ function startJob(kind,ids,log){job={kind,ids:ids||[],log:log||"",state:"running
 const jobInDialog=()=>isOn("#modal")&&$("#modal").dataset.job!==undefined;
 // (re)open the dialog on the job: no confirm text, buttons or fields of the dialog that started it
 function showJob(){if(!job)return;const b=$("#mb");b.replaceChildren();if(job.kind==="share"&&jobDest){const p=el("p",null,"Destination: "+jobDest);p.id="mdest";b.append(p)}
- $("#mgo").hidden=true;$("#mtype").hidden=true;$("#mfieldp").hidden=true;$("#mout").hidden=false;$("#mout").textContent="";$("#modal").dataset.job=job.state;openModal();paintJob();$("#mno").focus()}
+ $("#mgo").hidden=true;$("#mtype").hidden=true;$("#mfieldp").hidden=true;$("#mout").hidden=false;$("#mout").textContent="";$("#modal").dataset.job=job.state;openModal();paintJob();shareBits();$("#mno").focus()}
 function paintJob(){paintPill();if(!job)return;const d=$("#modal");if(d.dataset.job!==undefined)d.dataset.job=job.state;  // also while hidden
  if(!jobInDialog())return;$("#mh").textContent=job.head;
  const o=$("#mout");if(o.textContent!==job.log){o.textContent=job.log;o.scrollTop=1e9}
@@ -2664,17 +2735,21 @@ function stepText(j){return j.step&&j.total>1?` (step ${j.step} of ${j.total})`:
 function jobEnd(j){const n=job.ids.length,k=job.kind;
  if(j.state==="crashed")return [`The ${jobWord(k).toLowerCase()} stopped unexpectedly`+stepText(j)+(j.step_running?"; the step it started is still running":"")+". Nothing more runs by itself.",
   jobWord(k)+" stopped unexpectedly. Nothing more runs by itself; see the details."];
- if(/gps=STILL PRESENT/.test(job.log))return ["Finished, but GPS is still in some copies (see below): don't share those","Share-safe copy finished, but GPS is still in some copies: don't share those."];
+ if(/gps=STILL PRESENT/.test(job.log))return ["Finished, but GPS is still in some copies (see below): don't share those","Share finished, but GPS is still in some copies: don't share those."];
  if(!j.ok)return ["Finished with problems (see below)",jobWord(k)+" finished with problems; see the details."];
  const what=k==="trash"?`${plural(n,"file")} trashed.`:k==="erase"?`${plural(n,"file")} erased everywhere.`:k==="share"&&jobDest?`share-safe copies in ${jobDest}.`:"";
  return ["Done"+(k==="share"&&jobDest?": share-safe copies in "+jobDest:""),"Done"+(what&&n?": "+what:".")]}
 async function poll(since){const me=job;let j;try{j=await api("/api/job?since="+since)}catch(e){if(job!==me)return;
   job.log+="\n(server stopped; an action already started keeps going on its own)";job.state="unknown";job.status="The server stopped. The action keeps going on its own.";paintJob();return}
  if(job!==me)return;if(j.lines.length)job.log+=j.lines.join("\n")+"\n";const k=jobKind(j);if(k)job.kind=k;
+ if(job.kind==="share"&&j.dest){jobDest=j.dest;job.sid=j.id}  // a Share this server started: its folder, by job
  if(!j.done){job.state="running";job.head=jobWord(job.kind)+" running"+stepText(j);job.status=JOBRUN[job.kind]||"Working… you can close this page, it keeps running.";paintJob();setTimeout(()=>poll(j.next),600);return}
  job.state=j.state==="crashed"?"crashed":j.ok?"done":"failed";[job.head,job.status]=jobEnd(j);
- const seen=jobInDialog();paintJob();job.ids.forEach(id=>sel.delete(id));closeViewer();loadFacets();reset();
- if(!seen){if(job.state==="done")toast(job.status);else errorToast(job.status,{label:"Details",fn:showJob})}}
+ const seen=jobInDialog();paintJob();shareBits();job.ids.forEach(id=>sel.delete(id));closeViewer();loadFacets();reset();
+ const auto=shareReady()&&job.auto;job.auto=false;
+ // a Share this click started opens its folder now (the message then says so); one this page re-attached to offers it
+ if(!seen&&!auto){if(job.state!=="done")errorToast(job.status,{label:"Details",fn:showJob});else if(shareReady())shareToast(job.status);else toast(job.status)}
+ if(auto)openShare(true)}
 // a job this page didn't start (a reload, another tab, a restarted server): true when one is running and shown
 async function attachJob(){if(job&&job.state==="running"){showJob();return true}let j;try{j=await api("/api/job")}catch(e){return false}if(j.done)return false;
  job={kind:jobKind(j),ids:j.ids||[],log:"",state:"running",head:"",status:""};job.head=jobWord(job.kind)+" running";showJob();poll(0);return true}
@@ -2734,10 +2809,11 @@ async function openViewer(n,opt){opt=opt||{};if(n<0||n>=items.length)return;if(v
  const s=$("#info");s.replaceChildren();
  const head=el("div","ihead"),x=el("button","icon");x.id="vclose";x.type="button";x.setAttribute("aria-label","Close (Esc)");x.title="Close (Esc)";x.insertAdjacentHTML("beforeend",'<svg class="ic"><use href="#i-x"/></svg>');x.onclick=closeViewer;
  head.append(el("h2",null,d.name),x);s.append(head);
+ const vs=el("button","btn share");vs.id="vshare";vs.type="button";vs.title=SHARE_TIP;vs.insertAdjacentHTML("beforeend",'<svg class="ic"><use href="#i-share"/></svg>');vs.append("Share");vs.onclick=()=>askShare([d.id]);x.before(vs);
  const acts=el("div","acts"),mk=(box,t,f,c)=>{const b=el("button","btn"+(c?" "+c:""),t);b.type="button";b.onclick=f;box.append(b);return b};
  mk(acts,"Keep (K)",()=>doKeep([d.id]),"keep");mk(acts,"Trash (T)",()=>askTrash([d.id]),"trash");mk(acts,"Erase (E)",()=>askErase([d.id]),"erase");s.append(acts);
  const tools=el("div","tools");mk(tools,"Rotate left (Shift+R)",()=>rot([d.id],"ccw")).setAttribute("aria-keyshortcuts","Shift+R");mk(tools,"Rotate right (R)",()=>rot([d.id],"cw")).setAttribute("aria-keyshortcuts","R");
- mk(tools,"Set event…",()=>askSetEvent([d.id]));mk(tools,"Share-safe copy",()=>askShare([d.id])).title=SHARE_TIP;
+ mk(tools,"Set event…",()=>askSetEvent([d.id]));
  mk(tools,"Find similar",()=>{simId=d.id;simName=d.name;closeViewer();$("#q").value="";syncUI();reset()}).title="Photos that look like this one";s.append(tools);
  const dl=el("dl","dt"),row=(k,v)=>{if(v){dl.append(el("dt",null,k),el("dd",null,v))}};
  row("Date",d.date);row("Place",d.place);row("Event",d.event);row("Project",d.project);row("Source",d.source);row("Folder",d.folder);row("Resolution",d.res);row("Size",d.size);
@@ -2808,7 +2884,7 @@ $$(".nv[data-v]").forEach(b=>b.onclick=()=>{const v=b.dataset.v;
  else{F={aimin:F.aimin};if(v==="recent")F.added=String((facets&&facets.recent_days)||30);if(v==="child")F.review="child-in-shot";if(v==="untagged")F.review="untagged";$("#q").value="";setView("lib")}
  if(mqPhone.matches&&drawer){drawer=false;layout()}});
 let qt=null;$("#q").oninput=()=>{clearTimeout(qt);qt=setTimeout(()=>{simId=null;syncUI();reset()},500)};
-$("#close").onclick=()=>{confirmBox("Stop the gallery server?",["The page stops working until you run media-intake gallery again. A Trash, Erase or Share-safe copy that is already running keeps going on its own."],false,
+$("#close").onclick=()=>{confirmBox("Stop the gallery server?",["The page stops working until you run media-intake gallery again. A Trash, Erase or Share that is already running keeps going on its own."],false,
  async()=>{try{await api("/api/close",{})}catch(e){}document.body.replaceChildren(el("p","empty big","Gallery stopped. You can close this tab."))});$("#mgo").textContent="Stop the server"};
 new IntersectionObserver(es=>{if(es.some(e=>e.isIntersecting))more()},{rootMargin:"800px"}).observe($("#sentinel"));
 // thumbnail size (a per-browser convenience)

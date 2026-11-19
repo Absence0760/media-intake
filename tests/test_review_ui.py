@@ -1001,7 +1001,7 @@ class BusyWords(unittest.TestCase):
         unknown = jobs.LibraryBusy(msg)  # no note: the usual suspects, never "another media-intake command"
         own = jobs.Busy("a job for review-2026-11-12 is still running")
         self.assertEqual(review_ui.busy_words(lib), "Another action is using the library (a Trash, Erase or "
-                         "Share-safe copy from another gallery). Wait for it to finish, then apply again.")
+                         "Share from another gallery). Wait for it to finish, then apply again.")
         self.assertEqual(review_ui.busy_words(unknown), "Another action is using the library (an import, a gallery "
                          "Trash or Erase, or another review). Wait for it to finish, then apply again.")
         self.assertTrue(review_ui.busy_words(own).startswith("A run of this review is still going"))

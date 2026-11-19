@@ -134,7 +134,7 @@ class Doctor(unittest.TestCase):
         code, lines = self.run_doctor()
         self.assertEqual(code, 0, lines)
         self.assertEqual(self.line(lines, "xdg-open"),
-                         "optional xdg-open (the gallery's Open in the system player button) (xdg-utils)")
+                         "optional xdg-open (the gallery's Open in the system player and Open folder buttons) (xdg-utils)")
         self.assertEqual(self.dnf(lines), ["sudo dnf install -y xdg-utils"])
 
     def test_h264_encoder_for_gallery_proxies(self):

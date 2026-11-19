@@ -82,7 +82,7 @@ HEVC_DECODERS, HEVC_PACKAGE = ("vah265dec", "vulkanh265dec"), "gstreamer1-plugin
 GST_H264_ENCODERS, H264_PACKAGE = ("x264enc", "openh264enc", "vah264enc"), "gstreamer1-plugin-openh264"
 FFMPEG_H264_ENCODERS = ("libx264", "libopenh264")
 MTP_BACKEND, MTP_PACKAGE = "/usr/libexec/gvfsd-mtp", "gvfs-mtp"
-XDG_OPEN, XDG_PACKAGE = "xdg-open", "xdg-utils"  # the gallery's "Open in the system player" (POST /api/open)
+XDG_OPEN, XDG_PACKAGE = "xdg-open", "xdg-utils"  # the gallery's "Open in the system player" and a Share's "Open folder"
 OPTIONAL = {"gstreamer1", HEVC_PACKAGE, H264_PACKAGE, MTP_PACKAGE, XDG_PACKAGE}  # Fedora packages, as in the maps above
 
 
@@ -244,7 +244,7 @@ def doctor(probe=None, out=print, colour=None):
     if probe.which(XDG_OPEN):
         report("ok", XDG_OPEN)
     else:
-        missing(XDG_PACKAGE, f"{XDG_OPEN} (the gallery's Open in the system player button)")
+        missing(XDG_PACKAGE, f"{XDG_OPEN} (the gallery's Open in the system player and Open folder buttons)")
 
     heading("Venv, models and data")
     vp = venv_python()

@@ -54,7 +54,10 @@ backup drive, quarantine, review folder, Keep, Trash, Erase, ...).
   token. The gallery can launch the desktop's default app (`xdg-open`, an
   argument list, no shell) on one library file, for media the browser can't
   play, and only from its "Open in the system player" button's POST (token,
-  CSRF and Origin checked); a quarantined or flagged file is refused.
+  CSRF and Origin checked); a quarantined or flagged file is refused. After
+  a Share it also opens the new share-safe folder it made in the file
+  manager: the page names the job, never a path, and the folder must still
+  sit directly inside the share-safe folder.
 - The gallery's H.264 copies of HEVC videos live in
   `~/.cache/media-intake/proxies` (`0700`, files `0600`); `erase`, `forget`
   and `trash` delete them, `verify-gone` reports any left, and quarantine and
