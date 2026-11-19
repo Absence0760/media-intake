@@ -85,6 +85,14 @@ Off until `bash setup.sh --recognition`; [recognition.md](recognition.md).
 | **slug** | An event's name in the sidecars: lowercase letters, digits and dashes, like `summer-2026` (`plan --event`, Set event, Rename). Always in the tooltip and the event bar. | The display name. |
 | **display name** | What the gallery shows for an event in the sidebar and the title: one you set with **Display name…**, else the slug made readable ("Summer 2026") when no other event looks like it, else the slug. Kept by the gallery in the state folder, never in a sidecar; two events never show alike. | The slug. |
 
+## Places
+
+| Word | Means | Not to be confused with |
+| --- | --- | --- |
+| **Place** | The city or town nearest a file's GPS (within 50 km), added by `tag` from offline GeoNames, like "Fernvale, Eastmarch, XA". The gallery's **Place** filter and Details row. | My places. |
+| **My places**, **My place** | Places you name yourself (Home, The cabin): a name, a point and a radius, kept only in the state folder's `places.json`. A file whose GPS is inside one gets it as a tag beside its Place. `media-intake places`, the gallery's **Places** list and **Add a place here…** ([places.md](places.md)). | Place (the city). |
+| **Probably here** | The gallery's guess for a file without GPS: a photo from the same camera, close in time, was in one of your places. Only a suggestion: **Yes** tags it, **No** stops it being suggested again. | |
+
 The tool's own tag names (`Review|maybe-trash`, `Owner|keep`, `Label|food`)
 appear only in sidecars and in the developer docs; the pages map them to the
 words above in one place each (`WORDS` in `gallery.py`, the review page's

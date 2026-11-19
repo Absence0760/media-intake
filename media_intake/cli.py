@@ -42,6 +42,7 @@ Library
   search "TEXT"             find photos by a description (venv)
   similar FILE              find photos that look like this one (venv)
   tag-files FILE...         write tags again for library files
+  places list|add|tag|...   your own named places (Home, ...) as tags
   mark-used FILE --post P   record that files were used in a post
   share-copy FILE --out D   copy without GPS or metadata (or social-copy)
   calibrate                 test content labels on your marks; changes nothing
@@ -113,6 +114,14 @@ class Probe:
             importlib.import_module(module)
             return True
         except ImportError:
+            return False
+
+    def venv_importable(self, venv_py, module):
+        """MODULE imports in the venv's python (a subprocess: this python may be the system one)."""
+        try:
+            return subprocess.run([venv_py, "-I", "-c", f"import {module}"], capture_output=True,
+                                  timeout=60).returncode == 0
+        except (OSError, subprocess.TimeoutExpired):
             return False
 
     def exists(self, path):
@@ -262,6 +271,14 @@ def doctor(probe=None, out=print, colour=None):
     have = probe.exists(vp)
     report("ok" if have else "MISSING", f"venv {vp}" + ("" if have else " (bash setup.sh)"))
     ok &= have
+    # The gallery and review page re-run under the venv for HEIC; without pillow-heif there, HEIC photos show
+    # only as a small preview (gallery) or "no preview" (review page).
+    if have:
+        heif = probe.venv_importable(vp, "pillow_heif")
+        report("ok" if heif else "MISSING", "pillow-heif in the venv (HEIC photos full size in the gallery and the "
+                                            "review page)" + ("" if heif else "; without it a small preview only "
+                                                                              "(bash setup.sh)"))
+        ok &= heif
     ok &= _check_models(probe, report)
     ok &= _check_recognition(probe, report)
     geo = os.path.join(cfg["state"], "geo", "cities1000.zip")
@@ -378,6 +395,11 @@ def _zip_check(rest):
     return zip_check.main(rest)
 
 
+def _places(rest):  # its own parser (list, add, rename, remove, suggest, tag) and the library lock
+    import places
+    return places.main(rest)
+
+
 def _gallery(rest):  # here, not in intake.py: gallery imports intake, so intake never imports gallery
     import gallery
     return gallery.main(rest)
@@ -395,7 +417,8 @@ def _prune_cache(rest):  # cli.py's too: it reads the library as the gallery doe
 
 # cli.py's own commands; VENV_SCRIPTS run in the venv; everything else goes to intake.py's parser.
 COMMANDS = {"doctor": lambda rest: doctor(), "queue": _queue, "review": _review, "backup": _backup,
-            "gallery": _gallery, "proxies": _proxies, "prune-cache": _prune_cache, "zip-check": _zip_check}
+            "gallery": _gallery, "proxies": _proxies, "prune-cache": _prune_cache, "zip-check": _zip_check,
+            "places": _places}
 HELP = ("-h", "--help", "help")
 
 

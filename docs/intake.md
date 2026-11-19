@@ -1200,7 +1200,8 @@ own namespace; your tags win.
 | Namespace | Written by | Re-tag behaviour |
 |---|---|---|
 | Your keywords (digiKam), digiKam pick labels, `xmp:Rating` (stars; 5 = a favorite), `Owner\|keep`, `Owner\|not-trash`, `Owner\|trash` | you (digiKam; Keep, Trash and the Favorite star in the gallery, Keep and Trash on the review page) | never touched by any tool except your next decision on the same file (Keep drops `Owner\|trash`); `trash --from-digikam` acts on Rejected (PickLabel 1) only when you run it |
-| `Project\|`, `Source\|`, `Event\|`, `Place\|`, dates | `tag`, `tag-files` | a prefix is replaced only when the run has a value for it |
+| `Project\|`, `Source\|`, `Event\|`, `Place\|<city>, <state>, <CC>`, dates | `tag`, `tag-files` | a prefix is replaced only when the run has a value for it |
+| `Place\|<name>` (no comma: a place you named) | `places` (`places.py`, via `tag`, `tag-files`, `places tag` and the gallery) | only for a place in `places.json`; never put back once you remove it; the city fact never replaces it ([places.md](places.md)) |
 | `Label\|*`, `Review\|maybe-trash`, `Review\|untagged-*` | SigLIP (`label.py` via `tag`/`tag-files`) | replaced as a set on every labelled run (`--no-labels` leaves them) |
 | `Review\|child-in-shot` | SigLIP | added, never removed by a tool; only you clear it |
 | `AI\|vlm/<model>/...` (and the older `Review\|vlm-trash/*`, `Review\|vlm-keep`) | the VLM (`vlm_trash.py`) | its own; tagging never touches them |

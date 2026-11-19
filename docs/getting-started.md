@@ -243,6 +243,7 @@ Use a LUKS-encrypted drive. [backup.md](backup.md).
 | `no batch named '...'` | A typo in the batch name: the message lists your batches, newest first. |
 | `stage` says `no such folder` or `nothing to stage` | Check the path. For a phone: unlock it, pull down the USB notification and choose "File transfer", then find it with `ls /run/user/$UID/gvfs/`. A locked or charge-only phone looks empty. |
 | `scan` says `no venv` | `bash setup.sh`. |
+| The gallery shows a HEIC photo blurry, saying "This is a small preview" | No venv with pillow-heif to run under: `bash setup.sh`, then start `media-intake gallery` again (`doctor` lists `pillow-heif in the venv`). |
 | `apply` says `scan has not run` or `plan has not run` | Run the command it prints. |
 | `apply` says the ID and card checks need a package | Run the `sudo dnf install -y` line it prints, then `media-intake scan <batch>` again. |
 | Videos are quarantined as `unscanned-video` | No video decoder could read them (most phone video is HEVC): install the GStreamer HEVC decoder `doctor` lists as optional before your next import. A *photo* with this flag is a motion photo whose short video couldn't be found or read ([intake.md](intake.md), "Principles"); open it yourself and release it if it's fine. |

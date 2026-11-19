@@ -10,6 +10,18 @@ media-intake gallery [--drive DRIVE] [--port 0] [--share-out DIR]
 `python3 -I media_intake/gallery.py` takes the same flags. `--share-out` is
 where share-safe copies go (below).
 
+The `media-intake` command runs on the system Python, which has no
+pillow-heif, so before it prints anything the gallery re-runs itself (same
+flags) under `setup.sh`'s venv, which has pillow-heif and reuses the system
+packages; HEIC/HEIF photos then show full size. It does this the way the
+review page does (`review_ui.venv_reexec`): not when the Python already has
+pillow-heif or already is the venv, and not with `MEDIA_REVIEW_NO_VENV=1`.
+Without a venv the gallery runs as it is, and a HEIC's large view shows its
+thumbnail with "This is a small preview: HEIC photos need setup.sh's venv
+(pillow-heif) to show full size." (or "No preview: ..." when there is no
+thumbnail either); `media-intake doctor` reports pillow-heif missing from the
+venv as `MISSING`.
+
 It prints exactly one `xdg-open 'http://127.0.0.1:<port>/?t=<token>'` line,
 then a note with the item count, the start-up time, how many flagged or erased
 files were left out and any plugin tabs. A private browser window keeps the
@@ -198,7 +210,8 @@ page's own handlers and fails when the list leaves one out.
 - **Library**: a timeline grid by month, newest first, 240 items per page with
   infinite scroll; thumbnails load lazily. Click (or Enter on a focused tile)
   opens the large view (the image, or `<video controls>`, which starts playing
-  by itself; HEIC/DNG get a 1600 px JPEG made in memory) with tags, date,
+  by itself; HEIC/DNG get a 1600 px JPEG made in memory, HEIC only with
+  pillow-heif: above) with tags, date,
   place, event, project, source, folder, resolution and size. Arrow keys go to
   the previous/next item, Esc closes, `/` jumps to the search box.
 - **Suggested junk** (was "Trash suggestions"): the one place for what
@@ -305,6 +318,12 @@ page's own handlers and fails when the list leaves one out.
   name when the gallery next starts, but only when every library folder is
   there and no file was left out as flagged (an unmounted drive's events
   aren't gone); until then it would show the old name if made again.
+- **Places**: your own named places (My places), each with how many items
+  carry it; a click shows them (the My place filter). The large view's
+  **Add a place here…** (only on an item with GPS) names a new one at that
+  item's point, and an item without GPS can show a **Probably at …**
+  suggestion to answer Yes or No. The page never gets a coordinate: see
+  [places.md](places.md), "In the gallery".
 - **Plugin tabs**: any view a plugin adds through `gallery_views()`, with its
   routes under `/plugin/<id>/` ([plugins.md](plugins.md)).
 
@@ -395,7 +414,8 @@ the large view. The **Favorites** quick view lists them, with its count, and
 
 ## Filters (all combinable)
 
-Project, Source, Event, Place, year or month, Looks like (any `Label|*`), my
+Project, Source, Event, Place (the city: a `Place|` tag with a comma), My place
+(`myplace=<id>`: one of your named places, from the Places list), year or month, Looks like (any `Label|*`), my
 tags, Flags (Tagged as junk = `Review|maybe-trash`, Possible child =
 `Review|child-in-shot`, Untagged = `Review|untagged-*` or no tags, Favorite =
 `xmp:Rating` >= 5), Junk check
@@ -432,7 +452,9 @@ project, source, event, place, label, month and year, my tag), `counts`
 many more a lower Junk score adds), `recent`), `ai_scores` (`[score, n]`
 for every Judged junk score, to 2 decimals: the page sums those at or above
 its slider), `recent_days`, the search
-status, `share_out` and `drive` (the backup drive Erase includes, or null). Like every route it needs the session cookie or token.
+status, `share_out` and `drive` (the backup drive Erase includes, or null), `places` (`{id, name, n}` per
+named place, most items first), `places_error` (why they can't be read, or "") and `radii` / `radius` (Add a place
+here…'s choices and default, metres). Like every route it needs the session cookie or token.
 
 The search box runs `semantic.py search` (local SigLIP text model, through the
 media-intake venv). When the venv, the embeddings or the text model are
@@ -834,7 +856,9 @@ cold read from disk will be slower.
 ## Test
 
 `python3 -I -m unittest discover -s tests -p test_gallery.py`: synthetic media in a throwaway
-HOME, the real `intake.py` for trash and forget, and a demo plugin view; the
+HOME, the re-run under the venv with every flag and nothing printed first (`VenvReexecTest`: `os.execv`
+mocked; none when opted out, already in the venv, without one, or with pillow-heif), a HEIC without pillow-heif
+flagged `heic` with its full size a 404 (`HeicWithoutPillowHeifTest`), the real `intake.py` for trash and forget, and a demo plugin view; the
 job tests swap in a fake `intake.py` whose trash waits on a FIFO, then kill
 the server or the worker mid-job, and a plugin POST gets 409 while such a job
 holds the library lock (a view declared `post_read_only` does not), every 409 then reading "a Trash is still
@@ -987,7 +1011,9 @@ does it on the page: a mixed selection by Space, a shift-click range and
 Ctrl-click, Keep by K and by the bar (sidecars and the tiles' "Kept" flags),
 a shift-click after the grid reloads, + tag / − tag, Set event, Rotate (the
 thumbnails made again turned) and Trash on a mixed selection, and the large
-view playing an .mp4 and a .MOV and rotating a video.
+view playing an .mp4 and a .MOV and rotating a video, and a HEIC without
+pillow-heif showing its thumbnail as "a small preview" and why (never "can't
+show" over it), or "No preview" when it has no thumbnail.
 
 `tests/test_gallery_proxy.py` (the HEVC cases skip, naming why, when no
 synthetic HEVC clip can be made: ffmpeg's `libx265`, else VA-API's
