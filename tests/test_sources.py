@@ -548,6 +548,21 @@ class RootPresent(unittest.TestCase):
             with unittest.mock.patch.object(sources, "drive_mount", side_effect=OSError("no findmnt")):
                 self.assertTrue(sources.root_present(root), "no findmnt: the non-empty folder is all there is")
 
+    def test_a_hung_findmnt_is_not_present(self):
+        import subprocess
+        media = os.path.join(self.tmp, "media")
+        root = os.path.join(media, "user", "LABEL")
+        os.makedirs(root)
+        open(os.path.join(root, "a.jpg"), "w").close()
+        hung = unittest.mock.Mock(side_effect=subprocess.TimeoutExpired("findmnt", sources.FINDMNT_TIMEOUT))
+        with unittest.mock.patch.object(sources, "FOLDER_DRIVE_PREFIXES", (media,)), \
+                unittest.mock.patch.dict(os.environ, {}, clear=False), \
+                unittest.mock.patch("subprocess.run", hung):
+            os.environ.pop("MEDIA_INTAKE_TEST_MOUNT", None)
+            self.assertEqual(sources._findmnt("TARGET", root), "")
+            self.assertFalse(sources.root_present(root), "a hung mount is not a library that is there")
+        self.assertEqual(hung.call_args.kwargs["timeout"], sources.FINDMNT_TIMEOUT)
+
     def test_file_gone_uses_the_innermost_root(self):
         lib = os.path.join(self.tmp, "lib")
         proj = os.path.join(lib, "projects", "p")  # a project folder inside the library, on its own drive

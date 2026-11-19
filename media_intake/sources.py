@@ -257,9 +257,18 @@ TELEGRAM_EXPORT_NAME = re.compile(r"^(photo|video|file)_\d+@\d\d-\d\d-\d{4}_\d\d
 _IMG_EXT = {".jpg", ".jpeg", ".png", ".heic", ".heif", ".webp", ".gif", ".dng", ".gpr"}
 
 
+FINDMNT_TIMEOUT = 10  # seconds: a hung mount (a dead network share, a drive gone mid-read) answers nothing
+
+
 def _findmnt(field, path):
+    """findmnt's FIELD for the mount holding path; "" when it can't tell in FINDMNT_TIMEOUT (a hung mount):
+    callers then take the path as on no drive (root_present: not there). OSError when findmnt is missing."""
     import subprocess
-    r = subprocess.run(["findmnt", "-n", "-o", field, "-T", path], capture_output=True, text=True)
+    try:
+        r = subprocess.run(["findmnt", "-n", "-o", field, "-T", path], capture_output=True, text=True,
+                           stdin=subprocess.DEVNULL, timeout=FINDMNT_TIMEOUT)
+    except subprocess.TimeoutExpired:
+        return ""
     return r.stdout.strip()
 
 
