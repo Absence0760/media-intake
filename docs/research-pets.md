@@ -1,9 +1,10 @@
 # Research: recognising pets, and bringing people tags in
 
-Status: **proposal, not built**. Researched 2026-11-19. Nothing here changes the
-tool yet; the owner approves (or edits) the decisions below before any code.
+Status: **decided, not built**. Researched 2026-11-19; the owner accepted the
+recommendations the same day ("Decisions" below). Nothing here changes the tool
+yet.
 
-Goal: tag each of a household's own pets by name (`Pet|<Name>`), the same way a
+Goal: tag each of a household's own pets by name (`Pets|<Name>`), the same way a
 face pipeline tags people (`People|<Name>`), and move that face pipeline into
 media-intake so both share one scan, one naming page, one erase path. Fully
 offline, CPU-only by default, models downloaded only by `setup.sh` and pinned by
@@ -15,27 +16,49 @@ sha256, off unless the owner turns it on.
   runs in the `cv2` wheel already installed). COCO classes `cat` and `dog` by
   default (bird, horse and the rest by config). Whole-body boxes, not faces:
   pets are photographed from behind and from the side far more than people.
-- **Tell pets apart** with DINOv2 ViT-S/14 (Meta, Apache-2.0, 88 MB ONNX,
-  runs in the `onnxruntime` wheel already installed): a 384-d vector per animal
-  crop. SigLIP (already installed) on the same crops is kept as the zero-download
+- **Tell pets apart** with DINOv2 ViT-S/14 (Meta, Apache-2.0), starting with the
+  int8 ONNX file (24 MB; the 88 MB fp32 file only if the owner's `pets eval`
+  shows confusion), run in the `onnxruntime` wheel already installed: a 384-d
+  vector per animal crop. SigLIP (already installed) on the same crops is kept as the zero-download
   baseline that the evaluation compares against.
 - **Group and name** exactly like the face prototype: union-find clustering with
   "two animals in one photo are never the same pet" and "a cat is never a dog",
-  the owner names clusters, later photos join a named cluster, tags go to the
-  sidecar only. Nothing is named without the owner.
+  the owner names clusters, later photos that join a named cluster are
+  **suggestions until the owner confirms them**, tags go to the sidecar only.
+  Nothing is named without the owner.
 - **Port the face prototype** (YuNet + SFace, already pinned there) into one
   shared `identities` core with two kinds, `person` and `pet`; same state folder
   rules (0700/0600, never backed up), and erase / forget / trash / make-private /
-  verify-gone cover both.
-- No torch, no new Python wheel. New downloads: 124 MB for pets, 39 MB for faces.
+  verify-gone cover both. Two commands, `media-intake people …` and
+  `media-intake pets …`, on that one core.
+- Videos: scene-change frame sampling on the GPU decode path, linked across
+  frames (see "Videos"); it doubles as the roadmap's per-frame video index.
+- No torch, no new Python wheel. New downloads: 60 MB for pets, 39 MB for faces.
+
+## Decisions (owner, 2026-11-19)
+
+1. **No automatic naming.** A new face or pet that joins a named cluster is a
+   suggestion until the owner confirms it; only confirmed ones are tagged. The
+   ported faces code changes accordingly (the prototype's `how=auto`
+   propagation becomes `how=suggested`), matching the roadmap's "never names
+   faces automatically".
+2. **Tags:** `Pets|<Name>` (plural, matching `People|<Name>`).
+3. **No fallback model trained on research-only or scraped data** (so not the
+   AvitoTech fine-tune, nor anything derived from PetFace).
+4. **Classes:** cats and dogs by default; other COCO animals (bird, horse,
+   sheep, cow, …) opt-in by config.
+5. **Commands:** `media-intake people …` and `media-intake pets …`, two
+   commands on one shared core.
+6. **Model size:** start with the int8 DINOv2 (24 MB); move to fp32 only if
+   the owner's `pets eval` shows confusion.
 
 ## Decision table
 
 | Job | Choice | Pin | Why |
 |---|---|---|---|
 | Animal detection | YOLOX-s `object_detection_yolox_2022nov.onnx` ([opencv_zoo](https://github.com/opencv/opencv_zoo/tree/48b10fa505aeb51fbd127fc60a5c660040e823b7/models/object_detection_yolox)), Apache-2.0 (its `LICENSE`; upstream [Megvii YOLOX](https://github.com/Megvii-BaseDetection/YOLOX), Apache-2.0) | opencv_zoo commit `48b10fa505aeb51fbd127fc60a5c660040e823b7` (main, 2026-10-20; file last changed 2022-11-13), 35,858,002 bytes, sha256 `c5c2d13e59ae883e6af3b45daea64af4833a4951c92d116ec270d9ddbe998063` | `cv2.dnn`, already in the venv: no new wheel. COCO val per-class AP (0.50:0.95, the zoo README): cat 66.4, dog 60.1, horse 58.1, bird 33.3. Same source and download pattern as the face models. |
-| Pet embedding | DINOv2 ViT-S/14 ([facebook/dinov2-small](https://huggingface.co/facebook/dinov2-small), Apache-2.0; code [facebookresearch/dinov2](https://github.com/facebookresearch/dinov2), Apache-2.0), ONNX export [Xenova/dinov2-small](https://huggingface.co/Xenova/dinov2-small) `onnx/model.onnx` | revision `c2bb04a51fab207c420665f1946016107bffc701` (2025-07-10), 88,459,888 bytes, sha256 `83141175ec78b4ff9a2bb58a4c7c264ba0054d1c2e122e5a8114b79a8d4179ea` | `onnxruntime`, already in the venv. Self-supervised features keep instance detail (coat pattern, markings) that text-aligned models like CLIP/SigLIP partly throw away; in the WildlifeDatasets benchmark (below) zero-shot DINOv2 beat CLIP on most of 29 animal re-ID datasets. Same exporter as the SigLIP files already pinned. |
-| Baseline embedding (evaluation only) | SigLIP vision encoder already pinned in `media_intake/pins.json` (`onnx/vision_model_quantized.onnx`) | as pinned today | Zero new download; run on the same crops so the owner's evaluation shows whether DINOv2 earns its 88 MB. |
+| Pet embedding | DINOv2 ViT-S/14 ([facebook/dinov2-small](https://huggingface.co/facebook/dinov2-small), Apache-2.0; code [facebookresearch/dinov2](https://github.com/facebookresearch/dinov2), Apache-2.0), ONNX export [Xenova/dinov2-small](https://huggingface.co/Xenova/dinov2-small), **int8** `onnx/model_quantized.onnx` (fp32 `onnx/model.onnx` only if `pets eval` shows confusion) | revision `c2bb04a51fab207c420665f1946016107bffc701` (2025-07-10). int8: 24,451,943 bytes, sha256 `3afdc8bc63b50558d6e5770f5b799bb82455c2311183a2de43803f343a29d917`. fp32 (escalation): 88,459,888 bytes, sha256 `83141175ec78b4ff9a2bb58a4c7c264ba0054d1c2e122e5a8114b79a8d4179ea` | `onnxruntime`, already in the venv. Self-supervised features keep instance detail (coat pattern, markings) that text-aligned models like CLIP/SigLIP partly throw away; in the WildlifeDatasets benchmark (below) zero-shot DINOv2 beat CLIP on most of 29 animal re-ID datasets. Same exporter as the SigLIP files already pinned. |
+| Baseline embedding (evaluation only) | SigLIP vision encoder already pinned in `media_intake/pins.json` (`onnx/vision_model_quantized.onnx`) | as pinned today | Zero new download; run on the same crops so the owner's evaluation shows whether DINOv2 earns its download. |
 | Face detection (port) | YuNet `face_detection_yunet_2023mar.onnx` (opencv_zoo), MIT | same commit, 232,589 bytes, sha256 `8f2383e4dd3cfbb4553ea8718107fc0423210dc964f9f4280604804ed2552fa4` | `cv2.FaceDetectorYN`; present in the pinned `opencv-python-headless==5.0.0.93` (checked, see "Measured"). |
 | Face embedding (port) | SFace `face_recognition_sface_2021dec.onnx` (opencv_zoo), Apache-2.0 | same commit, 38,696,353 bytes, sha256 `0ba9fbfa01b5270c96627c4ef784da859931e02f04419c829e83484087c34e79` | `cv2.FaceRecognizerSF`, same wheel; 128-d, LFW 99.60 % at cosine 0.363 (OpenCV's dnn_face tutorial). |
 | Clustering, naming, tags | Shared numpy union-find core (from the face prototype) | no dependency | Constraints, owner names, propagation, `written` table for tags the tool may remove: one implementation for both kinds. |
@@ -68,7 +91,7 @@ file or model card on 2026-11-19.
 | MegaDescriptor ([BVRA/MegaDescriptor-L-384](https://huggingface.co/BVRA/MegaDescriptor-L-384), T/B/L) | **CC-BY-NC-4.0** (model card tag) | timm/torch safetensors | Best zero-shot wildlife re-ID ([arXiv 2311.09118](https://arxiv.org/abs/2311.09118)); on DogFaceNet only top-1 0.461 per the AvitoTech paper (Table 26). | Rejected: non-commercial, and the owner's photos may be used for business. |
 | MiewID-msv3 ([conservationxlabs/miewid-msv3](https://huggingface.co/conservationxlabs/miewid-msv3)) | **none stated** (card has no licence; [code repo](https://github.com/WildMeOrg/wbia-plugin-miew-id) has no LICENSE file) | torch, `trust_remote_code`, 440 px, 24 GMACs | DogFaceNet top-1 0.557, cats 0.872 (AvitoTech paper, zero-shot) | Rejected: no licence means no permission to redistribute or use; heavy; needs remote code. |
 | PetFace models ([mapooon/PetFace](https://github.com/mapooon/PetFace), ECCV 2024) | README: dataset, code and pretrained models "for non-commercial research purpose only" | torch | Face-aligned ArcFace models on 257k animal identities | Rejected: non-commercial; needs a pet-face aligner. |
-| AvitoTech fine-tuned DINOv2-small ([AvitoTech/DINO-v2-small-for-animal-identification](https://huggingface.co/AvitoTech/DINO-v2-small-for-animal-identification), rev `a3ea88f20537d9c605da65894243ab68469db1bd`, `model.safetensors` 88,249,960 bytes, sha256 `059fb5e9…554a1be`) | Apache-2.0 on the card | safetensors only (an ONNX export would be ours to make, with torch, once) | Kudryavtsev et al., *J. Imaging* 12(1):30, 2026 ([arXiv 2603.02270](https://arxiv.org/abs/2603.02270)): cats top-1 0.855, DogFaceNet 0.558, ROC AUC 0.98-0.99, on 3,001 test animals | **Deferred, owner decision.** Purpose-built for cats and dogs, same size and runtime as the chosen model. But it was trained on PetFace (research-only terms) and scraped listings, so the Apache-2.0 label may not cover how the weights were made. Only worth it if the evaluation shows stock DINOv2 confusing the household's pets. |
+| AvitoTech fine-tuned DINOv2-small ([AvitoTech/DINO-v2-small-for-animal-identification](https://huggingface.co/AvitoTech/DINO-v2-small-for-animal-identification), rev `a3ea88f20537d9c605da65894243ab68469db1bd`, `model.safetensors` 88,249,960 bytes, sha256 `059fb5e9…554a1be`) | Apache-2.0 on the card | safetensors only (an ONNX export would be ours to make, with torch, once) | Kudryavtsev et al., *J. Imaging* 12(1):30, 2026 ([arXiv 2603.02270](https://arxiv.org/abs/2603.02270)): cats top-1 0.855, DogFaceNet 0.558, ROC AUC 0.98-0.99, on 3,001 test animals | **Rejected (owner, 2026-11-19).** Purpose-built for cats and dogs, same size and runtime as the chosen model, but trained on PetFace (research-only terms) and scraped listings, so the Apache-2.0 label may not cover how the weights were made. |
 | DINOv3 ViT-S/16 ([facebook/dinov3-vits16-pretrain-lvd1689m](https://huggingface.co/facebook/dinov3-vits16-pretrain-lvd1689m)) | **DINOv3 License** (custom: commercial use allowed, but gated download, an indemnity clause, Meta may amend it "effective immediately") | gated on Hugging Face | Newer, likely stronger | Rejected: `setup.sh` can't fetch a gated file without a token, and the terms are not a standard open licence. |
 | CLIP ViT-L | MIT | – | Below DINOv2 on most WildlifeDatasets sets | Rejected: SigLIP already covers the "text-aligned" baseline. |
 
@@ -121,14 +144,14 @@ real phone photos decode slower, HEIC much slower), accuracy on any real pet.
 ## Proposed pipeline
 
 Mirrors the face prototype step for step; `media-intake people …` and
-`media-intake pets …` (or one `media-intake identities --kind`, see open
-questions).
+`media-intake pets …` (decision 5), one shared core.
 
 1. **scan** (incremental by path + size + mtime, same content at another path
    reuses its rows). One decode per photo feeds both kinds: YuNet + SFace for
    faces, YOLOX for animals. Keep boxes with class in `pets.classes` (default
    `cat`, `dog`), score >= 0.5 (uncalibrated), short side >= 96 px in the
-   decoded image (DINOv2 reads 224 px; smaller crops give weak vectors). Crop
+   decoded image (DINOv2 reads 224 px; smaller crops give weak vectors).
+   `pets.classes` holds COCO class names; other animals are opt-in. Crop
    with 10 % margin, pad to square (no centre crop: it cuts tails and ears),
    DINOv2 CLS token, L2-normalised. Skipped exactly as faces: `label.refused()`
    (quarantine, staging, private store, anything flagged, erased or kept
@@ -141,14 +164,15 @@ questions).
    the wrong pet).
 3. **name / merge / ignore / take out** on the naming page or the CLI. "Ignore"
    covers strangers' dogs, toys, statues, pets on a TV or a poster.
-4. **grow**: later crops that cluster with exactly one named pet get that name
-   (`how=auto`), as faces do. Whether that counts as "naming automatically" is
-   an open question below.
-5. **tag**: `Pet|<Name>` into `lr:HierarchicalSubject` (leaf in `dc:Subject`),
+4. **grow**: later crops that cluster with exactly one named pet are shown as
+   suggestions for that name (`how=suggested`); the owner confirms them in bulk
+   on the page ("these 40 are Max") or one by one, and only confirmed crops are
+   tagged. Faces work the same way after the port.
+5. **tag**: `Pets|<Name>` (confirmed crops only) into `lr:HierarchicalSubject` (leaf in `dc:Subject`),
    with the face prototype's rules: remove only tags it wrote, never re-add one
    the owner deleted from a sidecar.
 6. **find**: `pets find "Name" [--alone] [--min-box 0.05]`, and `find --tag
-   'Pet|Name'` on sidecars.
+   'Pets|Name'` on sidecars.
 
 What differs from faces:
 
@@ -160,7 +184,7 @@ What differs from faces:
   chains help when the library has photos in between; otherwise the owner merges
   once. Optional later: prefer neighbours close in date when propagating.
 - **Several pets per photo** is common (and pets with people): one photo can
-  carry `Pet|A`, `Pet|B` and `People|C`.
+  carry `Pets|A`, `Pets|B` and `People|C`.
 - **Look-alikes** (littermates, two black labs): the case the evaluation must
   test; if DINOv2 can't separate them, they stay one cluster the owner can
   ignore or name "the dogs", and tags fall back to manual.
@@ -186,7 +210,7 @@ What differs from faces:
   remains, for either kind.
 - **Turning it off:** a `media-intake identities purge` (or `people purge` /
   `pets purge`) that deletes the folder and lists, but does not remove, the
-  `People|`/`Pet|` tags it wrote (removing them is a separate `untag --yes`).
+  `People|`/`Pets|` tags it wrote (removing them is a separate `untag --yes`).
 - Only names leave the folder, and only into sidecars.
 
 ## Porting the face prototype
@@ -205,7 +229,7 @@ Must change:
   baked in beyond the existing config keys: roots come from `config.get()`
   (`library`, `videos`, project folders), the state folder from config (no
   separate env var, or one documented in `docs/configuration.md`). Tag
-  namespaces `People|` and `Pet|` documented in `docs/words.md`.
+  namespaces `People|` and `Pets|` documented in `docs/words.md`.
 - **Off by default.** `identities.people: false`, `identities.pets: false` in
   config; commands refuse with a one-line hint when off. `setup.sh` downloads the
   four models only when asked (`--with-people`, `--with-pets`), pins live in
@@ -220,6 +244,11 @@ Must change:
 - **OpenCV 5.0** instead of 4.14: the face APIs exist with the same signatures
   (checked); the detector wrappers need their own output handling (NanoDet's
   output order and stride count differ from the zoo wrapper, as found above).
+- **No automatic naming** (decision 1): the prototype's propagation
+  (`how=auto`, tagged at once) becomes `how=suggested`, shown on the page with a
+  Confirm action, and `tag` writes only owner-named or owner-confirmed faces.
+  A face suggested for a name the owner later removes or renames drops its
+  suggestion.
 - **Erase/verify-gone/backup hooks** as in "Data handling", with tests.
 - **Docs and notices:** a section in `docs/intake.md` "Chosen tools", rows in
   `THIRD_PARTY_NOTICES.md` (YOLOX, DINOv2, YuNet, SFace, all downloaded by
@@ -228,7 +257,7 @@ Must change:
 ## Gallery: "People & Pets"
 
 A sidebar section listing named people and pets with photo counts; a click
-filters the grid (`People|Name` / `Pet|Name`, combinable with every other
+filters the grid (`People|Name` / `Pets|Name`, combinable with every other
 filter). An unnamed-clusters view replaces the separate naming page: a grid of
 crops per cluster with Name, Merge, Ignore, and a click on a crop to take it out.
 Crops are served by id only, from the identities folder, never cached in the
@@ -257,20 +286,94 @@ Later, by the owner, on the laptop:
    copied.
 4. Decision rules: pick the threshold where no cluster mixes two labelled pets;
    if SigLIP-crop matches DINOv2 within 0.01 AUC and mixes nothing, the owner may
-   drop DINOv2 (`pets.embedder: siglip`, 88 MB saved); if DINOv2 mixes two pets
-   at any usable threshold, consider the fine-tuned model (open question 3).
+   drop DINOv2 (`pets.embedder: siglip`, 24 MB saved); if int8 DINOv2 mixes two
+   pets at any usable threshold, rerun with fp32 (`pets.precision: fp32`,
+   +88 MB) and compare. No research-only or scraped-data model is a fallback
+   (decision 3); if fp32 also confuses two pets, they stay a cluster the owner
+   tags by hand.
+
+## Videos
+
+Research only; nothing built. One pass serves pets, people and the roadmap's
+"search across video frames by the best-matching frame" item: the same sampled
+frames give per-frame SigLIP vectors for that index.
+
+**Sampling.** Decode on the GPU through the path thumbnails, scans and gallery
+proxies already use (`scan_sensitive._gst_hevc_decoder()`: `vah265dec`, else a
+Vulkan decoder; `vah264dec` for H.264 when present; ffmpeg for what neither
+takes), scaled on the GPU (`vapostproc`) to 960x540, dropped to 2 frames a
+second, piped to Python as raw BGR. Nothing is written to disk: the only file is
+the 0700 work folder's link to the clip, as today. Keep a frame when its 32x32
+grey thumbnail differs from the last kept one by more than a threshold (a scene
+change), or when 5 s passed without one; cap at 30-60 frames a video, spread
+evenly when there are more.
+
+**Skipping near-duplicates.** Within a track (below), a crop whose vector is
+within cosine 0.97 of the track's last stored vector is not stored; it only
+adds a timestamp. Static shots cost one vector, not forty.
+
+**Temporal linking.** Boxes of the same class in consecutive kept frames with
+IoU > 0.5 are one track: the same individual. A track enters clustering as a
+must-link group (its vectors averaged, or its best few kept), so a pet seen from
+the side and then from the front in one clip ties those poses together, which
+still photos can't do. Two tracks visible in the same frame are never one
+individual.
+
+**Tags.** A video gets `Pets|<Name>` or `People|<Name>` only when that
+individual's confirmed tracks cover at least `k` kept frames (first guess 3),
+so a dog crossing the background for half a second doesn't tag the clip.
+Suggestions and confirmation work as for photos.
+
+**Timestamps.** Each track keeps its frame times (seconds into the clip) in
+`identities.db`, so the gallery can later offer "jump to where Max appears".
+Crops for the naming page are re-decoded on demand at that timestamp (one
+seek), never stored.
+
+**Erase and verify-gone.** Video tracks, timestamps and per-frame vectors are
+keyed by the clip's sha256 like photo rows, so the same `identities.forget(sha)`
+drops them and `verify-gone` checks them.
+
+**Overnight runs.** `media-intake pets scan --videos --inhibit` (the queue's
+`systemd-inhibit --what=sleep:idle` pattern), resumable per clip: a clip is done
+when its rows are written, so stopping loses at most the clip in progress.
+
+### Measured (synthetic clips, 2026-11-19)
+
+Three 40 s, 30 fps clips made locally with ffmpeg from the public COCO sample
+(two cats, panned and mirrored) and ffmpeg's `testsrc2`/`mandelbrot` patterns
+(four 10 s scenes); same CPU, 4 threads, int8 DINOv2, YOLOX-s, VA-API on the
+AMD iGPU. No user media.
+
+| Clip | GPU decode to 2 fps (GStreamer) | CPU decode (ffmpeg, OpenH264) | Detect, 40 kept frames | Embed |
+|---|---|---|---|---|
+| 4K HEVC, 40 Mbit/s | 9.1 s | not possible (ffmpeg-free has no HEVC) | 3.8 s (95 ms a frame) | 52 crops, 1.35 s; 28 near-duplicates not stored |
+| 4K H.264 | 5.0 s | 18.0 s | 3.7 s | 50 crops, 1.32 s |
+| 1080p H.264 | 1.9 s | 5.8 s | 3.7 s | 50 crops, 1.32 s |
+
+Scene selection took 0.09 s a clip. Temporal linking turned the 2 cats x 2
+scenes into 4 tracks (17, 17, 9 and 9 frames): linking is per scene, joining
+scenes is clustering's job. Totals: 14.3 s (4K HEVC), 10.9 s (1080p) for a
+40 s clip. Decode time grows with clip length (every frame is decoded, then
+dropped); detection and embedding are capped by the frame limit.
+
+**Estimate for ~2,000 videos** (inferred, not measured on real clips): at a
+mix of 30-60 s phone clips, about 8-20 s a clip for pets, so 4.5-11 hours;
+adding faces on the same frames (YuNet + SFace, about 0.1-0.2 s a frame)
+brings it to roughly 7-15 hours. That is an overnight job or two, resumable.
+Cheaper options if needed: cap at 30 frames, NanoDet instead of YOLOX for
+video (28 ms against 86 ms a frame), or decode keyframes only (not measured).
 
 ## Costs
 
 | | Pets | People | Both |
 |---|---|---|---|
-| Download | 124.3 MB (YOLOX 35.9 + DINOv2 88.5; 60 MB with int8 DINOv2) | 38.9 MB | 163 MB |
+| Download | 60.3 MB (YOLOX 35.9 + int8 DINOv2 24.5; +88.5 MB if fp32 is needed) | 38.9 MB | 99 MB |
 | RAM while scanning | ~300 MB measured | small (YuNet + SFace) | under 1 GB (estimate) |
 | CPU per photo | ~90 ms detect + ~33 ms per animal found (measured, synthetic), plus decode | 0.21 s (the prototype's own 20-photo smoke test) | one shared decode |
 
 For ~9,000 photos, 4 threads: pets alone about 15-30 minutes (detection 13
 minutes plus decode and crops; real decode not measured); with people in the
-same pass about 45-75 minutes. Resumable with `--limit N` or by stopping and
+same pass about 45-75 minutes. Videos: see "Videos". Resumable with `--limit N` or by stopping and
 re-running. The NVIDIA GPU is not needed; CUDA could be an opt-in later
 (onnxruntime-gpu is a different, much larger wheel).
 
@@ -279,29 +382,19 @@ re-running. The NVIDIA GPU is not needed; CUDA could be an opt-in later
 | Phase | What | Size |
 |---|---|---|
 | 1 | Port the face prototype as `identities.py` + `people.py`, off by default; config keys, `setup.sh --with-people`, pins, doctor, erase / forget / trash / private / verify-gone hooks, backup test, synthetic tests, docs | M |
-| 2 | `pets.py`: YOLOX detection and DINOv2 vectors in the same scan pass; species and same-photo constraints; `Pet|` tags; `setup.sh --with-pets` | M |
+| 2 | `pets.py`: YOLOX detection and int8 DINOv2 vectors in the same scan pass; species and same-photo constraints; suggestions and confirm; `Pets|` tags; `setup.sh --with-pets` | M |
 | 3 | `pets eval` / `people eval` (read-only, `Calibrate|pet|…` labels), threshold notes in `docs/configuration.md` | S |
 | 4 | Gallery "People & Pets": sidebar section, filters, the naming view in the gallery server | M |
-| 5 | Video frames (sampled like `label.py`), date-aware propagation | M |
-| 6 (only if 3 says so) | Fine-tuned pet embedder: one-off ONNX export in a build cache, licence decision first | L |
+| 5 | Videos (section "Videos"): scene-change sampling on the GPU decode path, temporal linking, per-video tags with timestamps; the per-frame search index from the same frames | L |
+| 6 (only if `pets eval` says so) | Switch the pet embedder to fp32 DINOv2 (`setup.sh` fetches the second pinned file) | S |
 
-## Open questions for the owner
+## Still open
 
-1. **Propagation vs "never names automatically".** The roadmap says face
-   grouping never names faces automatically. The prototype propagates a name the
-   owner gave a cluster to new faces that join it (`how=auto`). Keep that, or
-   show propagated names as suggestions until confirmed (slower, stricter)?
-2. **Tag namespace:** `Pet|<Name>` (as proposed) or `Pets|<Name>` to match the
-   plural `People|`?
-3. **The fine-tuned pet model** (AvitoTech DINOv2-small): acceptable given its
-   training data includes research-only and scraped images, if the evaluation
-   shows the stock model isn't enough? Default answer here: no.
-4. **Classes:** only cats and dogs, or also horses, birds and others by default?
-5. **One command or two:** `media-intake people …` and `media-intake pets …`,
-   or `media-intake identities … --kind`?
-6. **DINOv2 fp32 (88 MB) or int8 (24 MB)?** The int8 file stayed within 0.03
-   cosine of fp32 on the sample; fp32 is proposed because fine distinctions are
-   the point.
+- Date-aware suggestions (prefer neighbours close in date, for kittens and
+  puppies): worth the complexity, or leave it to owner merges? Decide after the
+  first real clusters.
+- How many frames a video must show a pet or person in before it gets the tag
+  (`k` in "Videos"); a first guess of 3 is calibrated by `pets eval`.
 
 ## Unverified
 
@@ -311,8 +404,10 @@ re-running. The NVIDIA GPU is not needed; CUDA could be an opt-in later
 - The AvitoTech paper's numbers (read from its arXiv HTML and model card, not
   reproduced); the MegaDescriptor/MiewID zero-shot pet numbers come from that
   same paper's tables.
-- NanoDet and YOLOX wrappers were written for the scratch test, not reviewed as
-  product code.
+- NanoDet and YOLOX wrappers and the video sampler were written for the
+  scratch test, not reviewed as product code.
+- Video numbers are from synthetic clips; real phone clips (variable frame
+  rate, rotation, 10-bit HDR, audio) are not measured.
 
 ## Sources (read 2026-11-19)
 
