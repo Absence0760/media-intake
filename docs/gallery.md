@@ -57,8 +57,8 @@ without one" (`/api/facets` gives `drive`, the mount or null).
   that brings the dialog back; at phone width the item count is left out and
   Stop server is an icon, so the header fits beside a long title, which
   shortens with an ellipsis), the active filters as removable chips (in an
-  event: the event's name as the title, no chip for it, and the event's
-  **Rename…** and **Merge into…** bar), the month grid. The
+  event: the event's display name as the title, no chip for it, and the event's
+  bar with its slug, **Display name…**, **Rename…** and **Merge into…**), the month grid. The
   selection actions sit in a bar at the bottom that appears only while
   something is selected (Suggested junk keeps its Apply bar there). It
   floats over the grid while you scroll and takes its own room at the end, so
@@ -197,8 +197,23 @@ page's own handlers and fails when the list leaves one out.
   trash N files").
 - **Events**: every event in the library, from the sidecars' `Event|<slug>`
   tags (or `XMP-iptcExt:Event` on a file with no `Event|` tag), with its count;
-  an item in two events counts and shows in both. A click shows that event's
-  items (the Event filter; the event's name is the view's title) and a bar with:
+  an item in two events counts and shows in both. Each row shows the event's
+  display name, its slug in the row's tooltip. A click shows that event's
+  items (the Event filter; the display name is the view's title, the slug its
+  tooltip) and a bar with the display name, the slug beside it when they
+  differ, and:
+  - **Display name…** (`POST /api/event/name`, `{"event": slug, "name": text}`):
+    the name the sidebar and the title show for the event, 1-64 characters on
+    one line (runs of spaces kept as one; no control or invisible format
+    characters such as zero-width or bidi marks); `""` goes back to the
+    default. Refused when it looks like another event's slug or display name
+    (the same but for case, width, spacing, or a dash or underscore for a
+    space). Stored in the state folder's `event-names.json`, never in a
+    sidecar ([configuration.md](configuration.md), `state`). The default is
+    the slug prettified (`some-trip-2024` shows as "Some trip 2024"), but
+    only when nothing else looks like it: beside an event `A b` (another
+    tool's `XMP-iptcExt:Event` text), `a-b` stays `a-b`. Every name is put
+    on the page as text, never as markup.
   - **Rename…** (`POST /api/event/rename`, `{"from": old, "to": new}`): every
     sidecar with `Event|old` gets `Event|new` instead. The new name is a slug
     (lowercase letters, digits, dashes, like `plan --event`) that no event has
@@ -206,7 +221,12 @@ page's own handlers and fails when the list leaves one out.
   - **Merge into…** (`POST /api/event/merge`, `{"from": [a, ...], "into": b}`):
     every item of each `from` event moves to `b`, which must exist.
 
-  Both rewrite only `Event|` tags (and `XMP-iptcExt:Event` when it named the
+  A display name goes with Rename to the new slug (and a name left over for
+  that slug, from an event emptied earlier, is dropped, not attached); Merge
+  keeps `b`'s and drops the merged events'. When `event-names.json` is
+  unreadable, both still go through and say the display names were not
+  updated (the file is left as it is; Display name… is refused until it is
+  fixed or removed). Rename and Merge rewrite only `Event|` tags (and `XMP-iptcExt:Event` when it named the
   old event), in the sidecars that have them, under the library lock: never an
   original, never `Owner|`, your tags or any other namespace, and a removed
   `dc:Subject` leaf only when no other tag uses it. A later `tag` or
@@ -615,17 +635,24 @@ filters, the added-in-N-days filter, a trashed file's copy showing as
 flagged `trashed copy` at once, and Open in the system player through a fake
 `xdg-open` on PATH (its refusals included). Events: the sidebar counts, the
 filter, rename and merge (and their refusals) with `Owner|` and other tags
-kept; bulk tags, Set event (and clearing it) and Rotate on a selection;
+kept, a display name moving with a rename (a stale one for the new slug
+dropped) and the merged events' names dropped (`EventLabelsTest`: never two
+events alike, the defaults, the name's checks, `event-names.json` per library,
+0600, no temp file left); bulk tags, Set event (and clearing it) and Rotate on a selection;
 byte-identical copies rotated differently getting their own thumbnails (and
 copies turned alike sharing one), with Trash, `trash`, `forget` and
 `verify-gone` reaching every turn and the older `<sha256>.jpg`; a
 share-safe copy through exiftool with no GPS or Model left. `ViewsEndpointsTest`
 writes its sidecars as plain XMP, so it runs without exiftool: every new POST
-(`/api/event/set`, `/api/event/rename`, `/api/event/merge`, `/api/share`)
+(`/api/event/set`, `/api/event/rename`, `/api/event/merge`, `/api/event/name`, `/api/share`)
 refused without the token, with a wrong CSRF value, another Origin or Host
 (403) or a non-JSON type (415), 409 while a job holds the library lock, and a
 share-safe copy (Pillow's re-encode when exiftool is missing) into its own
-0700 folder, with its refusals.
+0700 folder, with its refusals; and display names: set, refused (too long,
+a newline, a zero-width character, another event's slug or name alike), kept
+across a restart, back to the default with `""`, a default falling back to
+the slug beside another tool's look-alike, and an unreadable
+`event-names.json` never overwritten (409).
 
 `tests/test_gallery_undo.py`: Undo of Keep (every tag and leaf it removed back,
 a file that had no sidecar), a tag added and removed, Rotate (an orientation
@@ -681,7 +708,9 @@ shortcuts item on a touch screen.
 scroll, the header's title shown and its controls inside the header, a burst
 badge and X button inside their tile and clear of its checkbox (stack closed
 and open), Select all's long label wrapping inside the bar, and the last row
-of tiles above the selection bar at the end of the page. At 1440 px it drags
+of tiles above the selection bar at the end of the page, and a 64-character
+event slug and display name with nowhere to break inside the phone's drawer,
+title and event bar. At 1440 px it drags
 the sidebar's edge (the grid following mid-drag), clamps it at 240 px and
 560 px and to half a 1000 px window, keeps it across a reload, resets it on a
 double-click, resizes it by Left / Right / Shift / Home / End with a visible
@@ -743,7 +772,10 @@ Range, and the job dialog's progress (no confirm text left, Hide), re-attach
 after a reload, its end (Done, the status line, Close) and crash message,
 Erase's status line shown while its output is still empty (a
 fake `intake.py` that prints nothing until the test opens a FIFO), and the
-Events list (filter, Rename with a refused name first), Set event on a
+Events list (filter, Rename with a refused name first; Display name… set as
+text, never markup, with a look-alike refused first, kept across a reload and
+cleared back to the default, the slug in the tooltips and the bar, a default
+that would look like another event's left as the slug), Set event on a
 selection and a Share-safe copy ending in "Done: share-safe copies in ...".
 
 ## Not verified

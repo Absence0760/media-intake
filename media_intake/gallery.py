@@ -19,7 +19,8 @@ share-copy into a new folder under --share-out, default ~/Pictures/share-safe, a
 job). A left sidebar holds the views with counts (/api/facets): Library, Trash
 suggestions, any tab a plugin adds (plugins.py gallery_views(), docs/plugins.md),
 the quick views Recently added, Possible child, Untagged, and the Events (Event|
-tags; rename and merge rewrite only those, in the sidecars that have them); then
+tags; rename and merge rewrite only those, in the sidecars that have them; each shown by
+a display name kept in <state>/event-names.json, never two alike); then
 search, the filters and Keyboard shortcuts; its right edge drags (or arrow keys) to a
 width kept per browser. Bursts (bursts.py over the plan entries intake wrote) show in
 the timeline as one stack per burst: a cover with a count badge, X opens or closes it,
@@ -43,7 +44,7 @@ check, CSRF value on every POST, no-store + strict CSP, media by opaque id only.
 Originals are never written: sidecars (<file>.<ext>.xmp) only. docs/gallery.md.
 """
 import argparse, collections, contextlib, datetime, hashlib, html, http.server, io, json, os, re, secrets, shutil, subprocess, sys, tempfile
-import threading, time
+import threading, time, unicodedata
 import xml.etree.ElementTree as ET
 
 HERE = os.path.dirname(os.path.abspath(__file__))
@@ -634,6 +635,126 @@ def busy_text(holder=None):
     return f"{what} is still running; wait for it to finish, then try again"
 
 
+# ---------------------------------------------------------------- event display names (docs/gallery.md, "Events")
+# The name the sidebar and the title show for an event, in place of its slug. One small file in the state folder,
+# never the sidecars: a display name belongs to the event, not to each of its files, so it is one atomic write
+# (never one per file, never two files disagreeing) and other XMP readers never see it.
+EVENT_NAMES = "event-names.json"  # {"version": 1, "libraries": {<library key>: {<event>: <display name>}}}
+EVENT_NAME_MAX = 64
+
+
+def library_key(roots=None):
+    """Which library a display name belongs to: a hash of its folders (the library, videos, project folders),
+    so two configs sharing one state folder keep their names apart. Never a path in the file."""
+    rs = sorted({os.path.realpath(r) for r in (ROOTS if roots is None else roots)})
+    return hashlib.sha256("\0".join(rs).encode()).hexdigest()[:16]
+
+
+def read_event_names(state=None):
+    """The whole file: {library key: {event: display name}}. Missing: {}. Unreadable: None (then never
+    overwritten: a write refuses, so another library's names aren't lost)."""
+    p = os.path.join(state or STATE, EVENT_NAMES)
+    try:
+        with open(p, encoding="utf-8") as f:
+            d = json.load(f)
+    except FileNotFoundError:
+        return {}
+    except (OSError, ValueError):
+        return None
+    libs = d.get("libraries") if isinstance(d, dict) else None
+    if not isinstance(libs, dict):
+        return None
+    return {k: {e: n for e, n in v.items() if isinstance(e, str) and isinstance(n, str)}
+            for k, v in libs.items() if isinstance(k, str) and isinstance(v, dict)}
+
+
+def load_event_names(state=None, roots=None):
+    """{event: display name} for this library ({} when the file is missing or unreadable). A name edited by hand
+    into something the page would refuse is left out."""
+    out = {}
+    for e, n in (read_event_names(state) or {}).get(library_key(roots), {}).items():
+        try:
+            if check_display_name(n) == n and n:
+                out[e] = n
+        except ValueError:
+            pass
+    return out
+
+
+def save_event_names(names, state=None, roots=None):
+    """Write this library's display names (0600, atomically: a temp file then rename), leaving every other
+    library's as they are."""
+    state = state or STATE
+    libs = read_event_names(state)
+    if libs is None:
+        raise RuntimeError(f"{EVENT_NAMES} in the state folder is unreadable; fix or remove it, then try again")
+    key = library_key(roots)
+    if names:
+        libs[key] = dict(sorted(names.items()))
+    else:
+        libs.pop(key, None)
+    os.makedirs(state, mode=0o700, exist_ok=True)
+    write_private_bytes(os.path.join(state, EVENT_NAMES),
+                        json.dumps({"version": 1, "libraries": libs}, ensure_ascii=False, indent=1).encode())
+
+
+def check_display_name(name):
+    """A display name: 1-64 characters on one line, runs of spaces as one, no invisible format characters
+    (zero-width, bidi overrides) that would let two names look alike. "" clears it."""
+    if not isinstance(name, str):
+        raise ValueError("the display name is text, or empty to go back to the default")
+    msg = f"a display name is 1-{EVENT_NAME_MAX} visible characters on one line"
+    name = unicodedata.normalize("NFC", name)
+    if any(unicodedata.category(ch) in ("Cc", "Cf", "Co", "Cs") for ch in name):  # newline, tab, zero-width, ...
+        raise ValueError(msg)
+    name = " ".join(name.split())
+    if name and (len(name) > EVENT_NAME_MAX or not TAG_RE.match(name)):
+        raise ValueError(msg)
+    return name
+
+
+def look_key(s):
+    """Two labels with the same key would look the same, or too alike: case, width, spacing, and a dash or an
+    underscore read as a space (so some-trip, Some trip and some_trip are one key)."""
+    return " ".join(unicodedata.normalize("NFKC", s).casefold().replace("-", " ").replace("_", " ").split())
+
+
+def pretty_event(slug):
+    """some-trip-2024 -> Some trip 2024; anything that isn't a plain slug stays as it is."""
+    if not intake.config.SLUG.match(slug) or "--" in slug or slug.endswith("-"):
+        return slug
+    s = slug.replace("-", " ")
+    return s[0].upper() + s[1:]
+
+
+def event_labels(events, names):
+    """{event: what the page shows for it}. Never two events that look alike: a display name you set is shown
+    unless it looks like another event's slug or name; otherwise the prettified slug, only when nothing else
+    looks like it; otherwise the slug itself (slugs are distinct)."""
+    raw = collections.defaultdict(set)
+    for e in events:
+        raw[look_key(e)].add(e)
+    mine = collections.defaultdict(set)
+    for e in events:
+        if names.get(e):
+            mine[look_key(names[e])].add(e)
+    shown = {}
+    for e in events:
+        n = names.get(e)
+        if n and mine[look_key(n)] == {e} and raw[look_key(n)] <= {e}:
+            shown[e] = n
+    taken = {look_key(n) for n in shown.values()}
+    pretty = collections.defaultdict(set)
+    for e in events:
+        if e not in shown:
+            pretty[look_key(pretty_event(e))].add(e)
+    for e in events:
+        if e not in shown:
+            p, k = pretty_event(e), look_key(pretty_event(e))
+            shown[e] = p if pretty[k] == {e} and raw[k] <= {e} and k not in taken else e
+    return shown
+
+
 class App:
     def __init__(self, items, drive=None, views=(), share_out=None):
         self.items = items
@@ -836,8 +957,11 @@ class App:
             else self.share_out
         drive = None if not self.drive else "~/" + os.path.relpath(self.drive, HOME) \
             if self.drive.startswith(HOME + os.sep) else self.drive
+        names = load_event_names()  # read each time: another gallery on this library may have set one
+        shown = event_labels(c["event"], names)
+        event_names = {e: dict(label=shown[e], name=names.get(e, "")) for e in c["event"]}
         return dict(total=n, facets=out, counts=dict(counts), recent_days=RECENT_DAYS, search=search, share_out=share,
-                    drive=drive)
+                    drive=drive, event_names=event_names)
 
     def suggested(self, it):
         if it["kept"] or it["used"] or f"Project|{it['project']}" in PROTECTED or PROTECTED.intersection(it["tags"]):
@@ -1171,9 +1295,14 @@ class App:
         with self.writing("set event"), self.lock:
             ids = self.targets(ids)
             before = self.snapshots(ids)
+            new = event and event not in self.event_names()
             blocks = [b for b in (self.event_block(self.items[i], event, None) for i in ids) if b]
             self.run_exiftool(blocks)
             self.refresh(ids)
+            if new and blocks:  # a new event never picks up a display name left from one emptied earlier
+                names = load_event_names()
+                if names.pop(event, None) is not None:
+                    self._save_names_after(names, True)
             return self.journal("event", before, f"event {event!r} set on {len(blocks)}" if event
                                 else f"event cleared on {len(blocks)}")
 
@@ -1192,7 +1321,15 @@ class App:
                 raise ValueError("no such event")
             if new in names:
                 raise ValueError(f"{new!r} already exists: use Merge to join the two")
-            return self._move_events({old}, new, f"renamed {old!r} to {new!r}")
+            out = self._move_events({old}, new, f"renamed {old!r} to {new!r}")
+            # the display name goes with the event; a name left over for the new slug (an event that was
+            # emptied earlier) never attaches to it
+            names = load_event_names()
+            kept = names.pop(old, None)
+            had = names.pop(new, None)
+            if kept:
+                names[new] = kept
+            return out + self._save_names_after(names, kept or had)
 
     def merge_events(self, sources, into):
         """Merge events into an existing one: every item of each source event moves to into."""
@@ -1211,7 +1348,50 @@ class App:
             names = self.event_names()
             if into not in names or not sources <= names:
                 raise ValueError("no such event")
-            return self._move_events(sources, into, f"merged {', '.join(sorted(map(repr, sources)))} into {into!r}")
+            out = self._move_events(sources, into, f"merged {', '.join(sorted(map(repr, sources)))} into {into!r}")
+            names = load_event_names()  # into keeps its display name; the merged events' names go with them
+            return out + self._save_names_after({e: n for e, n in names.items() if e not in sources},
+                                                sources & set(names))
+
+    @staticmethod
+    def _save_names_after(names, changed):
+        """After a rename or merge (its sidecars already written): the display names saved, or why not (an
+        unreadable file is said even when no name was known to move: it may hold one)."""
+        if read_event_names() is None:
+            return f"; display names not updated: {EVENT_NAMES} in the state folder is unreadable"
+        if not changed:
+            return ""
+        try:
+            save_event_names(names)
+        except RuntimeError as e:
+            return f"; display names not updated: {e}"
+        except OSError as e:
+            return f"; display names not updated ({type(e).__name__})"
+        return ""
+
+    def name_event(self, event, name):
+        """Set (or, with "", clear) the display name an event is shown by. Only event-names.json in the state
+        folder changes, never a sidecar. Refused when it would look like another event's slug or name."""
+        if not isinstance(event, str) or not event.strip():
+            raise ValueError("which event?")
+        event = event.strip()
+        name = check_display_name(name)
+        with self.writing("name event"), self.lock:
+            events = self.event_names()
+            if event not in events:
+                raise ValueError("no such event")
+            names = load_event_names()
+            if name:
+                for o in sorted(events - {event}):
+                    if look_key(name) in (look_key(o), look_key(names.get(o) or "")):
+                        shown = names.get(o) or o
+                        raise ValueError(f"another event already looks like that ({shown!r}, event {o!r}); "
+                                         "pick a name that differs by more than case or spacing")
+                names[event] = name
+            elif names.pop(event, None) is None:
+                return f"{event!r} already shows its default name"
+            save_event_names(names)
+            return f"{event!r} shown as {name!r}" if name else f"{event!r} back to its default name"
 
     def _move_events(self, drop, new, what):
         """(Under the library lock and self.lock.) Every live item in one of the drop events, moved to new."""
@@ -1694,6 +1874,7 @@ class Handler(R.Handler):
             "/api/event/set": lambda: app.set_event(body.get("ids"), body.get("event")),
             "/api/event/rename": lambda: app.rename_event(body.get("from"), body.get("to")),
             "/api/event/merge": lambda: app.merge_events(body.get("from"), body.get("into")),
+            "/api/event/name": lambda: app.name_event(body.get("event"), body.get("name")),
             "/api/decide": lambda: app.decide(body.get("keep") or [], body.get("trash") or [], body.get("confirm")),
             "/api/undo": lambda: app.undo(body.get("undo")),
         }
@@ -1882,6 +2063,7 @@ kbd{font:600 11px/1 ui-monospace,monospace;border:1px solid currentColor;border-
 .evmore{align-self:flex-start;margin:2px 10px}
 #evbar{display:flex;flex-wrap:wrap;align-items:center;gap:8px;padding:12px 24px 0}
 #evbar .evt{font-weight:600;margin-right:4px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;max-width:100%}
+#evbar .evslug{color:var(--mut);font-family:ui-monospace,monospace;font-size:13px;margin-right:4px;min-width:0;overflow-wrap:anywhere}
 #mfieldp label{display:block;font-size:13px;color:var(--mut);margin-bottom:4px}
 #mfield{width:100%}
 /* search and filters: apart from the views above by a heavier rule */
@@ -2215,7 +2397,7 @@ dl.dt dd{margin:0;word-break:break-word}
   <button type="button" class="btn" id="close" title="Stop the gallery server" aria-label="Stop server"><svg class="ic"><use href="#i-power"/></svg><span class="lbl2">Stop server</span></button>
  </header>
  <div id="chips" aria-label="Active filters" hidden></div>
- <div id="evbar" role="toolbar" aria-label="Event" hidden><span class="evt" id="evname"></span><button type="button" class="btn" id="evren">Rename…</button><button type="button" class="btn" id="evmerge">Merge into…</button></div>
+ <div id="evbar" role="toolbar" aria-label="Event" hidden><span class="evt" id="evname"></span><span class="evslug" id="evslug" title="The event's name in the sidecars" hidden></span><button type="button" class="btn" id="evlabel">Display name…</button><button type="button" class="btn" id="evren">Rename…</button><button type="button" class="btn" id="evmerge">Merge into…</button></div>
  <p id="note" class="note" hidden></p>
  <p id="helpb" class="note" hidden><span class="hshort"><span class="kb">Bursts are stacked; X opens one.</span><span class="tch">Burst stacks: tap ×N to open one.</span></span><span class="hfull">A stack is a burst (shots from one camera a moment apart): its Show all button (×N on a small tile) or the X key opens or closes it; the shots of an open stack share a coloured ring. On a closed stack, selecting and every action (Keep, Trash, Erase, tags, Rotate, Set event, Share-safe copy) act on the cover shot only; open the stack to act on the others.</span><button type="button" class="link" id="hmore" aria-controls="helpb" aria-expanded="false">more</button></p>
  <main id="main" aria-busy="true"><div id="list"><div class="state" role="status"><p><span class="spin" aria-hidden="true"></span>Loading your library…</p></div></div><div id="sentinel"></div><div id="plugin" hidden></div></main>
@@ -2407,17 +2589,21 @@ async function loadFacets(tries){facets=await api("/api/facets");const fc=facets
  syncUI()}
 // ---------------------------------------------------------------- events (Event| tags): the sidebar list, rename, merge
 let evAll=false;const EVSHOW=8;
+// an event's display name (/api/facets event_names: never two alike, else the slug itself); the slug stays in tooltips
+function evLabel(n){const m=facets&&facets.event_names,x=m&&Object.hasOwn(m,n)?m[n]:null;return x&&typeof x.label==="string"&&x.label?x.label:n}
 // the tag field's suggestions: every tag of yours in the library (the My tags facet)
 function renderMyTags(){$("#mytags").replaceChildren(...((facets&&facets.facets.mine)||[]).map(([n])=>{const o=el("option");o.value=n;return o}))}
 function renderEvents(){const L=$("#evlist");L.replaceChildren();const ev=(facets&&facets.facets.event)||[];
  $("#evnames").replaceChildren(...ev.map(([n])=>{const o=el("option");o.value=n;return o}));
  if(!ev.length){L.append(el("div","empty","No events yet"));return}
  const show=evAll?ev.slice():ev.slice(0,EVSHOW);if(F.event&&!show.some(([n])=>n===F.event)){const x=ev.find(([n])=>n===F.event);if(x)show.push(x)}
- show.forEach(([n,c])=>{const b=el("button","nv");b.type="button";b.dataset.ev=n;b.title="Event: "+n;b.insertAdjacentHTML("beforeend",'<svg class="ic"><use href="#i-cal"/></svg>');b.append(el("span","lbl",n),el("span","ct",fmt(c)));
+ show.forEach(([n,c])=>{const b=el("button","nv");b.type="button";b.dataset.ev=n;b.title="Event: "+n;b.insertAdjacentHTML("beforeend",'<svg class="ic"><use href="#i-cal"/></svg>');b.append(el("span","lbl",evLabel(n)),el("span","ct",fmt(c)));
   b.onclick=()=>{F={aimin:F.aimin,event:n};$("#q").value="";setView("lib");if(mqPhone.matches&&drawer){drawer=false;layout()}};L.append(b)});
  if(ev.length>EVSHOW){const m=el("button","link evmore",evAll?"Fewer events":"All "+fmt(ev.length)+" events");m.type="button";m.onclick=()=>{evAll=!evAll;renderEvents();syncUI()};L.append(m)}}
-function askField(title,lines,label,value,go,list){confirmBox(title,lines,false,go);$("#mfieldp").hidden=false;$("#mflabel").textContent=label;const f=$("#mfield");f.setAttribute("list",list||"evnames");f.value=value||"";f.focus();f.select()}
+function askField(title,lines,label,value,go,list){confirmBox(title,lines,false,go);$("#mfieldp").hidden=false;$("#mflabel").textContent=label;const f=$("#mfield");if(list===null)f.removeAttribute("list");else f.setAttribute("list",list||"evnames");f.value=value||"";f.focus();f.select()}
 async function afterEvent(j,ev){closeModal();toast(j.result,j.undo);if(ev!==undefined){if(ev)F.event=ev;else delete F.event}await loadFacets();reset()}
+$("#evlabel").onclick=()=>{const ev=F.event,m=facets&&facets.event_names,x=m&&Object.hasOwn(m,ev)?m[ev]:null;askField("Display name for the event "+ev+"?",["The sidebar and the title show this name instead of "+ev+". The sidecars keep "+ev+": your files and tags don't change.","Leave it empty for the default. A name that looks like another event's (the same but for case or spacing) is refused."],"Display name",x?x.name:"",
+ async()=>{const j=await api("/api/event/name",{event:ev,name:$("#mfield").value});closeModal();toast(j.result);await loadFacets()},null)};
 $("#evren").onclick=()=>{const old=F.event;askField("Rename the event "+old+"?",["Every photo and video in "+old+" moves to the new name. Only the event changes: the files and your other tags stay as they are.","Use lowercase letters, digits and dashes, like summer-2026. To join an event that already exists, use Merge."],"New name",old,
  async()=>afterEvent(await api("/api/event/rename",{from:old,to:$("#mfield").value.trim()}),$("#mfield").value.trim()))};
 $("#evmerge").onclick=()=>{const src=F.event;askField("Merge "+src+" into another event?",["Every photo and video in "+src+" moves to the event you name, and "+src+" is gone afterwards. The files and your other tags don't change."],"Merge into (an event that exists)","",
@@ -2440,8 +2626,9 @@ function syncUI(){$$("button[data-k]").forEach(b=>b.setAttribute("aria-pressed",
  C.hidden=!C.children.length||plugView();
  $$(".nv[data-v]").forEach(b=>{if(b.dataset.v===na)b.setAttribute("aria-current","page");else b.removeAttribute("aria-current")});
  $$(".nv[data-ev]").forEach(b=>{if(na==="ev"&&b.dataset.ev===F.event)b.setAttribute("aria-current","page");else b.removeAttribute("aria-current")});
- $("#evbar").hidden=na!=="ev";if(na==="ev")$("#evname").textContent="Event: "+F.event;
- $("#vtitle").textContent=na==="ev"?F.event:TITLES[na]||""}
+ $("#evbar").hidden=na!=="ev";const evl=na==="ev"?evLabel(F.event):"";
+ if(na==="ev"){$("#evname").textContent="Event: "+evl;$("#evslug").textContent=F.event;$("#evslug").hidden=evl===F.event}
+ $("#vtitle").textContent=na==="ev"?evl:TITLES[na]||"";$("#vtitle").title=na==="ev"&&evl!==F.event?"Event: "+F.event:""}
 $("#clear").onclick=clearAll;
 // ---------------------------------------------------------------- listing
 // the view's note above the grid; Suggested junk always says what the view is and that nothing changes until Apply
@@ -2461,7 +2648,7 @@ function emptyState(note){const q=$("#q").value.trim(),nf=activeKeys().length,na
  if(facets&&facets.total===0)return listState("none","Your library is empty.",{lines:["To add photos and videos, run these in a terminal, with the folder they are in:"],
   cmd:"media-intake stage <folder> --kind folder --batch first\nmedia-intake plan first\nmedia-intake scan first\nmedia-intake apply first",
   after:["Then reload this page. Getting started (docs/getting-started.md) explains each step."]});
- if(view==="lib"&&QUICK.includes(na))return listState("none","Nothing in "+(na==="ev"?F.event:TITLES[na])+" right now.",{act:{label:"Show the whole "+TITLES.lib.toLowerCase(),fn:clearAll}});
+ if(view==="lib"&&QUICK.includes(na))return listState("none","Nothing in "+(na==="ev"?evLabel(F.event):TITLES[na])+" right now.",{act:{label:"Show the whole "+TITLES.lib.toLowerCase(),fn:clearAll}});
  if(q||nf)return listState("none","Nothing matches "+(q&&nf?"this search and these filters":q?"this search":"these filters")+".",
   {act:{label:q&&nf?"Clear search and filters":q?"Clear search":"Clear filters",fn:clearAll}});
  if(view==="sug")return listState("none","No "+WORDS.view.sug.toLowerCase()+" right now.",{lines:["When the tools flag a photo as possible junk, it shows up here for you to mark Keep or Trash."]});

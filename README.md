@@ -46,7 +46,8 @@ backup drive, quarantine, review folder, Keep, Trash, Erase, ...).
   backup records, `jobs/`: each detached job's status, log and lock, `locks/`:
   the library lock, and `device-salt`) is `0700`. So are `backup/`, `jobs/`
   and `locks/`, whose files are `0600`; the lock's holder note names the
-  command and its PID, never a file name. `device-salt` is `0600`.
+  command and its PID, never a file name. `device-salt` is `0600`, and so is
+  `event-names.json` (the gallery's event display names, never in a sidecar).
 - **Raw camera serial numbers are never written anywhere** (folder names,
   tags, plans, logs). A device id is a salted HMAC pseudonym of make, model
   and serial, keyed by `device-salt`.
