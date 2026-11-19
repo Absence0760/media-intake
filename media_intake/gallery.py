@@ -1209,7 +1209,8 @@ class App:
                     video=it["show"] == "video", date=it["date"], place=it["place"], event=it["event"],
                     project=it["project"], source=it["source"], folder=folder, res=it["res"],
                     size=R.human(it["size"]), tags=it["tags"], mine=it["mine"], rot=rot, ai=it["ai_trash"],
-                    used=it["used"], kept=it["kept"], fav=it["fav"], has_xmp=it["has_xmp"])
+                    used=it["used"], kept=it["kept"], fav=it["fav"], has_xmp=it["has_xmp"],
+                    heic=it["ext"] in R.CONVERT_IMG and it["show"] == "none")  # no pillow-heif: a thumbnail only
 
     def facets(self):
         c = {k: collections.Counter() for k in ("project", "source", "event", "place", "label", "month", "mine")}
@@ -2478,6 +2479,8 @@ def main(argv=None):
     ap.add_argument("--share-out", metavar="DIR", help=f"folder for share-safe copies, one dated subfolder per "
                                                        f"export (default {SHARE_OUT}); never inside the library")
     a = ap.parse_args(argv)
+    # The system python has no pillow-heif: HEIC would show only as its thumbnail. Re-run under setup.sh's venv.
+    R.venv_reexec(sys.argv[1:] if argv is None else list(argv), __file__)
     if a.drive and not os.path.isdir(a.drive):
         sys.exit(f"--drive {a.drive}: not a directory")
     t0 = time.monotonic()
@@ -3606,8 +3609,10 @@ function fitMedia(){const m=$("#media>img,#media>video");if(!m)return;const r=$(
  m.style.width=q?r.height+"px":"100%";m.style.height=q?r.width+"px":"100%";m.style.transform=`translate(-50%,-50%) rotate(${m.dataset.rot||0}deg)`}
 addEventListener("resize",fitMedia);
 // the browser can't show it: the thumbnail, large, and a button that opens the file in the desktop's own player
-function cantPlay(d,why){stopVideo();const M=$("#media");M.replaceChildren();const box=el("div","nop"),im=el("img");im.alt=d.name;im.src="/t/"+d.id;im.onerror=()=>im.remove();
- const c=el("div","cant");c.append(el("span",null,why));const o=el("button",null,"Open in the system player");o.type="button";
+// (bare: what to say when there is no thumbnail either; without it, WHY stays)
+function cantPlay(d,why,bare){stopVideo();const M=$("#media");M.replaceChildren();const box=el("div","nop"),im=el("img"),w=el("span",null,why);
+ im.alt=d.name;im.src="/t/"+d.id;im.onerror=()=>{im.remove();if(bare)w.textContent=bare};
+ const c=el("div","cant");c.append(w);const o=el("button",null,"Open in the system player");o.type="button";
  o.onclick=async()=>{try{toast((await api("/api/open",{ids:[d.id]})).result)}catch(e){errorToast("Refused: "+e.message)}};c.append(o);
  box.append(im,c);M.append(box);const u=$("#unmute");if(u)u.remove();dropConv()}
 // an HEVC video's H.264 copy is being made: say so until it plays (it starts on the first seconds converted)
@@ -3635,7 +3640,7 @@ async function openViewer(n,opt){opt=opt||{};if(n<0||n>=items.length)return;if(v
   const nopic=()=>{if(curVideo()===v&&v.readyState>=1&&!v.videoWidth)bad()};
   v.addEventListener("error",bad);v.addEventListener("loadedmetadata",nopic);if(v.error)bad();else nopic()}
  else if(d.kind==="video")cantPlay(d,"No browser preview for this format.");
- else if(d.src){const im=el("img");im.alt=d.name;im.dataset.rot=d.rot;im.src=d.src;im.onerror=()=>cantPlay(d,"This browser can't show this picture.");M.replaceChildren(im);fitMedia()}
+ else if(d.src){const im=el("img");im.alt=d.name;im.dataset.rot=d.rot;im.src=d.src;im.onerror=()=>cantPlay(d,d.heic?"This is a small preview: HEIC photos need setup.sh's venv (pillow-heif) to show full size.":"This is a small preview: this browser can't show the full picture.",d.heic?"No preview: HEIC photos need setup.sh's venv (pillow-heif).":"This browser can't show this picture.");M.replaceChildren(im);fitMedia()}
  else cantPlay(d,"No browser preview for this format.");
  $("#vprev").disabled=n<=0;$("#vnext").disabled=n>=items.length-1&&done;
  const s=$("#info");s.replaceChildren();

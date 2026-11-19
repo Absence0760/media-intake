@@ -932,15 +932,18 @@ def serve(app, port=0):
     return httpd, url
 
 
-def venv_reexec(args):
-    """Without pillow-heif here (the system python), re-run this page under setup.sh's venv so HEIC
-    previews work. MEDIA_REVIEW_NO_VENV=1 turns this off; without a venv the page runs as it is."""
+def venv_reexec(args, script=None):
+    """Without pillow-heif here (the system python), re-run SCRIPT (default: this page; the gallery passes its
+    own) with ARGS under setup.sh's venv so HEIC shows. The venv reuses the system packages
+    (--system-site-packages), so everything else the page imports is there too. MEDIA_REVIEW_NO_VENV=1 turns
+    this off (for the review page and the gallery); without a venv the page runs as it is."""
     if HEIF or os.environ.get("MEDIA_REVIEW_NO_VENV") or not os.access(VENV_PY, os.X_OK):
         return
     if os.path.realpath(sys.prefix) == os.path.realpath(os.path.dirname(os.path.dirname(VENV_PY))):
         return  # already the venv: it lacks pillow-heif (re-run setup.sh), so no HEIC previews
     sys.stdout.flush()
-    os.execv(VENV_PY, [VENV_PY, "-I", os.path.abspath(__file__), *args])
+    sys.stderr.flush()
+    os.execv(VENV_PY, [VENV_PY, "-I", os.path.abspath(script or __file__), *args])
 
 
 def main(argv=None):
