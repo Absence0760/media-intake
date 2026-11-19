@@ -251,7 +251,8 @@ thumbnails written), with Range for video seeking. HEIC/HEIF photos are
 converted to a JPEG of at most 1600 px in memory as they are served (never
 written to disk); that needs pillow-heif, which `setup.sh`'s venv has, so a
 page started with a Python that lacks it re-runs itself under the venv's
-Python (`MEDIA_REVIEW_NO_VENV=1` turns that off). Without the venv, HEIC shows
+Python (`MEDIA_REVIEW_NO_VENV=1` turns that off; the gallery does the same,
+[gallery.md](gallery.md)). Without the venv, HEIC shows
 "no preview", and so do DNG and GPR; open those in your file manager. A card whose file the browser can't
 decode says so instead of an empty box: a picture it can't show, or a video it
 can't play, including one whose sound plays but whose picture doesn't (an

@@ -13,6 +13,8 @@ import support  # noqa: E402,F401  (hermetic config)
 
 import cli  # noqa: E402
 import label  # noqa: E402
+import people  # noqa: E402
+import pets  # noqa: E402
 import semantic  # noqa: E402
 import vlm_trash  # noqa: E402
 
@@ -37,10 +39,13 @@ class FakeProbe:
                        "-decoders": " V....D h264                 H.264\n"}
         self.files = {VISION: FILES["onnx/vision_model_quantized.onnx"], TEXT: FILES["onnx/text_model.onnx"],
                       TOKENIZER: FILES["tokenizer.json"], cli.venv_python(): None, cli.MTP_BACKEND: None,
-                      os.path.join(os.environ["MEDIA_INTAKE_STATE"], "geo", "cities1000.zip"): None}
+                      os.path.join(os.environ["MEDIA_INTAKE_STATE"], "geo", "cities1000.zip"): None,
+                      **{path: sha for mod in (people, pets)
+                         for _, path, sha in mod.model_files(os.environ["MEDIA_INTAKE_STATE"])}}
         self.tags = {"models": [{"name": PINS["ollama"]["model"], "model": PINS["ollama"]["model"],
                                  "digest": PINS["ollama"]["digest"]}]}
         self.hashed = []
+        self.venv_modules = {"pillow_heif"}
 
     def which(self, tool):
         return f"/usr/bin/{tool}" if tool in self.tools else None
@@ -52,6 +57,10 @@ class FakeProbe:
 
     def importable(self, module):
         return module in self.modules
+
+    def venv_importable(self, venv_py, module):
+        assert venv_py == cli.venv_python() and venv_py in self.files, "asked only of the venv, once it exists"
+        return module in self.venv_modules
 
     def exists(self, path):
         return path in self.files
@@ -100,7 +109,46 @@ class Doctor(unittest.TestCase):
         self.assertEqual(self.summary(lines), ["no problems, no optional items not available"])
         self.assertTrue(self.line(lines, "SigLIP vision model").startswith("ok "))
         self.assertTrue(self.line(lines, "digest").startswith("ok "))
-        self.assertEqual(sorted(self.p.hashed), sorted([VISION, TEXT, TOKENIZER]))
+        self.assertEqual(sorted(self.p.hashed), sorted([VISION, TEXT, TOKENIZER, *self.recognition()]))
+        self.assertTrue(self.line(lines, "YuNet face detector").startswith("ok "))
+
+    def recognition(self, mods=(people, pets)):
+        return [path for mod in mods for _, path, _ in mod.model_files(os.environ["MEDIA_INTAKE_STATE"])]
+
+    def test_recognition_models_absent_is_optional_half_missing_or_wrong_fails(self):
+        yunet, sface = self.recognition([people])
+        del self.p.files[yunet], self.p.files[sface]
+        code, lines = self.run_doctor()
+        self.assertEqual(code, 0, lines)
+        self.assertTrue(self.line(lines, "people recognition off").startswith("optional "))
+        self.assertIn("bash setup.sh --recognition", self.line(lines, "people recognition off"))
+        self.p.files[sface] = people.model_files(os.environ["MEDIA_INTAKE_STATE"])[1][2]
+        code, lines = self.run_doctor()
+        self.assertEqual(code, 1)
+        self.assertTrue(self.line(lines, "YuNet face detector").startswith("MISSING "))
+        self.p.files[yunet] = OTHER
+        code, lines = self.run_doctor()
+        self.assertEqual(code, 1)
+        self.assertTrue(self.line(lines, "YuNet face detector").startswith("BAD "))
+        self.assertTrue(self.line(lines, "SFace face recogniser").startswith("ok "))
+        self.assertTrue(self.line(lines, "DINOv2 pet recogniser").startswith("ok "), "the other kind is its own")
+
+    def test_pets_models_absent_is_optional_half_missing_or_wrong_fails(self):
+        yolox, dino = self.recognition([pets])
+        del self.p.files[yolox], self.p.files[dino]
+        code, lines = self.run_doctor()
+        self.assertEqual(code, 0, lines)
+        self.assertTrue(self.line(lines, "pets recognition off").startswith("optional "))
+        self.assertTrue(self.line(lines, "YuNet face detector").startswith("ok "))
+        self.p.files[dino] = pets.model_files(os.environ["MEDIA_INTAKE_STATE"])[1][2]
+        code, lines = self.run_doctor()
+        self.assertEqual(code, 1)
+        self.assertTrue(self.line(lines, "YOLOX animal detector").startswith("MISSING "))
+        self.p.files[yolox] = OTHER
+        code, lines = self.run_doctor()
+        self.assertEqual(code, 1)
+        self.assertTrue(self.line(lines, "YOLOX animal detector").startswith("BAD "))
+        self.assertTrue(self.line(lines, "DINOv2 pet recogniser").startswith("ok "))
 
     def test_missing_required_prints_the_exact_dnf_line(self):
         self.p.tools -= {"exiftool", "ffmpeg", "ffprobe", "findmnt"}
@@ -355,6 +403,29 @@ class Doctor(unittest.TestCase):
         self.assertEqual(self.summary(lines)[1:], ["Install the required packages:", "sudo dnf install -y python3-pillow",
                                                    "Then run: bash setup.sh   (venv, SigLIP model, GeoNames data)"])
 
+    def test_pillow_heif_missing_from_the_venv_fails(self):
+        """The gallery and review page re-run under the venv for HEIC; without pillow-heif there, a HEIC shows as
+        a small preview only. Without a venv at all only the venv line is reported."""
+        self.assertTrue(self.line(self.run_doctor()[1], "pillow-heif in the venv").startswith("ok "))
+        self.p.venv_modules.clear()
+        code, lines = self.run_doctor()
+        self.assertEqual(code, 1)
+        self.assertEqual(self.line(lines, "pillow-heif in the venv"),
+                         "MISSING  pillow-heif in the venv (HEIC photos full size in the gallery and the review page); "
+                         "without it a small preview only (bash setup.sh)")
+        self.assertEqual(self.summary(lines), ["1 problem, no optional items not available",
+                                               "Run: bash setup.sh   (venv, SigLIP model, GeoNames data)"])
+        del self.p.files[cli.venv_python()]
+        _, lines = self.run_doctor()
+        self.assertFalse([ln for ln in lines if "pillow-heif" in ln], lines)
+
+    def test_real_probe_runs_the_venv_python_isolated(self):
+        with mock.patch.object(cli.subprocess, "run", return_value=mock.Mock(returncode=0)) as run:
+            self.assertTrue(cli.Probe().venv_importable("/v/bin/python", "pillow_heif"))
+        self.assertEqual(run.call_args[0][0], ["/v/bin/python", "-I", "-c", "import pillow_heif"])
+        with mock.patch.object(cli.subprocess, "run", side_effect=OSError):
+            self.assertFalse(cli.Probe().venv_importable("/v/bin/python", "pillow_heif"))
+
     def test_no_run_setup_line_for_packages_or_optional_only(self):
         self.p.modules -= {"PIL"}
         del self.p.files[TEXT], self.p.files[TOKENIZER]
@@ -551,7 +622,7 @@ class VenvCommands(unittest.TestCase):
         return code, out.getvalue(), err.getvalue()
 
     def test_help_without_the_venv(self):
-        for cmd in ("index", "search", "similar"):
+        for cmd in ("index", "search", "similar", "people", "pets"):
             for flag in ("--help", "-h"):
                 with self.subTest(cmd=cmd, flag=flag):
                     code, out, err = self.run_main([cmd, flag])
@@ -592,15 +663,24 @@ class Pins(unittest.TestCase):
         self.assertEqual(label.MODEL_SHA, FILES["onnx/vision_model_quantized.onnx"])
         self.assertEqual((semantic.TEXT_SHA, semantic.TOK_SHA), (FILES["onnx/text_model.onnx"], FILES["tokenizer.json"]))
         self.assertEqual((vlm_trash.MODEL, vlm_trash.DIGEST), (PINS["ollama"]["model"], PINS["ollama"]["digest"]))
+        zoo = PINS["opencv_zoo"]["files"]
+        self.assertEqual([sha for _, _, sha in people.model_files()], [zoo[people.YUNET_FILE]["sha256"],
+                                                                       zoo[people.SFACE_FILE]["sha256"]])
+        self.assertEqual([sha for _, _, sha in pets.model_files()], [zoo[pets.YOLOX_FILE]["sha256"],
+                                                                     PINS["dinov2"]["files"][pets.DINO_FILE]["sha256"]])
+        self.assertEqual(sorted(zoo), sorted([people.YUNET_FILE, people.SFACE_FILE, pets.YOLOX_FILE]))
 
     PREFIX = 12  # `ollama list` and doctor show 12 characters; a copied prefix goes stale like a full pin
 
     def test_no_pin_copied_elsewhere(self):
-        pins = set(FILES.values()) | {PINS["siglip"]["revision"], PINS["ollama"]["digest"]}
+        pins = set(FILES.values()) | {PINS["siglip"]["revision"], PINS["ollama"]["digest"], PINS["opencv_zoo"]["commit"],
+                                      PINS["dinov2"]["revision"]}
+        pins |= {v["sha256"] for k in ("opencv_zoo", "dinov2") for v in PINS[k]["files"].values()}
         prefixes = {pin[:self.PREFIX] for pin in pins}
         root = support.ROOT
         paths = [os.path.join(root, "setup.sh"), *glob.glob(os.path.join(support.PKG, "*.py")),
-                 *glob.glob(os.path.join(root, "docs", "*.md")),
+                 *(p for p in glob.glob(os.path.join(root, "docs", "*.md"))  # a dated research record cites its
+                   if not os.path.basename(p).startswith("research-")),  # sources' pins as evidence
                  *(os.path.join(root, f) for f in ("README.md", "ROADMAP.md", "CONTRIBUTING.md")),
                  *glob.glob(os.path.join(root, ".github", "workflows", "*.yml"))]
         for p in paths:

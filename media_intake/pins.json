@@ -1,5 +1,5 @@
 {
-  "_comment": "The one place model pins live: setup.sh, label.py, semantic.py, vlm_trash.py and `media-intake doctor` read them. Regenerate with scripts/update-pins.py (7-day minimum age); don't hand-edit. CONTRIBUTING.md, Pins.",
+  "_comment": "The one place model pins live: setup.sh, label.py, semantic.py, vlm_trash.py, people.py, pets.py and `media-intake doctor` read them. Regenerate with scripts/update-pins.py (7-day minimum age); don't hand-edit. CONTRIBUTING.md, Pins.",
   "siglip": {
     "repo": "Xenova/siglip-base-patch16-224",
     "revision": "4649052661e53c7000355844105f8a1792088239",
@@ -14,5 +14,35 @@
     "model": "qwen3-vl:2b",
     "digest": "0635d9d857d497aeadba3d7d27485746c50554446f9f6ec01ef39788221adbe8",
     "candidate": null
+  },
+  "opencv_zoo": {
+    "repo": "opencv/opencv_zoo",
+    "commit": "48b10fa505aeb51fbd127fc60a5c660040e823b7",
+    "commit_date": "2026-10-20",
+    "files": {
+      "models/face_detection_yunet/face_detection_yunet_2023mar.onnx": {
+        "sha256": "8f2383e4dd3cfbb4553ea8718107fc0423210dc964f9f4280604804ed2552fa4",
+        "size": 232589
+      },
+      "models/face_recognition_sface/face_recognition_sface_2021dec.onnx": {
+        "sha256": "0ba9fbfa01b5270c96627c4ef784da859931e02f04419c829e83484087c34e79",
+        "size": 38696353
+      },
+      "models/object_detection_yolox/object_detection_yolox_2022nov.onnx": {
+        "sha256": "c5c2d13e59ae883e6af3b45daea64af4833a4951c92d116ec270d9ddbe998063",
+        "size": 35858002
+      }
+    }
+  },
+  "dinov2": {
+    "repo": "Xenova/dinov2-small",
+    "revision": "c2bb04a51fab207c420665f1946016107bffc701",
+    "revision_date": "2025-07-10",
+    "files": {
+      "onnx/model_quantized.onnx": {
+        "sha256": "3afdc8bc63b50558d6e5770f5b799bb82455c2311183a2de43803f343a29d917",
+        "size": 24451943
+      }
+    }
   }
 }

@@ -58,9 +58,31 @@ buttons are named in **bold**, as they appear on screen.
 | **Junk score** | How sure the optional vision check is that a file is junk, from 0 to 1, always shown to 2 decimals. Suggested junk lists verdicts of 0.70 or more by default (below that the model itself calls it low-confidence); its **Junk score** box goes lower, and **Show N more with a lower junk score** says how many that adds. |
 | **Junk check** | The gallery filter for the vision model's verdict: Judged junk (its count follows the "Junk score at least" slider), Judged fine or Not checked. |
 | **Possible child** | A content label for photos that may show a child. A hint only: it misses small or distant children. |
+| **Dates to check** | The gallery's view of the files `check-dates` found with a date that looks wrong (a clock-reset default, a camera newer than its date, out of order with the camera's numbering, dates that disagree), grouped by reason. Nothing changes until you **Fix date**. |
+| **suggested date** | The date `check-dates` thinks a file was really taken, and where it came from: its GPS time, a date in its name, a cloud export, or its numbered neighbours (the camera's files before and after it). |
+| **Fix date** | Give library files a corrected date, in their sidecars only (the photo or video and its folder don't change): the suggested date, a date you type, or a shift (`+8y`). Undo puts it back. Commands: `fix-dates` (a dry run until `--yes`; `--undo`). |
+| **clock-reset default** | A date a camera starts from when its clock was never set, such as a GoPro's 2016-01-01: files filed under it were taken some other time. |
 | **Looks like** | A content label (dog, beach, food, ...) from the local SigLIP model. |
 | **Flags** | The gallery filter for Tagged as junk, Possible child and Untagged. |
 | **video proxy**, **converting** | The gallery's H.264 copy of a video this browser can't play (HEVC, most phones), made on this computer and kept in the cache. While one is made the large view says **Converting this video for the browser** and starts playing within seconds; `media-intake proxies` makes them ahead of time. |
+
+## People and pets
+
+Off until `bash setup.sh --recognition`; [recognition.md](recognition.md).
+
+| Word | Means | Not to be confused with |
+| --- | --- | --- |
+| **People** | Recognising faces (`media-intake people`): the tool finds faces, groups the ones that look alike and you name the groups. A name you gave or confirmed goes into the sidecar as `People\|<Name>`. | Content labels ("Looks like"). |
+| **Pets** | The same for your own animals (`media-intake pets`; cats and dogs by default, other animals by config), tagged `Pets\|<Name>`. A cat is never in the same group as a dog. | Looks like: dog (a content label for any dog). |
+| **named** | A file with a person or pet you named in it (`People\|<Name>`, `Pets\|<Name>`): never suggested as junk, never judged by the vision check. Not a Keep. | Kept. |
+| **cluster** | A group of faces (or pets) that look alike, numbered by size (1 = largest); the numbers change every time `cluster` runs. You **name**, **merge**, **ignore** or **unname** a cluster. | An event. |
+| **suggestion** | A name the tool proposes for a face or pet that joined a cluster you named. Never a tag, and never counted by `find`, until you confirm it. | A name you gave. |
+| **confirm**, **reject** | Your answer to a suggestion: confirm makes it your name (written as a tag by `tag`); reject drops it, and that name is never suggested for that face or pet again. | Take out (a name you gave, undone for one face or pet). |
+| **take out** | "Not this one": one face or pet leaves its cluster's name for good (until **put back**). Removing a `People\|` or `Pets\|` tag the tool wrote from a sidecar does the same. | Reject. |
+| **ignore** | A cluster of strangers, posters or statues: never named, never tagged. In the gallery the button is **Not a person** / **Not a pet**, and **Not ignored** undoes it. | Trash. |
+| **People & Pets** | The gallery sidebar's section: each name you gave or confirmed with its item count, and **Name new faces/pets**. Shown only once the recognition store exists. | Quick views. |
+| **Name faces and pets** | The gallery's naming view (its **Name new faces/pets** entry): the clusters to name, the suggestions, the named and the ignored ones. | The review page. |
+| **Looks like _Name_** | In the naming view only: a cluster close to one you named ("Looks like Ann.", with Merge into Ann…), or the suggestions waiting for a name ("Looks like Ann: 42"). | **Looks like** the content label (dog, beach). |
 
 ## Events
 
@@ -69,6 +91,14 @@ buttons are named in **bold**, as they appear on screen.
 | **event** | A named group of photos and videos (a trip, a shoot), held in each file's sidecar as `Event\|<slug>`. **Set event…**, **Rename…** and **Merge into…** change it. | A batch. |
 | **slug** | An event's name in the sidecars: lowercase letters, digits and dashes, like `summer-2026` (`plan --event`, Set event, Rename). Always in the tooltip and the event bar. | The display name. |
 | **display name** | What the gallery shows for an event in the sidebar and the title: one you set with **Display name…**, else the slug made readable ("Summer 2026") when no other event looks like it, else the slug. Kept by the gallery in the state folder, never in a sidecar; two events never show alike. | The slug. |
+
+## Places
+
+| Word | Means | Not to be confused with |
+| --- | --- | --- |
+| **Place** | The city or town nearest a file's GPS (within 50 km), added by `tag` from offline GeoNames, like "Fernvale, Eastmarch, XA". The gallery's **Place** filter and Details row. | My places. |
+| **My places**, **My place** | Places you name yourself (Home, The cabin): a name, a point and a radius, kept only in the state folder's `places.json`. A file whose GPS is inside one gets it as a tag beside its Place. `media-intake places`, the gallery's **Places** list and **Add a place here…** ([places.md](places.md)). | Place (the city). |
+| **Probably here** | The gallery's guess for a file without GPS: a photo from the same camera, close in time, was in one of your places. Only a suggestion: **Yes** tags it, **No** stops it being suggested again. | |
 
 The tool's own tag names (`Review|maybe-trash`, `Owner|keep`, `Label|food`)
 appear only in sidecars and in the developer docs; the pages map them to the

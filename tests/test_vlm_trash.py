@@ -305,6 +305,21 @@ class VlmTrash(unittest.TestCase):
         for p in decided:
             self.assertEqual(ai(p), [])
 
+    def test_named_people_and_pets_never_judged(self):
+        named = []
+        for i, t in enumerate(["Pets|Rex", "People|Ann"]):  # names you gave or confirmed (recog.py's tag)
+            p = img(os.path.join(self.lib, "2026", f"n{i}.jpg"))
+            add_tag(p, "Review|maybe-trash")
+            add_tag(p, t)
+            named.append(p)
+        # never a candidate; --all and an explicit list count them owner-decided, and none is sent or tagged
+        for mode, n in (((), 0), (("--all",), 2), (tuple(named), 2)):
+            code, c, _ = self.run_v(*mode)
+            self.assertEqual((code, c["owner-decided"], c["todo"]), (0, n, 0), mode)
+        self.assertEqual(self.gens(), [])
+        for p in named:
+            self.assertEqual(ai(p), [])
+
     def test_used_and_demo_never_trash(self):
         u = img(os.path.join(self.lib, "2026", "u.jpg"))
         add_tag(u, "Used|2026-11-10-some-post")

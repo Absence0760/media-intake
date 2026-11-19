@@ -72,6 +72,12 @@ The goal: someone else can install it on Fedora, import a phone, and trust it.
 - [x] Device identity from Make/Model/serial: tag `Source|<model>` and name batches by it;
       two GoPros with the same file numbers go to separate device folders, never `_1`.
 - [x] GoPro chapters (GX01xxxx, GX02xxxx...) dated and grouped by the first chapter.
+- [x] Wrong dates already in the library: `check-dates` (clock-reset defaults, device era, video
+      format, numbering order, disagreeing sources, copies, GPS 0,0, place), `fix-dates` and the
+      gallery's Dates to check / Fix date, sidecars only, undoable (`docs/dates.md`).
+- [ ] Re-file a fixed file into its right YYYY/YYYY-MM folder: an explicit step with its own dry run
+      (index, plans and backup record rekeyed); today a fix leaves the file where it is.
+- [ ] Device era for more makers (DJI, Insta360, Sony, Canon), and HEVC 10-bit / HDR vs the model.
 - [x] Source kind `folder` for laptop folders (refuse HOME itself, hidden/config dirs, repos,
       the state dir, library roots, password-manager paths; offload refuses folder sources).
 
@@ -120,6 +126,19 @@ The goal: someone else can install it on Fedora, import a phone, and trust it.
       `XMP-GCamera:BurstID`; docs/intake.md, "Burst id").
 - [ ] Map view without leaking locations: offline vector tiles (or none); never fetch
       tiles for private photos from a third-party server.
+- [ ] Best shot per burst and near-duplicate set: pick the sharpest, best-exposed frame
+      (eyes open where faces are found) as the cover, and offer the rest to Suggested junk
+      with the reason "Not the best shot"; never trash on its own.
+- [ ] "On this day": a sidebar view of photos and videos taken on today's date in past
+      years, grouped by year; hides flagged, trashed and erased items like every view.
+- [ ] Albums: hand-picked collections that cross dates and events (stored in sidecars like
+      `Event|`, or a private state file), with rename and merge; **Share album** makes one
+      stripped share-safe folder.
+- [ ] Free up space: a read-only report of what takes room (largest videos, duplicate sets,
+      Suggested junk, cached proxies) with the space each would free, and links into the
+      gallery to act on it. Changes nothing itself.
+- [ ] Backup health in the gallery: when the last `backup` ran, to which drive, and how many
+      library files are not on it yet; a link to the command to run. Read-only.
 - [x] Bulk edits on a selection: add/remove tags, set event, rotate.
 - [x] Select all in the gallery (header button, Ctrl+A / Cmd+A): every tile shown, a closed
       stack's cover only, the pages loaded so far (docs/gallery.md, "Actions").
@@ -142,13 +161,30 @@ The goal: someone else can install it on Fedora, import a phone, and trust it.
 - [ ] Vision LLM: support newer local models when Ollama allows (e.g. a 4B Qwen3-VL needs
       a newer Ollama than 0.21); licence check (commercial use) before adopting any model.
 - [ ] Optional local face grouping (off by default): face data counts as personal data,
-      so erase/verify-gone must cover it; never names faces automatically.
+      so erase/verify-gone must cover it; never names faces automatically. Core and CLI built
+      (`recog.py`, `media-intake people`; names propagate only as suggestions until confirmed;
+      docs/recognition.md); the gallery's People & Pets section and naming view are built too
+      (docs/gallery.md, "People and pets").
+- [x] Pet recognition (`Pets|<Name>`) alongside face grouping, sharing one store, naming and
+      erase path; suggestions only until the owner confirms: core and CLI (`pets.py`,
+      `media-intake pets`, YOLOX + DINOv2, `pets eval` against your own names;
+      docs/recognition.md, decisions in docs/research-pets.md) and the gallery's naming view.
+- [ ] Pets: date-aware propagation (prefer photos close in date when growing a name, so a
+      kitten and the grown cat need fewer merges; docs/research-pets.md).
+- [ ] Search the text in photos: keep the OCR text the sensitive-content scan already reads
+      (screenshots, receipts, signs) in a private local index and let `search` and the
+      gallery find files by what they say; flagged and erased files never indexed, erase
+      and verify-gone cover the index.
+- [ ] Local captions: a short description of each photo from the local vision model
+      (Ollama, already used by `vlm-trash`), kept in the sidecar as the tool's own field and
+      searchable; off by default, resumable overnight like `vlm-trash --all`.
 - [x] Video near-duplicates (perceptual video hash) for re-encoded or trimmed copies
       (`videohash.py`; docs/intake.md, Duplicates).
 - [x] Text search quality: prompt ensembles for queries (`--no-ensemble` to compare) and
       per-label thresholds (docs/search.md).
 - [ ] Search across video frames by the best-matching frame: the index keeps one averaged
       vector per video today, so this needs a per-frame index.
+      The pets/people video pass would provide it (docs/research-pets.md, "Videos").
 
 ## Milestone 0.4: more sources
 
@@ -206,6 +242,10 @@ The goal: someone else can install it on Fedora, import a phone, and trust it.
 ---
 
 ## Known limitations (documented, not bugs)
+
+- Face grouping (`media-intake people`) is a hint: its thresholds are uncalibrated starting points
+  (`people eval` measures them on your own `Calibrate|people|` tags); videos are looked at through a
+  few sampled frames each (`frames.py`, docs/recognition.md, "Videos").
 
 - Motion photos: only JPEG and HEIC ones are read. A Samsung PNG or AVIF motion photo is
   scanned as a still, so its short video is not checked. HEIC stills need `pillow-heif`.

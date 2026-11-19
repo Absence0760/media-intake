@@ -39,6 +39,13 @@ download pins; the gallery's local-app launch (`/api/open`, which runs the
 desktop's default app on one library file); and the state folder's lock and
 salt files (`locks/`, whose holder note must never name a file, and
 `device-salt`, which keeps device ids from revealing camera serial numbers);
+the people and pets recognition store (`recognition.dir`: biometric data, `0700` with
+`0600` files, never backed up, removed by erase, forget, trash and
+sweep-erased; docs/recognition.md); `places.json` (your named places and their
+points: sensitive, where you live; `0600`, never backed up, synced or printed;
+docs/places.md); and `datecheck.json` and `date-fixes.json` (paths and dates,
+`0600`, a file's records dropped by erase, forget, trash and sweep-erased;
+docs/dates.md);
 and file names from devices reaching an external tool's command line or a
 GStreamer pipeline description (video frames and HEVC proxies are read through
 a link in a private work folder, never by name).

@@ -516,5 +516,66 @@ class LiveCaseMatches(unittest.TestCase):
             sources.live_case_matches(self.root, [t])
 
 
+
+class RootPresent(unittest.TestCase):
+    """sources.root_present: a library folder counts as there only when it exists, holds something and, where
+    drives mount, sits on a mounted drive (findmnt's answer, mocked here)."""
+
+    def setUp(self):
+        self.tmp = tempfile.mkdtemp(prefix="root-present-")
+        self.addCleanup(__import__("shutil").rmtree, self.tmp, True)
+
+    def test_missing_empty_and_populated(self):
+        root = os.path.join(self.tmp, "lib")
+        self.assertFalse(sources.root_present(root))
+        os.makedirs(root)
+        self.assertFalse(sources.root_present(root), "an empty folder: an unmounted drive's mountpoint")
+        open(os.path.join(root, "a.jpg"), "w").close()
+        self.assertTrue(sources.root_present(root))
+
+    def test_under_a_drive_prefix_the_drive_must_be_mounted(self):
+        media = os.path.join(self.tmp, "media")
+        root = os.path.join(media, "user", "LABEL", "Videos")
+        os.makedirs(root)
+        open(os.path.join(root, "stale.txt"), "w").close()  # something written to the laptop disk by mistake
+        with unittest.mock.patch.object(sources, "FOLDER_DRIVE_PREFIXES", (media,)):
+            with unittest.mock.patch.object(sources, "drive_mount", return_value="/"):
+                self.assertFalse(sources.root_present(root), "the laptop's own disk: the drive is not mounted")
+            with unittest.mock.patch.object(sources, "drive_mount", return_value=media):
+                self.assertFalse(sources.root_present(root), "the prefix itself is no drive")
+            with unittest.mock.patch.object(sources, "drive_mount", return_value=os.path.join(media, "user", "LABEL")):
+                self.assertTrue(sources.root_present(root))
+            with unittest.mock.patch.object(sources, "drive_mount", side_effect=OSError("no findmnt")):
+                self.assertTrue(sources.root_present(root), "no findmnt: the non-empty folder is all there is")
+
+    def test_a_hung_findmnt_is_not_present(self):
+        import subprocess
+        media = os.path.join(self.tmp, "media")
+        root = os.path.join(media, "user", "LABEL")
+        os.makedirs(root)
+        open(os.path.join(root, "a.jpg"), "w").close()
+        hung = unittest.mock.Mock(side_effect=subprocess.TimeoutExpired("findmnt", sources.FINDMNT_TIMEOUT))
+        with unittest.mock.patch.object(sources, "FOLDER_DRIVE_PREFIXES", (media,)), \
+                unittest.mock.patch.dict(os.environ, {}, clear=False), \
+                unittest.mock.patch("subprocess.run", hung):
+            os.environ.pop("MEDIA_INTAKE_TEST_MOUNT", None)
+            self.assertEqual(sources._findmnt("TARGET", root), "")
+            self.assertFalse(sources.root_present(root), "a hung mount is not a library that is there")
+        self.assertEqual(hung.call_args.kwargs["timeout"], sources.FINDMNT_TIMEOUT)
+
+    def test_file_gone_uses_the_innermost_root(self):
+        lib = os.path.join(self.tmp, "lib")
+        proj = os.path.join(lib, "projects", "p")  # a project folder inside the library, on its own drive
+        os.makedirs(proj)
+        open(os.path.join(lib, "x.jpg"), "w").close()
+        roots = [lib, proj]
+        gone = os.path.join(proj, "v.mp4")
+        self.assertFalse(sources.file_gone(gone, roots, sources.present_roots(roots)), "its own root is empty")
+        open(os.path.join(proj, "w.mp4"), "w").close()
+        self.assertTrue(sources.file_gone(gone, roots, sources.present_roots(roots)))
+        self.assertFalse(sources.file_gone(os.path.join(self.tmp, "else", "y.jpg"), roots, []), "no root: kept")
+        self.assertTrue(sources.file_gone(os.path.join(self.tmp, "y.jpg"), roots, [], outside=True))
+
+
 if __name__ == "__main__":
     unittest.main()

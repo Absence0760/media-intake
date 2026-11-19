@@ -19,9 +19,12 @@ only), Set event, all on one item or a selection, and Share (share-safe copies: 
 share-copy into a new folder under --share-out, default ~/Pictures/share-safe, as a
 job, then that folder opened in the file manager; also on each tile and in the large view). A left sidebar holds the views with counts (/api/facets): Library, Trash
 suggestions, any tab a plugin adds (plugins.py gallery_views(), docs/plugins.md),
-the quick views Favorites, Added in the last 30 days, Possible child, Untagged, and the Events (Event|
+the quick views Favorites, Added in the last 30 days, Possible child, Untagged, Dates to check (check-dates'
+report, datecheck.py; Fix date writes through fix-dates' code, undoable), and the Events (Event|
 tags; rename and merge rewrite only those, in the sidecars that have them; each shown by
-a display name kept in <state>/event-names.json, never two alike); then
+a display name kept in <state>/event-names.json, never two alike), and Places (your named places,
+places.py: Add a place here… in the large view, "probably here" for a file without GPS; the page
+never gets a coordinate, docs/places.md); then
 search, the filters and Keyboard shortcuts; its right edge drags (or arrow keys) to a
 width kept per browser. Bursts (bursts.py over the plan entries intake wrote) show in
 the timeline as one stack per burst: a cover with a count badge, X opens or closes it,
@@ -36,29 +39,38 @@ The paths go to the worker on a pipe; the status file names the files only by
 (device, inode), and an Erase's output is scrubbed of names when it ends.
 Favorites: a star on each tile and in the large view (F), xmp:Rating = 5 in the sidecar (digiKam's five
 stars; owner.favorite: rating >= 5 is a favorite, kept from Suggested junk like Keep), and a Favorites quick view.
-Keep, Favorite, my tags, Rotate and Set event can be undone (/api/undo: the server records each sidecar's
+Keep, Favorite, my tags, Rotate, Set event and Fix date can be undone (/api/undo: the server records each sidecar's
 fields before and after and puts back exactly that change, refusing once a sidecar changed
 again); Trash, Erase and Share can't. No native alert/confirm/prompt: in-page
 dialogs, an error message that stays until dismissed, and a "?" list of every key.
+People & Pets (recog.py's store, only once it exists; never created here): the sidebar lists the names you gave
+with their item counts (a filter by the People|<Name> / Pets|<Name> tag) and Name new faces/pets, a naming view in
+this page (name, merge, ignore, take out, confirm or reject suggestions; each POST names the cluster run it was made
+against, 409 after a re-cluster; tags written at once under the library lock). Crops by detection id only (/r/<id>,
+recog.crop_bytes: 0600 in the store's crops/, never for a file the gallery doesn't list). The large view names
+them, and for a video links the times they appear at.
 
 Server security is review_ui.py's: stdlib only, everything inline, 127.0.0.1 on a
 random port, random token swapped for an HttpOnly SameSite=Strict cookie, Host
 check, CSRF value on every POST, no-store + strict CSP, media by opaque id only.
 Originals are never written: sidecars (<file>.<ext>.xmp) only. docs/gallery.md.
 """
-import argparse, collections, contextlib, datetime, hashlib, html, http.server, io, json, os, re, secrets, select
-import shutil, subprocess, sys, tempfile, threading, time, unicodedata
+import argparse, collections, contextlib, datetime, hashlib, html, http.server, io, json, math, os, re, secrets, select
+import shutil, sqlite3, subprocess, sys, tempfile, threading, time, unicodedata
 import xml.etree.ElementTree as ET
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, HERE)
 import bursts  # noqa: E402  (burst groups: pure functions over date, device, dHash, burst id)
+import datecheck  # noqa: E402  (Dates to check: check-dates' report; Fix date writes through fix-dates' code)
 import intake  # noqa: E402  (constants, sidecar helpers, trash_allowed, exiftool_batch)
 import jobs  # noqa: E402  (trash / erase run as a detached job: <state>/jobs/gallery.*)
 import library_lock  # noqa: E402  (Keep, my tags, Rotate write sidecars under the library lock)
 import label  # noqa: E402  (flagged / refused: stdlib only at import)
 import owner  # noqa: E402  (owner decisions: Owner|keep / not-trash / trash)
+import places  # noqa: E402  (My places: Place|<name>, <state>/places.json)
 import plugins  # noqa: E402  (extra tabs: gallery_views())
+import recog  # noqa: E402  (people and pets: the store, names, suggestions, crops; numpy only when used)
 import review_ui as R  # noqa: E402  (server guards, media with Range, sizes)
 
 HOME, STATE = intake.HOME, intake.STATE
@@ -79,8 +91,10 @@ PROXY_REMUX_TIMEOUT = 600  # rewriting a finished proxy as a plain MP4 (a copy, 
 PROXY_KBPS = 8000  # the proxy's video bitrate (H.264, longer side at most PROXY_PX)
 PROXY_FRAG_MS = 1000  # the proxy is written as fragments this long, so the player can start before it is done
 PROXY_POLL = 0.2  # seconds between looks at a proxy being written (its size, a cancel) while it is streamed
-# Namespaces "my tag" never writes or removes (docs/intake.md, "Tags: who writes what").
-TOOL_PREFIXES = ("project|", "source|", "event|", "place|", "label|", "review|", "ai|", "used|", "owner|")
+# Namespaces "my tag" never writes or removes (docs/intake.md, "Tags: who writes what"). People| / Pets| are
+# recognition's: named, taken out and unnamed in the naming view, shown in the large view's People / Pets line.
+TOOL_PREFIXES = ("project|", "source|", "event|", "place|", "label|", "review|", "ai|", "used|", "owner|", "people|",
+                 "pets|")
 TAG_RE = re.compile(r"^[^\x00-\x1f\x7f]{1,64}$")
 DEG = {1: 0, 6: 90, 3: 180, 8: 270}
 ORIENT = {0: 1, 90: 6, 180: 3, 270: 8}
@@ -110,6 +124,8 @@ XMP_WANT = {
     ("http://ns.adobe.com/xap/1.0/", "Rating"): "rating",  # XMP-xmp:Rating, 0-5 stars: >= 5 a favorite (owner.py)
     ("http://www.digikam.org/ns/1.0/", "TagsList"): "tagslist",
     ("http://ns.google.com/photos/1.0/camera/", "BurstID"): "burst_id",  # XMP-GCamera:BurstID, if a tool wrote it
+    ("http://ns.adobe.com/exif/1.0/", "GPSLatitude"): "gpslat",  # tag wrote them: My places, never sent to the page
+    ("http://ns.adobe.com/exif/1.0/", "GPSLongitude"): "gpslon",
 }
 LISTS = {"tags", "tagslist", "subject"}
 DATE_RX = re.compile(r"(\d{4})[-:](\d\d)[-:](\d\d)(?:[T ](\d\d):(\d\d))?")
@@ -189,7 +205,9 @@ def facts(it):
     it["source"] = (pre("Source|") or [src or ""])[0]
     ev = pre("Event|") or ([it["xevent"]] if it.get("xevent") else [])
     it["event"] = ev[0] if ev else ""
-    it["place"] = (pre("Place|") or [", ".join(x for x in it.get("xplace", ()) if x)])[0]
+    # the city (a Place| tag with a comma, intake.py's); a place you named is in myplaces (places.py)
+    it["place"] = ([t for t in pre("Place|") if "," in t] or [", ".join(x for x in it.get("xplace", ()) if x)])[0]
+    it["myplaces"] = [t[len(places.PREFIX):] for t in tags if places.is_mine(t)]
     it["labels"] = pre("Label|")
     it["mine"] = [t for t in tags if owner_tag(t)]
     it["used"] = sorted(t[5:] for t in tags if t.startswith("Used|"))
@@ -218,6 +236,7 @@ def facts(it):
     it["ai_keep"] = any(t == "Review|vlm-keep" or (t.startswith("AI|vlm/") and "/keep" in t) for t in tags)
     it["kept"] = owner.kept(tags, it.get("pick", ""))  # your Keep (the tile's "Kept"); a favorite is it["fav"]
     it["fav"] = owner.favorite(it.get("rating"))
+    it["named"] = owner.named(tags)  # a person or pet you named (People|, Pets|): never Suggested junk
     it["trashed"] = owner.trashed(tags)  # a surviving copy of content you trashed
 
 
@@ -363,12 +382,15 @@ def load_sidecar(it):
     it["xdate"] = x.get("date") or ""  # with its seconds, for burst grouping (it["date"] keeps minutes)
     it["xburst"] = x.get("burst_id") or ""
     it["xplace"] = (x.get("city"), x.get("state"), x.get("country"))
+    it["gps"] = places.gps_of(x.get("gpslat"), x.get("gpslon"))  # server side only: never in a reply
+    it["xmp_read"] = bool(x)  # False: no sidecar, or one that didn't parse (places.Store.plan infers nothing)
     try:
         it["orient"] = int(x["orient"]) if x.get("orient") else None
     except ValueError:
         it["orient"] = None
     it["date"] = norm_date(x.get("date")) or guess_date(it["path"], it["root"], it["mtime"])
     facts(it)
+    it["when"], it["src"] = App.when_of(it), App.source_of(it)  # "probably here" (App.probably)
 
 
 # ---------------------------------------------------------------- thumbnails / previews
@@ -832,7 +854,7 @@ WORDS = {
     # filter sections and their chips
     "filter": {"kind": "Kind", "ym": "When", "project": "Project", "source": "Source", "place": "Place",
                "event": "Event", "label": "Looks like", "mine": "My tag", "review": "Flags", "ai": "Junk check",
-               "used": "Used", "added": "Added"},
+               "used": "Used", "added": "Added", "myplace": "My place", "dates": "Date check", "who": "Person or pet"},
     # a tool tag's namespace, shown as "<word>: <value>" in the large view (Owner| is not shown there:
     # the Details row says "Marked Keep")
     "ns": {"Project": "Project", "Source": "Source", "Event": "Event", "Place": "Place", "Label": "Looks like",
@@ -849,7 +871,18 @@ WORDS = {
             "forget": "Erase", "share-copy": "Share"},
     # the sidebar views
     "view": {"lib": "Library", "sug": "Suggested junk", "fav": "Favorites",
-             "recent": f"Added in the last {RECENT_DAYS} days", "child": "Possible child", "untagged": "Untagged"},
+             "recent": f"Added in the last {RECENT_DAYS} days", "child": "Possible child", "untagged": "Untagged",
+             "dates": "Dates to check", "names": "Name faces and pets"},
+    # Dates to check's groups: check-dates' kinds (datecheck.TITLES)
+    "dates": {k: datecheck.TITLES[k] for k in datecheck.DATE_KINDS},
+    # people and pets (docs/recognition.md, docs/words.md "People and pets"): per kind its sidebar heading (also
+    # the tag's namespace), what one is called, and the naming view's words
+    "rec": {"face": {"title": "People", "noun": "face", "not": "Not a person"},
+            "pet": {"title": "Pets", "noun": "pet", "not": "Not a pet"},
+            "section": "People & Pets", "entry": "Name new faces/pets",
+            "off": "people and pets recognition is off (no recognition store): docs/recognition.md",
+            "stale": "The clusters changed since this page loaded (media-intake {command} cluster ran): reload "
+                     "the list and try again; nothing was changed"},
 }
 
 
@@ -908,7 +941,7 @@ def load_event_names(state=None, roots=None):
             if check_display_name(n) == n and n:
                 out[e] = n
         except ValueError:
-            pass
+            pass  # a hand-edited name that fails the checks is ignored (docs/gallery.md, Events)
     return out
 
 
@@ -1008,6 +1041,383 @@ def event_labels(events, names):
     return shown
 
 
+# ---------------------------------------------------------------- people and pets (recog.py; docs/recognition.md)
+# The gallery's side of recognition: the sidebar's People & Pets, the naming view and the large view's names. Off
+# (nothing shown, every route 404 or "off") until the store exists: the gallery never creates one. Only names the
+# owner gave or confirmed are tags; a suggestion is never shown as a name outside the naming view.
+REC_KINDS = {"face": dict(module="people", command="people"), "pet": dict(module="pets", command="pets")}
+WHO_PREFIXES = ("People|", "Pets|")  # the tags recog writes for a name you gave or confirmed
+WHO_KIND = {"People|": "face", "Pets|": "pet"}
+REC_PAGE = 30          # clusters per page of the naming view (paged by cluster number, as social's page was)
+REC_CROPS = 24         # crops shown per cluster, largest first
+REC_IDS_MAX = 5000     # detection ids one POST may name
+REC_PRUNE_EVERY = 60   # seconds between two prunes of the store (refused, trashed, gone files) by the naming view
+
+
+class Rec:
+    """The recognition store as the gallery sees it: opened only when its file exists (never created here), one
+    connection shared by the server's threads, every use under self.lock. A store deleted (or replaced) since is
+    seen at the next request: the connection is closed (or reopened) and the feature goes off."""
+
+    def __init__(self):
+        self.c, self.ino = None, None
+        self.lock = threading.RLock()
+        self.specs = {}
+        self.pruned = 0.0
+        self.crop_sem = threading.BoundedSemaphore(2)
+
+    def conn(self):
+        """(Under self.lock.) The connection, or None when there is no store (or it is refused: inside a library
+        root, unreadable)."""
+        try:
+            d = recog.store_dir()
+            path = recog.db_path(d)
+            st = os.stat(path)
+        except (OSError, KeyError, ValueError):
+            st = None
+        ino = (st.st_dev, st.st_ino) if st else None
+        if self.c is not None and ino != self.ino:
+            self.c.close()
+            self.c = None
+        if st is None:
+            return None
+        if self.c is None:
+            try:
+                recog.check_location(d)
+                self.c = recog.connect(path, threads=True)
+                self.ino = ino
+            except (ValueError, OSError, sqlite3.Error):
+                self.c = None
+        return self.c
+
+    def kinds(self, c):
+        have = {k for (k,) in c.execute("SELECT DISTINCT kind FROM detections")}
+        return [k for k in REC_KINDS if k in have]
+
+    def spec(self, c, kind):
+        """The kind's recog.Kind (people.spec(), pets.spec()): its vector model and "looks like" threshold
+        (same). If its module fails to load, a stand-in with the store's own vector model: tags still work,
+        "looks like" hints don't."""
+        if kind not in self.specs:
+            mod = REC_KINDS[kind]["module"]
+            sp = None
+            if os.path.isfile(os.path.join(HERE, mod + ".py")):
+                try:
+                    sp = __import__(mod).spec()
+                except Exception as e:  # its module failed to load: the stand-in below, said once per kind
+                    print(f"gallery: {mod}.py failed to load ({type(e).__name__}: {str(e)[:200]}); {kind}s "
+                          "get no \"looks like\" hints", file=sys.stderr, flush=True)
+                    sp = None
+            if sp is None:
+                r = c.execute("SELECT e.model, COUNT(*) n FROM embeddings e JOIN detections d ON d.id=e.det "
+                              "WHERE d.kind=? GROUP BY e.model ORDER BY n DESC LIMIT 1", (kind,)).fetchone()
+                sp = recog.Kind(kind=kind, command=REC_KINDS[kind]["command"], prefix=WORDS["rec"][kind]["title"] + "|",
+                                model=r[0] if r else None, link=None, same=None, models=[], engine=None,
+                                noun=WORDS["rec"][kind]["noun"])
+            self.specs[kind] = sp
+        return self.specs[kind]
+
+    def need(self, kind):
+        """(Under self.lock.) The connection for a request about kind, or ValueError."""
+        if not isinstance(kind, str) or kind not in REC_KINDS:
+            raise ValueError("kind is face or pet")
+        c = self.conn()
+        if c is None:
+            raise ValueError(WORDS["rec"]["off"])
+        return c
+
+    @staticmethod
+    def run(c, kind):
+        return int(recog.meta(c, f"run:{kind}", 0) or 0)
+
+    def check_run(self, c, kind, run):
+        if type(run) is not int:
+            raise ValueError("run: the cluster run the page listed")
+        if run != self.run(c, kind):
+            raise RuntimeError(WORDS["rec"]["stale"].format(command=REC_KINDS[kind]["command"]))
+
+    # ------------------------------------------ read
+    def facet(self, tagged):
+        """The sidebar's People & Pets: per kind the owner names with the number of library items tagged with
+        each (tagged: {tag: count}), clusters still to name and suggestions waiting. None without a store."""
+        with self.lock:
+            c = self.conn()
+            if c is None:
+                return None
+            try:
+                out = []
+                for k in self.kinds(c):
+                    pre = WORDS["rec"][k]["title"] + "|"
+                    names = sorted(((n, tagged.get(pre + n, 0)) for (n,) in c.execute(
+                        f"SELECT DISTINCT name FROM detections WHERE kind=? AND how IN ({','.join('?' * len(recog.OWNER_HOW))}) "
+                        "AND name IS NOT NULL AND name != ?", (k, *recog.OWNER_HOW, recog.IGNORED))),
+                        key=lambda x: (-x[1], x[0].casefold()))
+                    todo = c.execute("SELECT COUNT(*) FROM (SELECT cluster FROM detections WHERE kind=? AND cluster IS "
+                                     "NOT NULL GROUP BY cluster HAVING COUNT(*) >= 2 AND SUM(name IS NOT NULL) = 0)",
+                                     (k,)).fetchone()[0]
+                    sugg = c.execute("SELECT COUNT(*) FROM detections WHERE kind=? AND how='suggested' AND name != ?",
+                                     (k, recog.IGNORED)).fetchone()[0]
+                    out.append(dict(kind=k, prefix=pre, names=[list(x) for x in names], unnamed=todo, suggestions=sugg))
+            except sqlite3.Error:
+                return None
+        return dict(kinds=out) if out else None
+
+    def maybe_prune(self, c):
+        """Drop what is flagged, erased, trashed or gone since (as every people / pets command does first)."""
+        if time.monotonic() - self.pruned >= REC_PRUNE_EVERY:
+            recog.prune(c, state=STATE)
+            self.pruned = time.monotonic()
+
+    def crops_of(self, c, kind, cl):
+        return [dict(id=r["id"], out=r["how"] == "out") for r in c.execute(
+            "SELECT id, how FROM detections WHERE kind=? AND cluster=? ORDER BY w * h DESC, id LIMIT ?",
+            (kind, cl, REC_CROPS))]
+
+    def listing(self, f):
+        """The naming view: one page of clusters (show: todo, named, ignored) or the suggestions by name."""
+        kind, show = f.get("kind") or "face", f.get("show") or "todo"
+        if show not in ("todo", "sugg", "named", "ignored"):
+            raise ValueError("show is todo, sugg, named or ignored")
+        try:
+            after = max(0, int(f.get("after") or 0))
+            lim = max(1, min(200, int(f.get("limit") or REC_PAGE)))
+        except ValueError:
+            after, lim = 0, REC_PAGE
+        with self.lock:
+            c = self.conn()
+            if c is None:
+                return dict(on=False)
+            kinds = self.kinds(c)
+            if not kinds:
+                return dict(on=False)
+            if kind not in kinds:
+                kind = kinds[0]
+            self.maybe_prune(c)
+            spec = self.spec(c, kind)
+            cl = recog.clusters(c, kind, min_size=2, samples=0)
+            groups = dict(todo=[d for d in cl if not d["name"] and not d["ignored"]],
+                          named=[d for d in cl if d["how"] == "owner" and not d["ignored"]],
+                          ignored=[d for d in cl if d["ignored"]])
+            sugg = recog.suggestions(c, kind)
+            counts = {k: len(v) for k, v in groups.items()}
+            counts["sugg"] = len(sugg)
+            out = dict(on=True, kind=kind, kinds=kinds, show=show, run=self.run(c, kind), counts=counts,
+                       names=[n for n, _, _ in recog.names(c, kind)], clusters=[], more=False, suggestions=[])
+            if show == "sugg":
+                by = collections.defaultdict(list)
+                for s in sugg:
+                    by[s["name"]].append(s["det"])
+                out["suggestions"] = [dict(name=n, ids=ids) for n, ids in
+                                      sorted(by.items(), key=lambda x: (-len(x[1]), x[0].casefold()))]
+                return out
+            rest = [d for d in groups[show] if d["id"] > after]
+            hints = {}
+            if show == "todo" and spec.same is not None and spec.model:
+                try:
+                    hints = recog.cluster_hints(c, spec)
+                except (ImportError, ValueError):
+                    hints = {}  # numpy missing in this Python: no "looks like" hints
+            for d in rest[:lim]:
+                d = dict(d, crops=self.crops_of(c, kind, d["id"]))
+                if d["id"] in hints:
+                    d["like"] = [dict(cluster=k, name=n, score=v) for k, n, v in hints[d["id"]]]
+                out["clusters"].append(d)
+            out["more"] = len(rest) > lim
+            return out
+
+    def crop(self, app, det):
+        """A detection's 160 px JPEG (recog.crop_bytes, cached 0600 in the store's crops/), or None: no store, no
+        such detection, or none of its files is an item the gallery may serve (live, not in a running job, never
+        flagged, quarantined, erased or trashed: crop_bytes checks the last ones again)."""
+        with self.lock:
+            c = self.conn()
+            if c is None:
+                return None
+            r = c.execute("SELECT sha FROM detections WHERE id=?", (det,)).fetchone()
+            if not r:
+                return None
+            paths = [p for (p,) in c.execute("SELECT path FROM files WHERE sha=? AND skip IS NULL", (r["sha"],))]
+        with app.lock:
+            if not any(app.by_path.get(p) is not None and app.servable(app.by_path[p]) for p in paths):
+                return None
+        # the decode on a connection of its own, so the naming view's other requests never wait behind it
+        with self.crop_sem:
+            try:
+                cc = recog.connect(recog.db_path(), threads=True) if os.path.isfile(recog.db_path()) else None
+            except (OSError, sqlite3.Error, ValueError):
+                return None
+            if cc is None:
+                return None
+            try:
+                return recog.crop_bytes(cc, det, state=STATE)
+            except (ImportError, OSError, ValueError, sqlite3.Error):
+                return None
+            finally:
+                cc.close()
+
+    def appearances(self, sha):
+        """[(kind, name, [seconds])] of the owner names in a video, by first appearance (each detection keeps its
+        frame's time), or [] (a photo, no store)."""
+        if not sha or not re.fullmatch(r"[0-9a-f]{64}", sha):
+            return []
+        with self.lock:
+            c = self.conn()
+            if c is None:
+                return []
+            try:
+                rows = c.execute(f"SELECT kind, name, t FROM detections WHERE sha=? AND t IS NOT NULL AND how IN "
+                                 f"({','.join('?' * len(recog.OWNER_HOW))}) AND name IS NOT NULL AND name != ? "
+                                 "ORDER BY t", (sha, *recog.OWNER_HOW, recog.IGNORED)).fetchall()
+            except sqlite3.Error:
+                return []
+        out = collections.OrderedDict()
+        for r in rows:
+            ts = out.setdefault((r["kind"], r["name"]), [])
+            if not ts or r["t"] - ts[-1] >= 1.0:  # one link a second at most
+                ts.append(round(float(r["t"]), 1))
+        return [(k, n, ts) for (k, n), ts in out.items()]
+
+    # ------------------------------------------ write (every action under the library lock, then tags written)
+    @staticmethod
+    def ids(v):
+        if not isinstance(v, list) or not v or len(v) > REC_IDS_MAX or any(type(i) is not int or i < 0 for i in v):
+            raise ValueError(f"ids: a list of 1-{REC_IDS_MAX} detection numbers")
+        return list(dict.fromkeys(v))
+
+    @staticmethod
+    def cluster_no(v):
+        if type(v) is not int or v < 1:
+            raise ValueError("which cluster?")
+        return v
+
+    @staticmethod
+    def paths_of(c, where, args):
+        return {p for (p,) in c.execute(f"SELECT DISTINCT f.path FROM files f JOIN detections d ON d.sha=f.sha "
+                                        f"WHERE {where}", args)}
+
+    def tag(self, c, spec, paths):
+        """Write the kind's tags for these files (recog.write_tags: only owner names, never a tag the owner
+        removed, never one it didn't write). Returns (the paths whose sidecar changed, a problem or None)."""
+        changed = []
+
+        def writer(entries):
+            changed.extend(p for p, _ in entries)
+            intake.write_tags(entries)
+        try:
+            recog.write_tags(c, spec, state=STATE, writer=writer, only=paths)
+        except (SystemExit, OSError, ValueError) as e:  # exiftool missing or failing: the store has it, the tags wait
+            return changed, str(e) or "exiftool failed"
+        return changed, None
+
+    def act(self, app, what, body):
+        """One naming action from the page: {kind, run, ...}. Returns (message, undo record or None, changed
+        paths). The run must be the one the page listed (409 after a re-cluster)."""
+        kind = body.get("kind")
+        w = WORDS["rec"]
+        with self.lock:
+            c = self.need(kind)
+            self.check_run(c, kind, body.get("run"))
+            spec, noun = self.spec(c, kind), w[kind]["noun"]
+            undo = None
+            if what in ("name", "ignore"):
+                cl = self.cluster_no(body.get("cluster"))
+                paths = self.paths_of(c, "d.kind=? AND d.cluster=?", (kind, cl))
+                before = {r["name"] for r in recog.cluster_rows(c, kind, cl) if recog.owner_label(r)}
+                name = recog.IGNORED if what == "ignore" else body.get("name")
+                if what == "name" and (not isinstance(name, str) or name == recog.IGNORED):
+                    raise ValueError("a name: 1-64 characters, no | / \\ , ; or control characters")
+                n, tot = recog.name_cluster(c, kind, cl, name)
+                if not before:
+                    undo = dict(act="unname", cluster=cl)
+                if what == "ignore":
+                    msg = f"Cluster {cl}: {n} {noun}s ignored. They are never tagged."
+                else:
+                    shown = next((r["name"] for r in recog.cluster_rows(c, kind, cl) if r["how"] == "cluster"), name)
+                    msg = f"Cluster {cl}: {n} of {tot} {noun}s named {shown}."
+            elif what == "unname":
+                cl = self.cluster_no(body.get("cluster"))
+                paths = self.paths_of(c, "d.kind=? AND d.cluster=?", (kind, cl))
+                msg = f"Cluster {cl}: {recog.unname_cluster(c, kind, cl)} {noun}s unnamed."
+            elif what == "merge":
+                cl, into = self.cluster_no(body.get("cluster")), body.get("into")
+                if isinstance(into, str):  # a name: the largest cluster carrying it
+                    r = c.execute(f"SELECT MIN(cluster) FROM detections WHERE kind=? AND how IN "
+                                  f"({','.join('?' * len(recog.OWNER_HOW))}) AND name=? COLLATE NOCASE",
+                                  (kind, *recog.OWNER_HOW, " ".join(into.split()))).fetchone()
+                    if not r or r[0] is None:
+                        raise ValueError(f"no one is named {' '.join(into.split())[:64]} yet: name a cluster first, "
+                                         "or give a cluster number")
+                    into = r[0]
+                into = self.cluster_no(into)
+                paths = self.paths_of(c, "d.kind=? AND d.cluster IN (?, ?)", (kind, cl, into))
+                name = recog.merge_clusters(c, kind, into, cl)
+                msg = f"Cluster {cl} joined cluster {into}" + (
+                    "." if not name else " (ignored)." if name == recog.IGNORED else f" ({name}).")
+            elif what in ("out", "back"):
+                ids = recog._ids(c, kind, self.ids(body.get("ids")))
+                q = ",".join("?" * len(ids))
+                paths = self.paths_of(c, f"d.kind=? AND d.id IN ({q})", (kind, *ids))
+                if what == "out":
+                    n = recog.take_out(c, kind, ids)
+                    undo = dict(act="back", ids=ids)
+                    msg = f"{n} {noun}{'' if n == 1 else 's'} taken out of the name."
+                else:
+                    n = recog.put_back(c, kind, ids)
+                    msg = f"{n} {noun}{'' if n == 1 else 's'} put back."
+            elif what == "answer":  # suggestions: confirm some, reject others, at once
+                yes = self.ids(body.get("confirm")) if body.get("confirm") else []
+                no = self.ids(body.get("reject")) if body.get("reject") else []
+                if not yes and not no or set(yes) & set(no):
+                    raise ValueError("confirm or reject each suggestion, not both")
+                recog._ids(c, kind, yes + no)  # every id first: a missing one writes nothing
+                q = ",".join("?" * len(yes + no))
+                paths = self.paths_of(c, f"d.kind=? AND d.id IN ({q})", (kind, *yes, *no))
+                a = recog.confirm(c, kind, yes) if yes else 0
+                b = recog.reject(c, kind, no) if no else 0
+                msg = f"{a} confirmed, {b} rejected."
+            else:
+                raise LookupError(what)
+            if undo:
+                undo.update(kind="rec", rk=kind, run=self.run(c, kind), after=self.snapshot(c, kind, undo))
+            changed, problem = self.tag(c, spec, paths)
+        if problem:
+            msg += f" The tags couldn't be written yet ({problem[:200]}); media-intake {REC_KINDS[kind]['command']} tag writes them."
+        return msg, undo, changed
+
+    @staticmethod
+    def snapshot(c, kind, undo):
+        """What an undoable action left: (id, how, name) of the cluster's detections, or of the ids taken out. An
+        undo is refused once these differ (a rename, a merge, a confirm since): it never clobbers a later change."""
+        if undo["act"] == "unname":
+            rows = c.execute("SELECT id, how, name FROM detections WHERE kind=? AND cluster=? ORDER BY id",
+                             (kind, undo["cluster"]))
+        else:
+            q = ",".join("?" * len(undo["ids"]))
+            rows = c.execute(f"SELECT id, how, name FROM detections WHERE kind=? AND id IN ({q}) ORDER BY id",
+                             (kind, *undo["ids"]))
+        return [tuple(r) for r in rows]
+
+    def undo(self, rec):
+        """Put one naming action back (unname a cluster named from nothing, put back what was taken out), then
+        the tags. Refused after a re-cluster (the cluster numbers are not the same any more)."""
+        kind = rec["rk"]
+        with self.lock:
+            c = self.need(kind)
+            if self.run(c, kind) != rec["run"]:
+                raise Changed(WORDS["rec"]["stale"].format(command=REC_KINDS[kind]["command"]))
+            if self.snapshot(c, kind, rec) != rec["after"]:
+                raise Changed("can't undo: that cluster changed again since; nothing was changed")
+            if rec["act"] == "unname":
+                paths = self.paths_of(c, "d.kind=? AND d.cluster=?", (kind, rec["cluster"]))
+                recog.unname_cluster(c, kind, rec["cluster"])
+            else:
+                q = ",".join("?" * len(rec["ids"]))
+                paths = self.paths_of(c, f"d.kind=? AND d.id IN ({q})", (kind, *rec["ids"]))
+                recog.put_back(c, kind, rec["ids"])
+            changed, _ = self.tag(c, self.spec(c, kind), paths)
+        return changed
+
+
 class App:
     def __init__(self, items, drive=None, views=(), share_out=None):
         self.items = items
@@ -1028,9 +1438,11 @@ class App:
         self.search_cache = {}
         self.undos = collections.OrderedDict()  # token -> what an undoable action changed (App.journal)
         self.shares = collections.OrderedDict()  # job id -> the folder its Share made (share_dir), for Open folder
+        self.dc_key, self.dc_report, self.dc = None, None, {}  # check-dates' report, as last read (date_findings)
         self.text_why = None
         self.text_checked = threading.Event()
         self.stop = threading.Event()
+        self.rec = Rec()  # people and pets: off until the recognition store exists
 
     # ---------------------------------------------- semantic search availability
     def check_text(self):
@@ -1194,7 +1606,18 @@ class App:
                     + (["kept"] if it["kept"] else []) + (["trashed copy"] if it["trashed"] else [])
                     + (["used"] if it["used"] else []), fav=it["fav"])
 
-    def detail(self, i):
+    def who(self, it, appear=()):
+        """The large view's People and Pets: each confirmed name (its People| / Pets| tag), and for a video the
+        seconds the store saw it at (appear: Rec.appearances)."""
+        times = {(WORDS["rec"][k]["title"] + "|" + n): ts for k, n, ts in appear if k in REC_KINDS}
+        out = []
+        for t in it["tags"]:
+            if t.startswith(WHO_PREFIXES):
+                ns, _, name = t.partition("|")
+                out.append(dict(kind=WHO_KIND[ns + "|"], name=name, tag=t, times=times.get(t, [])))
+        return out
+
+    def detail(self, i, appear=()):
         it = self.items[i]
         if "res" not in it:
             try:
@@ -1209,13 +1632,18 @@ class App:
                     video=it["show"] == "video", date=it["date"], place=it["place"], event=it["event"],
                     project=it["project"], source=it["source"], folder=folder, res=it["res"],
                     size=R.human(it["size"]), tags=it["tags"], mine=it["mine"], rot=rot, ai=it["ai_trash"],
-                    used=it["used"], kept=it["kept"], fav=it["fav"], has_xmp=it["has_xmp"])
+                    used=it["used"], kept=it["kept"], fav=it["fav"], has_xmp=it["has_xmp"],
+                    heic=it["ext"] in R.CONVERT_IMG and it["show"] == "none",  # no pillow-heif: a thumbnail only
+                    gps=it["gps"] is not None, myplaces=it["myplaces"], probably=self.probably(i),
+                    who=self.who(it, appear))
 
     def facets(self):
         c = {k: collections.Counter() for k in ("project", "source", "event", "place", "label", "month", "mine")}
         counts = collections.Counter()  # the sidebar's view and option counts (whole library, not cross-filtered)
         scores = collections.Counter()  # Judged junk by junk score: the page counts those at or above its slider
         recent = time.time() - RECENT_DAYS * 86400
+        dated = self.date_findings()
+        who = collections.Counter()  # People|<Name> / Pets|<Name> tags: the sidebar's People & Pets counts
         n = 0
         for it in self.items:
             if it["gone"]:
@@ -1236,6 +1664,7 @@ class App:
             counts["suggest"] += self.suggested(it)
             counts["suggest:lower"] += self.suggested(it, 0.0) and not self.suggested(it)
             counts["recent"] += it.get("ctime", 0) >= recent
+            counts["dates"] += it["path"] in dated
             for k in ("project", "source", "place"):
                 if it[k]:
                     c[k][it[k]] += 1
@@ -1247,6 +1676,9 @@ class App:
                 c["label"][t] += 1
             for t in it["mine"]:
                 c["mine"][t] += 1
+            for t in it["tags"]:
+                if t.startswith(WHO_PREFIXES):
+                    who[t] += 1
         out = {k: sorted(v.items(), key=lambda x: (-x[1], x[0])) for k, v in c.items()}
         out["month"] = sorted(c["month"].items(), reverse=True)
         self.text_checked.wait(timeout=0.05)
@@ -1259,17 +1691,22 @@ class App:
         names = load_event_names()  # read each time: another gallery on this library may have set one
         shown = event_labels(c["event"], names)
         event_names = {e: dict(label=shown[e], name=names.get(e, "")) for e in c["event"]}
+        mine, mine_err = self.my_places()
         return dict(total=n, facets=out, counts=dict(counts), ai_scores=sorted(scores.items()), recent_days=RECENT_DAYS,
-                    search=search, share_out=share, drive=drive, event_names=event_names)
+                    search=search, share_out=share, drive=drive, event_names=event_names,
+                    places=mine, places_error=mine_err, radii=list(places.RADII), radius=places.RADIUS_DEFAULT,
+                    dates_checked=(self.dc_report or {}).get("checked"), rec=self.rec.facet(who))
 
     def suggested(self, it, floor=SUGGEST_MIN):
         """Suggested junk: a copy of something you trashed, a content label's junk flag, or a vision-check trash
         verdict scoring at least `floor` (the view's Junk score; SUGGEST_MIN unless you lower it). Never a file you
-        kept or starred, one used in a post or one in a protected project, whatever the floor."""
+        kept or starred, one used in a post or one in a protected project, whatever the floor. A file with a person
+        or pet you named (People|, Pets|) is never suggested by a label or the vision check; a copy you trashed
+        still is (a name is no Keep)."""
         if it["kept"] or it["fav"] or it["used"] or f"Project|{it['project']}" in PROTECTED or PROTECTED.intersection(it["tags"]):
             return False
-        return it["trashed"] or "Review|maybe-trash" in it["tags"] or \
-            (it["ai_trash"] is not None and it["ai_trash"] >= floor)
+        return it["trashed"] or not it.get("named") and ("Review|maybe-trash" in it["tags"] or
+                                                         (it["ai_trash"] is not None and it["ai_trash"] >= floor))
 
     @staticmethod
     def junk_floor(f):
@@ -1278,7 +1715,7 @@ class App:
             v = float(f.get("jmin"))
         except (TypeError, ValueError):
             return SUGGEST_MIN
-        return min(1.0, max(0.0, v)) if v == v else SUGGEST_MIN
+        return min(1.0, max(0.0, v)) if not math.isnan(v) else SUGGEST_MIN
 
     def junk_why(self, it, floor):
         """The Why values an item is suggested for at this floor (a reason, WHY_LABEL, WHY_COPY)."""
@@ -1299,6 +1736,10 @@ class App:
             floor = self.junk_floor(f)
             if not self.suggested(it, floor) or (f.get("why") and f["why"] not in self.junk_why(it, floor)):
                 return False
+        if f.get("dates"):
+            fs = self.date_findings().get(it["path"])
+            if not fs or (f["dates"] != "all" and f["dates"] not in {x.get("kind") for x in fs}):
+                return False
         if f.get("kind") in ("photo", "video") and it["media"] != f["kind"]:
             return False
         for k in ("project", "source", "place"):
@@ -1306,9 +1747,13 @@ class App:
                 return False
         if f.get("event") and f["event"] not in self.events_of(it):
             return False
+        if f.get("myplace") and f.get("_myplace") not in it["myplaces"]:  # listing() resolved the id to its name
+            return False
         if f.get("label") and f["label"] not in it["labels"]:
             return False
         if f.get("mine") and f["mine"] not in it["mine"]:
+            return False
+        if f.get("who") and f["who"] not in t:  # a person or pet: the People|<Name> / Pets|<Name> tag you confirmed
             return False
         if f.get("ym") and not it["date"].startswith(f["ym"]):
             return False
@@ -1365,6 +1810,11 @@ class App:
 
     def listing(self, f):
         note, ranked = None, False
+        f = {k: v for k, v in f.items() if not k.startswith("_")}
+        if f.get("myplace"):  # a place by its id (it survives a rename); an unknown id matches nothing
+            st = self.place_store(quiet=True)
+            p = st.places.get(f["myplace"]) if st else None
+            f["_myplace"] = p["name"] if p else None
         ids = None
         q = (f.get("q") or "").strip()[:200]
         sim = f.get("similar")
@@ -1416,6 +1866,13 @@ class App:
             if f.get("view") == "suggest":
                 ids.sort(key=lambda i: -(self.items[i]["ai_trash"] if self.items[i]["ai_trash"] is not None else 0.5))
                 ranked = True
+            dated = self.date_findings() if f.get("dates") else {}
+            if f.get("dates"):  # grouped by what check-dates found (its first kind), then by date
+                ids.sort(key=lambda i: (self.date_info(self.items[i])["rank"], self.items[i]["date"], i))
+                ranked = True
+                checked = (self.dc_report or {}).get("checked")
+                note = note or (f"From check-dates on {checked.replace('T', ' ')[:16]}. A fix goes to the sidecar "
+                                "only; the files stay in their folders." if checked else None)
             try:
                 off = max(0, int(f.get("offset") or 0))
                 lim = max(1, min(500, int(f.get("limit") or 200)))
@@ -1428,6 +1885,8 @@ class App:
             for i in ids[off:off + lim]:
                 row = self.summary(i, self.items[i])
                 row.update(info.get(i, {}))
+                if self.items[i]["path"] in dated:
+                    row.update({k: v for k, v in self.date_info(self.items[i]).items() if k != "rank"})
                 page.append(row)
         out = dict(total=len(ids), items=page, note=note, ranked=ranked)
         if junk is not None:
@@ -1482,6 +1941,61 @@ class App:
         return out, info
 
     # ---------------------------------------------- your actions (sidecars only)
+    # ---------------------------------------------- Dates to check (check-dates' report; fixes: datecheck.py)
+    def date_findings(self):
+        """{library path: [date findings]} from the last check-dates report (datecheck.visible), re-read when the
+        report file changes (a check-dates run, a fix-dates or Fix date write, an undo)."""
+        try:
+            st = os.stat(datecheck.report_path())
+            key = (st.st_mtime_ns, st.st_size, st.st_ino)
+        except OSError:
+            key = None
+        if key != self.dc_key:
+            self.dc_report = datecheck.load_report() if key else None
+            self.dc, self.dc_key = datecheck.visible(self.dc_report), key
+        return self.dc
+
+    def date_info(self, it):
+        """A tile's Dates to check fields: dk its first kind, dq that kind's words, dd the date check-dates saw in
+        use (the sidecar's, else the file's own: the tile's d may be a folder guess), dr every reason, ds the
+        suggested date ("YYYY-MM-DD HH:MM", or None) and dsrc where it came from; rank orders the groups."""
+        fs = self.date_findings().get(it["path"]) or []
+        if not fs:
+            return dict(rank=99)
+        first = min(fs, key=lambda x: datecheck.KINDS.index(x["kind"]))
+        s, src = datecheck.best_suggestion(fs)
+        d = datecheck.from_iso(first.get("date"))
+        return dict(rank=datecheck.KINDS.index(first["kind"]), dk=first["kind"], dq=WORDS["dates"][first["kind"]],
+                    dd=d.strftime("%Y-%m-%d %H:%M") if d else None,
+                    dr="; ".join(str(x.get("reason") or "") for x in fs), dc=first.get("confidence"),
+                    ds=s.strftime("%Y-%m-%d %H:%M") if s else None, dsrc=src)
+
+    def fix_dates(self, ids, mode, value=None):
+        """Fix date: the same code as fix-dates (datecheck.plan_fix and write_fix), under the library lock. mode
+        set (value a date), shift (value like +8y) or suggested (check-dates' suggestion). Sidecars only; a file
+        that can't take the date is left as it is and counted. Undoable (/api/undo, datecheck.write_undo)."""
+        if mode not in ("set", "shift", "suggested"):
+            raise ValueError("set, shift or suggested")
+        if mode != "suggested" and (not isinstance(value, str) or not value.strip() or len(value) > 40):
+            raise ValueError("a date (YYYY-MM-DD or YYYY-MM-DD HH:MM)" if mode == "set" else "an amount, like +8y")
+        with self.writing("fix date"), self.lock:
+            ids = self.targets(ids)
+            paths = {self.items[i]["path"]: i for i in ids}
+            changes, refused = datecheck.plan_fix(list(paths), mode, value, what="Date" if mode == "set" else "Shift",
+                                                  report=self.dc_report if mode == "suggested" else None)
+            if not changes:
+                why = next(iter(refused.values()), "nothing to change")
+                raise ValueError(f"nothing was changed: {why}")
+            fid = datecheck.write_fix(changes, "gallery Fix date")
+            done = [paths[os.path.abspath(c["path"])] for c in changes if os.path.abspath(c["path"]) in paths]
+            self.refresh(ids)
+            self.date_findings()
+            n = len(changes)
+            msg = f"Fixed the date of {intake.plural(n, 'file')}" + (f"; {intake.plural(len(refused), 'file')} left as before "
+                                                                f"({next(iter(refused.values()))})" if refused else "") \
+                + ". In the sidecar only: the files stay in their folders."
+            return dict(result=msg, undo=self.remember(dict(kind="date", fix=fid, ids=done)))
+
     def targets(self, ids):
         if not isinstance(ids, list) or not ids or len(ids) > 5000:
             raise ValueError("no items")
@@ -1628,6 +2142,122 @@ class App:
             self.refresh(ids)
             return self.journal("tag", before, f"{'added' if op == 'add' else 'removed'} {tag!r} on {len(blocks)}")
 
+    # ---------------------------------------------- My places (places.py: Place|<name>, <state>/places.json)
+    @staticmethod
+    def place_store(quiet=False):
+        """This library's places (read each time: the CLI or another gallery may have changed them). quiet: None
+        when places.json is unreadable, else RuntimeError (a 409 on the page)."""
+        try:
+            return places.Store(STATE, ROOTS)
+        except places.Unreadable as e:
+            if quiet:
+                return None
+            raise RuntimeError(str(e)) from None
+
+    def my_places(self):
+        """([dict(id, name, n)] for the sidebar, most files first; "" or why they can't be read)."""
+        st = self.place_store(quiet=True)
+        if st is None:
+            return [], f"{places.FILE} in the state folder is unreadable"
+        n = collections.Counter(p for it in self.items if not it["gone"] for p in it["myplaces"])
+        rows = [dict(id=pid, name=p["name"], n=n[p["name"]]) for pid, p in st.places.items()]
+        return sorted(rows, key=lambda r: (-r["n"], places.look_key(r["name"]))), ""
+
+    @staticmethod
+    def when_of(it):
+        m = FULL_DATE.search(it.get("xdate") or "") or FULL_DATE.search(it.get("date") or "")
+        if not m:
+            return None
+        y, mo, d, h, mi, sec = m.groups()
+        try:
+            return datetime.datetime(int(y), int(mo), int(d), int(h), int(mi), int(sec or 0))
+        except ValueError:
+            return None
+
+    @staticmethod
+    def source_of(it):
+        return tuple(sorted(t for t in it["tags"] if t.startswith("Source|")))
+
+    def probably(self, i, st=None):
+        """"Probably here" for an item with no GPS and none of your places: [dict(id, name, minutes)] from
+        places.Store.probable over the library's GPS'd items. A suggestion only; nothing is written."""
+        it = self.items[i]
+        if it["gps"] is not None or it["myplaces"]:
+            return []
+        st = st or self.place_store(quiet=True)
+        if not st or not st.places:
+            return []
+        src, when = it["src"], it["when"]
+        if not src or when is None:
+            return []
+        span = datetime.timedelta(minutes=places.PROBABLY_MINUTES)
+        others = [(o["when"], o["src"], o["gps"]) for o in self.items  # cheap tests first: one pass, no parsing
+                  if o["src"] == src and o["gps"] is not None and not o["gone"] and o is not it
+                  and o["when"] is not None and abs(o["when"] - when) <= span]
+        got = st.probable(it["path"], when, src, others)
+        return [dict(id=pid, name=st.places[pid]["name"], minutes=m) for pid, m in got]
+
+    def place_add(self, item, name, radius):
+        """Add a place at a GPS'd item's point (the page never sees the coordinates), then tag every library
+        item inside it (places.Store.plan: never one you removed it from)."""
+        if not isinstance(item, int) or isinstance(item, bool):
+            raise ValueError("which item?")
+        try:
+            radius = places.check_radius(radius if radius is not None else places.RADIUS_DEFAULT)
+        except ValueError as e:
+            raise ValueError(str(e)) from None
+        with self.writing("add place"), self.lock:
+            i = self.targets([item])[0]
+            it = self.items[i]
+            if it["gps"] is None:
+                raise ValueError("this item has no location (GPS), so it can't mark a place")
+            st = self.place_store()
+            pid = st.add(name, it["gps"][0], it["gps"][1], radius)
+            ids, blocks = self.place_blocks(st, [pid])
+            self.run_exiftool(blocks)
+            self.refresh(ids)
+            st.save()  # after the sidecars: a record never says a tag is there before it is
+            p = st.places[pid]
+            return dict(result=f"Added the place {p['name']}: {len(blocks)} item{'' if len(blocks) == 1 else 's'} "
+                               f"within {p['radius']} m tagged.", place=pid, ids=ids)
+
+    def place_blocks(self, st, only):
+        """(item ids, exiftool blocks) bringing the live items in step with the places in only."""
+        ids, blocks = [], []
+        for i, it in enumerate(self.items):
+            if it["gone"] or not os.path.isfile(it["path"]):
+                continue
+            add, remove = st.plan(it["path"], it["gps"], it["tags"] if it["xmp_read"] else None, only=only)
+            if add or remove:
+                ids.append(i)
+                blocks.append(self.tag_block(it, add=add, remove=remove))
+        return ids, blocks
+
+    def place_probable(self, item, pid, yes):
+        """Your answer to "probably at <place>": yes tags the item with it (a tag of this tool's, like the ones
+        it adds by GPS); no records that it never asks about this item and place again."""
+        if not isinstance(item, int) or isinstance(item, bool) or not isinstance(pid, str):
+            raise ValueError("which item and place?")
+        if not isinstance(yes, bool):
+            raise ValueError("yes is true or false")
+        with self.writing("place"), self.lock:
+            i = self.targets([item])[0]
+            it = self.items[i]
+            st = self.place_store()
+            if pid not in st.places:
+                raise ValueError("no such place (it may have been removed)")
+            name = st.places[pid]["name"]
+            if not any(x["id"] == pid for x in self.probably(i, st)):
+                raise ValueError(f"{os.path.basename(it['path'])} is not suggested for {name} any more")
+            if yes:
+                self.run_exiftool([self.tag_block(it, add=[places.tag_of(name)])])
+                self.refresh([i])
+                st.tagged[pid].add(it["path"])
+            else:
+                st.declined[pid].add(it["path"])
+            st.save()
+            return dict(result=f"Tagged as {name}." if yes else f"Not {name}: it won't be suggested again.", ids=[i])
+
     # ---------------------------------------------- events (Event|<slug> tags; sidecars only)
     def events_of(self, it):
         """Every event an item is in: its Event| tags, and XMP-iptcExt:Event when it has no Event| tag."""
@@ -1653,7 +2283,7 @@ class App:
             names = (read_event_names() or {}).get(library_key(), {})
             prune_event_names(live if gone is None else live | (set(names) - gone))
         except OSError:
-            pass
+            pass  # names stay until the next start's prune; never fail the user's action over them
 
     def event_block(self, it, new, drop):
         """The block that moves one item out of the events in drop (all of its events when drop is None) and
@@ -1840,11 +2470,7 @@ class App:
                 rec[i] = (old, new, sha)
         if not rec:
             return msg
-        token = secrets.token_urlsafe(12)
-        self.undos[token] = dict(kind=kind, items=rec)
-        while len(self.undos) > UNDO_KEEP:
-            self.undos.popitem(last=False)
-        return dict(result=msg, undo=token)
+        return dict(result=msg, undo=self.remember(dict(kind=kind, items=rec)))
 
     @staticmethod
     def undo_block(kind, old, new, path):
@@ -1878,17 +2504,66 @@ class App:
             b.append(f"-XMP-xmp:Rating={old.get('rating') or ''}")
         return b + [path]
 
+    def remember(self, rec):
+        """An undo record (App.journal's, or a naming action's) under a new token."""
+        token = secrets.token_urlsafe(12)
+        self.undos[token] = rec
+        while len(self.undos) > UNDO_KEEP:
+            self.undos.popitem(last=False)
+        return token
+
+    def reload_paths(self, paths):
+        """Re-read the sidecars of these library files (after recog wrote their tags); their item ids."""
+        with self.lock:
+            ids = [self.by_path[p] for p in dict.fromkeys(paths) if p in self.by_path and self.live(self.by_path[p])]
+            self.refresh(ids)
+        return ids
+
+    def rec_act(self, what, body):
+        """POST /api/rec/<what>: a naming action (Rec.act) under the library lock, as every sidecar write is; the
+        reply carries an Undo token when the core can put it back (name or ignore a cluster that had no name,
+        take out)."""
+        with self.writing("people and pets"):
+            msg, undo, changed = self.rec.act(self, what, body)
+            ids = self.reload_paths(changed)
+            out = dict(result=msg, ids=ids)
+            if undo:
+                with self.lock:
+                    out["undo"] = self.remember(undo)
+            return out
+
     def undo(self, token):
         """Put back what one undoable action changed, item by item, under the library lock. Refused, writing
         nothing, when the token is unknown (already undone, or older than the last UNDO_KEEP actions), an item
         is gone, or any of its sidecars changed since (another action, the CLI, digiKam): an undo never
-        clobbers a later change. One use per token."""
+        clobbers a later change. One use per token. A naming action's undo (kind "rec") goes through the
+        recognition store instead (Rec.undo), refused after a re-cluster."""
         if not isinstance(token, str) or not token:
             raise ValueError("which action?")
+        with self.lock:
+            rec = self.undos.get(token)
+        if isinstance(rec, dict) and rec.get("kind") == "rec":
+            with self.writing("undo"):
+                with self.lock:
+                    if self.undos.pop(token, None) is None:
+                        raise ValueError("nothing to undo: it was undone already, or is too old")
+                ids = self.reload_paths(self.rec.undo(rec))
+            what = "naming the cluster" if rec["act"] == "unname" else "taking out"
+            return dict(result=f"undid {what}", ids=ids, kind="rec", thumbs=False)
         with self.writing("undo"), self.lock:
             rec = self.undos.get(token)
             if rec is None:
                 raise ValueError("nothing to undo: it was undone already, or is too old")
+            if rec["kind"] == "date":  # a Fix date: fix-dates' own undo (all its sidecars, or none)
+                del self.undos[token]
+                try:
+                    datecheck.write_undo(rec["fix"])
+                except datecheck.Changed as e:
+                    raise Changed(str(e)) from None
+                ids = [i for i in rec["ids"] if self.live(i)]
+                self.refresh(ids)
+                self.date_findings()
+                return dict(result=f"undid Fix date on {len(rec['ids'])}", ids=ids, kind="date", thumbs=False)
             ids = list(rec["items"])
             for i in ids:
                 if not self.live(i) or not os.path.isfile(self.items[i]["path"]):
@@ -2206,7 +2881,7 @@ def page(app):
 
 
 # Sidecar edits on a selection whose reply carries the items' new grid summaries ("items").
-REDRAW = ("/api/keep", "/api/favorite", "/api/tag", "/api/rotate", "/api/event/set")
+REDRAW = ("/api/keep", "/api/favorite", "/api/tag", "/api/rotate", "/api/event/set", "/api/dates/fix")
 
 
 class Handler(R.Handler):
@@ -2230,6 +2905,17 @@ class Handler(R.Handler):
             self.reply(200, page(app), "text/html; charset=utf-8")
         elif path == "/api/facets":
             self.json(200, app.facets())
+        elif path == "/api/rec":
+            try:
+                self.json(200, app.rec.listing(f))
+            except ValueError as e:
+                self.json(400, {"error": str(e)})
+        elif m := re.fullmatch(r"/r/([0-9]{1,12})", path):  # a face or pet crop, by detection id only (biometric)
+            data = app.rec.crop(app, int(m.group(1)))
+            if not data:
+                self.reply(404, "404\n")
+                return
+            self.reply(200, data, "image/jpeg")
         elif path == "/api/list":
             app.sync()
             self.json(200, app.listing(f))
@@ -2249,8 +2935,15 @@ class Handler(R.Handler):
                 conv = app.proxy_state(app.items[i])
             except OSError:
                 conv = None
+            it = app.items[i]
+            # before the lock too (the store has its own): when a video's people and pets appear
+            try:
+                appear = app.rec.appearances(app.sha_of(it)) if it["media"] == "video" and any(
+                    t.startswith(WHO_PREFIXES) for t in it["tags"]) else []
+            except OSError:
+                appear = []
             with app.lock:
-                self.json(200, dict(app.detail(i), conv=conv))
+                self.json(200, dict(app.detail(i, appear), conv=conv))
         elif m := re.fullmatch(r"/([tmp])/([0-9]{1,9})", path):
             i = int(m.group(2))
             if not app.servable(i):
@@ -2394,9 +3087,22 @@ class Handler(R.Handler):
             "/api/event/rename": lambda: app.rename_event(body.get("from"), body.get("to")),
             "/api/event/merge": lambda: app.merge_events(body.get("from"), body.get("into")),
             "/api/event/name": lambda: app.name_event(body.get("event"), body.get("name")),
+            "/api/place/add": lambda: app.place_add(body.get("id"), body.get("name"), body.get("radius")),
+            "/api/place/probable": lambda: app.place_probable(body.get("id"), body.get("place"), body.get("yes")),
             "/api/decide": lambda: app.decide(body.get("keep") or [], body.get("trash") or [], body.get("confirm")),
             "/api/undo": lambda: app.undo(body.get("undo")),
+            "/api/dates/fix": lambda: app.fix_dates(body.get("ids"), body.get("mode"), body.get("value")),
         }
+        if m := re.fullmatch(r"/api/rec/(name|ignore|unname|merge|out|back|answer)", path):
+            try:
+                self.json(200, app.rec_act(m.group(1), body))
+            except ValueError as e:
+                self.json(400, {"error": str(e)})
+            except LockBusy as e:
+                self.json(409, {"error": str(e), "busy": True})
+            except RuntimeError as e:
+                self.json(409, {"error": str(e)})
+            return
         if path == "/api/close":
             self.json(200, {"result": "closing"})
             app.stop.set()
@@ -2438,7 +3144,7 @@ class Handler(R.Handler):
         out = msg if isinstance(msg, dict) else {"result": msg}
         if path in REDRAW and isinstance(body.get("ids"), list):
             out["items"] = app.summaries(body["ids"])  # the page redraws those tiles' flags (kept, ...) in place
-        elif path == "/api/undo":
+        elif path in ("/api/undo", "/api/place/add", "/api/place/probable"):
             out["items"] = app.summaries(out["ids"])
         self.json(200, out)
 
@@ -2478,6 +3184,8 @@ def main(argv=None):
     ap.add_argument("--share-out", metavar="DIR", help=f"folder for share-safe copies, one dated subfolder per "
                                                        f"export (default {SHARE_OUT}); never inside the library")
     a = ap.parse_args(argv)
+    # The system python has no pillow-heif: HEIC would show only as its thumbnail. Re-run under setup.sh's venv.
+    R.venv_reexec(sys.argv[1:] if argv is None else list(argv), __file__)
     if a.drive and not os.path.isdir(a.drive):
         sys.exit(f"--drive {a.drive}: not a directory")
     t0 = time.monotonic()
@@ -2582,7 +3290,12 @@ kbd{font:600 11px/1 ui-monospace,monospace;border:1px solid currentColor;border-
 .nv[aria-current=page] .ct{color:var(--acc)}
 .railonly{display:none}
 .rl{display:none}
-#evlist{display:flex;flex-direction:column;gap:2px}
+#evlist,#pllist{display:flex;flex-direction:column;gap:2px}
+#plsec .empty{padding:4px 10px}
+.probably{border:1px solid var(--line);border-radius:8px;padding:8px 10px;margin:10px 0}
+.probably p{margin:0 0 6px}
+.probably .btn{margin:0 6px 0 0}
+.plrad select{height:34px;max-width:100%;border:1px solid var(--line);border-radius:8px;background:var(--panel);padding:0 8px}
 .evmore{align-self:flex-start;margin:2px 10px}
 .yrmore{margin:4px 10px}
 #evbar{display:flex;flex-wrap:wrap;align-items:center;gap:8px;padding:12px 24px 0}
@@ -2656,7 +3369,7 @@ output{font-variant-numeric:tabular-nums;color:var(--fg);font-weight:600}
 /* collapsed to an icon rail */
 .collapsed{--sbw:60px;--ml:60px}
 .collapsed #sidebar .lbl,.collapsed #sidebar .nv .ct,.collapsed #sidebar .brand,.collapsed #sidebar .nvhead,
-.collapsed .sb-search,.collapsed #filters,.collapsed #evsec,.collapsed #sbresize,.overlay #sbresize{display:none}
+.collapsed .sb-search,.collapsed #filters,.collapsed #evsec,.collapsed #reclist,.collapsed #sbresize,.overlay #sbresize{display:none}
 .collapsed .sb-foot{padding:4px 8px}
 .collapsed #views{padding:4px 8px}
 .collapsed .nv{justify-content:center;padding:0;height:40px}
@@ -2762,6 +3475,8 @@ body.marqing,body.marqing *{user-select:none;-webkit-user-select:none}
    stays under it however many rows its buttons wrap to */
 #actionbar{position:sticky;margin:0 16px;bottom:16px;z-index:12;display:flex;flex-wrap:wrap;gap:8px 16px;align-items:center;justify-content:center;padding:10px 14px;background:var(--panel);border:1px solid var(--line);border-radius:14px;box-shadow:var(--shadow)}
 .grp{display:flex;flex-wrap:wrap;gap:6px;align-items:center}
+.fixopt{display:flex;flex-wrap:wrap;gap:6px 8px;align-items:center;margin:8px 0}.fixopt input:not([type=radio]){flex:1 1 12em;min-width:0;max-width:100%}.fixopt input[type=radio]{height:auto;padding:0;margin:0}
+.fixlist{margin:4px 0 8px;padding-left:1.2em;max-height:9em;overflow:auto;overflow-wrap:anywhere}
 #seln,#sugn{font-weight:650;font-size:14px;margin-right:4px;white-space:nowrap}
 .sep{width:1px;height:22px;background:var(--line)}
 #toast{position:fixed;left:50%;bottom:24px;transform:translateX(-50%);z-index:40;background:var(--fg);color:var(--bg);padding:8px 14px;border-radius:8px;font-size:14px;max-width:min(560px,90vw);box-shadow:var(--shadow);opacity:0;pointer-events:none;transition:opacity .2s;display:flex;align-items:center;gap:12px}
@@ -2819,8 +3534,35 @@ dl.dt dd{margin:0;word-break:break-word}
 #info input{width:100%;height:32px;margin-top:8px;padding:0 10px;border:1px solid #34353c;border-radius:8px;background:#0f1013;color:#eee}
 #info input::placeholder{color:#9a9ba3}
 #info .fine{color:#8d8e96;font-size:12px;margin:0}
+/* the large view's People / Pets line: each name filters the grid; a video's times seek the player */
+#who p{margin:0 0 6px;overflow-wrap:anywhere}#who .link{color:#8ab0ff;font-size:14px}#who .wk{color:#9a9ba3}
 @media (max-width:760px){#viewer.on{display:block;overflow-y:auto;overscroll-behavior:contain}#stage{height:88vh;height:88dvh}#info{width:auto;overflow:visible;border-left:0;border-top:1px solid #2a2b31}#media{inset:8px}.arrow{width:36px;height:52px}
  #vclose{position:fixed;top:8px;right:8px;z-index:6;width:44px;height:44px;background:rgba(0,0,0,.6);color:#fff}}
+
+/* ---------------------------------------------------------------- people and pets: the naming view (in #plugin) */
+#names{padding:16px 24px 40px;display:flex;flex-direction:column;gap:14px;min-width:0}
+#names>.note{margin:0;padding:0}
+.rbar{display:flex;flex-wrap:wrap;gap:8px;align-items:center;min-width:0}
+.rseg{display:inline-flex;flex-wrap:wrap;gap:2px;padding:3px;background:var(--card);border-radius:9px;max-width:100%}
+.rseg button{border:0;border-radius:7px;background:none;padding:4px 10px;min-height:32px;font-size:14px;color:var(--mut)}
+.rseg button[aria-pressed=true]{background:var(--panel);color:var(--fg);font-weight:600;box-shadow:0 1px 3px rgba(0,0,0,.15)}
+.rcard{background:var(--panel);border:1px solid var(--line);border-radius:12px;padding:12px;min-width:0}
+.rcard h3{margin:0 0 8px;font-size:15px;overflow-wrap:anywhere}
+.rcard h3 .rsub{color:var(--mut);font-weight:400}
+.rlike{margin:0 0 8px;font-size:14px;color:var(--mut);overflow-wrap:anywhere}
+.rcrops{display:grid;grid-template-columns:repeat(auto-fill,minmax(72px,1fr));gap:6px;align-items:center}
+.rcrop{position:relative;padding:0;border:2px solid transparent;border-radius:8px;background:var(--card);aspect-ratio:1;overflow:hidden;min-width:44px;min-height:44px}
+.rcrop img{width:100%;height:100%;object-fit:cover;display:block}
+.rcrop[aria-pressed=true]{border-color:var(--erase)}
+.rcrop[aria-pressed=true] img{opacity:.4}
+.rcrop[aria-pressed=true]::after{content:"\2715";position:absolute;top:2px;right:4px;color:var(--erase);font-weight:700}
+.rmore{color:var(--mut);font-size:13px;text-align:center}
+.racts{display:flex;flex-wrap:wrap;gap:8px;margin-top:10px;align-items:center;min-width:0}
+.racts input{flex:1 1 160px;min-width:0;max-width:100%;height:34px;padding:0 10px;border:1px solid var(--line);border-radius:8px;background:var(--bg)}
+.racts input::placeholder{color:var(--mut)}
+#rpage{align-self:flex-start}
+@media (max-width:760px){#names{padding:12px 12px 40px}}
+@media (max-width:760px),(pointer:coarse){.rseg button,.racts input{min-height:44px}#who .link{min-height:44px}}
 
 /* ---------------------------------------------------------------- confirm / job dialog */
 .modal{position:fixed;inset:0;background:rgba(0,0,0,.55);z-index:30;display:none;align-items:center;justify-content:center;padding:16px}
@@ -2911,12 +3653,15 @@ dl.dt dd{margin:0;word-break:break-word}
  <symbol id="i-star" viewBox="0 0 24 24"><path d="M12 3.5l2.6 5.4 5.9.8-4.3 4.1 1 5.8-5.2-2.8-5.2 2.8 1-5.8-4.3-4.1 5.9-.8z"/></symbol>
  <symbol id="i-clock" viewBox="0 0 24 24"><circle cx="12" cy="12" r="8.5"/><path d="M12 7.5V12l3 2"/></symbol>
  <symbol id="i-child" viewBox="0 0 24 24"><circle cx="12" cy="6.5" r="2.5"/><path d="M8 21v-6l-2-1 2-5h8l2 5-2 1v6M12 15v6"/></symbol>
+ <symbol id="i-face" viewBox="0 0 24 24"><circle cx="12" cy="12" r="8.5"/><path d="M9 10h.01M15 10h.01M8.5 14.5a4.5 4.5 0 0 0 7 0"/></symbol>
+ <symbol id="i-paw" viewBox="0 0 24 24"><circle cx="7" cy="9" r="1.8"/><circle cx="11" cy="5.8" r="1.8"/><circle cx="15.5" cy="6.5" r="1.8"/><circle cx="18" cy="10.5" r="1.8"/><path d="M8.5 17.5c0-3 2-5.5 4-5.5s4 2.5 4 5c0 1.8-1.5 2.5-4 2.5s-4-.4-4-2z"/></symbol>
  <symbol id="i-tag" viewBox="0 0 24 24"><path d="M3.5 12.5V4h8.5l8.5 8.5-8.5 8.5z"/><circle cx="8" cy="8.5" r="1.4"/></symbol>
  <symbol id="i-search" viewBox="0 0 24 24"><circle cx="11" cy="11" r="6.5"/><path d="M20 20l-4.3-4.3"/></symbol>
  <symbol id="i-filter" viewBox="0 0 24 24"><path d="M4 5h16l-6 7.5V19l-4 1.5v-8z"/></symbol>
  <symbol id="i-chev" viewBox="0 0 24 24"><path d="M6 9l6 6 6-6"/></symbol>
  <symbol id="i-size" viewBox="0 0 24 24"><rect x="4" y="4" width="16" height="16" rx="2"/><path d="M4 14l4-4 5 5 2-2 5 5"/></symbol>
  <symbol id="i-power" viewBox="0 0 24 24"><path d="M12 3.5v8M7 6.5a7.5 7.5 0 1 0 10 0"/></symbol>
+ <symbol id="i-pin" viewBox="0 0 24 24"><path d="M12 21s-6.5-6.2-6.5-11a6.5 6.5 0 0 1 13 0c0 4.8-6.5 11-6.5 11z"/><circle cx="12" cy="10" r="2.3"/></symbol>
  <symbol id="i-cal" viewBox="0 0 24 24"><rect x="4" y="5.5" width="16" height="14.5" rx="2"/><path d="M4 10h16M8.5 3.5v4M15.5 3.5v4"/></symbol>
  <symbol id="i-x" viewBox="0 0 24 24"><path d="M6 6l12 12M18 6L6 18"/></symbol>
  <symbol id="i-share" viewBox="0 0 24 24"><path d="M12 15V4M8 8l4-4 4 4M5 12v7.5h14V12"/></symbol>
@@ -2936,7 +3681,11 @@ dl.dt dd{margin:0;word-break:break-word}
   <button type="button" class="nv" data-v="recent" title="Added in the last 30 days"><svg class="ic"><use href="#i-clock"/></svg><span class="lbl">Added in the last 30 days</span><span class="rl" aria-hidden="true">Recent</span><span class="ct" id="c-recent"></span></button>
   <button type="button" class="nv" data-v="child" title="Possible child"><svg class="ic"><use href="#i-child"/></svg><span class="lbl">Possible child</span><span class="rl" aria-hidden="true">Child</span><span class="ct" id="c-child"></span></button>
   <button type="button" class="nv" data-v="untagged" title="Untagged"><svg class="ic"><use href="#i-tag"/></svg><span class="lbl">Untagged</span><span class="rl" aria-hidden="true">No tags</span><span class="ct" id="c-untagged"></span></button>
+  <button type="button" class="nv" data-v="dates" title="Dates to check"><svg class="ic"><use href="#i-cal"/></svg><span class="lbl">Dates to check</span><span class="rl" aria-hidden="true">Dates</span><span class="ct" id="c-dates"></span></button>
   <div id="evsec"><div class="nvhead">Events</div><div id="evlist"></div></div>
+  <div id="plsec"><div class="nvhead">Places</div><div id="pllist"></div></div>
+  <div id="recsec" hidden><div class="nvhead">People &amp; Pets</div><div id="reclist"></div>
+   <button type="button" class="nv" data-v="names" title="Name new faces/pets"><svg class="ic"><use href="#i-face"/></svg><span class="lbl">Name new faces/pets</span><span class="rl" aria-hidden="true">Names</span><span class="ct" id="c-names"></span></button></div>
   <button type="button" class="nv railonly" id="rsearch" title="Search (/)"><svg class="ic"><use href="#i-search"/></svg><span class="vh">Search</span><span class="rl" aria-hidden="true">Search</span></button>
   <button type="button" class="nv railonly icon" id="rfilter" title="Filters" style="width:100%"><svg class="ic"><use href="#i-filter"/></svg><span class="vh">Filters</span><span class="rl" aria-hidden="true">Filters</span><span class="badge-n" id="rbadge" hidden></span></button>
  </nav>
@@ -2977,7 +3726,7 @@ dl.dt dd{margin:0;word-break:break-word}
    <button type="button" class="btn keep" id="bkeep">Keep <kbd>K</kbd></button><button type="button" class="btn trash" id="btrash">Trash <kbd>T</kbd></button><button type="button" class="btn erase" id="berase">Erase <kbd>E</kbd></button>
    <span class="sep"></span>
    <button type="button" class="btn" id="bfav" title="Star the selection as favorites (F toggles)">★ Favorite <kbd>F</kbd></button><button type="button" class="btn" id="bunfav" title="Take the selection out of Favorites">☆ Unfavorite</button>
-   <button type="button" class="btn" id="btag">+ tag</button><button type="button" class="btn" id="buntag">− tag</button><button type="button" class="btn" id="bevent">Set event…</button><button type="button" class="btn" id="brot">Rotate ⟳</button><button type="button" class="btn" id="bshare">Share</button><button type="button" class="btn" id="bnone">Clear selection <kbd>Esc</kbd></button>
+   <button type="button" class="btn" id="btag">+ tag</button><button type="button" class="btn" id="buntag">− tag</button><button type="button" class="btn" id="bevent">Set event…</button><button type="button" class="btn" id="bfixdate" hidden>Fix date…</button><button type="button" class="btn" id="brot">Rotate ⟳</button><button type="button" class="btn" id="bshare">Share</button><button type="button" class="btn" id="bnone">Clear selection <kbd>Esc</kbd></button>
   </div>
   <div class="grp" id="suggrp" role="group" aria-label="Decisions" hidden><span id="sugn"></span><span class="note" style="margin:0">Mark Keep or Trash on each, then Apply<span class="kbonly"> (keys: K, T, arrows)</span></span><button type="button" class="btn" id="bmarkall" title="Mark every tile shown Trash (a tile marked Keep keeps its mark); nothing changes until Apply">Mark all shown as Trash</button><button type="button" class="btn" id="bclearm" title="Take every Keep and Trash mark off (asks first)">Clear marks</button><button type="button" class="btn primary" id="sugapply">Apply…</button></div>
  </div>
@@ -2991,7 +3740,7 @@ dl.dt dd{margin:0;word-break:break-word}
  <aside id="info" aria-label="Details"></aside>
 </div>
 <div class="modal" id="modal" role="dialog" aria-modal="true" aria-labelledby="mh" data-dialog="confirm"><div class="box"><h3 id="mh"></h3><div id="mb"></div>
- <p id="mfieldp" hidden><label for="mfield" id="mflabel"></label><input id="mfield" list="evnames" autocomplete="off" spellcheck="false"><datalist id="evnames"></datalist><datalist id="mytags"></datalist></p>
+ <p id="mfieldp" hidden><label for="mfield" id="mflabel"></label><input id="mfield" list="evnames" autocomplete="off" spellcheck="false"><datalist id="evnames"></datalist><datalist id="mytags"></datalist><datalist id="recnames"></datalist></p>
  <p id="mtype" hidden>Type <b>ERASE</b> to confirm: <input id="mtyped" autocomplete="off" spellcheck="false" aria-label="Type ERASE"></p>
  <p id="mstatus" role="status" hidden></p><pre id="mout" hidden></pre>
  <div class="mbtns"><button type="button" class="btn" id="mno">Cancel</button><button type="button" class="btn primary" id="mgo">Confirm</button></div></div></div>
@@ -3050,7 +3799,7 @@ let F={aimin:"0.7"};
 // Suggested junk's own narrowing (the bar above its grid): Why (a reason) and the vision check's Junk score floor
 const JLINE="0.7",JMINS=[["0.9","0.9 or more"],["0.8","0.8 or more"],[JLINE,"0.7 or more (default)"],["0.5","0.5 or more"],["0.3","0.3 or more"],["0","Any score"]];
 let J={why:"",min:JLINE};
-const ACTIVE=["kind","ym","project","source","place","event","label","mine","review","ai","used","added"];
+const ACTIVE=["kind","ym","project","source","place","myplace","event","label","mine","review","ai","used","added","dates","who"];
 // internal names -> the words shown: gallery.py WORDS, the one place (no Owner|, Review|, Label| in the page's text)
 const WORDS=__WORDS__;
 const NAMES=WORDS.filter;
@@ -3061,13 +3810,13 @@ const TITLES=Object.assign({},WORDS.view);
 const plural=(n,w)=>fmt(n)+" "+w+(n===1?"":"s");
 // a tool's tag as a user reads it ("Project: Personal", "Suggested junk"); null: not shown (Owner|, a model's confidence)
 function plainTag(t){if(Object.prototype.hasOwnProperty.call(WORDS.tag,t))return WORDS.tag[t];const i=t.indexOf("|");if(i<0)return t;const ns=t.slice(0,i),v=t.slice(i+1);
- if(ns==="Owner")return null;
+ if(ns==="Owner"||ns==="People"||ns==="Pets")return null;/* Owner: the "Marked Keep" row; People / Pets: their own line */
  if(ns==="Review"){if(v.startsWith("untagged-"))return WORDS.flag.untagged;const m=/^vlm-trash\/?(.*)$/.exec(v);if(m)return WORDS.ns.AI+": "+WORDS.ai.trash+(m[1]?" ("+m[1].replace(/[/|]/g," ")+")":"")}
  if(ns==="AI"){const m=/^vlm\/[^/]+\/(trash|keep)(?:\/(.*))?$/.exec(v);if(m)return WORDS.ns.AI+": "+WORDS.ai[m[1]]+(m[2]?" ("+m[2].replace(/[/|]/g," ")+")":"");return null}
  return (WORDS.ns[ns]||ns)+": "+v.split("|").join(" › ")}
 VIEWS.forEach(v=>{TITLES["p-"+v.id]=v.title});
 const activeKeys=()=>ACTIVE.filter(k=>F[k]);
-const plugView=()=>view.startsWith("p-");
+const plugView=()=>view.startsWith("p-")||view==="names";  // not the grid: a plugin's tab, or naming faces and pets
 async function api(path,body){const o={credentials:"same-origin"};if(body!==undefined){o.method="POST";o.headers={"Content-Type":"application/json","X-CSRF":CSRF};o.body=JSON.stringify(body)}
  const r=await fetch(path,o);let j={};try{j=await r.json()}catch(e){}
  if(!r.ok){const er=new Error(j.error||("HTTP "+r.status));er.busy=!!j.busy;er.status=r.status;throw er}return j}
@@ -3079,7 +3828,7 @@ function monthName(k){const [y,m]=k.split("-");return new Date(+y,+m-1,1).toLoca
 function monthOnly(k){const [y,m]=k.split("-");return new Date(+y,+m-1,1).toLocaleString(undefined,{month:"long"})}
 function chipVal(k){const v=F[k];if(k==="kind")return v==="photo"?"Photos":"Videos";if(k==="ym")return v.length===4?v:monthName(v);if(k==="review")return REVIEW[v]||v;
  if(k==="ai")return v==="trash"?WORDS.score+" ≥ "+(+F.aimin||0).toFixed(2):AIV[v]||v;if(k==="used")return v==="used"?"in a post":(F.days?"not in "+F.days+" days":"never");
- if(k==="added")return "last "+v+" days";return v}
+ if(k==="added")return "last "+v+" days";if(k==="myplace")return plName(v);if(k==="dates")return v==="all"?"all":WORDS.dates[v]||v;if(k==="who")return whoName(v);return v}
 // ---------------------------------------------------------------- sidebar: layout
 const mqPhone=matchMedia("(max-width:760px)");let railPref=LS.get("rail","0")==="1",drawer=false;
 function layout(){const ph=mqPhone.matches,col=ph?!drawer:railPref;document.body.classList.toggle("collapsed",col);document.body.classList.toggle("overlay",ph&&drawer);
@@ -3167,11 +3916,11 @@ async function loadFacets(tries){facets=await api("/api/facets");const fc=facets
  renderOpts("review",Object.keys(REVIEW).map(v=>[v,c["review:"+v]||0]),v=>REVIEW[v]);
  renderOpts("ai",Object.keys(AIV).map(v=>[v,v==="trash"?judgedAt(F.aimin):c["ai:"+v]||0]),v=>AIV[v]);
  renderOpts("used",[["used",c["used:used"]||0],["unused",c["used:unused"]||0]],v=>v==="used"?WORDS.flag.used:"Not used");
- renderWhen();renderEvents();renderMyTags();
+ renderWhen();renderEvents();renderPlaces();renderMyTags();renderRec();
  $("#ck-all").textContent=fmt(facets.total);$("#ck-photo").textContent=fmt(c["kind:photo"]);$("#ck-video").textContent=fmt(c["kind:video"]);
  $("#c-lib").textContent=fmt(facets.total);$("#c-sug").textContent=fmt(c.suggest);$("#c-recent").textContent=fmt(c.recent);$("#c-fav").textContent=fmt(c["review:favorite"]);
  $('.nv[data-v=sug]').title=WORDS.view.sug+": the vision check's junk verdicts, files tagged as junk and copies of photos you trashed"+(c["suggest:lower"]?" ("+fmt(c["suggest:lower"])+" more with a lower junk score inside)":"");
- $("#c-child").textContent=fmt(c["review:child-in-shot"]);$("#c-untagged").textContent=fmt(c["review:untagged"]);
+ $("#c-child").textContent=fmt(c["review:child-in-shot"]);$("#c-untagged").textContent=fmt(c["review:untagged"]);$("#c-dates").textContent=fmt(c.dates||0);
  $('.nv[data-v=recent]').title=WORDS.view.recent+" (by when each file was filed, not when it was taken)";
  const h=$("#qhint");h.replaceChildren();h.hidden=!facets.search;
  if(facets.search){const checking=/^checking/.test(facets.search);const d=el("details"),s=el("summary",null,checking?"Checking the search model…":"Semantic search off: tags and names only");
@@ -3190,6 +3939,20 @@ function renderEvents(){const L=$("#evlist");L.replaceChildren();const ev=(facet
  show.forEach(([n,c])=>{const b=el("button","nv");b.type="button";b.dataset.ev=n;b.title="Event: "+n;b.insertAdjacentHTML("beforeend",'<svg class="ic"><use href="#i-cal"/></svg>');b.append(el("span","lbl",evLabel(n)),el("span","ct",fmt(c)));
   b.onclick=()=>{F={aimin:F.aimin,event:n};$("#q").value="";setView("lib");if(mqPhone.matches&&drawer){drawer=false;layout()}};L.append(b)});
  if(ev.length>EVSHOW){const m=el("button","link evmore",evAll?"Fewer events":"All "+fmt(ev.length)+" events");m.type="button";m.onclick=()=>{evAll=!evAll;renderEvents();syncUI()};L.append(m)}}
+// ---------------------------------------------------------------- My places (Place|<name>, places.json on this computer)
+// a place by its id (/api/facets places: id, name, n); the page never gets a place's or an item's coordinates
+function plName(id){const p=((facets&&facets.places)||[]).find(x=>x.id===id);return p?p.name:"a removed place"}
+function renderPlaces(){const L=$("#pllist");L.replaceChildren();const ps=(facets&&facets.places)||[];
+ if(facets&&facets.places_error){L.append(el("div","empty",facets.places_error));return}
+ if(!ps.length){const e=el("div","empty","No places yet. Open a photo that has a location and choose Add a place here…");L.append(e);return}
+ ps.forEach(p=>{const b=el("button","nv");b.type="button";b.dataset.pl=p.id;b.title=WORDS.filter.myplace+": "+p.name;b.insertAdjacentHTML("beforeend",'<svg class="ic"><use href="#i-pin"/></svg>');b.append(el("span","lbl",p.name),el("span","ct",fmt(p.n)));
+  b.onclick=()=>{F={aimin:F.aimin,myplace:p.id};$("#q").value="";setView("lib");if(mqPhone.matches&&drawer){drawer=false;layout()}};L.append(b)})}
+function radiusText(r){return r>=1000?(r/1000)+" km":r+" m"}
+function askPlace(d,n){const sl=el("select");sl.id="plradius";((facets&&facets.radii)||[150]).forEach(r=>{const o=el("option",null,radiusText(r));o.value=String(r);sl.append(o)});sl.value=String((facets&&facets.radius)||150);
+ const lab=el("label",null,"Radius ");lab.htmlFor="plradius";const p=el("p","plrad");p.append(lab,sl);
+ askField("Add a place here?",["Every photo and video taken within the radius of where "+d.name+" was taken gets this place, beside its city. Ones you took the place off stay off.","The place's name and location stay on this computer only (the state folder), never inside the photos, and share-safe copies never carry them.",p],"Place name (like Home)","",
+  async()=>{const j=await api("/api/place/add",{id:d.id,name:$("#mfield").value,radius:+sl.value});closeModal();patchTiles(j.items);toast(j.result);await loadFacets();if(vi===n)openViewer(n,{keep:true})},null)}
+async function answerProbable(d,n,pl,yes){try{const j=await api("/api/place/probable",{id:d.id,place:pl.id,yes});patchTiles(j.items);toast(j.result);loadFacets();if(vi===n)openViewer(n,{keep:true})}catch(e){refused("",e)}}
 function askField(title,lines,label,value,go,list){confirmBox(title,lines,false,go);$("#mfieldp").hidden=false;$("#mflabel").textContent=label;const f=$("#mfield");if(list===null)f.removeAttribute("list");else f.setAttribute("list",list||"evnames");f.value=value||"";f.focus();f.select()}
 async function afterEvent(j,ev){closeModal();toast(j.result,j.undo);if(ev!==undefined){if(ev)F.event=ev;else delete F.event}await loadFacets();reset()}
 $("#evlabel").onclick=()=>{const ev=F.event,m=facets&&facets.event_names,x=m&&Object.hasOwn(m,ev)?m[ev]:null;askField("Display name for the event "+ev+"?",["The sidebar and the title show this name instead of "+ev+". The sidecars keep "+ev+": your files and tags don't change.","Leave it empty for the default. A name that looks like another event's (the same but for case or spacing) is refused."],"Display name",x?x.name:"",
@@ -3198,10 +3961,107 @@ $("#evren").onclick=()=>{const old=F.event;askField("Rename the event "+old+"?",
  async()=>afterEvent(await api("/api/event/rename",{from:old,to:$("#mfield").value.trim()}),$("#mfield").value.trim()))};
 $("#evmerge").onclick=()=>{const src=F.event;askField("Merge "+src+" into another event?",["Every photo and video in "+src+" moves to the event you name, and "+src+" is gone afterwards. The files and your other tags don't change."],"Merge into (an event that exists)","",
  async()=>afterEvent(await api("/api/event/merge",{from:[src],into:$("#mfield").value.trim()}),$("#mfield").value.trim()))};
+// ---------------------------------------------------------------- people and pets (recog.py): the sidebar section, the naming view
+// Off without a recognition store (/api/facets rec: null). Only names you gave or confirmed are tags; the sidebar lists
+// those (People|<Name> / Pets|<Name>, filtered as ?who=). Every name reaches the page as text only (textContent).
+const RW=WORDS.rec,REC_SHOW=48;let RV={kind:"face",show:"todo"},rdata=null,rmarks={},rgen=0;
+function whoName(t){t=t||"";return t.slice(t.indexOf("|")+1)}
+function showWho(t){F={aimin:F.aimin,who:t};$("#q").value="";if(vi>=0)closeViewer();setView("lib");if(mqPhone.matches&&drawer){drawer=false;layout()}}
+function renderRec(){const R=facets&&facets.rec,L=$("#reclist");L.replaceChildren();$("#recsec").hidden=!R;if(!R)return;let un=0,sg=0;
+ R.kinds.forEach(k=>{un+=k.unnamed;sg+=k.suggestions;k.names.forEach(([n,c])=>{const t=k.prefix+n,b=el("button","nv");b.type="button";b.dataset.who=t;b.title=RW[k.kind].title+": "+n;
+  b.insertAdjacentHTML("beforeend",k.kind==="pet"?'<svg class="ic"><use href="#i-paw"/></svg>':'<svg class="ic"><use href="#i-face"/></svg>');b.append(el("span","lbl",n),el("span","ct",fmt(c)));b.onclick=()=>showWho(t);L.append(b)})});
+ $("#c-names").textContent=fmt(un+sg);$('.nv[data-v=names]').title=RW.entry+": "+plural(un,"cluster")+" to name, "+plural(sg,"suggestion")+" waiting"}
+// the large view: "People: Ann, Bo" (each a link to the grid of that name), and a video's "Ann appears at 0:12, 1:40" (seeks)
+function clock(t){t=Math.floor(+t||0);const h=Math.floor(t/3600),m=Math.floor(t/60)%60,s=String(t%60).padStart(2,"0");return h?h+":"+String(m).padStart(2,"0")+":"+s:m+":"+s}
+function whoLine(s,d){if(!d.who||!d.who.length)return;const wb=el("div");wb.id="who";
+ ["face","pet"].forEach(k=>{const ws=d.who.filter(x=>x.kind===k);if(!ws.length)return;const p=el("p");p.append(el("span","wk",RW[k].title+": "));
+  ws.forEach((x,i)=>{if(i)p.append(", ");const b=el("button","link",x.name);b.type="button";b.title="Show every item with "+x.name;b.onclick=()=>showWho(x.tag);p.append(b)});wb.append(p);
+  ws.filter(x=>x.times&&x.times.length).forEach(x=>{const q=el("p","appear");q.append(x.name+" appears at ");
+   x.times.forEach((t,i)=>{if(i)q.append(", ");const b=el("button","link",clock(t));b.type="button";b.dataset.t=t;b.setAttribute("aria-label",x.name+" at "+clock(t)+": play from there");
+    b.onclick=()=>{const v=curVideo();if(v){v.currentTime=t;v.play().catch(()=>{})}};q.append(b)});wb.append(q)})});s.append(wb)}
+// the naming view: clusters to name (largest first), suggestions by name, named, ignored; one kind at a time
+const RNOTE={todo:(w)=>`Clusters of ${w.noun}s that look alike, largest first. Type a name and press Enter, merge a cluster into one you named, or mark it ${w.not}. Click a ${w.noun} to take it out of the cluster (click again to put it back). A name becomes a tag in the sidecars; a cluster you mark ${w.not} is never tagged.`,
+ sugg:(w)=>`${w.noun[0].toUpperCase()+w.noun.slice(1)}s that joined a cluster you named. Nothing is tagged until you confirm. Click any that isn't them to leave it out: Confirm rejects those, and that name is never suggested for them again.`,
+ named:(w)=>`Clusters you named. Rename, merge or unname one; click a ${w.noun} that isn't them to take it out.`,
+ ignored:(w)=>`Clusters you marked ${w.not}: never tagged. Not ignored puts one back among the clusters to name.`};
+function rseg(label,opts,cur,go){const g=el("div","rseg");g.setAttribute("role","group");g.setAttribute("aria-label",label);
+ opts.forEach(([v,l])=>{const b=el("button",null,l);b.type="button";b.dataset.rv=v;b.setAttribute("aria-pressed",String(v===cur));b.onclick=()=>go(v);g.append(b)});return g}
+function cropLabel(w,out,name){return out?"Put this "+w.noun+" back"+(name?" into "+name:""):"Take this "+w.noun+" out"+(name?" of "+name:"")}
+function cropBtn(id,on,label){const b=el("button","rcrop");b.type="button";b.dataset.det=id;b.setAttribute("aria-pressed",String(!!on));b.setAttribute("aria-label",label);b.title=label;
+ const im=el("img");im.alt="";im.loading="lazy";im.decoding="async";im.src="/r/"+id;im.onerror=()=>im.remove();b.append(im);return b}
+function recProblem(n){n=(n||"").trim().split(/\s+/).join(" ");return !n||[...n].length>64||/[\x00-\x1f\x7f|/\\,;]/.test(n)?"a name: 1-64 characters, no | / \\ , ; or control characters":""}
+async function recPost(act,body){const j=await api("/api/rec/"+act,Object.assign({kind:rdata.kind,run:rdata.run},body));closeModal();toast(j.result,j.undo);loadFacets().catch(()=>{});return j}
+function recErr(e){if(e.status===409&&!e.busy)errorToast(e.message,{label:"Reload the list",fn:()=>renderNames()});else refused("",e)}
+async function recDo(act,body){try{await recPost(act,body);renderNames(true)}catch(e){recErr(e)}}
+function nameCluster(d,v){const why=recProblem(v);if(why){errorToast("Refused: "+why);return}const n=v.trim().split(/\s+/).join(" "),w=RW[rdata.kind];
+ if(!d.name){recDo("name",{cluster:d.id,name:n});return}
+ if(n===d.name)return;
+ confirmBox("Rename "+d.name+" to "+n+"?",["Every "+w.noun+" of cluster "+d.id+" named "+d.name+" is named "+n+", and the tags in their sidecars change with it.","This can't be undone here: rename it back if you change your mind."],false,
+  async()=>{await recPost("name",{cluster:d.id,name:n});renderNames(true)},"Rename")}
+function askMerge(d,into,name){const w=RW[rdata.kind];
+ const go=async v=>{await recPost("merge",{cluster:d.id,into:v});renderNames(true)};
+ const lines=["Cluster "+d.id+" is the same "+(rdata.kind==="pet"?"pet":"person")+(into!=null?" as "+name:"")+": its "+w.noun+"s join "+(into!=null?"that cluster":"the one you name")+" and keep its name, now and after every re-cluster.","This can't be undone here."];
+ if(into!=null){confirmBox("Merge cluster "+d.id+" into "+name+"?",lines,false,()=>go(into),"Merge");return}
+ askField("Merge cluster "+d.id+" into…?",lines,"A name you gave, or a cluster number","",async()=>{const v=$("#mfield").value.trim();if(!v)throw new Error("name a cluster");await go(/^\d{1,9}$/.test(v)?+v:v)},"recnames");$("#mgo").textContent="Merge"}
+function askUnname(d){const w=RW[rdata.kind];
+ confirmBox("Unname "+d.name+" (cluster "+d.id+")?",["Its "+w.noun+"s lose the name "+d.name+" and the tags written for them come out of the sidecars. Your own tags stay.","This can't be undone here: name the cluster again to put it back."],false,
+  async()=>{await recPost("unname",{cluster:d.id});renderNames(true)},"Unname")}
+async function toggleOut(b,name){const out=b.getAttribute("aria-pressed")==="true",w=RW[rdata.kind];
+ try{await recPost(out?"back":"out",{ids:[+b.dataset.det]});b.setAttribute("aria-pressed",String(!out));const l=cropLabel(w,!out,name);b.setAttribute("aria-label",l);b.title=l}catch(e){recErr(e)}}
+function clusterCard(d){const w=RW[rdata.kind],s=el("section","rcard");s.dataset.cluster=d.id;s.setAttribute("aria-label",(d.name?d.name+", ":"")+"cluster "+d.id);
+ const h=el("h3");h.append(el("span","rname",d.name||"Cluster "+d.id),el("span","rsub"," · "+(d.name?"cluster "+d.id+" · ":"")+plural(d.count,w.noun)+" in "+plural(d.photos,"file")));s.append(h);
+ (d.like||[]).forEach(x=>{const p=el("p","rlike");p.append("Looks like "+x.name+". ");const b=el("button","link","Merge into "+x.name+"…");b.type="button";b.onclick=()=>askMerge(d,x.cluster,x.name);p.append(b);s.append(p)});
+ const g=el("div","rcrops");d.crops.forEach(x=>{const b=cropBtn(x.id,x.out,cropLabel(w,x.out,d.name));b.onclick=()=>toggleOut(b,d.name);g.append(b)});
+ if(d.count>d.crops.length)g.append(el("span","rmore","+"+fmt(d.count-d.crops.length)+" more"));s.append(g);
+ const a=el("div","racts"),mk=(t,f,c)=>{const b=el("button","btn"+(c?" "+c:""),t);b.type="button";b.onclick=f;a.append(b);return b};
+ if(!d.ignored){const inp=el("input");inp.setAttribute("list","recnames");inp.autocomplete="off";inp.spellcheck=false;inp.maxLength=64;inp.placeholder=d.name?"New name":"Name";
+  inp.setAttribute("aria-label",(d.name?"Rename ":"Name ")+"cluster "+d.id);if(d.name)inp.value=d.name;
+  inp.onkeydown=ev=>{if(ev.key==="Enter"){ev.preventDefault();nameCluster(d,inp.value)}};a.append(inp);mk(d.name?"Rename":"Name",()=>nameCluster(d,inp.value),"primary")}
+ if(!d.ignored)mk("Merge into…",()=>askMerge(d));
+ if(!d.name&&!d.ignored)mk(w.not,()=>recDo("ignore",{cluster:d.id}));
+ if(d.name)mk("Unname…",()=>askUnname(d));
+ if(d.ignored)mk("Not ignored",()=>recDo("unname",{cluster:d.id}));
+ s.append(a);return s}
+function suggCard(sg){const w=RW[rdata.kind],s=el("section","rcard"),marks=rmarks[sg.name]||(rmarks[sg.name]=new Set());s.setAttribute("aria-label","Looks like "+sg.name);
+ s.append(el("h3",null,"Looks like "+sg.name+": "+fmt(sg.ids.length)));
+ const g=el("div","rcrops"),a=el("div","racts"),cb=el("button","btn primary"),rb=el("button","btn","Reject all");cb.type=rb.type="button";let shown=REC_SHOW;
+ const paint=()=>{const no=sg.ids.filter(i=>marks.has(i)).length,yes=sg.ids.length-no;cb.textContent=!yes?"Reject "+fmt(no):no?"Confirm "+fmt(yes)+", reject "+fmt(no):"Confirm all "+fmt(yes)};
+ const draw=()=>{g.replaceChildren();sg.ids.slice(0,shown).forEach(id=>{const b=cropBtn(id,marks.has(id),"Not "+sg.name);
+   b.onclick=()=>{marks.has(id)?marks.delete(id):marks.add(id);b.setAttribute("aria-pressed",String(marks.has(id)));paint()};g.append(b)});
+  if(sg.ids.length>shown){const m=el("button","link rmore","Show all "+fmt(sg.ids.length));m.type="button";m.onclick=()=>{shown=sg.ids.length;draw();const x=g.querySelectorAll(".rcrop")[REC_SHOW];if(x)x.focus()};g.append(m)}};
+ draw();paint();s.append(g);
+ cb.onclick=()=>askAnswer(sg,sg.ids.filter(i=>!marks.has(i)),sg.ids.filter(i=>marks.has(i)));rb.onclick=()=>askAnswer(sg,[],sg.ids.slice());a.append(cb,rb);s.append(a);return s}
+function askAnswer(sg,yes,no){const w=RW[rdata.kind],ls=[];
+ if(yes.length)ls.push(plural(yes.length,w.noun)+" "+(yes.length===1?"is":"are")+" named "+sg.name+", and the name is written into their files' sidecars.");
+ if(no.length)ls.push(plural(no.length,w.noun)+" "+(no.length===1?"loses":"lose")+" the suggestion: "+sg.name+" is never suggested for "+(no.length===1?"it":"them")+" again.");
+ ls.push("This can't be undone here (take a "+w.noun+" out later to correct a name).");
+ confirmBox(yes.length?"Confirm "+plural(yes.length,w.noun)+" as "+sg.name+"?":"Reject "+plural(no.length,"suggestion")+" of "+sg.name+"?",ls,false,
+  async()=>{await recPost("answer",{confirm:yes,reject:no});delete rmarks[sg.name];renderNames(true)},yes.length?"Confirm":"Reject")}
+async function renderNames(keep,after){const P=$("#plugin"),g=++rgen;delete P.dataset.ready;
+ const lim=keep&&rdata&&rdata.clusters&&rdata.kind===RV.kind&&rdata.show===RV.show?Math.min(200,Math.max(30,rdata.clusters.length)):30;let j;
+ try{j=await api("/api/rec?"+qs(Object.assign({kind:RV.kind,show:RV.show,limit:lim},after?{after}:{})))}
+ catch(e){if(g!==rgen||view!=="names")return;const d=el("div","state err");d.setAttribute("role","alert");d.append(el("h2",null,"Couldn't load the clusters"),el("p",null,(e.message||"no answer")+"."));
+  const b=el("button","btn","Try again");b.type="button";b.onclick=()=>renderNames();d.append(b);P.replaceChildren(d);return}
+ if(g!==rgen||view!=="names")return;
+ if(after&&rdata){rdata.clusters=rdata.clusters.concat(j.clusters);rdata.more=j.more;const box=$("#rcards");j.clusters.forEach(d=>box.append(clusterCard(d)));$("#rpage").hidden=!j.more;P.dataset.ready="1";return}
+ rdata=j;P.replaceChildren();const box=el("div");box.id="names";P.append(box);
+ if(!j.on){box.append(el("p","note",RW.off));$("#count").textContent="";P.dataset.ready="1";return}
+ RV.kind=j.kind;RV.show=j.show;const w=RW[j.kind],c=j.counts,bar=el("div","rbar");
+ if(j.kinds.length>1)bar.append(rseg("Kind",j.kinds.map(k=>[k,RW[k].title]),j.kind,v=>{RV.kind=v;rmarks={};renderNames()}));
+ bar.append(rseg("Show",[["todo","To name ("+fmt(c.todo)+")"],["sugg","Suggestions ("+fmt(c.sugg)+")"],["named","Named ("+fmt(c.named)+")"],["ignored",(j.kind==="pet"?"Not a pet":"Not a person")+" ("+fmt(c.ignored)+")"]],j.show,v=>{RV.show=v;rmarks={};renderNames()}));
+ box.append(bar,el("p","note",RNOTE[j.show](w)));
+ $("#recnames").replaceChildren(...j.names.map(n=>{const o=el("option");o.value=n;return o}));
+ const cards=el("div");cards.id="rcards";cards.style.cssText="display:flex;flex-direction:column;gap:14px;min-width:0";box.append(cards);
+ if(j.show==="sugg"){j.suggestions.forEach(sg=>cards.append(suggCard(sg)));$("#count").textContent=plural(c.sugg,"suggestion");
+  if(!j.suggestions.length)cards.append(el("p","empty","No suggestions waiting. They appear after media-intake "+(j.kind==="pet"?"pets":"people")+" cluster, when new "+w.noun+"s join a cluster you named."))}
+ else{j.clusters.forEach(d=>cards.append(clusterCard(d)));$("#count").textContent=plural(c[j.show],"cluster");
+  if(!j.clusters.length)cards.append(el("p","empty",j.show==="todo"?"Nothing to name right now.":"None yet."));
+  const m=el("button","btn","More clusters");m.type="button";m.id="rpage";m.hidden=!j.more;m.onclick=()=>{const l=rdata.clusters[rdata.clusters.length-1];renderNames(false,l?l.id:0)};box.append(m)}
+ P.dataset.ready="1"}
 // ---------------------------------------------------------------- filter state
 function setF(k,v){if(v)F[k]=v;else delete F[k];simId=null;if(plugView()){setView("lib");return}syncUI();reset()}
 function clearAll(){F={aimin:F.aimin||"0.7"};$("#q").value="";simId=null;syncUI();reset()}
-function navActive(){if(view!=="lib")return view;const a=activeKeys();if(a.length===1&&!$("#q").value.trim()&&simId===null){if(F.event)return "ev";if(F.added)return "recent";if(F.review==="favorite")return "fav";if(F.review==="child-in-shot")return "child";if(F.review==="untagged")return "untagged"}return "lib"}
+function navActive(){if(view!=="lib")return view;const a=activeKeys();if(a.length===1&&!$("#q").value.trim()&&simId===null){if(F.event)return "ev";if(F.myplace)return "pl";if(F.who)return "who";if(F.added)return "recent";if(F.review==="favorite")return "fav";if(F.review==="child-in-shot")return "child";if(F.review==="untagged")return "untagged";if(F.dates)return "dates"}return "lib"}
 function syncUI(){$$("button[data-k]").forEach(b=>b.setAttribute("aria-pressed",String((F[b.dataset.k]||"")===b.dataset.val)));
  $$(".fs").forEach(s=>{const k=SECKEY[s.dataset.s]||s.dataset.s;s.querySelector(".fs-v").textContent=F[k]?chipVal(k):""});
  const n=activeKeys().length;$("#clear").hidden=!n;$("#clear").textContent=`Clear filters (${n})`;$("#rbadge").hidden=!n;$("#rbadge").textContent=n;
@@ -3212,14 +4072,16 @@ function syncUI(){$$("button[data-k]").forEach(b=>b.setAttribute("aria-pressed",
  const chip=(text,fn)=>{const c=el("span","chip"),x=el("button","x","×");c.append(el("span",null,text));x.type="button";x.setAttribute("aria-label","Remove "+text);x.onclick=fn;c.append(x);C.append(c)};
  if(simId!==null)chip("Similar to "+simName,()=>{simId=null;syncUI();reset()});
  const q=$("#q").value.trim();if(q&&simId===null)chip("Search: "+q,()=>{$("#q").value="";syncUI();reset()});
- const na=navActive();activeKeys().forEach(k=>{if(k==="event"&&na==="ev")return;chip(NAMES[k]+": "+chipVal(k),()=>setF(k,""))});
+ const na=navActive();activeKeys().forEach(k=>{if((k==="event"&&na==="ev")||(k==="myplace"&&na==="pl")||(k==="who"&&na==="who"))return;chip(NAMES[k]+": "+chipVal(k),()=>setF(k,""))});
  if(C.children.length>1){const a=el("button","link","Clear all");a.type="button";a.onclick=clearAll;C.append(a)}
  C.hidden=!C.children.length||plugView();
  $$(".nv[data-v]").forEach(b=>{if(b.dataset.v===na)b.setAttribute("aria-current","page");else b.removeAttribute("aria-current")});
  $$(".nv[data-ev]").forEach(b=>{if(na==="ev"&&b.dataset.ev===F.event)b.setAttribute("aria-current","page");else b.removeAttribute("aria-current")});
+ $$(".nv[data-who]").forEach(b=>{if(na==="who"&&b.dataset.who===F.who)b.setAttribute("aria-current","page");else b.removeAttribute("aria-current")});
+ $$(".nv[data-pl]").forEach(b=>{if(na==="pl"&&b.dataset.pl===F.myplace)b.setAttribute("aria-current","page");else b.removeAttribute("aria-current")});
  $("#evbar").hidden=na!=="ev";$("#junkbar").hidden=view!=="sug";const evl=na==="ev"?evLabel(F.event):"";
  if(na==="ev"){$("#evname").textContent="Event: "+evl;$("#evslug").textContent=F.event;$("#evslug").hidden=evl===F.event}
- $("#vtitle").textContent=na==="ev"?evl:TITLES[na]||"";$("#vtitle").title=na==="ev"&&evl!==F.event?"Event: "+F.event:""}
+ $("#vtitle").textContent=na==="ev"?evl:na==="pl"?plName(F.myplace):na==="who"?whoName(F.who):TITLES[na]||"";$("#vtitle").title=na==="ev"&&evl!==F.event?"Event: "+F.event:""}
 $("#clear").onclick=clearAll;
 // ---------------------------------------------------------------- listing
 // the view's note above the grid; Suggested junk always says what the view is and that nothing changes until Apply
@@ -3245,13 +4107,14 @@ function listState(kind,head,o){o=o||{};const d=el("div","state"+(kind==="error"
  if(o.act){const b=el("button","btn",o.act.label);b.type="button";b.onclick=o.act.fn;d.append(b)}$("#list").replaceChildren(d);return d}
 function loadingState(){const d=listState("loading"),p=el("p"),sp=el("span","spin");sp.setAttribute("aria-hidden","true");p.append(sp,"Loading your library…");d.append(p);
  $("#main").setAttribute("aria-busy","true")}
-const QUICK=["fav","recent","child","untagged","ev"];
+const QUICK=["fav","recent","child","untagged","dates","ev","pl","who"];
 function emptyState(note){const q=$("#q").value.trim(),nf=activeKeys().length,na=navActive();
  if(simId!==null)return listState("none",note||"No photos look like this one.",{act:{label:"Back to the "+TITLES.lib.toLowerCase(),fn:()=>{simId=null;syncUI();reset()}}});
  if(facets&&facets.total===0)return listState("none","Your library is empty.",{lines:["To add photos and videos, run these in a terminal, with the folder they are in:"],
   cmd:"media-intake stage <folder> --kind folder --batch first\nmedia-intake plan first\nmedia-intake scan first\nmedia-intake apply first",
   after:["Then reload this page. Getting started (docs/getting-started.md) explains each step."]});
- if(view==="lib"&&QUICK.includes(na))return listState("none","Nothing in "+(na==="ev"?evLabel(F.event):TITLES[na])+" right now.",{act:{label:"Show the whole "+TITLES.lib.toLowerCase(),fn:clearAll}});
+ if(view==="lib"&&na==="dates")return listState("none","No dates to check right now.",{lines:[facets&&facets.dates_checked?"The last check found nothing more to look at. To check the library again, run this in a terminal, then reload this page:":"To look for photos and videos with a wrong date, run this in a terminal, then reload this page:"],cmd:"media-intake check-dates",act:{label:"Show the whole "+TITLES.lib.toLowerCase(),fn:clearAll}});
+ if(view==="lib"&&QUICK.includes(na))return listState("none","Nothing in "+(na==="ev"?evLabel(F.event):na==="pl"?plName(F.myplace):na==="who"?whoName(F.who):TITLES[na])+" right now.",{act:{label:"Show the whole "+TITLES.lib.toLowerCase(),fn:clearAll}});
  if(q||nf)return listState("none","Nothing matches "+(q&&nf?"this search and these filters":q?"this search":"these filters")+".",
   {act:{label:q&&nf?"Clear search and filters":q?"Clear search":"Clear filters",fn:clearAll}});
  if(view==="sug")return listState("none","No "+WORDS.view.sug.toLowerCase()+" right now.",{lines:["When the tools flag a photo as possible junk, it shows up here for you to mark Keep or Trash."]});
@@ -3276,7 +4139,7 @@ async function more(){if(loading||done||failed||plugView())return;loading=true;c
  catch(e){if(g===gen){failed=true;loadError(e)}}finally{loading=false}
  if(stale){more();return}
  if(!done&&$("#sentinel").getBoundingClientRect().top<innerHeight+600)more()}
-function groupKey(it){return ranked?(view==="sug"?"Most likely junk first":"Best matches first"):it.mo}
+function groupKey(it){if(F.dates&&it.dq&&view==="lib")return it.dq;return ranked?(view==="sug"?"Most likely junk first":"Best matches first"):it.mo}
 function render(start){const L=$("#list");let sec=L.lastElementChild,g=sec&&sec.querySelector(".grid"),gk=sec?sec.dataset.k:null;
  for(let n=start;n<items.length;n++){const it=items[n],k=groupKey(it);
   if(k!==gk){sec=el("section");sec.dataset.k=k;sec.append(el("h2","month",ranked?k:monthName(k)));g=el("div","grid");sec.append(g);L.append(sec);gk=k}
@@ -3294,7 +4157,7 @@ function toggleStack(n){const it=items[n];if(!it||it.b==null)return;const b=it.b
  if(last!==null&&hiddenAt(last))last=null;if(cur>=0&&hiddenAt(cur))cur=c;
  const ct=c>=0?$("#t"+items[c].id):null;if(ct){ct.classList.toggle("stack",!openB[b]);const x=ct.querySelector(".x");if(x)x.textContent=stackLabel(items[c]);const bx=ct.querySelector(".bx");if(bx)paintBx(bx,items[c]);ct.focus({preventScroll:false})}
  if(dropped)toast(`Stack closed: ${dropped} hidden shot${dropped>1?"s":""} unselected (actions act on the cover only).`);paintSel()}
-function tile(it,n){const t=el("div","tile"),sug=view==="sug";t.id="t"+it.id;t.dataset.n=n;t.dataset.item=it.n;t.tabIndex=0;t.title=it.n;
+function tile(it,n){const t=el("div","tile"),sug=view==="sug";t.id="t"+it.id;t.dataset.n=n;t.dataset.item=it.n;t.tabIndex=0;t.title=it.n+(it.dr?"\n"+it.dr:"");
  const im=el("img");im.loading="lazy";im.decoding="async";im.alt=it.n;im.src="/t/"+it.id;im.onerror=()=>{im.replaceWith(el("div","ph",(it.m==="video"?"video: ":"")+it.n))};t.append(im);
  // the checkbox in a larger hit area (a tap beside the 22 px box still ticks it); none in Suggested junk, whose Keep / Trash marks are the only choice there
  if(!sug){const w=el("span","ckw"),cb=el("input","ck");cb.type="checkbox";cb.tabIndex=-1;cb.setAttribute("aria-label","select "+it.n);
@@ -3342,7 +4205,7 @@ function clearMarks(){const n=Object.keys(dec).length;if(!n)return;
 function say(s){$("#selsay").textContent=s}
 // marks the page would lose on a reload or close: the browser asks first
 addEventListener("beforeunload",ev=>{if(Object.keys(dec).length){ev.preventDefault();ev.returnValue=""}});
-function flagsOf(it){const fl=[];if(it.c!=null)fl.push(WORDS.score+" "+it.c.toFixed(2)+(it.r?" ("+whyWord(it.r).toLowerCase()+")":""));fl.push(...it.f.map(f=>WORDS.flag[f]||f));return fl.join(" · ")}
+function flagsOf(it){const fl=[];if(it.dq)fl.push(it.ds?"Suggested "+it.ds:"No suggested date");if(it.c!=null)fl.push(WORDS.score+" "+it.c.toFixed(2)+(it.r?" ("+whyWord(it.r).toLowerCase()+")":""));fl.push(...it.f.map(f=>WORDS.flag[f]||f));return fl.join(" · ")}
 // after an edit: the reply's summaries replace those items and their tiles' flags (kept, ...);
 // the tile, its focus and the selection stay
 function patchTiles(fresh){(fresh||[]).forEach(s=>{const n=items.findIndex(i=>i.id===s.id);if(n<0)return;const o=items[n];items[n]=o.b!=null?Object.assign(s,{b:o.b,bn:o.bn,bc:o.bc,mo:o.mo}):s;const t=$("#t"+s.id);if(!t)return;
@@ -3364,7 +4227,7 @@ function paintSel(){const sugOn=view==="sug";$$(".tile").forEach(t=>{const id=+t
   // a mark in words too (top left), not by the outline's colour alone
   t.querySelectorAll("[data-dec]").forEach(b=>b.setAttribute("aria-pressed",String(b.dataset.dec===d)));
   let m=t.querySelector(".mark");if(d){if(!m){m=el("span");t.append(m)}m.className="mark "+d;m.textContent=d==="keep"?"Keep":"Trash"}else if(m)m.remove()});
- const selOn=sel.size>0&&!plugView()&&view!=="sug";$("#selgrp").hidden=!selOn;$("#suggrp").hidden=!sugOn;$("#actionbar").hidden=!(selOn||sugOn);
+ const selOn=sel.size>0&&!plugView()&&view!=="sug";$("#selgrp").hidden=!selOn;$("#bfixdate").hidden=navActive()!=="dates";$("#suggrp").hidden=!sugOn;$("#actionbar").hidden=!(selOn||sugOn);
  document.body.classList.toggle("selecting",sel.size>0);
  $("#seln").textContent=allSel&&allSel.n===sel.size?allSel.text:fmt(sel.size)+" selected";$("#ball").hidden=!canSelectAll();
  // the counts (and Apply) are the listed tiles' marks; marks on items not listed now wait, and the line says so
@@ -3459,7 +4322,7 @@ async function refused(what,e){let act=null;if(e.busy){try{const j=await api("/a
    exactly that back, under the library lock, and refuses (nothing written) when those items changed again since.
    Trash, Erase and Share never offer it. */
 async function doUndo(){const tok=undoTok;if(!tok)return;undoTok=null;const b=$("#tundo");if(b)b.remove();
- try{const j=await api("/api/undo",{undo:tok});toast(j.result);loadFacets();if(j.kind==="event"&&vi<0){patchTiles(j.items);reset()}else refreshAfter(j.ids,j.thumbs,j.items)}
+ try{const j=await api("/api/undo",{undo:tok});toast(j.result);loadFacets();if((j.kind==="event"||j.kind==="date")&&vi<0){patchTiles(j.items);reset()}else if(j.kind==="rec"){patchTiles(j.items);if(view==="names")renderNames(true)}else refreshAfter(j.ids,j.thumbs,j.items)}
  catch(e){refused("Undo",e)}}
 async function doKeep(ids){try{const j=await api("/api/keep",{ids});toast(j.result,j.undo);refreshAfter(ids,false,j.items);loadFacets()}catch(e){refused("Keep",e)}}
 /* In-page dialogs (the confirm / job dialog, the shortcut list): focus moves in, Tab stays in, Esc closes, and
@@ -3509,6 +4372,19 @@ function askErase(ids){const n=ids.length,dr=facets&&facets.drive;confirmBox(`Er
  ()=>runJob("/api/erase",{ids,confirm:$("#mtyped").value},ids),"Erase "+plural(n,"file"))}
 function askSetEvent(ids){if(!ids.length)return;askField("Set the event on "+plural(ids.length,"item")+"?",[names(ids),"Each one goes into this event and out of any other. The photos and your other tags don't change. Leave it empty to take them out of every event."],"Event name (lowercase letters, digits and dashes, like summer-2026)",F.event||"",
  async()=>{const ev=$("#mfield").value.trim(),j=await api("/api/event/set",{ids,event:ev});if(vi>=0){closeModal();toast(j.result,j.undo);loadFacets();openViewer(vi,{keep:true})}else afterEvent(j)})}
+/* Fix date (Dates to check): check-dates' suggested date, a date you type, or a shift, on the selection. The server runs
+   fix-dates' own code (sidecars only; files stay in their folders) and answers with an Undo token. */
+function askFixDate(ids){if(!ids.length)return;const its=ids.map(id=>items.find(i=>i.id===id)).filter(Boolean),ns=its.filter(i=>i.ds).length,n=ids.length;
+ const opt=(v,l,field)=>{const p=el("p","fixopt"),r=el("input"),lab=el("label",null,l);r.type="radio";r.name="fixmode";r.value=v;r.id="fix-"+v;lab.htmlFor=r.id;p.append(r,lab);
+  if(field){const f=el("input");f.id="fixv-"+v;f.autocomplete="off";f.spellcheck=false;f.placeholder=field;f.setAttribute("aria-label",l+" ("+field+")");f.onfocus=()=>{r.checked=true};p.append(f)}return [p,r]};
+ const [ps,rs]=opt("suggested",ns===n?"Use the suggested date":`Use the suggested date (${fmt(ns)} of ${fmt(n)} have one; the others stay as they are)`);rs.disabled=!ns;
+ const [pd,rd]=opt("set","Set the date to","YYYY-MM-DD or YYYY-MM-DD HH:MM"),[ph]=opt("shift","Shift by","+8y, -3h30m, +2d");(ns?rs:rd).checked=true;
+ const list=el("ul","fixlist");its.slice(0,10).forEach(i=>list.append(el("li",null,i.n+": "+(i.dd||i.d)+" → "+(i.ds?i.ds+" suggested":"no suggestion"))));if(its.length>10)list.append(el("li",null,`and ${fmt(its.length-10)} more`));
+ confirmBox("Fix the date of "+plural(n,"item")+"?",[list,"The new date goes to each file's sidecar only: the photo or video itself and its folder don't change. A date alone keeps each file's time of day; a shift uses y (years), d (days), h (hours) and m (minutes). Undo puts it back.",ps,pd,ph],false,
+  async()=>{const mode=($('input[name=fixmode]:checked')||rs).value,value=mode==="suggested"?null:$("#fixv-"+mode).value.trim();
+   const j=await api("/api/dates/fix",{ids,mode,value});closeModal();toast(j.result,j.undo);sel.clear();await loadFacets();reset()},"Fix dates");
+ $("#mno").focus()}
+$("#bfixdate").onclick=()=>askFixDate(selIds());
 /* Share: share-safe copies (intake.py share-copy as a job, one at a time with Trash and Erase) into a new folder; the
    page shows the folder and share-copy's own lines (each copy's path and "gps=none"), never the copies themselves.
    When the job this click started ends cleanly, the server opens that folder in the file manager (POST
@@ -3578,7 +4454,7 @@ async function attachJob(){if(job&&job.state==="running"){showJob();return true}
  job={kind:jobKind(j),ids:j.ids||[],log:"",state:"running",head:"",status:""};job.head=jobWord(job.kind)+" running";showJob();poll(0);return true}
 /* Your tags: the same refusals as the server (gallery.py tag(): TAG_RE, TOOL_PREFIXES), checked first so the field
    says why at once; the server checks again. Suggestions: every tag of yours in the library (#mytags). */
-const TOOL_NS=["project|","source|","event|","place|","label|","review|","ai|","used|","owner|"];
+const TOOL_NS=["project|","source|","event|","place|","label|","review|","ai|","used|","owner|","people|","pets|"];
 function tagProblem(t){if(!t||[...t].length>64||/[\x00-\x1f\x7f]/.test(t)||t.startsWith("-")||t.includes("@@sep@@"))return "a tag is 1-64 characters on one line";
  if(TOOL_NS.some(p=>t.toLowerCase().startsWith(p)))return WORDS.tools+" tags belong to the tools; pick another name";return ""}
 function tagAsk(op){const ids=vi>=0&&!sel.size?[items[vi].id]:selIds();if(!ids.length)return;const n=plural(ids.length,"item");
@@ -3606,8 +4482,10 @@ function fitMedia(){const m=$("#media>img,#media>video");if(!m)return;const r=$(
  m.style.width=q?r.height+"px":"100%";m.style.height=q?r.width+"px":"100%";m.style.transform=`translate(-50%,-50%) rotate(${m.dataset.rot||0}deg)`}
 addEventListener("resize",fitMedia);
 // the browser can't show it: the thumbnail, large, and a button that opens the file in the desktop's own player
-function cantPlay(d,why){stopVideo();const M=$("#media");M.replaceChildren();const box=el("div","nop"),im=el("img");im.alt=d.name;im.src="/t/"+d.id;im.onerror=()=>im.remove();
- const c=el("div","cant");c.append(el("span",null,why));const o=el("button",null,"Open in the system player");o.type="button";
+// (bare: what to say when there is no thumbnail either; without it, WHY stays)
+function cantPlay(d,why,bare){stopVideo();const M=$("#media");M.replaceChildren();const box=el("div","nop"),im=el("img"),w=el("span",null,why);
+ im.alt=d.name;im.src="/t/"+d.id;im.onerror=()=>{im.remove();if(bare)w.textContent=bare};
+ const c=el("div","cant");c.append(w);const o=el("button",null,"Open in the system player");o.type="button";
  o.onclick=async()=>{try{toast((await api("/api/open",{ids:[d.id]})).result)}catch(e){errorToast("Refused: "+e.message)}};c.append(o);
  box.append(im,c);M.append(box);const u=$("#unmute");if(u)u.remove();dropConv()}
 // an HEVC video's H.264 copy is being made: say so until it plays (it starts on the first seconds converted)
@@ -3635,7 +4513,7 @@ async function openViewer(n,opt){opt=opt||{};if(n<0||n>=items.length)return;if(v
   const nopic=()=>{if(curVideo()===v&&v.readyState>=1&&!v.videoWidth)bad()};
   v.addEventListener("error",bad);v.addEventListener("loadedmetadata",nopic);if(v.error)bad();else nopic()}
  else if(d.kind==="video")cantPlay(d,"No browser preview for this format.");
- else if(d.src){const im=el("img");im.alt=d.name;im.dataset.rot=d.rot;im.src=d.src;im.onerror=()=>cantPlay(d,"This browser can't show this picture.");M.replaceChildren(im);fitMedia()}
+ else if(d.src){const im=el("img");im.alt=d.name;im.dataset.rot=d.rot;im.src=d.src;im.onerror=()=>cantPlay(d,d.heic?"This is a small preview: HEIC photos need setup.sh's venv (pillow-heif) to show full size.":"This is a small preview: this browser can't show the full picture.",d.heic?"No preview: HEIC photos need setup.sh's venv (pillow-heif).":"This browser can't show this picture.");M.replaceChildren(im);fitMedia()}
  else cantPlay(d,"No browser preview for this format.");
  $("#vprev").disabled=n<=0;$("#vnext").disabled=n>=items.length-1&&done;
  const s=$("#info");s.replaceChildren();
@@ -3648,11 +4526,17 @@ async function openViewer(n,opt){opt=opt||{};if(n<0||n>=items.length)return;if(v
  {const fb=mk(acts,"★ Favorite (F)",()=>doFav([d.id],!d.fav),"favb");fb.setAttribute("aria-pressed",String(!!d.fav));fb.setAttribute("aria-keyshortcuts","F");fb.title=d.fav?"A favorite: press to unstar":"Add to "+WORDS.view.fav}
  const tools=el("div","tools");mk(tools,"Rotate left (Shift+R)",()=>rot([d.id],"ccw")).setAttribute("aria-keyshortcuts","Shift+R");mk(tools,"Rotate right (R)",()=>rot([d.id],"cw")).setAttribute("aria-keyshortcuts","R");
  mk(tools,"Set event…",()=>askSetEvent([d.id]));
+ if(d.gps)mk(tools,"Add a place here…",()=>askPlace(d,n)).title="Name the spot where this was taken (Home, …)";
  mk(tools,"Find similar",()=>{simId=d.id;simName=d.name;closeViewer();$("#q").value="";syncUI();reset()}).title="Photos that look like this one";s.append(tools);
  const dl=el("dl","dt"),row=(k,v)=>{if(v){dl.append(el("dt",null,k),el("dd",null,v))}};
- row("Date",d.date);row("Place",d.place);row("Event",d.event);row("Project",d.project);row("Source",d.source);row("Folder",d.folder);row("Resolution",d.res);row("Size",d.size);
+ row("Date",d.date);row("Place",d.place);row(WORDS.filter.myplace,(d.myplaces||[]).join(", "));row("Event",d.event);row("Project",d.project);row("Source",d.source);row("Folder",d.folder);row("Resolution",d.res);row("Size",d.size);
  if(d.ai!=null)row(WORDS.score,d.ai.toFixed(2));if(d.used.length)row("Used in",d.used.join(", "));if(d.kept)row("Your decision","Marked Keep");
  const det=el("div");det.append(el("p","sh","Details"),dl);s.append(det);
+ // "probably here": this has no location, but a shot from the same camera close in time was in one of your places
+ (d.probably||[]).forEach(pl=>{const box=el("div","probably");box.setAttribute("role","group");box.setAttribute("aria-label","Probably at "+pl.name);
+  box.append(el("p",null,"Probably at "+pl.name+": a photo from the same camera "+(pl.minutes?pl.minutes+" min apart":"at the same time")+" was there. This one has no location of its own."));
+  const y=el("button","btn","Yes, "+pl.name),no=el("button","btn","No");y.type=no.type="button";y.onclick=()=>answerProbable(d,n,pl,true);no.onclick=()=>answerProbable(d,n,pl,false);box.append(y,no);s.append(box)});
+ whoLine(s,d);
  // your tags (removable) apart from the tools' (in plain words: plainTag; Owner| is the Details row's "Marked Keep")
  const tg=el("div"),tl=el("div","tags"),tt2=el("div","tags");tl.id="mytagl";tt2.id="tooltagl";
  d.mine.forEach(t=>{const c=el("span","tag");c.append(el("span",null,t));const b=el("button",null,"×");b.type="button";b.title="Remove my tag";b.setAttribute("aria-label","Remove my tag "+t);
@@ -3720,13 +4604,14 @@ VIEWS.forEach(v=>{const b=el("button","nv");b.type="button";b.dataset.v="p-"+v.i
 function setView(v){view=v;simId=null;sugFocus=v==="sug";document.body.dataset.view=v;const plug=plugView();
  $("#list").hidden=plug;$("#sentinel").hidden=plug;$("#plugin").hidden=!plug;$("#filters").hidden=plug;$(".sb-search").hidden=plug;$("#tsizew").hidden=plug;
  if(plug){sel.clear();paintSel();$("#count").textContent="";setNote("");$("#helpb").hidden=true;syncUI();const id=v.slice(2),P=$("#plugin"),pv=window.mediaIntakeViews[id];P.replaceChildren();
+  if(v==="names"){RV.show=RV.show||"todo";renderNames();return}
   if(!pv||typeof pv.render!=="function"){P.append(el("p","warn","Plugin view "+id+" has no render()"));return}
   pv.render(P,{el,api:(p,b)=>api("/plugin/"+id+"/"+p,b),media:p=>"/plugin/"+id+"/media/"+p})}
  else{syncUI();reset()}}
 $$(".nv[data-v]").forEach(b=>b.onclick=()=>{const v=b.dataset.v;
  if(v==="lib"){if(QUICK.includes(navActive()))F={aimin:F.aimin};setView("lib")}
- else if(v==="sug"||v.startsWith("p-")){if(v==="sug"&&view!=="sug")J={why:"",min:JLINE};setView(v)}
- else{F={aimin:F.aimin};if(v==="recent")F.added=String((facets&&facets.recent_days)||30);if(v==="child")F.review="child-in-shot";if(v==="untagged")F.review="untagged";if(v==="fav")F.review="favorite";$("#q").value="";setView("lib")}
+ else if(v==="sug"||v.startsWith("p-")||v==="names"){if(v==="sug"&&view!=="sug")J={why:"",min:JLINE};setView(v)}
+ else{F={aimin:F.aimin};if(v==="recent")F.added=String((facets&&facets.recent_days)||30);if(v==="child")F.review="child-in-shot";if(v==="untagged")F.review="untagged";if(v==="fav")F.review="favorite";if(v==="dates")F.dates="all";$("#q").value="";setView("lib")}
  if(mqPhone.matches&&drawer){drawer=false;layout()}});
 let qt=null;$("#q").oninput=()=>{clearTimeout(qt);qt=setTimeout(()=>{simId=null;syncUI();reset()},500)};
 $("#close").onclick=()=>{confirmBox("Stop the gallery server?",["The page stops working until you run media-intake gallery again. A Trash, Erase or Share that is already running keeps going on its own."],false,

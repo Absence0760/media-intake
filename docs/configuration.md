@@ -13,13 +13,16 @@ Paths take `~` and `$VARS`.
 | --- | --- | --- |
 | `library` | `~/Pictures/library` | Photos, `Screenshots/`, `Messaging/<app>/` |
 | `videos` | `~/Videos/personal` | Videos (GoPro included), `Screen recordings/` |
-| `state` | `~/.local/share/media-intake` | Staging, quarantine, index, erase log, `jobs/` (each detached job's status, log and lock), `locks/` (the library lock), `device-salt` (the key of the device-id pseudonyms, `0600`), `event-names.json` (the gallery's event display names, per library by a hash of its folders, `0600`, written atomically; [gallery.md](gallery.md), Events), venv, models, GeoNames. Kept `0700` (`jobs/` and `locks/` too, their files `0600`); never sync or index it. Keep `device-salt` when you move or rebuild the state folder: a new salt gives every camera a new device id, so its next batches and folders no longer match the old ones. |
+| `state` | `~/.local/share/media-intake` | Staging, quarantine, index, erase log, `jobs/` (each detached job's status, log and lock), `locks/` (the library lock), `device-salt` (the key of the device-id pseudonyms, `0600`), `event-names.json` (the gallery's event display names, per library by a hash of its folders, `0600`, written atomically; [gallery.md](gallery.md), Events), `places.json` (My places: each place's name, point and radius and the files tagged with it or declined, per library, `0600`, written atomically; **sensitive**: it says where you live, so it is never backed up, synced or printed; [places.md](places.md)), `datecheck.json` (the last `check-dates` report) and `date-fixes.json` (every `fix-dates` write, for `--undo`), both `0600` ([dates.md](dates.md)), venv, models, GeoNames. Kept `0700` (`jobs/` and `locks/` too, their files `0600`); never sync or index it. Keep `device-salt` when you move or rebuild the state folder: a new salt gives every camera a new device id, so its next batches and folders no longer match the old ones. |
 | `phone.extra_folders` | none | `{ "relative/folder" = "App" }`: extra exact folders on a phone that may be read, each filed under `Messaging/<App>/`. Everything else outside `DCIM/` and `Pictures/` stays unlisted. Entries for WhatsApp, Telegram and Signal: [intake.md](intake.md), "Messaging apps". |
 | `drive.backup_markers` | `[]` | Folder names at a drive's mount root that mark your backup drive; `stage --kind drive` and `queue add` refuse it. A `.media-intake-backup` file at the root does the same; `.media-intake-source-ok` overrides both. |
 | `queue.wrapper` | `[]` | Command prefix for the queue's heavy steps (plan, scan, tag, index, vlm). |
 | `queue.wrapper_lock` | none | That wrapper's lock file, so `queue run` can say when it will wait. |
 | `projects.<key>` | none | See below. |
 | `plugins.paths`, `plugins.modules` | none | Plugin modules and where to import them from: [plugins.md](plugins.md). |
+| `recognition.dir` | `<state>/recognition` | People and pets recognition data (detections, vectors, names, crops; biometric). Kept `0700`, its files `0600`; refused inside the library, videos or a project folder, never backed up: [recognition.md](recognition.md). |
+| `recognition.pet_classes` | `["cat", "dog"]` | The animals `media-intake pets` looks for, from the detector's COCO animals: `bird`, `cat`, `dog`, `horse`, `sheep`, `cow`, `elephant`, `bear`, `zebra`, `giraffe`. A cat is never grouped with a dog. |
+| `recognition.pet_min_frames` | `3` | A video gets `Pets\|<Name>` only when that pet is in at least this many of its sampled frames (1 to 100). Photos need one. |
 
 `state`, `library`, `videos` and every project's `folder` (as resolved, env
 vars included) are never accepted as a laptop folder source, nor any folder
@@ -88,6 +91,9 @@ The thresholds in [`media_intake/labels.yaml`](../media_intake/labels.yaml)
 machine: it reads stored numbers and sidecar tags only, opens no photo or
 video, and writes nothing (not `labels.yaml`, not this config, not a sidecar).
 Changing a threshold stays your edit to `labels.yaml`.
+`Calibrate|people|<Name>` and `Calibrate|pets|<Name>` tags are not labels:
+`media-intake people eval` and `pets eval` read them
+([recognition.md](recognition.md)) and `calibrate` ignores them.
 
 1. **Build or update the search index**: `media-intake index`. Without it,
    calibrate stops with `calibrate: no search index yet. Build it first:

@@ -10,6 +10,18 @@ media-intake gallery [--drive DRIVE] [--port 0] [--share-out DIR]
 `python3 -I media_intake/gallery.py` takes the same flags. `--share-out` is
 where share-safe copies go (below).
 
+The `media-intake` command runs on the system Python, which has no
+pillow-heif, so before it prints anything the gallery re-runs itself (same
+flags) under `setup.sh`'s venv, which has pillow-heif and reuses the system
+packages; HEIC/HEIF photos then show full size. It does this the way the
+review page does (`review_ui.venv_reexec`): not when the Python already has
+pillow-heif or already is the venv, and not with `MEDIA_REVIEW_NO_VENV=1`.
+Without a venv the gallery runs as it is, and a HEIC's large view shows its
+thumbnail with "This is a small preview: HEIC photos need setup.sh's venv
+(pillow-heif) to show full size." (or "No preview: ..." when there is no
+thumbnail either); `media-intake doctor` reports pillow-heif missing from the
+venv as `MISSING`.
+
 It prints exactly one `xdg-open 'http://127.0.0.1:<port>/?t=<token>'` line,
 then a note with the item count, the start-up time, how many flagged or erased
 files were left out and any plugin tabs. A private browser window keeps the
@@ -34,7 +46,11 @@ without one" (`/api/facets` gives `drive`, the mount or null).
   plugin tab; quick views **Favorites** (below), **Added in the last 30
   days** = filed into the library in the last 30 days, by the file's inode
   change time, Possible child = `Review|child-in-shot`,
-  Untagged; then **Events** with counts, the eight largest and "All N events"),
+  Untagged, **Dates to check** (below); then **Events** with counts, the eight largest and "All N events";
+  then **Places** (below); then, only once people and pets recognition has a store, **People & Pets**:
+  each person and pet you named with the number of items tagged with the
+  name, and **Name new faces/pets** with the clusters still to name plus the
+  suggestions waiting, below),
   the search box (a one-line hint when semantic search is off, the
   full reason under "why"), then the filters as collapsible sections with
   counts (open / closed remembered per section) and "Clear filters (N)",
@@ -44,7 +60,7 @@ without one" (`/api/facets` gives `drive`, the mount or null).
   search and filters.
   Counts are for the whole library, not narrowed by the other filters.
   Collapsed to the rail, each icon has a short word under it (Library, Junk,
-  Favorites, Recent, Child, No tags, Search, Filters); the full name stays its tooltip
+  Favorites, Recent, Child, No tags, Names, Search, Filters); the full name stays its tooltip
   and the name a screen reader reads.
 - **Sidebar width**: 300 px by default; on a desktop, with the sidebar
   expanded, drag its right edge to make it wider or narrower (the grid
@@ -198,7 +214,8 @@ page's own handlers and fails when the list leaves one out.
 - **Library**: a timeline grid by month, newest first, 240 items per page with
   infinite scroll; thumbnails load lazily. Click (or Enter on a focused tile)
   opens the large view (the image, or `<video controls>`, which starts playing
-  by itself; HEIC/DNG get a 1600 px JPEG made in memory) with tags, date,
+  by itself; HEIC/DNG get a 1600 px JPEG made in memory, HEIC only with
+  pillow-heif: above) with tags, date,
   place, event, project, source, folder, resolution and size. Arrow keys go to
   the previous/next item, Esc closes, `/` jumps to the search box.
 - **Suggested junk** (was "Trash suggestions"): the one place for what
@@ -305,6 +322,12 @@ page's own handlers and fails when the list leaves one out.
   name when the gallery next starts, but only when every library folder is
   there and no file was left out as flagged (an unmounted drive's events
   aren't gone); until then it would show the old name if made again.
+- **Places**: your own named places (My places), each with how many items
+  carry it; a click shows them (the My place filter). The large view's
+  **Add a place here…** (only on an item with GPS) names a new one at that
+  item's point, and an item without GPS can show a **Probably at …**
+  suggestion to answer Yes or No. The page never gets a coordinate: see
+  [places.md](places.md), "In the gallery".
 - **Plugin tabs**: any view a plugin adds through `gallery_views()`, with its
   routes under `/plugin/<id>/` ([plugins.md](plugins.md)).
 
@@ -393,9 +416,111 @@ the large view. The **Favorites** quick view lists them, with its count, and
   each item's rating back as it was (four stars back as four, none as none),
   refusing after a later change.
 
+## Dates to check
+
+The files whose date looks wrong, as the last `media-intake check-dates` run
+found them ([dates.md](dates.md): clock-reset defaults, a camera newer than
+its date, a video format newer than its date, file numbers out of date
+order, dates that disagree, copies with other dates), with the count in the
+sidebar. Its tiles are grouped by the first thing found (that kind's words
+as the heading, the groups in [dates.md](dates.md)'s order), each with
+"Suggested YYYY-MM-DD HH:MM" (or "No suggested date") as its flag and every
+reason in its tooltip; the note above the grid says when the check ran.
+Before any run, and once everything is fixed, the view says to run
+`media-intake check-dates` in a terminal. `/api/list?dates=all` (or one kind,
+`dates=reset`, ...) lists them; each row carries `dk`, `dq`, `dd` (the date
+check-dates saw in use), `dr`, `ds` and `dsrc`. The report is re-read when
+it changes, so a CLI run or fix shows on the next reload of the grid.
+
+**Fix date…** in the selection bar (only in this view) asks how: **Use the
+suggested date** (disabled when none of the selection has one; the others are
+left as they are), **Set the date to** (YYYY-MM-DD, or with HH:MM; a date
+alone keeps each file's time of day) or **Shift by** (`+8y`, `-3h30m`, `+2d`),
+listing up to ten of the files with their date and suggestion.
+`POST /api/dates/fix` (`{"ids", "mode": "suggested"|"set"|"shift", "value"}`)
+runs fix-dates' own code under the library lock: the date goes to the
+sidecar only and the files stay in their folders; a file that can't take it
+is left as before and counted in the message, and a request where none can
+is refused (400, nothing written). The message has **Undo**, which puts
+exactly that fix back through fix-dates' record (`fix-dates --undo` sees it
+too), refusing (409) once a sidecar changed again. A fixed file leaves the
+view, and its tile shows the new date elsewhere.
+
+## People and pets
+
+Off by default: nothing of it shows until `media-intake people scan` (or
+`pets scan`) has made the recognition store ([recognition.md](recognition.md));
+the gallery reads that store and never creates one. Words:
+[words.md](words.md), "People and pets".
+
+- **Sidebar, People & Pets** (below Places): each name you gave or confirmed,
+  with the number of library items whose sidecar has its tag
+  (`People|<Name>` or `Pets|<Name>`). A click shows those items, by the tag
+  (`who=People|<Name>` on `/api/list`), with the name as the title. A
+  suggestion never counts or shows there. Then **Name new faces/pets**, its
+  count the clusters with no name yet (two or more faces or pets) plus the
+  suggestions waiting; collapsed to the rail it is the face icon with
+  "Names".
+- **Name faces and pets** (that entry; in the main column, not a separate
+  server): People or Pets (when the store has both), then **To name**,
+  **Suggestions**, **Named** and **Not a person** / **Not a pet**, each with
+  its count. A cluster is a card with up to 24 crops, largest first, loaded
+  as you scroll; 30 cards a page, **More clusters** for the next.
+  - **To name**: type a name (the box suggests the names you gave) and press
+    Enter or **Name**: every face of the cluster gets it, and its tag is
+    written into the sidecars of the files it is in at once (under the
+    library lock, like Keep). The message has **Undo** (Ctrl+Z), which takes
+    the name and the tags back off. **Merge into…** asks for a name you gave
+    or a cluster number; a cluster close to one you named says "Looks like
+    Ann." with **Merge into Ann…**. **Not a person** / **Not a pet** ignores
+    the cluster: never tagged.
+  - A click (or Enter / Space) on a crop takes that one face or pet out of
+    the cluster's name (its tag comes off that file; the message has Undo),
+    a second one puts it back. A taken-out crop is shown crossed out
+    (`aria-pressed`).
+  - **Suggestions**: one card per name, "Looks like Ann: 42", for faces that
+    joined a cluster you named since. Click a crop that isn't Ann to mark it
+    ("Not Ann"); **Confirm all 42** (or "Confirm 40, reject 2") and
+    **Reject all** ask first. Confirmed ones are tagged; rejected ones are
+    never suggested that name again.
+  - **Named**: Rename (asks), Merge into…, Unname… (asks; the tags it wrote
+    come off). **Not a person**: **Not ignored** puts a cluster back to name.
+  - Merge, rename, unname and confirm / reject say "This can't be undone
+    here" in their dialog: the store has no step back for them (you can
+    still unname, take out or name again).
+  - Every POST names the cluster run the page listed; after `people cluster`
+    (or `pets cluster`) ran, it gets 409 "The clusters changed since this
+    page loaded…" with **Reload the list**, and nothing changes. An Undo
+    from before a re-cluster is refused the same way.
+- **Large view**: "People: Ann, Bo" and "Pets: Rex" under Details, from the
+  tags you confirmed (only there: not under "Your tags" or "Added by the
+  tools", and "+ tag" refuses `People|` / `Pets|`); each name shows the grid of that name. For a video,
+  "Ann appears at 0:12, 1:40" (the times the store saw Ann, one a second at
+  most) seeks the player. Each time is the second of the frame
+  `media_intake/frames.py` sampled the face or pet in
+  ([recognition.md](recognition.md), "Videos").
+- **Crops** are biometric: served only as `/r/<detection id>` (no path),
+  made on demand by `recog.crop_bytes` into the store's own `crops/` (folder
+  `0700`, files `0600`; never the thumbnail cache), with `no-store` like
+  every response, and never for a file that is flagged, quarantined,
+  erased, trashed, in a running Trash or Erase, or not in the library the
+  gallery lists. Share copies never include them. A video's crop is cut
+  from the same sampled frame again (frames.py); a video that can no longer
+  be decoded shows an empty square.
+- **Suggested junk**: a file with a name you gave or confirmed (its
+  `People|<Name>` or `Pets|<Name>` tag) is never suggested as junk by a
+  label or the vision check (`owner.named`); a copy of something you
+  trashed still is, since a name is no Keep.
+- API: `GET /api/rec?kind=face|pet&show=todo|sugg|named|ignored&after=<cluster>`;
+  `POST /api/rec/name|ignore|unname|merge|out|back|answer` with
+  `{"kind", "run", ...}` (`cluster`, `name`, `into` a cluster number or a
+  name, `ids` detection ids, `confirm` / `reject` id lists); the token, Host,
+  Origin and CSRF checks of every POST (403), JSON only (415).
+
 ## Filters (all combinable)
 
-Project, Source, Event, Place, year or month, Looks like (any `Label|*`), my
+Project, Source, Event, Place (the city: a `Place|` tag with a comma), My place
+(`myplace=<id>`: one of your named places, from the Places list), year or month, Looks like (any `Label|*`), my
 tags, Flags (Tagged as junk = `Review|maybe-trash`, Possible child =
 `Review|child-in-shot`, Untagged = `Review|untagged-*` or no tags, Favorite =
 `xmp:Rating` >= 5), Junk check
@@ -432,7 +557,9 @@ project, source, event, place, label, month and year, my tag), `counts`
 many more a lower Junk score adds), `recent`), `ai_scores` (`[score, n]`
 for every Judged junk score, to 2 decimals: the page sums those at or above
 its slider), `recent_days`, the search
-status, `share_out` and `drive` (the backup drive Erase includes, or null). Like every route it needs the session cookie or token.
+status, `share_out` and `drive` (the backup drive Erase includes, or null), `places` (`{id, name, n}` per
+named place, most items first), `places_error` (why they can't be read, or "") and `radii` / `radius` (Add a place
+here…'s choices and default, metres). Like every route it needs the session cookie or token.
 
 The search box runs `semantic.py search` (local SigLIP text model, through the
 media-intake venv). When the venv, the embeddings or the text model are
@@ -502,7 +629,7 @@ a scroll and a selection.
 | Keep | sidecar: `Owner\|keep` and `Owner\|not-trash` added; `Review\|maybe-trash`, an older `Owner\|trash` and the legacy `Review\|not-trash` removed (each leaf only when no other tag uses it). Nothing else. The same rule as the review page's Keep (`intake.keep_args`). |
 | Trash | `media-intake trash FILE... --yes` (the page has already asked): plain delete of the file, its sidecar, thumbnails (freedesktop and the gallery's) and index entry; the sha goes in `trashed.json` (the durable `Owner\|trash`) so intake never takes it in again, and library copies of it left on disk get `Owner\|trash` in their sidecar. The same command the review page's Trash runs. Summary + confirm. |
 | Erase | `media-intake forget FILE... --yes [--drive]`: the erase-everywhere path (quarantine, sweep of HOME, sidecars, thumbnails, recent files, erase log, verify-gone). Summary + type ERASE. For anything private. |
-| My tag + / - | sidecar `HierarchicalSubject` + its `dc:Subject` leaf. Refused for the tools' namespaces (`Project\|`, `Source\|`, `Event\|`, `Place\|`, `Label\|`, `Review\|`, `AI\|`, `Used\|`, `Owner\|`); removal only touches your tags, and keeps a leaf another tag still uses. |
+| My tag + / - | sidecar `HierarchicalSubject` + its `dc:Subject` leaf. Refused for the tools' namespaces (`Project\|`, `Source\|`, `Event\|`, `Place\|`, `Label\|`, `Review\|`, `AI\|`, `Used\|`, `Owner\|`, `People\|`, `Pets\|`: names go through the naming view); removal only touches your tags, and keeps a leaf another tag still uses. |
 | Rotate | sidecar `XMP-tiff:Orientation` only (1/6/3/8), each item from its own orientation. The original is never re-encoded or written; digiKam reads the same field. |
 | Set event | `POST /api/event/set` (`{"ids": [...], "event": slug}`): sidecar `Event\|<slug>` (and `XMP-iptcExt:Event`), replacing the item's other `Event\|` tags; `"event": ""` takes the items out of every event. Nothing else. |
 | Share | nothing in the library: `media-intake share-copy` into a new folder (below), then that folder opened in the file manager. |
@@ -513,7 +640,8 @@ a scroll and a selection.
 ### Undo
 
 The message after **Keep**, **Favorite** / **Unfavorite**, a tag of yours
-added or removed (bar or large view), **Rotate** and **Set event** has an
+added or removed (bar or large view), **Rotate**, **Set event** and **Fix
+date** (Dates to check, above: undone through fix-dates' own record) has an
 **Undo** button (or Ctrl+Z / Cmd+Z
 while it shows). Trash, Erase and Share never offer it: a deleted
 file can't come back, and a copy made is out of the library.
@@ -819,7 +947,9 @@ only, every byte of HTML/CSS/JS inline (no CDN, fonts or scripts), bound to
 SameSite=Strict cookie, a Host check against DNS rebinding, a CSRF value and
 an Origin check on every POST, `no-store` and a strict CSP on every response,
 media by opaque id only (never a path), Range requests for video. Plugin
-routes run only after the same token, Host, Origin and CSRF checks.
+routes run only after the same token, Host, Origin and CSRF checks. Face and
+pet crops (`/r/<id>`) follow the same rules and the ones under "People and
+pets" above.
 
 ## Performance
 
@@ -833,8 +963,26 @@ cold read from disk will be slower.
 
 ## Test
 
+`python3 -I -m unittest discover -s tests -p test_gallery_people.py`: People & Pets on a
+synthetic recognition store built through recog's API with a mock detector
+and embedder (no model): off without a store (none created), the facet and
+filter, name / Undo / ignore / unname / merge (across species refused) / take
+out / put back with the sidecars read back by exiftool, "looks like" hints
+(people at people.py's threshold, pets at pets.py's `SAME`, never a cat for a
+dog), a name only in the large view's People line (not "Your tags"; "+ tag"
+refuses `People|` / `Pets|`), suggestions after a re-cluster, 409 for a stale run and a stale Undo, 403 and
+415, crops (0600 in 0700, no-store, never for a flagged file) and the large
+view's names and a video's times. Its browser counterpart is
+`tests/browser/test_browser_gallery_people.py` (also: a junk-flagged photo
+leaves Suggested junk once named and comes back on Undo, and the sidebar's
+order, Quick views, Events, Places, People & Pets, with no sideways scroll at
+1000 px or on a phone). A video's crop through the real frame source (frames.py
+on an ffmpeg clip) is in `tests/test_recog.py`.
+
 `python3 -I -m unittest discover -s tests -p test_gallery.py`: synthetic media in a throwaway
-HOME, the real `intake.py` for trash and forget, and a demo plugin view; the
+HOME, the re-run under the venv with every flag and nothing printed first (`VenvReexecTest`: `os.execv`
+mocked; none when opted out, already in the venv, without one, or with pillow-heif), a HEIC without pillow-heif
+flagged `heic` with its full size a 404 (`HeicWithoutPillowHeifTest`), the real `intake.py` for trash and forget, and a demo plugin view; the
 job tests swap in a fake `intake.py` whose trash waits on a FIFO, then kill
 the server or the worker mid-job, and a plugin POST gets 409 while such a job
 holds the library lock (a view declared `post_read_only` does not), every 409 then reading "a Trash is still
@@ -869,6 +1017,15 @@ look-alike, and an unreadable `event-names.json` never overwritten (409).
 `ShareOpenGuardTest` runs `open_share` in-process with Popen, `shutil.which`
 and the job status mocked: the argument list, a folder outside or nested
 under `--share-out`, `..` in it, a running job, and no `xdg-open`.
+
+`tests/test_gallery_dates.py`: Dates to check over the real check-dates' report (the sidebar count, the
+groups in order, each tile's suggestion, `dates=<kind>`), Fix date by the suggestion, a set date and a shift
+writing only the sidecar (the originals' sha256 unchanged), its refusals (a bad date or amount, an impossible
+date, no suggestion: 400, no sidecar made), Undo putting it back and refusing after a later change (409), a
+gallery fix undone by `fix-dates --undo`, and no report yet. `tests/browser/test_browser_gallery_dates.py`
+runs the same in Chromium: the sidebar entry, the groups and flags, Fix date only in this view, the
+suggestion and a typed date (a bad one refused in the dialog), Undo, a file name holding HTML shown as text,
+and at phone width no sideways scroll in the view or the dialog.
 
 `tests/test_gallery_undo.py`: Undo of Keep (every tag and leaf it removed back,
 a file that had no sidecar), Favorite and Unfavorite (each rating back: four
@@ -987,7 +1144,9 @@ does it on the page: a mixed selection by Space, a shift-click range and
 Ctrl-click, Keep by K and by the bar (sidecars and the tiles' "Kept" flags),
 a shift-click after the grid reloads, + tag / − tag, Set event, Rotate (the
 thumbnails made again turned) and Trash on a mixed selection, and the large
-view playing an .mp4 and a .MOV and rotating a video.
+view playing an .mp4 and a .MOV and rotating a video, and a HEIC without
+pillow-heif showing its thumbnail as "a small preview" and why (never "can't
+show" over it), or "No preview" when it has no thumbnail.
 
 `tests/test_gallery_proxy.py` (the HEVC cases skip, naming why, when no
 synthetic HEVC clip can be made: ffmpeg's `libx265`, else VA-API's
@@ -1068,6 +1227,11 @@ recent years, All years (N), kept across a reload, and a picked older year
 staying listed.
 
 ## Not verified
+
+- People and pets with the real models (YuNet + SFace, YOLOX + DINOv2) on
+  real photos: the gallery tests use a mock detector and embedder (with
+  pets.py's real thresholds); a video's times in the gallery come from a stub
+  frame source there, and from the real one only in `tests/test_recog.py`.
 
 - The layout by eye (sidebar, drawer and rail at phone width, light and
   dark), infinite scroll and HEVC posters through GStreamer in a real

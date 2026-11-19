@@ -190,6 +190,9 @@ media-intake tag BATCH [--no-labels]
 media-intake tag-files FILE... [--event SLUG] [--no-labels]
 media-intake mark-used FILE... --post SLUG
 media-intake find [--tag T] [--event E] [--place P] [--project P] [--unused-since 30d] [--never-used]
+media-intake check-dates [PATHS...] [--json] [--quick]   # wrong-looking dates; report only (dates.md)
+media-intake fix-dates FILE... --set W|--shift ±N|--suggested|--from-neighbours|--like GOOD [--reason T] [--yes]
+media-intake fix-dates --undo [ID] [--yes]    # sidecars only; a dry run without --yes (dates.md)
 media-intake gallery [--drive DRIVE] [--share-out DIR]
 media-intake proxies [--dry-run] [--inhibit]  # make the gallery's HEVC video proxies ahead of time (gallery.md)
 media-intake prune-cache [--dry-run]          # gallery thumbnails and proxies nothing shows any more
@@ -365,9 +368,10 @@ run and a CLI `apply` never interleave (`media_intake/library_lock.py`):
 - **CLI:** `intake.py main()` takes it for every subcommand in
   `intake.LOCKED` (stage, plan, scan, apply, release, erase, forget,
   sweep-erased, offload, purge-review, trash, not-trash, suggest-trash, tag, tag-files, mark-used,
-  migrate-tags).
+  migrate-tags, fix-dates).
   The read-only ones in `intake.READ_ONLY` (quarantine, verify-gone, wipe-free,
-  share-copy, find) never do; a new subcommand counts as locked until
+  share-copy, social-copy, find, check-dates) never do (check-dates writes only its own report in the
+  state folder, so a long run never blocks the gallery); a new subcommand counts as locked until
   it is listed there, and `tests/test_library_lock.py` fails on one in neither.
   `media-intake gallery` is cli.py's, not intake.py's (gallery.py imports
   intake.py, never the reverse); it takes the lock itself, per write.
@@ -496,6 +500,11 @@ original keeps its own EXIF and its sha256. `tag-files` keeps a
 `DateTimeOriginal` already in a sidecar (it may be a correction from the
 plan) and only fills in a missing one; to recompute it, clear it first
 (`exiftool -XMP-exif:DateTimeOriginal= FILE.xmp`).
+
+Files filed earlier, or whose clock-reset date had no GPS to check it, are
+found across the whole library by `media-intake check-dates` and corrected in
+their sidecars by `fix-dates` or the gallery's Fix date
+([dates.md](dates.md)).
 
 Without exiftool, Pillow (images) and ffprobe (videos) read the same tags,
 except a GoPro video's GPMF GPS time and any serial number: ffprobe can't
@@ -816,6 +825,10 @@ quarantine. A file named twice is forgotten once.
   (`~/.cache/media-intake/proxies/<sha256>.mp4`) are not exact copies, so the
   sweep can't find them: `erase`, `forget` and `trash` delete them by the
   erased item's sha256 (every rotation), and `verify-gone` reports any left.
+  The same goes for people and pets recognition data (detections, vectors,
+  file rows and crops in `recognition.dir`, [recognition.md](recognition.md)):
+  `erase`, `forget`, `trash` and `sweep-erased --yes` delete them by sha256,
+  the coverage report counts them, and `verify-gone` fails while any is left.
 - **verify-gone.** The erase log keeps checksum and size, no names, so
   `verify-gone [BATCH]` repeats the sweep read-only and exits 1 if anything is
   left (including orphaned sidecars, gallery thumbnails and gallery video
@@ -835,7 +848,7 @@ quarantine. A file named twice is forgotten once.
   sidecars and orphaned sidecars, and exact copies inside a git working tree
   left alone. Without `--yes` it is a dry run: counts per top-level folder,
   nothing deleted. With `--yes` it deletes, drops the paths from
-  `index.json`, the freedesktop and gallery thumbnails, recent files and app
+  `index.json`, the freedesktop and gallery thumbnails, recognition data, recent files and app
   traces (HOME only) and the backup records, zeroes the drive's free space if
   it deleted anything there (`--no-wipe-free` skips), and ends with
   `verify-gone` over the same places (exit 1 if anything is left).
@@ -1080,7 +1093,8 @@ any plugin's `after_tag` hook ([plugins.md](plugins.md)).
   `XMP-photoshop:City/State/Country`, `XMP-iptcCore:CountryCode`,
   `XMP-exif:GPSLatitude/GPSLongitude` (read from the file: EXIF, QuickTime,
   GoPro GPMF with `-ee`) and `XMP-exif:DateTimeOriginal` (the plan's date,
-  with its UTC offset when known; see "Dates" above).
+  with its UTC offset when known; see "Dates" above; a date `fix-dates` set is
+  written instead, so a rerun never undoes a fix, [dates.md](dates.md)).
 - **Events**: `plan --event [PROJECT/]SLUG@YYYY-MM-DD`. With a `PROJECT/`
   prefix, or a slug matching one of a project's `events` fnmatch patterns,
   that day's camera files (photos, videos, GoPro; not screenshots or messaging
@@ -1196,16 +1210,19 @@ own namespace; your tags win.
 | Namespace | Written by | Re-tag behaviour |
 |---|---|---|
 | Your keywords (digiKam), digiKam pick labels, `xmp:Rating` (stars; 5 = a favorite), `Owner\|keep`, `Owner\|not-trash`, `Owner\|trash` | you (digiKam; Keep, Trash and the Favorite star in the gallery, Keep and Trash on the review page) | never touched by any tool except your next decision on the same file (Keep drops `Owner\|trash`); `trash --from-digikam` acts on Rejected (PickLabel 1) only when you run it |
-| `Project\|`, `Source\|`, `Event\|`, `Place\|`, dates | `tag`, `tag-files` | a prefix is replaced only when the run has a value for it |
+| `Project\|`, `Source\|`, `Event\|`, `Place\|<city>, <state>, <CC>`, dates | `tag`, `tag-files` | a prefix is replaced only when the run has a value for it |
+| `Place\|<name>` (no comma: a place you named) | `places` (`places.py`, via `tag`, `tag-files`, `places tag` and the gallery) | only for a place in `places.json`; never put back once you remove it; the city fact never replaces it ([places.md](places.md)) |
 | `Label\|*`, `Review\|maybe-trash`, `Review\|untagged-*` | SigLIP (`label.py` via `tag`/`tag-files`) | replaced as a set on every labelled run (`--no-labels` leaves them) |
 | `Review\|child-in-shot` | SigLIP | added, never removed by a tool; only you clear it |
 | `AI\|vlm/<model>/...` (and the older `Review\|vlm-trash/*`, `Review\|vlm-keep`) | the VLM (`vlm_trash.py`) | its own; tagging never touches them |
 | `Used\|<slug>` | `mark-used` | never removed |
+| `People\|<Name>`, `Pets\|<Name>` | `people tag` and `pets tag` ([recognition.md](recognition.md)), only for names you gave or confirmed | removes only tags it wrote that no longer apply; never re-adds one you removed from the sidecar; your own `People\|` and `Pets\|` tags are never touched |
 | `Calibrate\|<label>\|yes`, `Calibrate\|<label>\|no` | you (the gallery's "+ tag") | never touched by a tool; only `calibrate` reads them ([configuration.md](configuration.md), "Calibrating label thresholds") |
 
 - `Review|maybe-trash` is never added to a file with `Owner|not-trash`,
   `Owner|keep`, `Owner|trash` (or the legacy `Review|not-trash`), digiKam
-  Accepted or a favorite (`xmp:Rating` >= 5).
+  Accepted, a favorite (`xmp:Rating` >= 5) or a person or pet you named
+  (`People|<Name>`, `Pets|<Name>`).
 
 #### Owner decisions
 
@@ -1222,6 +1239,12 @@ suggest-trash, vlm-trash, semantic `--clean`, the gallery and the review page.
   never suggested as trash, never judged by the VLM, never marked
   `Owner|trash` as a copy. No tag is written; four stars or fewer are no
   decision.
+- **A person or pet you named** (`People|<Name>`, `Pets|<Name>`: `people tag`
+  and `pets tag` write only names you gave or confirmed, never a suggestion,
+  and one you typed yourself counts too; `owner.named`): never Suggested junk
+  (the gallery, `suggest-trash`), never judged by the VLM, never
+  `Review|maybe-trash`. It is not a Keep: the tile doesn't say Kept, and a
+  trash decision on the file still stands.
 - **Trash** (`trash`, the review page's Trash, the gallery's Trash) deletes the
   file and its sidecar, so the decision can't live there. Its durable home is
   the sha256 in `<state>/trashed.json`, written before the delete: `plan`
@@ -1365,7 +1388,7 @@ Rejected:
 
 `python3 -I -m unittest discover -s tests` (synthetic media, a throwaway HOME,
 a hermetic config), or one module: `python3 -I -m unittest discover -s tests -p test_intake.py`
-(also `test_intake_output`: the progress lines of stage, plan, apply and tag by count, none naming a file, and the `next:` line for a clean, quarantined and review batch, on a terminal and off it, the plan and apply summary lines in words, a wrong batch name on each command, a missing or empty source, steps out of order, the missing-detector message, and the quarantine hint by batch kind; `test_dates`, `test_devices`, `test_sources`, `test_exports` (Google Takeout and iCloud export metadata), `test_tagging`, `test_config`, and `test_device_case`: offload,
+(also `test_intake_output`: the progress lines of stage, plan, apply and tag by count, none naming a file, and the `next:` line for a clean, quarantined and review batch, on a terminal and off it, the plan and apply summary lines in words, a wrong batch name on each command, a missing or empty source, steps out of order, the missing-detector message, and the quarantine hint by batch kind; `test_dates`, `test_datecheck` (check-dates' rules and fix-dates' writes and undo, [dates.md](dates.md)), `test_devices`, `test_sources`, `test_exports` (Google Takeout and iCloud export metadata), `test_tagging`, `test_config`, and `test_device_case`: offload,
 erase and trash on fake MTP, gphoto2 and drive trees with case-only collisions, in the manifests or only in the live listing, and a listing that fails; `test_device_ops_media_kinds`:
 stage, plan, apply, erase, offload and verify-gone with photos, videos and a mix from a phone, a GoPro card,
 a drive, a laptop folder and the drive queue, and erase's and offload's prompts (a wrong answer or closed

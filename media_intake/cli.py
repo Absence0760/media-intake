@@ -42,9 +42,14 @@ Library
   search "TEXT"             find photos by a description (venv)
   similar FILE              find photos that look like this one (venv)
   tag-files FILE...         write tags again for library files
+  places list|add|tag|...   your own named places (Home, ...) as tags
+  check-dates [PATHS]       find files whose date looks wrong; changes nothing
+  fix-dates FILE...         correct dates in sidecars, with --yes; --undo
   mark-used FILE --post P   record that files were used in a post
   share-copy FILE --out D   copy without GPS or metadata (or social-copy)
   calibrate                 test content labels on your marks; changes nothing
+  people                    name the people in photos (venv; off by default)
+  pets                      name your pets in photos (venv; off by default)
   migrate-tags              one-off: rename an older tool tag in your sidecars
   proxies                   make the gallery's video copies now, so they play
   prune-cache               DELETES gallery thumbnails nothing shows any more
@@ -68,7 +73,10 @@ if HERE not in sys.path:
 import config  # noqa: E402
 
 VENV_SCRIPTS = {"index": ("semantic.py", ["index"]), "search": ("semantic.py", ["search"]),
-                "similar": ("semantic.py", ["similar"]), "vlm-trash": ("vlm_trash.py", [])}
+                "similar": ("semantic.py", ["similar"]), "vlm-trash": ("vlm_trash.py", []),
+                "people": ("people.py", []), "pets": ("pets.py", [])}
+# Recognition kinds (recog.py's core): module -> what doctor calls it. Optional: off until setup.sh --recognition.
+RECOGNITION = {"people": "people recognition", "pets": "pets recognition"}
 # Each thing doctor checks, with the Fedora package that provides it: the one source for the
 # `sudo dnf install ...` lines doctor prints. Required unless listed in OPTIONAL.
 SYSTEM_TOOLS = {"exiftool": "perl-Image-ExifTool", "tesseract": "tesseract", "ffmpeg": "ffmpeg-free",
@@ -108,6 +116,14 @@ class Probe:
             importlib.import_module(module)
             return True
         except ImportError:
+            return False
+
+    def venv_importable(self, venv_py, module):
+        """MODULE imports in the venv's python (a subprocess: this python may be the system one)."""
+        try:
+            return subprocess.run([venv_py, "-I", "-c", f"import {module}"], capture_output=True,
+                                  timeout=60).returncode == 0
+        except (OSError, subprocess.TimeoutExpired):
             return False
 
     def exists(self, path):
@@ -257,7 +273,16 @@ def doctor(probe=None, out=print, colour=None):
     have = probe.exists(vp)
     report("ok" if have else "MISSING", f"venv {vp}" + ("" if have else " (bash setup.sh)"))
     ok &= have
+    # The gallery and review page re-run under the venv for HEIC; without pillow-heif there, HEIC photos show
+    # only as a small preview (gallery) or "no preview" (review page).
+    if have:
+        heif = probe.venv_importable(vp, "pillow_heif")
+        report("ok" if heif else "MISSING", "pillow-heif in the venv (HEIC photos full size in the gallery and the "
+                                            "review page)" + ("" if heif else "; without it a small preview only "
+                                                                              "(bash setup.sh)"))
+        ok &= heif
     ok &= _check_models(probe, report)
+    ok &= _check_recognition(probe, report)
     geo = os.path.join(cfg["state"], "geo", "cities1000.zip")
     have = probe.exists(geo)
     report("ok" if have else "MISSING", "GeoNames data" + ("" if have else " (bash setup.sh)"))
@@ -293,6 +318,34 @@ def _check_models(probe, report):
             ok = False
             report("BAD", f"{name} {path}: sha256 {_short(got)}, pinned {_short(pinned)} "
                           "(bash setup.sh deletes it; run it again to fetch the pinned file)")
+    return ok
+
+
+def _check_recognition(probe, report):
+    """Each recognition kind's models (people.py: YuNet + SFace; pets.py: YOLOX + DINOv2) against
+    media_intake/pins.json. Optional: absent models only mean the command is off; a present file with the
+    wrong sha256 fails."""
+    ok = True
+    for mod, what in RECOGNITION.items():
+        if not os.path.isfile(os.path.join(HERE, mod + ".py")):
+            continue
+        files = importlib.import_module(mod).model_files(config.get()["state"])
+        have = [f for f in files if probe.exists(f[1])]
+        if not have:
+            report("optional", f"{what} off: models not installed (bash setup.sh --recognition; docs/recognition.md)")
+            continue
+        for name, path, pinned in files:
+            if not probe.exists(path):
+                ok = False
+                report("MISSING", f"{name} ({what}; bash setup.sh --recognition)")
+                continue
+            got = probe.sha256(path)
+            if got == pinned:
+                report("ok", f"{name} sha256:{_short(pinned)}")
+            else:
+                ok = False
+                report("BAD", f"{name} {path}: sha256 {_short(got)}, pinned {_short(pinned)} "
+                              "(bash setup.sh --recognition deletes it; run it again to fetch the pinned file)")
     return ok
 
 
@@ -344,6 +397,11 @@ def _zip_check(rest):
     return zip_check.main(rest)
 
 
+def _places(rest):  # its own parser (list, add, rename, remove, suggest, tag) and the library lock
+    import places
+    return places.main(rest)
+
+
 def _gallery(rest):  # here, not in intake.py: gallery imports intake, so intake never imports gallery
     import gallery
     return gallery.main(rest)
@@ -361,7 +419,8 @@ def _prune_cache(rest):  # cli.py's too: it reads the library as the gallery doe
 
 # cli.py's own commands; VENV_SCRIPTS run in the venv; everything else goes to intake.py's parser.
 COMMANDS = {"doctor": lambda rest: doctor(), "queue": _queue, "review": _review, "backup": _backup,
-            "gallery": _gallery, "proxies": _proxies, "prune-cache": _prune_cache, "zip-check": _zip_check}
+            "gallery": _gallery, "proxies": _proxies, "prune-cache": _prune_cache, "zip-check": _zip_check,
+            "places": _places}
 HELP = ("-h", "--help", "help")
 
 

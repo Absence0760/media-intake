@@ -8,7 +8,8 @@
   <state>/backup/<drive id>.json                   what each run copied (size, mtime, sha256), laptop only
 
 What is copied: every media file (sources.MEDIA_EXT) under the library roots and its `<file>.<ext>.xmp`
-sidecar. Never: the state folder (quarantine, staging, review copies, index.json, jobs), the thumbnail and
+sidecar. Never: the state folder (quarantine, staging, review copies, index.json, jobs), the people and
+pets recognition store (recognition.dir; recog.py refuses one inside the library anyway), the thumbnail and
 proxy caches, hidden files and folders (digiKam's .dtrash, .thumbnails), symlinks, orphaned sidecars or
 anything else in the library folders.
 
@@ -115,7 +116,7 @@ def walk_library(cfg=None, skip=()):
     cfg = cfg or config.get()
     rs = roots(cfg)
     real_roots = {os.path.realpath(s) for s, _ in rs}
-    never = {os.path.realpath(p) for p in (cfg["state"], intake.THUMBS, intake.PROXIES)}
+    never = {os.path.realpath(p) for p in (cfg["state"], cfg["recognition_dir"], intake.THUMBS, intake.PROXIES)}
     for src, sub in rs:
         if sub in skip or not os.path.isdir(src) or os.path.islink(src):
             continue

@@ -5,7 +5,8 @@ Files it writes, and nothing else:
   requirements.txt           the venv's runtime deps (setup.sh), for the system Python
   requirements-labels.txt    the label-embedding build (setup.sh --build-labels), for the system Python
   requirements-browser.txt   Playwright for tests/browser/, for CPython 3.12 (CI) and 3.14 (Fedora 43)
-  media_intake/pins.json     the SigLIP revision and file sha256s, the Ollama model digest
+  media_intake/pins.json     the SigLIP revision and file sha256s, the Ollama model digest (the
+                             opencv_zoo and dinov2 recognition pins are carried over unchanged)
 
   python3 -I scripts/update-pins.py                  rewrite all four in place
   python3 -I scripts/update-pins.py --check          show what would change; exit 1 if anything would
