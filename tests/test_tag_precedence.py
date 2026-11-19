@@ -49,6 +49,15 @@ class OwnerRules(unittest.TestCase):
         self.assertEqual(owner.rating("4.0"), 4)
         self.assertIsNone(owner.rating(None))
 
+    def test_a_named_person_or_pet_is_never_junk_but_no_keep(self):
+        # People|<Name> / Pets|<Name>: recognition writes only names you gave or confirmed; yours by hand too
+        for tags in (["People|Ann"], ["Pets|Rex", "Review|maybe-trash"], ["Label|dog", "People|A|B"]):
+            self.assertTrue(owner.named(tags), tags)
+        for tags in ([], ["People|"], ["Pets"], ["Label|dog"], ["Calibrate|pets|Rex"], ["Peoples|x"]):
+            self.assertFalse(owner.named(tags), tags)
+        self.assertFalse(owner.kept(["Pets|Rex"]), "a name is no Keep")
+        self.assertTrue(owner.trashed(["Owner|trash", "Pets|Rex"]), "a trash decision on the file stands")
+
 
 class MergeTags(unittest.TestCase):
     """The re-tag (tag, tag-files): SigLIP replaces only its namespace, facts only their prefix."""
@@ -84,6 +93,9 @@ class MergeTags(unittest.TestCase):
         self.assertNotIn("Review|maybe-trash", hier)
         hier, _, _ = intake.merge_tags([], ["Review|maybe-trash"], stars="4")  # four stars: no decision
         self.assertIn("Review|maybe-trash", hier)
+        for old in (["People|Ann"], ["Pets|Rex"]):  # a person or pet you named: never junk
+            hier, _, _ = intake.merge_tags(old, ["Project|Personal", "Review|maybe-trash"])
+            self.assertNotIn("Review|maybe-trash", hier, old)
 
     def test_legacy_rewritten_on_write(self):
         hier, remove, leaves = intake.merge_tags(["Review|not-trash", "Label|food"], ["Label|food"], relabelled=False)
@@ -231,7 +243,10 @@ class Sidecars(Base):
         f["favorite"] = self.photo("favorite.jpg", 41, ["Review|maybe-trash", "AI|vlm/m/trash/dark",
                                                         "AI|vlm/m/conf/0.9"], ["-XMP-xmp:Rating=5"])
         f["four"] = self.photo("four.jpg", 42, ["Review|maybe-trash"], ["-XMP-xmp:Rating=4"])
-        self.assertEqual(sorted(self.suggested()), sorted([f["plain"], f["four"]]))
+        f["pet"] = self.photo("pet.jpg", 43, ["Review|maybe-trash", "Pets|Rex"])  # a pet you named
+        f["person"] = self.photo("person.jpg", 44, ["AI|vlm/m/trash/dark", "AI|vlm/m/conf/0.9", "People|Ann"])
+        f["trashed-pet"] = self.photo("trashed-pet.jpg", 45, ["Owner|trash", "Pets|Rex"])  # a name is no Keep
+        self.assertEqual(sorted(self.suggested()), sorted([f["plain"], f["four"], f["trashed-pet"]]))
 
     def test_migrate_tags(self):
         leg = self.photo("leg.jpg", 23, ["Review|not-trash", "Review|maybe-trash", "Label|food", "pasta"],

@@ -19,7 +19,8 @@ backup drive, quarantine, review folder, Keep, Trash, Erase, ...).
 - **Everything runs locally.** No cloud API, no telemetry, no remote model.
   The only network traffic is `setup.sh` downloading pinned files once
   (Python wheels, the SigLIP model, GeoNames, and with `--recognition` the
-  YuNet and SFace face models), each checked by sha256, and
+  YuNet and SFace face models and the YOLOX and DINOv2 pet models), each
+  checked by sha256, and
   Ollama on `127.0.0.1`: the optional vision-model check and `media-intake
   doctor`'s digest check. `scripts/update-pins.py` is a maintainer tool, not
   part of the tool you run: it reads metadata (never model weights) from
@@ -27,7 +28,8 @@ backup drive, quarantine, review folder, Keep, Trash, Erase, ...).
 - **Every detector is local**: NudeNet (nudity), Tesseract (text on IDs and
   cards), zxing-cpp (QR and barcodes), SigLIP (labels and search), an optional
   Qwen3-VL model through your own Ollama (trash second opinion), and, off
-  until you install them, YuNet and SFace (finding and grouping faces).
+  until you install them, YuNet and SFace (finding and grouping faces) and
+  YOLOX and DINOv2 (finding and telling apart your pets).
 - **No AI service sees your images.** If you drive the tool with a coding
   assistant, it runs the commands and sees counts and paths; the tool never
   prints image content, and the docs and `CLAUDE.md` forbid an assistant from
@@ -50,7 +52,7 @@ backup drive, quarantine, review folder, Keep, Trash, Erase, ...).
   and `locks/`, whose files are `0600`; the lock's holder note names the
   command and its PID, never a file name. `device-salt` is `0600`, and so is
   `event-names.json` (the gallery's event display names, never in a sidecar).
-  Face detections, vectors, names and crops (biometric) live in
+  Face and pet detections, vectors, names and crops (biometric) live in
   `recognition.dir` (default `<state>/recognition`, `0700`, files `0600`),
   are never backed up, and go with every `erase`, `forget`, `trash` and
   `sweep-erased` ([docs/recognition.md](docs/recognition.md)).
@@ -114,8 +116,8 @@ terminal, and never with `NO_COLOR` set.
 It is safe to re-run (it only re-verifies checksums). Options:
 `--build-labels` (text model for semantic search, and to rebuild
 `labels.npz` after editing `labels.yaml` or moving the SigLIP pin), `--refresh-geo` (accept a new
-GeoNames snapshot), `--no-launcher`, `--recognition` (the face models for
-`media-intake people`, off without it: [docs/recognition.md](docs/recognition.md)). For HEVC video (most phones) Fedora's
+GeoNames snapshot), `--no-launcher`, `--recognition` (the face and pet models for
+`media-intake people` and `pets`, off without it: [docs/recognition.md](docs/recognition.md)). For HEVC video (most phones) Fedora's
 `ffmpeg-free` has no decoder; the tool uses GStreamer's VA-API (`vah265dec`)
 or Vulkan decoder when one is installed, also to make the H.264 copy the
 gallery plays HEVC from (with an H.264 encoder: `vah264enc` on the GPU, else
@@ -158,6 +160,7 @@ media-intake offload phone-1 --phone <phone folder>   # after a backup: free the
 | `index`, `search`, `similar` | Local semantic search (SigLIP) |
 | `vlm-trash` | Local vision-model second opinion on Suggested junk |
 | `people` | Recognise people in photos, offline: you name them, it suggests and tags `People\|<Name>` once you confirm (off until `setup.sh --recognition`; [docs/recognition.md](docs/recognition.md)) |
+| `pets` | The same for your own pets (cats and dogs by default), tagged `Pets\|<Name>` (off until `setup.sh --recognition`) |
 | `calibrate` | Report precision and recall of each label's threshold against your own marks; changes nothing |
 | `gallery` | Local web gallery: browse, Keep, Favorite, Trash, Erase, tag, rotate, events, bulk edits, share-safe copies |
 | `proxies` | Make the gallery's H.264 copies of HEVC videos now, so they play at once (`--dry-run`, `--inhibit`) |

@@ -145,8 +145,10 @@ The goal: someone else can install it on Fedora, import a phone, and trust it.
       so erase/verify-gone must cover it; never names faces automatically. Core and CLI built
       (`recog.py`, `media-intake people`; names propagate only as suggestions until confirmed;
       docs/recognition.md); the gallery's naming view is still to come.
-- [ ] Pet recognition (`Pet|<Name>`) alongside face grouping, sharing one scan, naming page
-      and erase path: proposal and model choices in docs/research-pets.md (awaiting approval).
+- [ ] Pet recognition (`Pets|<Name>`) alongside face grouping, sharing one store, naming and
+      erase path: core and CLI built (`pets.py`, `media-intake pets`, YOLOX + DINOv2, `pets eval`
+      against your own names; docs/recognition.md, design in docs/research-pets.md); the gallery's
+      naming view and date-aware propagation are still to come.
 - [x] Video near-duplicates (perceptual video hash) for re-encoded or trimmed copies
       (`videohash.py`; docs/intake.md, Duplicates).
 - [x] Text search quality: prompt ensembles for queries (`--no-ensemble` to compare) and

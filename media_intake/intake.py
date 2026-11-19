@@ -2388,7 +2388,8 @@ def cmd_suggest_trash(a):
     """Library files the VLM called trash (Review|vlm-trash/*, written only at confidence >= 0.7, or
     AI|vlm/<model>/trash...), SigLIP's Review|maybe-trash without a VLM keep, or a surviving copy of
     content you trashed (Owner|trash). Never one you kept (owner.kept: Owner|keep, Owner|not-trash,
-    digiKam Accepted, a favorite: xmp:Rating >= 5), Used|* or a protected project's Project| tag."""
+    digiKam Accepted, a favorite: xmp:Rating >= 5), one with a person or pet you named (owner.named:
+    People|<Name>, Pets|<Name>; unless it is a copy you trashed), Used|* or a protected project's Project| tag."""
     need_exiftool()
     roots = [r for r in LIB_ROOTS if os.path.isdir(r)]
     protected = config.protected_tags(CFG)
@@ -2408,7 +2409,7 @@ def cmd_suggest_trash(a):
         if not (vlm_trash or ("Review|maybe-trash" in tags and not vlm_keep) or owner.TRASH in tags):
             continue
         if owner.kept(tags, owner.pick_label(row.get("PickLabel")), row.get("Rating")) \
-                or protected.intersection(tags) or any(t.startswith("Used|") for t in tags):
+                or (owner.named(tags) and owner.TRASH not in tags) or protected.intersection(tags) or any(t.startswith("Used|") for t in tags):
             continue
         if not trash_allowed(media) or (only is not None and os.path.realpath(media) not in only):
             continue
@@ -2601,9 +2602,10 @@ def merge_tags(old, new, pick="", relabelled=True, owner_leaves=(), stars=None):
     Facts replace only the prefixes this run has a value for; AI labels replace SigLIP's
     namespace (only when it ran); everything else (owner keywords, Owner|, Used|, the VLM's
     Review|vlm-*, Review|child-in-shot) is never removed. A file you kept (a favorite too: stars, its
-    xmp:Rating) or trashed (owner.py) never gets Review|maybe-trash. A legacy Review|not-trash is
+    xmp:Rating), trashed, or with a person or pet you named (People|, Pets|; owner.py) never gets
+    Review|maybe-trash. A legacy Review|not-trash is
     rewritten to Owner|not-trash (migration on write; the decision is never dropped)."""
-    if owner.kept(old, pick, stars) or owner.TRASH in old:
+    if owner.kept(old, pick, stars) or owner.TRASH in old or owner.named(old) or owner.named(new):
         new = [t for t in new if t != "Review|maybe-trash"]
     legacy = [t for t in old if t in owner.LEGACY]
     new = new + [h for h in dict.fromkeys(owner.LEGACY[t] for t in legacy) if h not in new]

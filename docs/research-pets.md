@@ -1,7 +1,14 @@
 # Research: recognising pets, and bringing people tags in
 
-Status: **proposal, not built**. Researched 2026-11-19. Nothing here changes the
-tool yet; the owner approves (or edits) the decisions below before any code.
+Status: researched 2026-11-19 as a proposal; **pets built** on the shared core
+(`media_intake/pets.py`, [recognition.md](recognition.md)) with the owner's
+decisions of 2026-11-19: tags `Pets|<Name>`; names grow only as suggestions
+until confirmed; DINOv2 **INT8** (`onnx/model_quantized.onnx`, 24 MB) instead of
+fp32; cats and dogs by default, other COCO animals by config; two commands
+(`people`, `pets`); a video tagged only when the pet is in 3 or more frames;
+`pets eval` takes the owner's own names and `Pets|` tags as truth, plus
+`Calibrate|pets|<Name>` (not `Calibrate|pet|`). Date-aware propagation and the
+gallery view are not built. The text below is the proposal as written.
 
 Goal: tag each of a household's own pets by name (`Pet|<Name>`), the same way a
 face pipeline tags people (`People|<Name>`), and move that face pipeline into

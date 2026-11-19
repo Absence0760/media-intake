@@ -18,6 +18,9 @@ Plug-in interface (what a kind module gives the core)
       engine() -> (detector, {model name: embedder}); called once per scan and only when there is
       something new to scan. Several embedders may run (stored side by side for `eval`); clustering
       uses Kind.model's vectors. models: [(what, path, sha256)] that must exist for the command to run.
+      Optional: min_frames (a video is tagged with a name only when that individual is in at least this many
+      of its frames; default 1), eval_labels ((c, spec) -> {detection id: name}, eval's truth; default
+      calibration_labels, the Calibrate|<command>|<Name> tags).
 
 Frames (videos): ingest() takes any iterable of (t_seconds, rgb) frames; a photo is the one frame
 (None, rgb). Videos are scanned only when a frame source exists: frames.sample(path) -> iterator of
@@ -72,10 +75,13 @@ OWNER_HOW = ("cluster", "confirmed")   # owner names: the only ones written as t
 class Kind:
     """What one command (people, pets) plugs into the core. See the module docstring."""
 
-    def __init__(self, kind, command, prefix, model, link, same, models, engine, noun, max_side=1600):
+    def __init__(self, kind, command, prefix, model, link, same, models, engine, noun, max_side=1600,
+                 min_frames=1, eval_labels=None):
         self.kind, self.command, self.prefix, self.model = kind, command, prefix, model
         self.link, self.same, self.models, self.engine = link, same, models, engine
         self.noun, self.max_side = noun, max_side
+        self.min_frames = max(1, int(min_frames))  # a video's tag needs the individual in this many frames
+        self.eval_labels = eval_labels  # (c, spec) -> {detection id: name} for eval; default calibration_labels
 
     def missing(self):
         """The model files not installed (path), for the refusal and doctor."""
@@ -837,15 +843,20 @@ def reject(c, kind, ids):
 
 # ---------------------------------------------------------------- tags into sidecars
 def desired_tags(c, spec):
-    """{path: {<prefix><Name>}} for every scanned file, from its owner-named detections of spec.kind."""
+    """{path: {<prefix><Name>}} for every scanned file, from its owner-named detections of spec.kind. A video
+    (detections with a frame time) gets a name only when it is in at least spec.min_frames of its frames."""
     want = collections.defaultdict(set)
     for r in c.execute("SELECT f.path FROM files f JOIN scans s ON s.sha=f.sha AND s.kind=? WHERE s.status='ok'",
                        (spec.kind,)):
         want[r["path"]]
-    for r in c.execute("SELECT f.path, d.name FROM files f JOIN detections d ON d.sha=f.sha "
+    frames = collections.defaultdict(set)
+    for r in c.execute("SELECT f.path, d.name, d.t FROM files f JOIN detections d ON d.sha=f.sha "
                        f"WHERE d.kind=? AND d.how IN ({','.join('?' * len(OWNER_HOW))}) AND d.name IS NOT NULL "
                        "AND d.name != ?", (spec.kind, *OWNER_HOW, IGNORED)):
-        want[r["path"]].add(spec.prefix + r["name"])
+        frames[(r["path"], r["name"])].add(r["t"])
+    for (path, name), ts in frames.items():
+        if None in ts or len(ts) >= getattr(spec, "min_frames", 1):
+            want[path].add(spec.prefix + name)
     return want
 
 
@@ -1062,14 +1073,29 @@ def crop_bytes(c, det_id, frames="default", d=None, state=None):
 
 # ---------------------------------------------------------------- eval (read-only)
 CALIBRATE = "Calibrate|"
+EVAL_MAX = 300                # labelled detections per individual eval scores (evenly spread by id): bounded pairs
 
 
 def calibration_labels(c, spec, reader=None):
     """{detection id: name} from Calibrate|<command>|<Name> sidecar tags: only files with exactly one
     detection of spec.kind (more would be ambiguous), and one such name."""
+    return tag_labels(c, spec, f"{CALIBRATE}{spec.command}|", reader)
+
+
+def owner_labels(c, spec):
+    """{detection id: name} of the owner's names in the store (named clusters, confirmed suggestions; never a
+    suggestion, an ignored cluster or a taken-out detection)."""
+    return {r["id"]: r["name"] for r in c.execute(
+        f"SELECT id, name FROM detections WHERE kind=? AND how IN ({','.join('?' * len(OWNER_HOW))}) "
+        "AND name IS NOT NULL AND name != ?", (spec.kind, *OWNER_HOW, IGNORED))}
+
+
+def tag_labels(c, spec, prefix, reader=None):
+    """{detection id: name} from <prefix><Name> sidecar tags: only files with exactly one detection of
+    spec.kind (more would be ambiguous), and one such name."""
     import intake
     reader = reader or intake.read_sidecar_tags
-    pre = f"{CALIBRATE}{spec.command}|".casefold()
+    pre = prefix.casefold()
     paths = [r[0] for r in c.execute("SELECT DISTINCT f.path FROM files f JOIN detections d ON d.sha=f.sha "
                                      "WHERE d.kind=?", (spec.kind,)) if os.path.isfile(r[0])]
     tags = reader(paths) if paths else {}
@@ -1083,6 +1109,19 @@ def calibration_labels(c, spec, reader=None):
         if len(ds) == 1:
             out[ds[0][0]] = ns.pop()
     return out
+
+
+def eer(pos, neg):
+    """(equal error rate, its threshold) of same-pair scores pos against different-pair scores neg, both rounded
+    to 4 places: every threshold at once, sorted (O(n log n)); the lowest threshold where the false-reject and
+    false-accept rates are closest wins."""
+    import numpy as np
+    pos, neg = np.asarray(pos), np.asarray(neg)
+    ths = np.unique(np.concatenate([pos, neg]))
+    frr = np.searchsorted(np.sort(pos), ths, "left") / len(pos)               # pos < th
+    far = (len(neg) - np.searchsorted(np.sort(neg), ths, "left")) / len(neg)  # neg >= th
+    b = int(np.argmin(np.abs(frr - far)))
+    return round(float((frr[b] + far[b]) / 2), 4), round(float(ths[b]), 4)
 
 
 def evaluate(c, spec, labels, models=None, link=None):
@@ -1099,6 +1138,13 @@ def evaluate(c, spec, labels, models=None, link=None):
         rows, emb = load_vectors(c, spec.kind, model)
         keep = [i for i, r in enumerate(rows) if r["id"] in labels]
         res = dict(labelled=len(keep), individuals=len({labels[rows[i]["id"]] for i in keep}))
+        per_name = collections.defaultdict(list)
+        for i in keep:
+            per_name[labels[rows[i]["id"]]].append(i)
+        keep = sorted(i for v in per_name.values() for i in
+                      (v if len(v) <= EVAL_MAX else [v[j] for j in np.linspace(0, len(v) - 1, EVAL_MAX).astype(int)]))
+        if len(keep) < res["labelled"]:
+            res["scored"] = len(keep)
         if len(keep) < 2:
             out[model] = res
             continue
@@ -1106,7 +1152,8 @@ def evaluate(c, spec, labels, models=None, link=None):
         y = [labels[rows[i]["id"]] for i in keep]
         sim = X @ X.T
         iu = np.triu_indices(len(keep), 1)
-        same = np.array([y[a] == y[b] for a, b in zip(*iu)])
+        yi = np.unique(np.array(y), return_inverse=True)[1].reshape(-1)
+        same = yi[iu[0]] == yi[iu[1]]
         s = sim[iu]
         pos, neg = s[same], s[~same]
         res.update(same_pairs=int(same.sum()), different_pairs=int((~same).sum()))
@@ -1116,18 +1163,23 @@ def evaluate(c, spec, labels, models=None, link=None):
             ranks[order] = np.arange(1, len(order) + 1)
             res["roc_auc"] = round(float((ranks[:len(pos)].sum() - len(pos) * (len(pos) + 1) / 2)
                                          / (len(pos) * len(neg))), 4)
-            best = (2.0, None)
-            for th in np.unique(np.concatenate([pos, neg])):
-                frr, far = float((pos < th).mean()), float((neg >= th).mean())
-                if abs(frr - far) < best[0]:
-                    best = (abs(frr - far), (frr + far) / 2, float(th))
-            res["eer"], res["eer_threshold"] = round(best[1], 4), round(best[2], 4)
+            res["eer"], res["eer_threshold"] = eer(pos, neg)
             res["median_same"], res["closest_different"] = round(float(np.median(pos)), 4), round(float(neg.max()), 4)
         np.fill_diagonal(sim, -2.0)
         nn = sim.argmax(1)
         res["nearest_neighbour_accuracy"] = round(float(np.mean([y[i] == y[j] for i, j in enumerate(nn)])), 4)
-        comp = cluster_vectors(X, [None] * len(keep), photos=[frame_key(rows[i]) for i in keep], link=link,
-                               same=spec.same)
+        # The clustering model at the link it uses (or --link); another model, whose cosines live on another
+        # scale, at its own equal-error threshold (both reported as "link").
+        at = link if model == spec.model or "eer_threshold" not in res else res["eer_threshold"]
+        same_at = spec.same if model == spec.model else at
+        res["link"] = round(float(at), 4)
+        comp = np.zeros(len(keep), dtype=int)
+        by_species = collections.defaultdict(list)
+        for t, i in enumerate(keep):
+            by_species[rows[i]["species"] or ""].append(t)
+        for base, (_, idx) in enumerate(sorted(by_species.items())):  # as cluster does: one species at a time
+            comp[idx] = cluster_vectors(X[idx], [None] * len(idx), photos=[frame_key(rows[keep[t]]) for t in idx],
+                                        link=at, same=same_at) + base * len(keep)
         per = collections.defaultdict(set)
         mixed = collections.defaultdict(set)
         for i, g in enumerate(comp):
@@ -1204,6 +1256,8 @@ def build_parser(spec, prog=None):
     s.add_argument("--limit", type=int, help="at most N files")
     p(cmd, "names and photo counts", "List the names, with file counts and suggestions waiting.")
     s = p("eval", "how well it tells them apart (read-only)",
+          f"Score the vectors against the names you gave or confirmed, and {spec.prefix}<Name> or\n"
+          f"Calibrate|{cmd}|<Name> tags on files with one {n}. Read-only." if spec.eval_labels else
           f"Score the vectors on files you tagged Calibrate|{cmd}|<Name> (one {n} in the file). Read-only.")
     s.add_argument("--link", type=float, help=f"link threshold to test (default {spec.link})")
     return ap
@@ -1287,12 +1341,12 @@ def main(spec, argv=None, prog=None):
             for name, n, waiting in names(c, spec.kind):
                 print(f"{n:>6} files  {name}" + (f"  ({waiting} suggestions waiting)" if waiting else ""))
         elif a.cmd == "eval":
-            labels = calibration_labels(c, spec)
+            labels = (spec.eval_labels or calibration_labels)(c, spec)
             res = evaluate(c, spec, labels, link=a.link)
             print(json.dumps(res, indent=1, sort_keys=True))
             if not labels:
-                print(f"no labelled files: tag some Calibrate|{spec.command}|<Name> in the gallery (one {spec.noun} "
-                      "in the file)", file=sys.stderr)
+                print(f"no labelled files: name some {spec.noun}s, or tag files Calibrate|{spec.command}|<Name> "
+                      f"in the gallery (one {spec.noun} in the file)", file=sys.stderr)
     except ValueError as e:
         sys.exit(f"{tool}: {e}")
     finally:
