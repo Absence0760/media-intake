@@ -6,7 +6,8 @@
 Images are drawn with Pillow and the video is an ffmpeg test pattern: no real
 photo is read. intake.py is replaced (MEDIA_REVIEW_INTAKE) by a fake that
 records its argv and mimics release/erase/purge-review on the fake state, so
-the real erase never runs. Nothing points at the real ~/.local/share/media-intake,
+the real erase never runs. Like the real one, its trash and purge-review delete
+nothing without --yes. Nothing points at the real ~/.local/share/media-intake,
 ~/Pictures, ~/Videos or /run/user/*/gvfs. With FAKE_GATE (a FIFO) the fake's first
 erase waits until the test opens the FIFO, so a run can be held mid-step without
 a sleep: the tests then kill servers or the job's worker and check what the next
@@ -48,12 +49,15 @@ if cmd == "release":
             print(f"released {p} -> library")  # names the file, as real output can: scrubbed at the end
     json.dump(q, open(man, "w"))
 elif cmd == "erase":
-    print(f"erased {len(json.load(open(man)))} files; library copies 0; phone 0; drive 0")
+    n = len(json.load(open(man)))
+    print(f"erased {n} files: {n} quarantined, 0 in your library, 0 in your home folder")
     shutil.rmtree(quar)
 elif cmd == "verify-gone":
     print("verify-gone: no copies remain")
+elif cmd in ("trash", "purge-review") and "--yes" not in sys.argv:
+    print("dry run: nothing deleted")  # as the real intake: a delete needs --yes
 elif cmd == "trash":
-    args = sys.argv[2:]
+    args = [x for x in sys.argv[2:] if x != "--yes"]
     if "--phone" in args:
         i = args.index("--phone"); del args[i:i + 2]
     if "--batch" in args:
@@ -425,6 +429,32 @@ class ReviewUITest(unittest.TestCase):
         self.assertEqual(self.calls(), [])
         self.assertFalse(os.path.exists(os.path.join(self.state, "batches", BATCH, "review-decisions.json")))
 
+    def test_erase_word_only_when_something_is_removed(self):
+        """ERASE is asked for only when a decision removes something; an all-keep submit needs no word."""
+        self.quarantine()
+        self.review()
+        s = self.start("--phone", self.phone)
+        items = self.items(s)
+        csrf = s.csrf()
+        keep = {str(i["id"]): "keep" for i in items}
+        quar = next(i for i in items if i["tab"] == "quarantine")
+        rev = next(i for i in items if i["tab"] == "review")
+        # each removal on its own: a quarantined erase, and the review tab's delete and trash
+        for it, d in ((quar, "erase"), (rev, "delete"), (rev, "trash")):
+            one_gone = dict(keep, **{str(it["id"]): d})
+            for body in ({"decisions": one_gone}, {"decisions": one_gone, "confirm": ""},
+                         {"decisions": one_gone, "confirm": "erase"}):
+                r, b = s.req("POST", "/api/submit", headers={"X-CSRF": csrf}, body=body)
+                self.assertEqual(r.status, 400, (d, b))
+                self.assertEqual(json.loads(b)["error"], "type ERASE to confirm", d)
+        self.assertEqual(self.calls(), [])  # nothing ran
+        self.assertFalse(os.path.exists(os.path.join(self.state, "batches", BATCH, "review-decisions.json")))
+        r, b = s.req("POST", "/api/submit", headers={"X-CSRF": csrf}, body={"decisions": keep})
+        self.assertEqual(r.status, 202, b)
+        j, out = self.wait_done(s)
+        self.assertTrue(j["ok"], out)
+        self.assertFalse(any(c[0] in ("erase", "trash", "purge-review") for c in self.calls()), self.calls())
+
     def test_submit_flow(self):
         quar, _ = self.quarantine()
         rv = self.review()
@@ -511,7 +541,7 @@ class ReviewUITest(unittest.TestCase):
         self.assertEqual(r.status, 202)
         j, out = self.wait_done(s)
         self.assertTrue(j["ok"], out)
-        self.assertEqual(self.calls(), [["purge-review", BATCH]])
+        self.assertEqual(self.calls(), [["purge-review", BATCH, "--yes"]])
         self.assertEqual(s.p.wait(timeout=30), 0)
 
     def xcheck(self):
@@ -599,8 +629,8 @@ class ReviewUITest(unittest.TestCase):
         self.assertTrue(j["ok"], out)
         ph, dr = ["--phone", self.phone], ["--drive", self.drive]
         self.assertEqual(self.calls(), [
-            ["trash", "--batch", BATCH, os.path.join(rv, "DCIM/Camera/r1.jpg"), *ph],
-            ["purge-review", BATCH],
+            ["trash", "--batch", BATCH, os.path.join(rv, "DCIM/Camera/r1.jpg"), *ph, "--yes"],
+            ["purge-review", BATCH, "--yes"],
             ["release", f"near-{BATCH}", os.path.join(self.state, "quarantine", f"near-{BATCH}", "Downloads/n.jpg")],
             ["release", X, os.path.join(xq, w + "w1.jpg")],
             ["erase", X, "--yes", *dr],  # xcheck: never --phone
@@ -644,7 +674,7 @@ class ReviewUITest(unittest.TestCase):
         self.assertTrue(j["ok"], out)
         self.assertEqual([c for c in self.calls() if c[0] == "trash"],
                          [["trash", "--batch", BATCH, os.path.join(self.state, "batches", BATCH, "review", rv["rel"]),
-                           "--phone", self.phone]], "only the review item is trashed")
+                           "--phone", self.phone, "--yes"]], "only the review item is trashed")
         self.assertEqual(s.p.wait(timeout=30), 0)
 
     def test_page_offers_no_trash_on_quarantined_items(self):
@@ -668,6 +698,21 @@ class ReviewUITest(unittest.TestCase):
         for text in (b'role="alert"', b'role="dialog" aria-modal="true"', b'role="tablist"', b'role="log"'):
             self.assertIn(text, page)
 
+    def test_page_words(self):
+        """The page's own words (the browser tests drive them): one counter that says why Submit is locked, the
+        Apply dialog named for its action, plain names for tag groups and scanner flags, and refusals without a
+        PID or a lock file's path."""
+        self.quarantine()
+        s = self.start()
+        _, page = s.req("GET", "/")
+        for text in (b"Decide ${left} more to submit", b'aria-describedby="done"', b"Apply ${N} decision${s(N)}?",
+                     b'"Review|maybe-trash":"Suggested junk"', b'Label:"Looks like"', b'"nudity":"Possible nudity"',
+                     b"Another action is using the library", b'replace(/\\s*\\(PID \\d+\\)/g,"")',
+                     b"Press a pressed button again to clear it."):
+            self.assertIn(text, page)
+        for text in (b'id="count"', b">Run<", b">Confirm<", b"not xcheck copies", b"No library place"):
+            self.assertNotIn(text, page)
+
     def test_maybe_trash_tab(self):
         lib = os.path.join(self.home, "photo_library/2026/2026-11")
         pasta, floor = os.path.join(lib, "pasta.jpg"), os.path.join(lib, "floor.jpg")
@@ -690,7 +735,7 @@ class ReviewUITest(unittest.TestCase):
             self.assertEqual((r.status, b), (200, f.read()))
         r, page = s.req("GET", "/")
         self.assertIn(b"Maybe trash", page)
-        self.assertIn(b"Trash (T)", page)
+        self.assertIn(b'VERB={keep:"Keep",erase:"Erase",delete:"Delete this copy",trash:"Trash"}', page)
         csrf = s.csrf()
         bad = {str(items[0]["id"]): "erase", str(items[1]["id"]): "trash"}
         r, _ = s.req("POST", "/api/submit", headers={"X-CSRF": csrf}, body={"decisions": bad, "confirm": "ERASE"})
@@ -700,7 +745,7 @@ class ReviewUITest(unittest.TestCase):
         self.assertEqual(r.status, 202, b)
         j, out = self.wait_done(s)
         self.assertTrue(j["ok"], out)
-        self.assertEqual(self.calls(), [["not-trash", floor], ["trash", pasta, "--phone", self.phone]])
+        self.assertEqual(self.calls(), [["not-trash", floor], ["trash", pasta, "--phone", self.phone, "--yes"]])
         dp = os.path.join(self.state, "maybe-trash-decisions.json")
         self.assertEqual(stat.S_IMODE(os.stat(dp).st_mode), 0o600)
         self.assertTrue(os.path.isfile(outside) and os.path.isfile(inq))
@@ -761,7 +806,7 @@ class ReviewUITest(unittest.TestCase):
         j, out = self.wait_done(s)
         self.assertTrue(j["ok"], out)
         self.assertEqual(self.calls(), [["not-trash", p["b2.jpg"], p["b4.jpg"], p["solo.jpg"]],
-                                        ["trash", p["b1.jpg"], p["b3.jpg"], "--phone", self.phone]])
+                                        ["trash", p["b1.jpg"], p["b3.jpg"], "--phone", self.phone, "--yes"]])
         self.assertTrue(all(os.path.isfile(p[n]) for n in ("b2.jpg", "b4.jpg", "solo.jpg")))
         self.assertEqual(s.p.wait(timeout=30), 0)
 
@@ -887,6 +932,29 @@ class ReviewUITest(unittest.TestCase):
         self.assertEqual(len(self.calls()), n)  # nothing ran
         self.assertEqual(self.job()["id"], j["job"]["id"])  # and no new job was started
 
+    def test_busy_library_refusal_has_no_pid_or_path(self):
+        """A submit refused because another writer holds the library lock says so in plain words: the lock's own
+        message names a PID and the lock file's path, and neither reaches the page."""
+        self.quarantine()
+        s = self.start()
+        dec = {str(i["id"]): "erase" for i in self.items(s)}
+        hold = ("import sys; sys.path.insert(0, sys.argv[1]); import library_lock as L; "
+                "L.acquire('intake.py apply'); print('held', flush=True); sys.stdin.read()")
+        holder = subprocess.Popen([PY, "-I", "-c", hold, HERE], env=self.env, stdin=subprocess.PIPE,
+                                  stdout=subprocess.PIPE, text=True)
+        self.addCleanup(holder.wait, 30)
+        self.addCleanup(holder.stdin.close)
+        self.addCleanup(holder.stdout.close)
+        self.assertEqual(holder.stdout.readline().strip(), "held")
+        r, b = s.req("POST", "/api/submit", headers={"X-CSRF": s.csrf()}, body={"decisions": dec, "confirm": "ERASE"})
+        self.assertEqual(r.status, 409, b)
+        err = json.loads(b)["error"]
+        self.assertEqual(err, "Another action is using the library (the media-intake apply command). "
+                              "Wait for it to finish, then apply again.")
+        self.assertNotRegex(err, r"PID|\d{2,}|\.lock|/|intake\.py")
+        self.assertNotIn(self.state, err)
+        self.assertEqual(self.calls(), [])  # nothing ran
+
     def test_crashed_run_is_reported(self):
         quar, _ = self.quarantine()
         g = self.gate()
@@ -918,6 +986,27 @@ class ReviewUITest(unittest.TestCase):
         self.assertEqual([c[0] for c in self.calls()], ["erase"])
         r, page = s2.req("GET", "/")
         self.assertIn(b"crashed", page)
+
+
+class BusyWords(unittest.TestCase):
+    """busy_words: a refused submit's 409 text, mapped on the server; never the exception's PID or lock path."""
+
+    def test_plain_words_for_each_busy(self):
+        sys.path.insert(0, HERE)
+        import jobs
+        import review_ui
+        msg = ("the library is busy: job gallery (PID 510) holds its lock (/tmp/x/locks/library-1.lock); "
+               "try again when it has finished")
+        lib = jobs.LibraryBusy(msg, {"what": "job gallery", "pid": 510})
+        unknown = jobs.LibraryBusy(msg)  # no note: the usual suspects, never "another media-intake command"
+        own = jobs.Busy("a job for review-2026-11-12 is still running")
+        self.assertEqual(review_ui.busy_words(lib), "Another action is using the library (a Trash, Erase or "
+                         "Share-safe copy from another gallery). Wait for it to finish, then apply again.")
+        self.assertEqual(review_ui.busy_words(unknown), "Another action is using the library (an import, a gallery "
+                         "Trash or Erase, or another review). Wait for it to finish, then apply again.")
+        self.assertTrue(review_ui.busy_words(own).startswith("A run of this review is still going"))
+        for e in (lib, unknown, own):
+            self.assertNotRegex(review_ui.busy_words(e), r"PID|\d|\.lock|/|review-")
 
 
 class BurstInputs(unittest.TestCase):

@@ -268,7 +268,7 @@ class EndToEnd(unittest.TestCase):
             self.assertEqual((p["lib_dst"], p["device_model"]),
                              (os.path.join(month, p["device"], "GOPR0001.JPG"), "HERO11 Black"))
         self.assertNotEqual(pa["device"], pb["device"])
-        self.assertIn(f"devices {{'{pb['device']}': 1}}", out)
+        self.assertIn(f"devices: {pb['device']} 1", out)
         self.run_intake("apply", "b", "--no-scan")
         self.assertFalse(glob.glob(os.path.join(month, "**", "*_1.*"), recursive=True))
         self.assert_no_serial()

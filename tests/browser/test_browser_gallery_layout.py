@@ -193,13 +193,20 @@ class GalleryLayoutBrowserTest(LayoutCase):
         B.expect(page.get_by_role("dialog", name="Item")).to_be_hidden()  # never opens the large view
         bx = cover.get_by_role("button", name="Burst: 3 shots, close stack")
         B.expect(bx).to_be_visible()
-        # an open stack's other shots show the count compactly too; the full text stays for screen readers
+        B.expect(bx).to_have_text("Close")  # the cover's button says what a tap does now
+        # an open stack's other shots show their place compactly ("2/3"); the full text stays for screen readers
         rest = page.locator(f'[data-item="{REST[0]}"] .badge')
-        B.expect(rest).to_have_text("Burst: 3 shots")
+        B.expect(rest).to_have_text("Burst: shot 2 of 3")
+        self.assertEqual(rest.evaluate("e => getComputedStyle(e, '::before').content"), '"2/3"')
         self.assertLess(rest.bounding_box()["width"], 50)
+        # one group: the cover and its shots share the ring
+        for n in (COVER, *REST):
+            B.expect(page.locator(f'[data-item="{n}"]')).to_have_class(re.compile(r"(^|\s)inb(\s|$)"))
         bx.tap()
         for n in REST:
             B.expect(page.locator(f'[data-item="{n}"]')).to_be_hidden()
+        B.expect(cover.locator(".bx")).to_have_text("×3")
+        B.expect(cover).not_to_have_class(re.compile(r"(^|\s)inb(\s|$)"))
         cover.focus()  # x still works
         page.keyboard.press("x")
         B.expect(page.locator(f'[data-item="{REST[0]}"]')).to_be_visible()
@@ -215,7 +222,8 @@ class GalleryLayoutBrowserTest(LayoutCase):
     def test_burst_help_is_one_line_on_a_phone(self):
         page = self.page(PHONE)
         helpb, more = page.locator("#helpb"), page.get_by_role("button", name="more", exact=True)
-        B.expect(helpb).to_contain_text("Bursts are stacked; X opens one.")
+        B.expect(helpb.locator(".tch")).to_have_text("Burst stacks: tap ×N to open one.")  # no X key on a phone
+        B.expect(helpb.locator(".kb")).to_be_hidden()
         B.expect(helpb.locator(".hfull")).to_be_hidden()
         self.assertLess(helpb.bounding_box()["height"], 40, "the phone help is more than one line")
         B.expect(more).to_have_attribute("aria-expanded", "false")
@@ -343,7 +351,8 @@ class ReviewLayoutBrowserTest(LayoutCase):
                 self.assert_contrast(cover.locator(".badge"), f"{scheme}: burst badge")
                 cover.locator(".burst .x").click()
                 cover.get_by_role("button", name="Keep this one, erase the rest").click()  # decides the stack
-                keep = cover.get_by_role("button", name=re.compile(r"^Keep \("))
+                # on a touch phone the key hint " (K)" is hidden, so the name is just "Keep"
+                keep = cover.get_by_role("button", name=re.compile(r"^Keep( \(K\))?$"))
                 B.expect(keep).to_have_attribute("aria-pressed", "true")
                 self.assert_contrast(keep, f"{scheme}: pressed Keep")
                 submit = page.get_by_role("button", name="Submit")

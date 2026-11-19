@@ -22,10 +22,19 @@ Detectors (docs/intake.md has the research and pins):
             QR codes holding otpauth:// (2FA setup).
 Videos: one frame every 2 s (max 90, at least one for a clip under 2 s) through
 the nudity detector; a detector error on any frame flags "unscanned-nudity".
+Motion photos (a JPEG/HEIC with a video appended; motion.py): the still as an
+image, then the embedded video, copied into the private work folder, as a
+video; its flags join the photo's. A video that can't be located or copied out
+flags "unscanned-video", the same as an undecodable clip.
 """
 import contextlib, json, os, re, shutil, subprocess, sys, tempfile
 
 from PIL import Image, ImageOps
+
+# -I leaves the script's folder off sys.path; appended, so a sibling never shadows a venv package.
+if os.path.dirname(os.path.abspath(__file__)) not in sys.path:
+    sys.path.append(os.path.dirname(os.path.abspath(__file__)))
+import motion  # noqa: E402
 
 try:
     from pillow_heif import register_heif_opener  # optional
@@ -235,6 +244,50 @@ def gst_frames_command(dec, work, every):
             "multifilesink", "location=" + os.path.join(work, "%03d.jpg")]
 
 
+def video_flags(det, path, tmpdir):
+    """Reason labels for one video's sampled frames ("unscanned-video" when none could be taken)."""
+    reasons = []
+    fd = os.path.join(tmpdir, "frames")
+    shutil.rmtree(fd, ignore_errors=True)  # never judge an earlier clip's frames
+    os.makedirs(fd)
+    try:
+        frames = video_frames(path, fd)
+        if not frames:
+            reasons.append("unscanned-video")
+        for f in frames:
+            r = nude_flags(det, os.path.join(fd, f))
+            if r is None:  # the detector failed on this frame: not checked, never clean
+                reasons.append("unscanned-nudity")
+            elif r:
+                reasons.append("nudity")
+                break
+    finally:
+        shutil.rmtree(fd, ignore_errors=True)
+    return reasons
+
+
+def motion_flags(det, path, tmpdir):
+    """Reason labels for a motion photo's embedded video ([] for a plain still). The video is copied into
+    tmpdir (the private 0700 work folder; GStreamer, if needed, reads it through video_frames' link, never by
+    name), scanned like any clip and deleted. One that can't be located or copied is "unscanned-video":
+    not checked, never clean. The photo itself is only read."""
+    try:
+        info = motion.probe(path)
+    except (OSError, ValueError):
+        return ["unscanned-video"]  # can't read the bytes to tell: not checked
+    if info is None:
+        return []
+    try:
+        clip = motion.extract(path, info, tmpdir)
+    except (motion.MotionError, OSError):
+        return ["unscanned-video"]
+    try:
+        return video_flags(det, clip, tmpdir)
+    finally:
+        with contextlib.suppress(FileNotFoundError):
+            os.remove(clip)
+
+
 def scan_file(det, path, tmpdir):
     """Reason labels for one file ([] = checked and clean)."""
     ext = os.path.splitext(path)[1].lower()
@@ -258,26 +311,19 @@ def scan_file(det, path, tmpdir):
             reasons += ["unscanned-nudity"] if r is None else r
             reasons += barcode_flags(im)
             reasons += ocr_flags(im, tmpdir)
+        reasons += motion_flags(det, path, tmpdir)
     elif ext in VID:
-        fd = os.path.join(tmpdir, "frames")
-        shutil.rmtree(fd, ignore_errors=True)  # never judge an earlier clip's frames
-        os.makedirs(fd)
-        try:
-            frames = video_frames(path, fd)
-            if not frames:
-                reasons.append("unscanned-video")
-            for f in frames:
-                r = nude_flags(det, os.path.join(fd, f))
-                if r is None:  # the detector failed on this frame: not checked, never clean
-                    reasons.append("unscanned-nudity")
-                elif r:
-                    reasons.append("nudity")
-                    break
-        finally:
-            shutil.rmtree(fd, ignore_errors=True)
+        reasons += video_flags(det, path, tmpdir)
     else:
         reasons.append("unscanned-type")  # staged as media, but no detector here reads it
     return reasons
+
+
+def is_motion(path):
+    try:
+        return motion.probe(path) is not None
+    except (OSError, ValueError):
+        return True  # unreadable: re-check it (scan_file then flags it), never keep a stale clean result
 
 
 def main():
@@ -293,8 +339,9 @@ def main():
     flags, n = {}, 0
     files = sorted(os.path.join(r, f) for r, _, fs in os.walk(src) for f in fs)
     if videos_only:
-        # Re-check only the videos and merge into an earlier scan.json for the images.
-        files = [f for f in files if os.path.splitext(f)[1].lower() in VID]
+        # Re-check only the videos (motion photos too: their embedded video) and merge into an earlier
+        # scan.json for the images.
+        files = [f for f in files if os.path.splitext(f)[1].lower() in VID or is_motion(f)]
         try:
             with open(out_path) as fh:
                 flags = json.load(fh)

@@ -317,6 +317,42 @@ class Doctor(unittest.TestCase):
             self.assertEqual(cli.main(["doctor"]), 0)
         d.assert_called_once_with()
 
+    def test_doctor_help_prints_help_and_runs_nothing(self):
+        for flag in ("--help", "-h", "help"):
+            with self.subTest(flag=flag):
+                out, err = io.StringIO(), io.StringIO()
+                with mock.patch.object(cli, "doctor") as d, mock.patch("sys.stdout", out), mock.patch("sys.stderr", err):
+                    self.assertEqual(cli.main(["doctor", flag]), 0)
+                d.assert_not_called()
+                self.assertEqual(err.getvalue(), "")
+                self.assertTrue(out.getvalue().startswith("usage: media-intake doctor\n"), out.getvalue())
+                self.assertIn("Changes nothing. Exits 1 if something required is missing", out.getvalue())
+
+    def test_doctor_rejects_other_arguments(self):
+        out, err = io.StringIO(), io.StringIO()
+        with mock.patch.object(cli, "doctor") as d, mock.patch("sys.stdout", out), mock.patch("sys.stderr", err):
+            self.assertEqual(cli.main(["doctor", "--bogus"]), 2)
+        d.assert_not_called()
+        self.assertEqual(out.getvalue(), "")
+        self.assertIn("media-intake doctor takes no options", err.getvalue())
+
+    def test_setup_problems_add_a_run_setup_line(self):
+        del self.p.files[cli.venv_python()]
+        code, lines = self.run_doctor()
+        self.assertEqual(code, 1)
+        self.assertEqual(self.summary(lines), ["1 problem, no optional items not available",
+                                               "Run: bash setup.sh   (venv, SigLIP model, GeoNames data)"])
+        self.p.modules -= {"PIL"}
+        _, lines = self.run_doctor()
+        self.assertEqual(self.summary(lines)[1:], ["Install the required packages:", "sudo dnf install -y python3-pillow",
+                                                   "Then run: bash setup.sh   (venv, SigLIP model, GeoNames data)"])
+
+    def test_no_run_setup_line_for_packages_or_optional_only(self):
+        self.p.modules -= {"PIL"}
+        del self.p.files[TEXT], self.p.files[TOKENIZER]
+        _, lines = self.run_doctor()
+        self.assertFalse([ln for ln in self.summary(lines) if "setup.sh" in ln], lines)
+
 
 class Commands(unittest.TestCase):
     """`media-intake` with no command or --help prints the usage (exit 0); an unknown one names the nearest
@@ -333,8 +369,8 @@ class Commands(unittest.TestCase):
             with self.subTest(argv=argv):
                 code, out, err = self.run_main(argv)
                 self.assertEqual((code, err), (0, ""))
-                self.assertIn("media-intake doctor", out)
-                self.assertIn("Intake commands:", out)
+                self.assertIn("usage: media-intake <command> [options]", out)
+                self.assertIn("docs/words.md", out)
 
     def test_names_include_every_intake_subcommand(self):
         import argparse, intake
@@ -355,6 +391,23 @@ class Commands(unittest.TestCase):
                 self.assertEqual(first, f"media-intake: unknown command {typo!r}; did you mean {near!r}?")
                 self.assertIn("usage: media-intake <command> [options]", err)
 
+    def test_version(self):
+        with open(os.path.join(support.PKG, "__init__.py")) as f:
+            (want,) = re.findall(r'^__version__ = "([^"]+)"$', f.read(), re.M)
+        for argv in (["--version"], ["-V"], ["version"]):
+            with self.subTest(argv=argv):
+                self.assertEqual(self.run_main(argv), (0, f"media-intake {want}\n", ""))
+
+    def test_unknown_option_gets_no_command_guess(self):
+        for flag in ("--verison", "--verbose", "-x"):
+            with self.subTest(flag=flag):
+                code, out, err = self.run_main([flag])
+                self.assertEqual((code, out), (2, ""))
+                first = err.splitlines()[0]
+                self.assertTrue(first.startswith(f"media-intake: unknown option {flag!r} "), first)
+                self.assertNotIn("did you mean", err)
+                self.assertIn("--version", first)
+
     def test_unknown_command_without_a_close_match(self):
         code, out, err = self.run_main(["zzzzzz"])
         self.assertEqual(code, 2)
@@ -372,6 +425,155 @@ class Commands(unittest.TestCase):
         with mock.patch.object(intake, "main") as m:
             self.assertEqual(self.run_main(["find", "--event", "x"])[0], 0)
         m.assert_called_once_with(["find", "--event", "x"], prog="media-intake")
+
+
+class HelpText(unittest.TestCase):
+    """Help a non-technical owner can read: `media-intake --help` lists every command once, by task, with no
+    argparse `{a,b,...}` line; every intake command's --help says what it does, what it touches and whether it
+    deletes; and every option and positional (intake, gallery, review) has help text."""
+
+    @staticmethod
+    def intake_sub():
+        import argparse, intake
+        return next(a for a in intake.build_parser("media-intake")._actions
+                    if isinstance(a, argparse._SubParsersAction))
+
+    def top_help(self):
+        out = io.StringIO()
+        with mock.patch("sys.stdout", out):
+            self.assertEqual(cli.main(["--help"]), 0)
+        return out.getvalue()
+
+    def test_top_level_help_lists_each_command_once(self):
+        out = self.top_help()
+        listed = re.findall(r"^  ([a-z][a-z-]+)", out, re.M)
+        for name in cli.command_names():
+            if name == "social-copy":  # share-copy's older name, given on share-copy's line
+                self.assertIn("(or social-copy)", out)
+                continue
+            with self.subTest(name):
+                self.assertEqual(listed.count(name), 1, f"{name} listed once in media-intake --help")
+        self.assertLessEqual(set(listed), set(cli.command_names()), "no command listed that doesn't exist")
+        self.assertNotIn("{", out, "no argparse {a,b,...} usage line")
+        self.assertNotIn("positional arguments", out)
+        for line in out.splitlines():
+            self.assertLessEqual(len(line), 80, line)
+
+    def test_deleting_commands_say_so_in_the_list(self):
+        out = self.top_help()
+        for name in ("erase", "forget", "offload", "trash", "purge-review", "prune-cache"):
+            with self.subTest(name):
+                self.assertRegex(out, rf"(?m)^  {name}\b.*DELETES")
+
+    def test_every_intake_command_says_what_it_touches_and_deletes(self):
+        for name, p in self.intake_sub().choices.items():
+            with self.subTest(name):
+                desc = p.description or ""
+                self.assertRegex(desc, r"(?m)^Touches: \S", "says what it touches")
+                self.assertRegex(desc, r"(?m)^Deletes: \S", "says whether it deletes")
+                self.assertTrue(desc.split("\n\n")[0].strip(), "says what it does")
+                deletes = desc.split("Deletes: ", 1)[1]
+                summary = next(a.help for a in self.intake_sub()._choices_actions if a.dest == name)
+                self.assertEqual(deletes.startswith("YES"), summary.startswith("DELETES"),
+                                 "the one-line summary says DELETES exactly when the command deletes")
+                for line in p.format_help().splitlines():
+                    self.assertLessEqual(len(line), 80, line)
+
+    def assert_every_argument_has_help(self, parser):
+        for a in parser._actions:
+            if a.help == "show this help message and exit":
+                continue
+            with self.subTest(prog=parser.prog, arg=a.option_strings or a.dest):
+                self.assertTrue(a.help and len(a.help) > 8, "has help text")
+
+    def test_every_intake_option_and_positional_has_help(self):
+        for p in self.intake_sub().choices.values():
+            self.assert_every_argument_has_help(p)
+
+    def parser_of(self, module):
+        """gallery's or review_ui's parser, as main() builds it: captured from --help's parse."""
+        import argparse
+        seen = []
+        real = argparse.ArgumentParser.parse_args
+
+        def grab(ap, args=None, namespace=None):
+            seen.append(ap)
+            return real(ap, args, namespace)
+        with mock.patch.object(argparse.ArgumentParser, "parse_args", grab), \
+                mock.patch("sys.stdout", io.StringIO()) as out, self.assertRaises(SystemExit) as e:
+            module.main(["--help"])
+        self.assertEqual(e.exception.code, 0)
+        return seen[0], out.getvalue()
+
+    def test_gallery_and_review_help(self):
+        import gallery, review_ui
+        for module, prog in ((gallery, "media-intake gallery"), (review_ui, "media-intake review")):
+            with self.subTest(prog):
+                ap, out = self.parser_of(module)
+                self.assertTrue(out.startswith(f"usage: {prog} "), "names the command, not cli.py")
+                self.assertIn("\nTouches: ", out)
+                self.assertIn("\nDeletes: ", out)
+                self.assertIn("the backup drive", out, "--drive is the backup drive")
+                self.assertNotIn("passed to", out, "no internal wording")
+                self.assert_every_argument_has_help(ap)
+
+    def test_bad_port_is_a_usage_error(self):
+        import gallery, review_ui
+        for module in (gallery, review_ui):
+            for bad in ("99999", "-1", "x"):
+                with self.subTest(module=module.__name__, port=bad), mock.patch("sys.stderr", io.StringIO()) as err, \
+                        self.assertRaises(SystemExit) as e:
+                    module.main([f"--port={bad}"])
+                self.assertEqual(e.exception.code, 2)
+                self.assertIn("a port is 0-65535", err.getvalue())
+
+
+class VenvCommands(unittest.TestCase):
+    """index, search, similar (and vlm-trash) run in the venv; before setup.sh built it, --help still prints the
+    command's options with the system Python, plus one line saying the venv is needed."""
+
+    def run_main(self, argv):
+        out, err = io.StringIO(), io.StringIO()
+        missing = os.path.join(tempfile.mkdtemp(prefix="cli-novenv-"), "venv", "bin", "python")
+        self.addCleanup(shutil.rmtree, os.path.dirname(os.path.dirname(os.path.dirname(missing))), True)
+        with mock.patch.object(cli, "venv_python", return_value=missing), mock.patch.object(cli.os, "execv") as ex, \
+                mock.patch("sys.stdout", out), mock.patch("sys.stderr", err):
+            code = cli.main(argv)
+        ex.assert_not_called()
+        return code, out.getvalue(), err.getvalue()
+
+    def test_help_without_the_venv(self):
+        for cmd in ("index", "search", "similar"):
+            for flag in ("--help", "-h"):
+                with self.subTest(cmd=cmd, flag=flag):
+                    code, out, err = self.run_main([cmd, flag])
+                    self.assertEqual((code, err), (0, ""))
+                    self.assertIn(f"usage: media-intake {cmd} ", out)
+                    last = out.rstrip("\n").splitlines()[-1]
+                    self.assertTrue(last.startswith(f"note: media-intake {cmd} needs the venv"), last)
+                    self.assertTrue(last.endswith("run bash setup.sh first"), last)
+        code, out, _ = self.run_main(["search", "dog", "--clean", "--help"])
+        self.assertEqual(code, 0)
+        self.assertIn("--unused-since Nd", out)
+
+    def test_running_without_the_venv_says_run_setup(self):
+        for argv in (["index"], ["search", "dog"], ["similar", "x.jpg", "-n", "3"]):
+            with self.subTest(argv=argv):
+                code, out, err = self.run_main(argv)
+                self.assertEqual((code, out), (1, ""))
+                self.assertEqual(len(err.splitlines()), 1)
+                self.assertIn(f"media-intake {argv[0]} needs the venv", err)
+                self.assertIn("run bash setup.sh first", err)
+
+    def test_with_the_venv_help_goes_to_the_venv(self):
+        d = tempfile.mkdtemp(prefix="cli-venv-")
+        self.addCleanup(shutil.rmtree, d, True)
+        vp = os.path.join(d, "python")
+        open(vp, "w").close()
+        with mock.patch.object(cli, "venv_python", return_value=vp), mock.patch.object(cli.os, "execv") as ex, \
+                mock.patch("sys.stdout", io.StringIO()), mock.patch("sys.stderr", io.StringIO()):
+            cli.main(["search", "--help"])  # execv never returns; the mock does, so the rest is ignored
+        ex.assert_called_once_with(vp, [vp, "-I", os.path.join(cli.HERE, "semantic.py"), "search", "--help"])
 
 
 class Pins(unittest.TestCase):

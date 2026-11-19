@@ -57,6 +57,15 @@ class Busy(Exception):
     """A job with this key is still running (or a step it started still is), or the library is locked."""
 
 
+class LibraryBusy(Busy):
+    """The library lock is held by another writer. Its message names the holder with a PID and the lock file's
+    path, so a page never shows it: it maps .holder (the lock's note) to words (library_lock.plain_holder)."""
+
+    def __init__(self, msg, holder=None):
+        super().__init__(msg)
+        self.holder = holder or {}
+
+
 def intake_path():
     # Tests point this at a fake that records its argv, so a real erase never runs there.
     return os.environ.get("MEDIA_REVIEW_INTAKE", os.path.join(HERE, "intake.py"))
@@ -367,7 +376,7 @@ class Claim:
             self.lib_fd = library_lock.acquire(f"job {key}")
         except library_lock.Busy as e:
             self.release()
-            raise Busy(str(e)) from None
+            raise LibraryBusy(str(e), e.holder) from None
 
     def release(self):
         for k in ("lib_fd", "fd"):

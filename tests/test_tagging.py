@@ -200,7 +200,7 @@ class Sidecars(Base):
         # a released (scan-flagged) file is still never tagged
         self.intake("release", batch, "DCIM/Camera/20261023_100000.jpg")
         rel = os.path.join(self.lib, "2026", "2026-10", "20261023_100000.jpg")
-        self.assertIn("skipped 1 files", self.intake("tag-files", rel, "--no-labels"))
+        self.assertIn("skipped 1 file:", self.intake("tag-files", rel, "--no-labels"))
         self.assertFalse(os.path.exists(rel + ".xmp"))
 
     def test_erase_takes_sidecars(self):
@@ -212,7 +212,7 @@ class Sidecars(Base):
         orphan = os.path.join(self.home, "Pictures", "gone.jpg.xmp")  # its photo was deleted by hand
         shutil.copyfile(self.far + ".xmp", orphan)
         out = self.intake("forget", self.jpg, "--yes")
-        self.assertIn("home sweep: 1 more copies deleted", out)
+        self.assertIn(", 1 in your home folder", out)
         self.assertIn("orphan sidecars deleted", out)
         for p in (self.jpg, self.jpg + ".xmp", copy, copy + ".xmp", orphan):
             self.assertFalse(os.path.exists(p), p)

@@ -1,12 +1,14 @@
 # Review page (local only)
 
 ```
-media-intake review BATCH [--phone ROOT] [--drive MOUNT] [--port 0]
-media-intake review [BATCH] --maybe-trash [--phone ROOT]
+media-intake review BATCH [--phone PHONE] [--drive DRIVE] [--port 0]
+media-intake review [BATCH] --maybe-trash [--phone PHONE]
 ```
 
 Pass-throughs to `erase`: `--keep-phone-thumbnails`, `--no-wipe-free`.
-`--port 0` (a random free port) is the default. It prints one `xdg-open
+`--phone` is the phone or camera the batch came from (its folder) and
+`--drive` the backup drive (the folder it is mounted on); the words are in
+[words.md](words.md). `--port 0` (a random free port) is the default. It prints one `xdg-open
 'http://127.0.0.1:<port>/?t=<token>'` line; open it in a private browser
 window to keep it out of your history. If the batch has no quarantined or
 review files it prints `nothing to review for BATCH` and exits 0.
@@ -15,36 +17,80 @@ review files it prints `nothing to review for BATCH` and exits 0.
   chain (`near-BATCH`, `near-near-BATCH`, ...; see below), with
   the scanner's labels; Keep (release to the library) or Erase, nothing else
   (see "Quarantine is Erase-only" below). **Review** tab:
-  `batches/BATCH/review` with plan.json's `why`; Keep, Delete or Trash. Keys:
-  K keep, E (or D) erase/delete, T trash (not in Quarantine), X opens or
-  closes a burst stack, arrows (and J) move. Submit unlocks when every
-  item is decided, shows a summary and needs ERASE typed.
+  `batches/BATCH/review` with plan.json's `why`; Keep, Delete this copy or
+  Trash. Keys: K keep, E erase (Quarantine only), D delete this copy (Review
+  only), T trash (not in Quarantine), X opens or closes a burst stack,
+  arrows (and J) move. Submit unlocks when every item is decided, shows a
+  summary and needs ERASE typed when anything will be removed (an all-keep
+  apply asks for no word).
+- **The words** match the gallery's: **Keep**, **Trash** (removed, and
+  skipped if the same photo is imported again: `media-intake trash`) and
+  **Erase** (every copy removed). Review adds **Delete this copy**: only that
+  file goes, with nothing remembered. Every choice is only a mark until you
+  submit; pressing a pressed button (or its key) again clears it. Once
+  marked, a card says what will happen ("Decided: Keep. It stays in the
+  review folder for now."), and each button's tooltip says the same before
+  you press it.
+- **Plain labels.** The page maps the tools' own names to plain ones in one
+  place (`FLAG`, `GROUP`, `plain()` in the page script): scanner flags
+  (`nudity` is "Possible nudity", `id-barcode` "Looks like an ID card",
+  `secret-words:banking` "Private text: banking"), tag groups
+  (`Review|maybe-trash` is "Suggested junk", `Label|food` "Looks like:
+  food"; any other `Group|value` shows as "Group: value"), and the plan's
+  `why` ("Tiny or empty image", "Near-copy of ..."). A card shows its path in
+  the batch without the sub-batch prefix (`near-BATCH`, `xcheck-BATCH`), and
+  the meta line names a folder only for a library original, never the
+  tool's own state folder.
+- **Header.** The title names the batch ("Review BATCH", or "Review
+  suggested junk" for `--maybe-trash` alone). One counter says what is left
+  and so why Submit is locked: "Decide 3 more to submit (1 in Quarantine, 2
+  in Review)" (the tabs are named unless only the open one is left), then
+  "All decided: 13 of 13. Ready to submit.". On a phone (640 px or less) the
+  tabs sit on one scrolling row and only the bar with the counter and
+  Submit stays pinned while you scroll; on a touch screen without a mouse
+  the Keys button and the key hints are hidden. Every button and the ERASE
+  box are at least 44 by 44 px.
+- **The Apply dialog** is titled and labelled with the action ("Apply 13
+  decisions?", button "Apply 13 decisions") and lists one line of counts per
+  tab ("Quarantine: keep 8, erase 1", "Review: keep 1, delete this copy 0,
+  trash 1"), then what goes where in words ("Erase removes every copy: on
+  this computer and your phone."; no device path), and how many files will
+  be removed for good, or "Nothing will be deleted.". ERASE is typed only
+  when something is removed (erase, trash or delete this copy); an all-keep
+  apply deletes nothing, so the box is hidden and the server needs no word.
 - **Keyboard and screen readers.**
   - `?` (or the header's "Keys (?)") opens a list of every key the page
-    handles and where each applies: K everywhere; E or D in Quarantine and
-    Review (nothing in Maybe trash); T in Review and Maybe trash (nothing in
-    Quarantine); X on a stack; → ↓ J next, ← ↑ previous; on a tab, ← → Home
-    End switch lists; Esc closes a dialog. Letter keys and `?` do nothing
-    while you type.
+    handles and where each applies: K everywhere; E in Quarantine only; D in
+    Review only; T in Review and Maybe trash (nothing in Quarantine); X on a
+    stack; → ↓ J next, ← ↑ previous; on a tab, ← → Home End switch lists;
+    Esc closes a dialog. Letter keys and `?` do nothing while you type.
   - The tabs are a tablist (`role="tab"`, `aria-selected`, one Tab stop:
     the selected tab); ↑ ↓ on a tab still move between items. Each card is
     a labelled group ("<name>, item 2 of 5: decided erase" or "undecided"),
-    and the Keep / Erase / Delete / Trash buttons carry `aria-pressed`.
+    and the Keep / Erase / Delete this copy / Trash buttons carry
+    `aria-pressed`.
   - Keyboard focus shows a 3 px outline in the focus colour (6:1 or more
     against the page and the cards, light and dark). The focus follows the
     outlined card after a key decision or move, stays on the stack's cover
     when it opens or closes, and Tab onto a card or its buttons outlines
     that card, so K acts there.
-  - The ERASE confirm is a modal dialog (`aria-modal`, labelled "Confirm",
-    described by the summary): the page behind is inert, Tab stays inside,
-    Esc is Back, and the focus returns to Submit.
-  - The header shows "N of M decided" (`role="status"`, so a screen reader
-    hears it) beside the per-tab undecided count.
+  - The Apply dialog is a modal dialog (`aria-modal`, labelled by its
+    title, described by the summary): the page behind is inert, Tab stays
+    inside, Esc is Back, and the focus returns to Submit.
+  - The header's counter is `role="status"` (a screen reader hears it) and
+    describes Submit (`aria-describedby`), so a locked Submit says why.
   - A refused submit (409 or 400 from the server, or no answer) shows the
-    server's message in a dismissible `role="alert"` banner ("Refused: the
-    library is busy: ..."), inside the confirm while it is open and above
-    the list after Back; Run stays available to retry. The page opens no
-    native `alert()`, `confirm()` or `prompt()`.
+    reason in a dismissible `role="alert"` banner, under the dialog's title
+    while it is open and at the top of the list, below the header, after
+    Back; Apply stays available to retry. A busy library reads "Not
+    applied: Another action is using the library (...). Wait for it to
+    finish, then apply again.", the brackets naming what holds it in the
+    gallery's words ("the media-intake apply command", a run from the
+    review page, ...); a run of the same batch reads "A run of this review
+    is still going. ...". The server writes these words
+    (`review_ui.busy_words`, with `library_lock.plain_holder`), so neither
+    the 409 nor the page ever carries a PID or a lock file's path. The page opens no native `alert()`, `confirm()` or `prompt()`.
+  - The Keys button stays usable while a run goes.
   - While a run goes, its step line is a polite live region and its output
     a `role="log"`, so new lines are announced as they arrive.
 - **Colours** follow the system's light or dark scheme (the page declares
@@ -89,18 +135,18 @@ review files it prints `nothing to review for BATCH` and exits 0.
   written or any job starts. The run itself also stops if one ever reaches it.
   `media-intake trash` refuses a path under `quarantine/` the same way, from
   the command line.
-- **Trash** (T) on Review and Maybe trash items: `media-intake trash` (plain
-  delete for junk that isn't private, remembered by checksum so `plan` drops
-  it next time; with `--phone` when the page has it). It runs first in each
+- **Trash** (T) on Review and Maybe trash items: `media-intake trash --yes`
+  (the page's ERASE confirm is the question; plain delete for junk that isn't
+  private, remembered by checksum so `plan` drops it next time; with `--phone` when the page has it). It runs first in each
   of those tabs. `--maybe-trash` (or `media-intake suggest-trash`, which opens it)
   adds a "Maybe trash" tab from `maybe-trash.json`, re-checked against the
   library roots: Keep runs `not-trash` (`Owner|keep` + `Owner|not-trash`, the
   gallery's Keep rule), Trash runs `trash` (the sha256 goes in `trashed.json`,
   the durable `Owner|trash`; copies left on disk get `Owner|trash` in their
   sidecar: [intake.md](intake.md), "Owner decisions"). With no BATCH,
-  decisions go to `maybe-trash-decisions.json`. The confirm summary shows
-  keep / erase in Quarantine and keep / delete / trash (or keep / trash)
-  elsewhere.
+  decisions go to `maybe-trash-decisions.json`. The Apply dialog's summary
+  shows keep / erase in Quarantine, keep / delete this copy / trash in
+  Review and keep / trash in Maybe trash.
 - **Burst stacks** (in each tab): shots from one device a moment apart show as
   one stack with a count badge ("Burst: 4 shots, 2 undecided"); "Show all"
   (or X) opens it and every shot follows the first. On an open stack each shot
@@ -128,7 +174,7 @@ review files it prints `nothing to review for BATCH` and exits 0.
   tab or a quarantine batch. No file is opened to group them.
 - **On submit** it writes `batches/BATCH/review-decisions.json` (0600,
   relative paths and decisions) first, then runs: review deletions
-  (`purge-review` when all are deleted, else file by file plus its
+  (`purge-review --yes` when all are deleted, else file by file plus its
   freedesktop thumbnail; kept review items stay in `review/`, there is no
   command to file them yet); then for each near- level of `BATCH` (deepest
   first), each near- level of `xcheck-BATCH` (deepest first), `xcheck-BATCH`,

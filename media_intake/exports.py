@@ -1,4 +1,5 @@
-"""Dates and places from a cloud export's own metadata files: Google Takeout JSON, iCloud CSV.
+"""Dates and places from an export's own metadata files: Google Takeout JSON, iCloud CSV, and a
+Telegram Desktop export's result.json.
 
 A Google Photos Takeout or an iCloud Photos export is just a folder of photos and videos, so it
 comes in as a folder or drive source (sources.py). Their files often lost their own capture date
@@ -18,8 +19,16 @@ export keeps the date beside them:
   iCloud Photos   "Photo Details.csv" (and numbered variants) beside the media, a header row
                   imgName,fileChecksum,favorite,hidden,deleted,originalCreationDate,viewCount,
                   importDate; originalCreationDate like "Tuesday March 3,2015 7:45 PM GMT".
+  Telegram        a Telegram Desktop JSON export (tdesktop export/output/export_output_json.cpp):
+                  one result.json at the export's top, a chat object ({"messages": [...]}) for
+                  one chat or {"chats": {"list": [...]}, "left_chats": {...}} for all data. Each
+                  message has "date_unixtime" (UTC epoch seconds, as a string) and "date"
+                  (ISO local time of the exporting computer, older exports' only date), and
+                  "photo" / "file" paths relative to the folder holding result.json. Only a file
+                  inside a Telegram export (sources.telegram_export) and kept under its own name
+                  is matched: photo_<n>@<date> names are dated by dates.py already.
 
-Neither format is documented by its vendor; the rules above, and where they were checked, are in
+Google's and Apple's formats are not documented by their vendor; the rules above, and where they were checked, are in
 docs/intake.md ("Cloud exports"). Nothing here touches the network or writes a file: scan() only
 lists the media's own folders and reads these small metadata files (never through a symlink).
 A metadata file it won't read (a symlink, over JSON_MAX / CSV_MAX, a CSV that isn't UTF-8, not a
@@ -34,15 +43,19 @@ file has none of its own.
 """
 import csv, datetime, json, math, os, re, stat, unicodedata
 
+import sources
+
 GOOGLE_LIMIT = 46            # characters of "<name><suffix>" kept before "(N).json"
 SUPPLEMENTAL = ".supplemental-metadata"
 EDITED = "-edited"           # Google Photos' (English) suffix for an edited copy
 JSON_MAX = 1 << 20           # a Takeout sidecar is a few KB; anything bigger is not one
 CSV_MAX = 64 << 20           # an iCloud Photo Details CSV lists a few thousand rows per part
+TELEGRAM_MAX = 64 << 20      # a result.json holds every message's text too; a bigger one is refused
+TELEGRAM_JSON = "result.json"
 # scan() counts keys for metadata files it refused to read, and what stage prints for each.
 REFUSED = {"refused_link": "symlinked cloud export metadata files (never followed)",
            "refused_size": "cloud export metadata files over the size cap",
-           "refused_encoding": "cloud export CSV files that are not UTF-8",
+           "refused_encoding": "cloud export CSV files or Telegram result.json files that are not UTF-8",
            "refused_unreadable": "cloud export metadata files that are not regular files or could not be read"}
 INDEX_RX = re.compile(r"(.+)\((\d+)\)")
 DETAILS_RX = re.compile(r"photos? details", re.I)
@@ -210,6 +223,79 @@ def read_icloud(path, refused=None):
     return out, bad
 
 
+def _telegram_date(m):
+    """UTC text of a Telegram export message's date: date_unixtime, else its ISO local "date" read in
+    this machine's time zone (what the exporting computer's clock showed). None when neither is valid."""
+    ts = m.get("date_unixtime")
+    if isinstance(ts, str) and ts.strip().isdigit():
+        ts = int(ts.strip())
+    try:
+        if isinstance(ts, int) and not isinstance(ts, bool) and ts > 0:
+            when = datetime.datetime.fromtimestamp(ts, UTC)
+        elif isinstance(m.get("date"), str):
+            when = datetime.datetime.fromisoformat(m["date"])
+            when = when.astimezone(UTC)  # naive: this machine's local time; aware: its own offset
+        else:
+            return None
+    except (OverflowError, OSError, ValueError):
+        return None
+    return _utc_text(when) if when >= FLOOR else None
+
+
+def read_telegram(path, refused=None):
+    """({NFC relative path: "YYYY-MM-DD HH:MM:SSZ"}, ambiguous paths) from one Telegram Desktop
+    result.json: each message's "photo" and "file" path (relative to the folder holding it, "/"
+    separated) with that message's date. ({}, set()) when it isn't one (or wasn't read: see _read_small)."""
+    raw = _read_small(path, TELEGRAM_MAX, refused)
+    if raw is None:
+        return {}, set()
+    try:
+        text = raw.decode("utf-8-sig")
+    except UnicodeDecodeError:  # tdesktop writes UTF-8; anything else is not its export
+        _refuse(refused, path, "refused_encoding")
+        return {}, set()
+    try:
+        d = json.loads(text)
+    except ValueError:
+        return {}, set()
+    if not isinstance(d, dict):
+        return {}, set()
+    chats = [d]  # one chat's export is the chat object itself
+    for k in ("chats", "left_chats"):  # "Export Telegram data": every chat under chats.list
+        lst = d.get(k, {}).get("list") if isinstance(d.get(k), dict) else None
+        chats += [c for c in lst if isinstance(c, dict)] if isinstance(lst, list) else []
+    out, bad = {}, set()
+    for c in chats:
+        msgs = c.get("messages")
+        for m in msgs if isinstance(msgs, list) else []:
+            if not isinstance(m, dict):
+                continue
+            paths = [m.get(k) for k in ("photo", "file") if isinstance(m.get(k), str) and m.get(k)]
+            t = _telegram_date(m) if paths else None
+            for rel in paths if t else []:
+                key = nfc(rel.replace("\\", "/"))
+                if out.get(key, t) != t:
+                    bad.add(key)
+                out[key] = t
+    return out, bad
+
+
+def _telegram_json(root, path, rel):
+    """The result.json of the Telegram export holding the file at root/rel: the nearest folder from the
+    file's own up to root that has one (a symlinked one too, so _read_small refuses and counts it).
+    None when the file is not in a Telegram export (sources.telegram_export) or no result.json is found."""
+    parts = rel.split(os.sep)
+    if not sources.telegram_export(root, parts):
+        return None
+    d = os.path.dirname(path)
+    for _ in parts:
+        j = os.path.join(d, TELEGRAM_JSON)
+        if os.path.lexists(j):
+            return j
+        d = os.path.dirname(d)
+    return None
+
+
 def _listing(d):
     """({NFC name: real name} of the .json files, [Photo Details CSVs]) in folder d, None when d can't
     be listed. Symlinks are listed too, so a symlinked sidecar is refused and counted by
@@ -232,15 +318,16 @@ def _listing(d):
 
 def scan(root, files):
     """({rel: {"time", "via", "sidecar", ["lat", "lon"]}}, counts) for the walked media files
-    [(abs path, rel)] whose export metadata was found. counts: google, icloud, places, ambiguous,
+    [(abs path, rel)] whose export metadata was found. counts: google, icloud, telegram, places, ambiguous,
     unreadable (folders that couldn't be listed, so their files go without export metadata), and one
     REFUSED key per reason a metadata file was skipped (each file counted once)."""
     by_dir = {}
     for path, rel in files:
         by_dir.setdefault(os.path.dirname(path), []).append((path, rel))
-    out, counts = {}, dict(google=0, icloud=0, places=0, ambiguous=0, unreadable=0)
+    out, counts = {}, dict(google=0, icloud=0, telegram=0, places=0, ambiguous=0, unreadable=0)
     counts.update(dict.fromkeys(REFUSED, 0))
     refused = {}  # {path: REFUSED key}: a JSON tried for several media files still counts once
+    telegram = {}  # {result.json path: read_telegram()}: each export's JSON is read once
     for d, items in sorted(by_dir.items()):
         listing = _listing(d)
         if listing is None:
@@ -248,6 +335,7 @@ def scan(root, files):
             continue
         js, cs = listing
         if not js and not cs:
+            _scan_telegram(root, items, out, counts, refused, telegram)
             continue
         names = [os.path.basename(p) for p, _ in items]
         direct = {rel: [j for j in google_names(os.path.basename(p)) if j in js] for p, rel in items}
@@ -285,9 +373,30 @@ def scan(root, files):
             if meta:
                 counts["places"] += "lat" in meta
                 out[rel] = meta
+        _scan_telegram(root, [(p, rel) for p, rel in items if rel not in out], out, counts, refused, telegram)
     for key in refused.values():
         counts[key] += 1
     return out, counts
+
+
+def _scan_telegram(root, items, out, counts, refused, cache):
+    """Telegram result.json dates into out for the files in items [(abs path, rel)] that are in a Telegram
+    export and kept under their own name (a photo_<n>@<date> name is a filename date already)."""
+    for p, rel in items:
+        if sources.TELEGRAM_EXPORT_NAME.match(os.path.basename(p)):
+            continue
+        j = _telegram_json(root, p, rel)
+        if j is None:
+            continue
+        if j not in cache:
+            cache[j] = read_telegram(j, refused)
+        rows, bad = cache[j]
+        key = nfc(os.path.relpath(p, os.path.dirname(j)).replace(os.sep, "/"))
+        if key in bad:
+            counts["ambiguous"] += 1
+        elif key in rows:
+            out[rel] = dict(time=rows[key], via="telegram", sidecar=os.path.relpath(j, root))
+            counts["telegram"] += 1
 
 
 def gps_of(entry):

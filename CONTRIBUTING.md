@@ -90,6 +90,7 @@ close the PR.
 ## Tests
 
 - Every change updates its tests and docs in the same PR.
+- New UI or help words come from [docs/words.md](docs/words.md); a new term goes there first.
 - Tests use synthetic media only (Pillow drawings, ffmpeg test patterns) in a
   throwaway HOME. Never commit a real photo, path, device id or batch name.
 - Run what you touched: `python3 -I -m unittest discover -s tests -p "test_<area>.py"`; the full
@@ -112,7 +113,8 @@ close the PR.
   loosen an assertion or add a sleep to make it pass.
 - Real-browser tests (`tests/browser/`, Playwright + headless Chromium) drive
   the gallery and the review page: keys, selection and the bottom selection
-  bar, the confirm dialogs (ERASE typed; the gallery's Close too), lightbox video autoplay and Space
+  bar (every gallery view but Suggested junk, which has Keep and Trash on each
+  tile instead and no selection bar), the confirm dialogs (ERASE typed; the gallery's Close too), lightbox video autoplay and Space
   play / pause, Range seeking, and the detached job's
   progress, including re-attaching after a reload; on the review page also
   its keyboard and screen-reader hooks (`ReviewA11yBrowserTest`: the tablist,
@@ -139,7 +141,12 @@ close the PR.
   a 409 while a job holds the library lock, the `?` shortcut list against the
   keys the page's handlers check, and Undo of Rotate, Keep, Set event and a
   tag restoring the sidecars (refused after a later change, never offered after
-  Trash, Erase or Share-safe copy). `test_browser_gallery_layout.py` checks the
+  Trash, Erase or Share-safe copy). `test_browser_gallery_grid.py` runs the
+  grid: Suggested junk marked by tap and click (Keep and Trash on each tile, a
+  second tap unmarking, Apply keeping what was marked), a 44 x 44 px target for
+  every control on a 390 px touch phone, the grid's loading, empty, no-results,
+  item-gone and load-error states, and the phone's sidebar rail with a word
+  under each icon. `test_browser_gallery_layout.py` checks the
   gallery at 390 px and 800 px: no sideways scroll, the header fitting, a burst
   badge clear of its tile's checkbox, and the last row above the selection
   bar; at 390 px the compact "×N" burst button (opening and closing the

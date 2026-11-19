@@ -16,6 +16,7 @@ guards and the 409 while the library is locked with hand-written sidecars, so it
 """
 import errno, hashlib, http.client, io, json, os, re, shutil, signal, stat, subprocess, sys, tempfile, time
 import unittest, urllib.parse
+import unittest.mock as mock
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import support  # noqa: E402,F401  (hermetic config)
@@ -337,7 +338,7 @@ class GalleryTest(unittest.TestCase):
         # Similar without an index says so
         j = s.get(f"/api/list?similar={self.id_of(s, 'b.jpg')}")
         self.assertEqual(j["total"], 0)
-        self.assertIn("semantic index", j["note"])
+        self.assertIn("run media-intake index", j["note"])
         # Trash suggestions: maybe-trash or AI >= 0.7, never kept / used / Demo; by confidence
         names, j = self.names(s, view="suggest")
         self.assertEqual(names, ["a.jpg"])
@@ -515,7 +516,7 @@ class GalleryTest(unittest.TestCase):
         other = [os.path.join(self.thumbs, "f" * 64 + n) for n in names]
         for p in ta + tk + other:
             open(p, "wb").close()
-        r = subprocess.run([PY, "-I", INTAKE, "trash", self.a], env=self.env, capture_output=True, text=True)
+        r = subprocess.run([PY, "-I", INTAKE, "trash", self.a, "--yes"], env=self.env, capture_output=True, text=True)
         self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
         self.assertEqual([p for p in ta if os.path.exists(p)], [])
         r = subprocess.run([PY, "-I", INTAKE, "forget", self.k, "--yes"], env=self.env, capture_output=True, text=True)
@@ -552,7 +553,7 @@ class GalleryTest(unittest.TestCase):
         ida2, idb2 = self.id_of(s2, "a.jpg"), self.id_of(s2, "b.jpg")
         j = s2.get("/api/job")
         self.assertEqual((j["done"], j["ids"]), (False, [ida2]))
-        self.assertEqual(j["lines"][0], "$ intake.py trash 'a.jpg'")
+        self.assertEqual(j["lines"][0], "$ intake.py trash 'a.jpg' --yes")
         self.assertEqual(s2.req("GET", f"/m/{ida2}")[0].status, 404)
         code, j = s2.post("/api/trash", {"ids": [idb2], "confirm": True})
         self.assertEqual(code, 409, j)
@@ -651,7 +652,7 @@ class GalleryTest(unittest.TestCase):
         until(lambda: any("waiting at the gate" in x for x in s.get("/api/job")["lines"]), "the trash to start")
         code, j = s.post("/plugin/toy/write", {"a": 1})
         self.assertEqual(code, 409, j)
-        self.assertIn("the library is busy: job gallery", j["error"])
+        self.assertEqual((j["error"], j.get("busy")), ("a Trash is still running; wait for it to finish, then try again", True))  # plain words: no PID, no lock path
         self.assertEqual(s.get("/plugin/toy/posts"), {"posts": 0})  # the handler never ran
         code, j = s.post("/plugin/ro/look", {"b": 2})  # declared read-only: not locked
         self.assertEqual((code, j), (200, {"got": {"b": 2}}))
@@ -1087,7 +1088,7 @@ class ViewsEndpointsTest(unittest.TestCase):
         for path, body in self.bodies(s).items():
             code, j = s.post(path, body)
             self.assertEqual(code, 409, (path, j))
-            self.assertRegex(j["error"], r"the library is busy: job gallery|still running", path)
+            self.assertEqual((j["error"], j.get("busy")), ("a Trash is still running; wait for it to finish, then try again", True), path)
         self.assertEqual(self.files(), before)
         self.assertEqual(os.listdir(self.share_root), [])  # the export's folder went with the refusal
         fd = os.open(gate, os.O_WRONLY)  # the fake is waiting on it: this returns at once
@@ -1217,7 +1218,6 @@ class SemanticArgvTest(unittest.TestCase):
 
     def test_search_and_similar_pass_format_machine(self):
         import gallery
-        from unittest import mock
         tmp = tempfile.mkdtemp(prefix="gallery-argv-test-")
         self.addCleanup(shutil.rmtree, tmp, True)
         p = os.path.join(tmp, "a.jpg")
@@ -1251,6 +1251,43 @@ class AddedFilterTest(unittest.TestCase):
         for it, f, want in ((old, {"added": "30"}, False), (new, {"added": "30"}, True), (old, {"added": "41"}, True),
                             (old, {"added": "0"}, True), (old, {"added": "x"}, True), (old, {}, True)):
             self.assertEqual(app.matches(it, f), want, (it["ctime"], f))
+
+
+class PlainWordsTest(unittest.TestCase):
+    """busy_text (a 409's words on the page) and WORDS (the one map of internal names): what is running in plain
+    words, never a PID, a lock-file path or a tool namespace."""
+
+    def busy(self, status, holder):
+        import gallery
+        with mock.patch.object(gallery.jobs, "status", lambda key: status):
+            return gallery.busy_text(holder)
+
+    def test_busy_text_names_what_runs(self):
+        tail = " is still running; wait for it to finish, then try again"
+        for label, what in (("trash", "a Trash"), ("erase", "an Erase"), ("share", "a Share-safe copy")):
+            st = dict(done=False, spec=dict(label=label), label="")
+            self.assertEqual(self.busy(st, {"what": "job gallery", "pid": 510}), what + tail)
+        done = dict(done=True, spec=dict(label="trash"))
+        for holder, what in (({"what": "job review-phone-1", "pid": 7}, "a run from the review page"),
+                             ({"what": "job maybe-trash"}, "a run from the review page"),
+                             ({"what": "job gallery"}, "a Trash, Erase or Share-safe copy from another gallery"),
+                             ({"what": "gallery keep", "pid": 9}, "a change from another gallery page"),
+                             ({"what": "intake.py apply", "pid": 3}, "the media-intake apply command"),
+                             ({"what": "intake.py /tmp/x (PID"}, "another media-intake command"),
+                             ({}, "another media-intake command")):
+            got = self.busy(done if holder.get("what") else None, holder)
+            self.assertEqual(got, what + tail, holder)
+            self.assertNotRegex(got, r"PID|/|lock")
+
+    def test_words_name_no_tool_namespace(self):
+        import gallery
+        shown = json.dumps({k: v for k, v in gallery.WORDS.items() if k != "tag"})
+        shown += json.dumps(list(gallery.WORDS["tag"].values()))
+        self.assertNotRegex(shown, r"(Owner|Review|Label|AI|Used|Project|Source|Event|Place)\|")
+        for f in ("maybe-trash", "child-in-shot", "kept", "trashed copy", "used"):  # summary()'s flags
+            self.assertIn(f, gallery.WORDS["flag"])
+        for k in ("trash", "erase", "share", "forget", "share-copy"):  # a job by its spec and by its step
+            self.assertIn(k, gallery.WORDS["job"])
 
 
 if __name__ == "__main__":

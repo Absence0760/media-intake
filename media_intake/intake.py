@@ -1,31 +1,17 @@
 #!/usr/bin/env python3
-"""Media intake: phone/GoPro -> organised library, junk and duplicates out,
-sensitive files quarantined for you to review, erased everywhere on confirm.
-Run as `media-intake <command>` (cli.py); `python3 -I media_intake/intake.py` works too.
+"""Media intake: copy photos and videos from a source (a phone, camera, drive or laptop folder) into
+one library, drop duplicates, set private-looking files aside in quarantine for you to decide on,
+and erase them everywhere when you say so.
 
-  media-intake stage   SRC_ROOT --kind phone|gopro|drive|folder [--batch NAME] [--only LISTFILE]  (default name: <device>-<date>)
-  media-intake plan    BATCH [--event [PROJECT/]SLUG@YYYY-MM-DD ...] [--clock-offset DEVICE=±Nh ...]
-  media-intake scan    BATCH                     (local detectors; labels only)
-  media-intake apply   BATCH                     (moves files; prints a summary)
-  media-intake quarantine BATCH                  (counts + the folder to open)
-  media-intake release BATCH FILE...             (false positive -> library)
-  media-intake erase   BATCH [--phone ROOT [--keep-phone-thumbnails]] [--drive MOUNT [--no-wipe-free]]
-  media-intake forget  LIBRARY_FILE... [--drive MOUNT] [--yes]  (later finds; asks before anything moves)
-  media-intake verify-gone [BATCH] [--drive MOUNT]  (read-only sweep; exit 1 if a copy remains)
-  media-intake wipe-free MOUNT                   (zero a backup drive's free space)
-  media-intake purge-review BATCH                (empty the review folder)
-  media-intake trash   [BATCH] FILE... [--phone ROOT]   (plain delete of non-sensitive junk; never comes back)
-  media-intake trash   --from-digikam [--yes]    (library files with digiKam's Rejected pick label)
-  media-intake suggest-trash [--batch B] [--phone ROOT]  (Review|maybe-trash files -> review page)
-  media-intake not-trash FILE...                 (keep a suggestion: Owner|keep + Owner|not-trash)
-  media-intake migrate-tags [--dry-run]          (legacy Review|not-trash -> Owner|not-trash, once)
-  media-intake offload BATCH --phone ROOT        (after a drive backup: free the phone; a drive batch: its source root;
-                                                  refused for a laptop folder batch: you delete the folder yourself)
-  media-intake share-copy FILE... --out DIR      (copy without GPS/metadata; alias social-copy)
-  media-intake tag     BATCH [--no-labels]       (after apply: XMP sidecar tags for filed files)
-  media-intake tag-files FILE... [--event SLUG] [--no-labels]   (re-tag library files)
-  media-intake mark-used FILE... --post SLUG     (adds Used|<post slug>)
-  media-intake find    [--tag T] [--event E] [--place P] [--project P] [--unused-since 30d]
+Run as `media-intake <command>` (cli.py); `python3 -I media_intake/intake.py` works too.
+`media-intake --help` lists every command by task, and `media-intake <command> --help` says what
+one does, what it touches and whether it deletes. The words used here (batch, source, backup
+drive, quarantine, review folder, Keep, Trash, Erase): docs/words.md.
+
+An import, in order:
+  media-intake stage SOURCE --kind phone|gopro|drive|folder [--batch NAME]
+  media-intake plan BATCH          then scan, apply, review and tag, each with the BATCH
+  media-intake backup DRIVE        then, for a phone or camera: media-intake offload BATCH --phone SOURCE
 
 Tags live in <file>.<ext>.xmp sidecars next to each file (digiKam's default
 naming); originals are never written (their sha256 drives dedupe and erase).
@@ -38,12 +24,10 @@ Layout (docs/intake.md; every path comes from config.toml, docs/configuration.md
   ~/Videos/personal/<YYYY>/<YYYY-MM>/                 videos (GoPro in <YYYY-MM>/<device id>/)
   <project folder>/<date>-<event>/{phone,gopro/<device id>}/   events routed to a configured project
   ~/.local/share/media-intake/  (0700, never synced or indexed)
-    batches/<batch>/raw/          staged copy, deleted once applied
-    batches/<batch>/review/       near-duplicates + junk for a glance
-    quarantine/<batch>/           sensitive files; no assistant or tool ever opens these
-    index.json                    sha256 + dHash of everything in the library
-
-Test: python3 -I -m unittest discover -s tests (synthetic media, throwaway HOME).
+    batches/<batch>/raw/          the batch's staged copy, deleted once applied
+    batches/<batch>/review/       the review folder: near-duplicates and junk, for a glance
+    quarantine/<batch>/           quarantine: flagged files; no assistant or tool ever opens these
+    index.json                    sha256 + dHash (videos: vhash) of everything in the library
 
 An AI assistant may run these commands for you, but must never read, view,
 montage or describe a file under quarantine/ or a file scan.json flags.
@@ -97,6 +81,50 @@ def _umask():
 
 def bdir(batch):
     return os.path.join(STATE, "batches", batch)
+
+
+def shown_path(p):
+    """p for a line a person copies: ~/... under HOME, shell-quoted."""
+    rel = os.path.relpath(p, HOME)
+    return "~/" + shlex.quote(rel) if not rel.startswith("..") else shlex.quote(p)
+
+
+def batch_names():
+    """The staged batches (folders under batches/), most recently changed first."""
+    d = os.path.join(STATE, "batches")
+    try:
+        names = [n for n in os.listdir(d) if os.path.isdir(os.path.join(d, n))]
+    except FileNotFoundError:
+        return []
+    return sorted(names, key=lambda n: (-os.path.getmtime(os.path.join(d, n)), n))
+
+
+def need_batch(name, staged=True):
+    """Exit with one plain sentence unless name is a batch. Every command that takes a BATCH calls it first,
+    before it reads or writes anything of the batch. staged=True wants a staged batch (batches/<name>);
+    staged=False also takes one that only has a quarantine folder (near-<batch>, xcheck-<batch>), as quarantine
+    and release do. The sentence names the batches that exist and the
+    command that lists them all."""
+    if BATCH_NAME.match(name or ""):
+        if os.path.isdir(bdir(name)):
+            return
+        if os.path.isdir(os.path.join(STATE, "quarantine", name)):
+            if not staged:
+                return
+            sys.exit(f"{name!r} has no staged files, only quarantined ones: see them with "
+                     f"media-intake review {shlex.quote(name)}")
+    have = batch_names()
+    if not have:
+        sys.exit(f"no batch named {name!r}: nothing is staged yet. "
+                 "Start with: media-intake stage SRC --kind phone|gopro|drive|folder")
+    shown = ", ".join(have[:10]) + (f" (and {len(have) - 10} more)" if len(have) > 10 else "")
+    sys.exit(f"no batch named {name!r}. Batches, newest first: {shown}. "
+             f"List them all with: ls {shown_path(os.path.join(STATE, 'batches'))}")
+
+
+def plural(n, word, many=None):
+    """'1 file', '2 files', '1,200 files'."""
+    return f"{n:,} {word if n == 1 else many or word + 's'}"
 
 
 def load(p, default=None):
@@ -228,14 +256,15 @@ def has_gps(path):
         return False
 
 
-def category(rel, kind):
+def category(rel, kind, app=None):
+    """app: the messaging app stage found the file's source folder to be an export of (manifest "app")."""
     p = rel.split("/")
     sub = p[1] if len(p) > 2 else ""
     ext = os.path.splitext(rel)[1].lower()
     if kind == "gopro":
         return "gopro"
     if kind in ("drive", "folder"):
-        return sources.drive_category(rel)
+        return sources.drive_category(rel, app)
     app = sources.extra_app(rel)
     if app:
         return f"messaging:{app}"
@@ -272,10 +301,27 @@ def default_batch(root, kind, files, origin):
         name = f"{base}-{n}"
 
 
+PHONE_TIP = ("A phone shows up only while it is unlocked and set to File transfer (pull down the USB notification); "
+             "then find it with: ls /run/user/$UID/gvfs/")
+# Why stage found no source folder, or no media in it, by --kind.
+STAGE_WHERE = {"phone": PHONE_TIP, "gopro": "Is the camera on and connected, or its card mounted?",
+               "drive": "Is the drive mounted? Its folder is under /run/media/$USER/."}
+STAGE_EMPTY = {
+    "phone": "It looks only under " + ", ".join(f"{d}/" for d in sources.PHONE_ALLOW + sources.PHONE_ALLOW_EXTRA)
+             + ". Pass the phone's storage folder (the one holding DCIM). " + PHONE_TIP,
+    "gopro": "It looks only under DCIM/<nnn>GOPRO/. Pass the card's or camera's top folder (the one holding DCIM).",
+    "drive": "It skips system, app and hidden folders, and files that are not photos or videos.",
+    "folder": "It skips hidden folders, code (git) folders, and files that are not photos or videos.",
+}
+
+
 def cmd_stage(a):
     root = os.path.abspath(a.src)
     if a.batch is not None and not BATCH_NAME.match(a.batch):
         sys.exit(f"--batch {a.batch!r}: letters, digits, '.', '_' and '-' only")
+    if not os.path.isdir(root):  # before any batch folder exists: a typo leaves nothing behind
+        sys.exit(f"{a.src}: {'not a folder' if os.path.exists(root) else 'no such folder'}. "
+                 + STAGE_WHERE.get(a.kind, ""))
     man = {}
     skipped = collections.Counter()
     extra = {}
@@ -294,13 +340,19 @@ def cmd_stage(a):
         with open(a.only) as f:
             only = {l.rstrip("\n") for l in f if l.strip()}
     files = [(path, rel) for path, rel in sources.walk(root, a.kind) if only is None or rel in only]
+    if not files:  # no batch is created for nothing
+        if only is not None:  # a queue chunk whose listed files are gone from the source
+            sys.exit(f"nothing to stage in {a.src}: none of the {plural(len(only), 'file')} in {a.only} is there now")
+        sys.exit(f"nothing to stage in {a.src}: no photos or videos found for --kind {a.kind}. "
+                 + STAGE_EMPTY[a.kind])
     if a.batch is None:
         a.batch = default_batch(root, a.kind, files, os.path.abspath(a.origin or root))
         print(f"batch {a.batch}")
     raw = private_dir(os.path.join(private_dir(bdir(a.batch)), "raw"))
     prog = Progress("stage", f"copying {len(files):,} media files into the batch (size-checked)",
                     unit="files staged", hits=None, total=len(files))
-    # Google Takeout JSON / iCloud CSV beside the files (exports.py): their dates and places ride in the manifest.
+    # Google Takeout JSON / iCloud CSV beside the files, a Telegram export's result.json (exports.py): their
+    # dates and places ride in the manifest.
     exported, ec = exports.scan(root, files) if a.kind in ("drive", "folder") else ({}, {})
     for path, rel in files:
         dst = os.path.join(raw, rel)
@@ -313,16 +365,22 @@ def cmd_stage(a):
             sys.exit(f"size mismatch after copy: {rel}")
         origin = os.path.join(os.path.abspath(a.origin), rel) if a.origin else path
         man[rel] = dict(src=origin, size=st.st_size, **({"export": exported[rel]} if rel in exported else {}))
+        app = sources.export_app(root, rel) if a.kind in ("drive", "folder") else None
+        if app:  # the staged folder may be the export itself: plan's category can't see that from rel
+            man[rel]["app"] = app
         prog.tick()
     for dirpath, _, names in os.walk(root) if a.kind == "gopro" else []:
         for n in names:
             if os.path.splitext(n)[1].lower() in sources.CAMERA_JUNK_EXT:
                 skipped["gopro preview (.lrv/.thm)"] += 1
     save(os.path.join(bdir(a.batch), "manifest.json"), dict(kind=a.kind, root=os.path.abspath(a.origin or root), files=man, **extra))
-    print(f"staged {len(man)} media files into {raw}")
-    if exported or ec.get("ambiguous"):
-        print(f"  cloud export metadata: Google Takeout {ec['google']}, iCloud {ec['icloud']}, "
-              f"with a place {ec['places']}, ambiguous (ignored) {ec['ambiguous']}")
+    print(f"staged {plural(len(man), 'media file')} into {raw}")
+    if exported or ec.get("ambiguous"):  # only the export kinds this source had
+        got = ", ".join(f"{name} {ec[k]}" for k, name in (("google", "Google Takeout"), ("icloud", "iCloud"),
+                                                          ("telegram", "Telegram")) if ec[k])
+        print("  dates from cloud export files: " + (got or "none")
+              + (f" ({ec['places']} with a place)" if ec["places"] else "")
+              + (f"; {ec['ambiguous']} ambiguous, ignored" if ec["ambiguous"] else ""))
     if ec.get("unreadable"):
         skipped["folders whose cloud export metadata could not be read"] = ec["unreadable"]
     for k, what in exports.REFUSED.items():  # a symlinked, oversized or non-UTF-8 JSON/CSV: its media get no export date
@@ -335,9 +393,18 @@ def cmd_stage(a):
 
 
 # ---------------------------------------------------------------- plan
+# plan's "dates:" line: where each file's date came from (dates.SOURCES), in words.
+DATE_FROM = {"exif": "from the camera", "video": "from the video's own date", "gps": "from GPS time",
+             "export": "from a cloud export", "filename": "from the file name", "folder": "from the folder name",
+             "mtime": "from file times (no camera date found)", "offset": "shifted by --clock-offset"}
+
+
 def cmd_plan(a):
+    need_batch(a.batch)
     b = bdir(a.batch)
     man = load(os.path.join(b, "manifest.json"))
+    if man is None:  # stage stopped before it wrote the manifest
+        sys.exit(f"{a.batch} was never fully staged: run media-intake stage again with --batch {a.batch}")
     raw = os.path.join(b, "raw")
     kind = man["kind"]
     routed, personal = {}, {}  # day -> (project, slug) / day -> slug
@@ -346,6 +413,10 @@ def cmd_plan(a):
         key, _, ev = spec.rpartition("/")
         if not re.fullmatch(r"\d{4}-\d\d-\d\d", day) or not config.SLUG.match(ev):
             sys.exit(f"--event wants [PROJECT/]SLUG@YYYY-MM-DD (slug: lowercase, digits, dashes), got {t}")
+        try:
+            datetime.date.fromisoformat(day)
+        except ValueError:
+            sys.exit(f"--event {t}: {day} is not a date")
         if key and key not in PROJECTS:
             sys.exit(f"--event {t}: no project {key!r} in {CFG['path']} (known: {', '.join(PROJECTS) or 'none'})")
         proj = PROJECTS[key] if key else config.project_for_event(ev, CFG)
@@ -357,8 +428,8 @@ def cmd_plan(a):
     by_sha = {v["sha"]: k for k, v in index.items()}
 
     paths = [os.path.join(raw, rel) for rel in man["files"]]
-    prog = Progress("plan", f"reading dates, then hashing {len(paths):,} files (sha256, dHash, video hash)",
-                    unit="files hashed", hits=None, total=len(paths))
+    prog = Progress("plan", f"reading dates, then comparing files to find duplicates ({plural(len(paths), 'file')})",
+                    unit="files read", hits=None, total=len(paths))
     exp = {os.path.abspath(os.path.join(raw, rel)): f["export"] for rel, f in man["files"].items() if f.get("export")}
     try:
         metas = None
@@ -381,7 +452,7 @@ def cmd_plan(a):
                          chapter_of=dd.chapter_of, device=dd.device, device_model=dd.model,
                          burst_id=dd.burst_id,  # the camera's BurstUUID / GCamera BurstID, for bursts.py
                          export_gps=exports.gps_of(man["files"][rel]),  # tag's place when the file has no GPS
-                         cat=category(rel, kind), dhash=dh, w=w, h=h, ext=ext,
+                         cat=category(rel, kind, man["files"][rel].get("app")), dhash=dh, w=w, h=h, ext=ext,
                          vhash=vh, vhash_note=vnote))  # videohash frame dHashes ([] + a note: not compared)
         prog.tick()
 
@@ -413,8 +484,8 @@ def cmd_plan(a):
         items = [r for r in rows if r.get(key) is not None and r["rel"] not in action]
         lib = [(k, v) for k, v in index.items() if v.get(key) is not None]
         what = "photos" if key == "dhash" else "videos"
-        near = Progress("plan", f"comparing {len(items):,} {what} for near-copies (the batch and "
-                                f"{len(lib):,} library entries)", unit=f"{what} compared", hits=None,
+        near = Progress("plan", f"looking for look-alike {what} ({len(items):,} in this batch, "
+                                f"{len(lib):,} already in the library)", unit=f"{what} compared", hits=None,
                         total=len(items)) if items else None
         for i, x in enumerate(items):
             if near:
@@ -487,11 +558,13 @@ def cmd_plan(a):
                                   else None)))
     save(os.path.join(b, "plan.json"), plan)
     c = collections.Counter(p["action"] for p in plan)
-    print(f"plan: {len(plan)} files  file {c['file']}  delete(exact dup) {c['delete']}  review {c['review']}")
-    print("dates from", dict(collections.Counter(p["date_src"] for p in plan)))
+    print(f"plan: {plural(len(plan), 'file')}: {c['file']:,} to file, {plural(c['delete'], 'exact duplicate')} "
+          f"to drop, {c['review']:,} to review. Nothing has moved yet.")
+    print("dates: " + ", ".join(f"{n:,} {DATE_FROM.get(k, 'from ' + str(k))}"
+                                for k, n in collections.Counter(p["date_src"] for p in plan).most_common()))
     devs = collections.Counter(p["device"] for p in plan if p["device"])
     if devs:
-        print("devices", dict(sorted(devs.items())))
+        print("devices: " + ", ".join(f"{k} {v:,}" for k, v in sorted(devs.items())))
     for label, sel in (("camera dates replaced by GPS", lambda p: p["date_src"] == "gps" and p["date_note"]
                         and not p["chapter_of"]),
                        ("GoPro chapters dated by their first chapter", lambda p: p["chapter_of"]),
@@ -508,14 +581,22 @@ def cmd_plan(a):
     for note, rels in sorted(unhashed.items()):
         print(f"  {len(rels)} videos not checked for near-duplicates ({note}): "
               + ", ".join(sorted(rels)[:5]) + (" ..." if len(rels) > 5 else ""))
-    for k in sorted({os.path.dirname(os.path.relpath(p["dst"], HOME)) for p in plan if p["action"] == "file"}):
-        print("  ~/" + k)
+    folders = collections.Counter(os.path.dirname(p["dst"]) for p in plan if p["action"] == "file")
+    if folders:
+        print("will be filed in:")
+    for k, n in sorted(folders.items()):
+        print(f"  {shown_path(k)}  ({n:,})")
     next_hint(["scan", a.batch])
 
 
 # ---------------------------------------------------------------- scan
 def cmd_scan(a):
+    need_batch(a.batch)
     b = bdir(a.batch)
+    if not os.path.isdir(os.path.join(b, "raw")):  # apply removes raw/ once everything has moved
+        sys.exit(f"nothing to scan in {a.batch}: its staged files have already been moved by apply"
+                 if os.path.exists(os.path.join(b, "plan.json")) else
+                 f"nothing to scan in {a.batch}: no staged files (run media-intake stage again with --batch {a.batch})")
     if not os.path.exists(VENV_PY):
         sys.exit(f"no venv: run bash {SETUP} first")
     out = os.path.join(b, "scan.json")
@@ -525,23 +606,49 @@ def cmd_scan(a):
     next_hint(["apply", a.batch])  # flagged files go to quarantine there; the review page comes after
 
 
+def index_entry(sha, size, dh, vh=None, vnote=None, **extra):
+    """One index.json entry, built the same way by apply and release: sha256, size and dHash (None for a
+    video), and for a video its videohash frame dHashes (vhash) as plan stores them. A video that couldn't
+    be hashed keeps vhash [] and its vhash_note (why), so it is never read as "no near-copy". Readers
+    take an entry with no vhash key (an image, or an index written before videohash) as not a video."""
+    e = dict(sha=sha, size=size, dhash=dh)
+    if vh is not None:
+        e["vhash"] = vh
+        if vnote:
+            e["vhash_note"] = vnote
+    e.update(extra)
+    return e
+
+
 # ---------------------------------------------------------------- apply
-def cmd_apply(a):
-    b = bdir(a.batch)
-    plan = load(os.path.join(b, "plan.json"))
-    flags = load(os.path.join(b, "scan.json"))
-    if flags is None and not a.no_scan:
-        sys.exit("run `scan` first (or --no-scan to file everything without the sensitive check)")
-    flags = flags or {}
-    missing = [t for t in ("tesseract",) if not shutil.which(t)]
+def missing_detectors():
+    """The Fedora packages of the document detectors scan needs and can't find (tesseract, zxing-cpp), named
+    as doctor names them (cli.SYSTEM_TOOLS / SYSTEM_MODULES: one table for both)."""
+    import cli
+    missing = [] if shutil.which("tesseract") else [cli.SYSTEM_TOOLS["tesseract"]]
     try:
         import zxingcpp  # noqa: F401
     except ImportError:
-        missing.append("python3-zxing-cpp")
+        missing.append(cli.SYSTEM_MODULES["zxingcpp"])
+    return missing
+
+
+def cmd_apply(a):
+    need_batch(a.batch)
+    b = bdir(a.batch)
+    plan = load(os.path.join(b, "plan.json"))
+    if plan is None:
+        sys.exit(f"plan has not run for {a.batch}. Run: media-intake plan {a.batch}")
+    flags = load(os.path.join(b, "scan.json"))
+    if flags is None and not a.no_scan:
+        sys.exit(f"scan has not run for {a.batch}. Run: media-intake scan {a.batch}")
+    flags = flags or {}
+    missing = missing_detectors()
     if missing and not a.no_scan and not a.allow_missing_detectors:
-        sys.exit(f"document detectors missing ({', '.join(missing)}): IDs, cards and 2FA codes were not "
-                 f"checked. Install them ({DEPS}), then `scan` again "
-                 "(or --allow-missing-detectors to file anyway).")
+        sys.exit(f"Nothing was filed: the ID, card and 2FA-code checks need {', '.join(missing)}.\n"
+                 f"Install:  sudo dnf install -y {' '.join(missing)}\n"
+                 f"Then run: media-intake scan {a.batch}\n"
+                 "(media-intake doctor checks everything else the tool needs.)")
     raw = os.path.join(b, "raw")
     quar = private_dir(os.path.join(private_dir(os.path.join(STATE, "quarantine")), a.batch))
     index = load(os.path.join(STATE, "index.json"), {})
@@ -578,8 +685,7 @@ def cmd_apply(a):
             os.makedirs(os.path.dirname(p["dst"]), exist_ok=True)
             shutil.move(src, p["dst"])
             if p["action"] == "file":
-                index[p["dst"]] = dict(sha=p["sha"], size=p["size"], dhash=p["dhash"],
-                                       **({"vhash": p["vhash"]} if p.get("vhash") else {}))
+                index[p["dst"]] = index_entry(p["sha"], p["size"], p["dhash"], p.get("vhash"), p.get("vhash_note"))
                 c["filed"] += 1
             else:
                 c["to review"] += 1
@@ -587,11 +693,19 @@ def cmd_apply(a):
     save(os.path.join(STATE, "index.json"), index)
     if moved:  # tag, offload and the review page read each file's place from the plan
         save(os.path.join(b, "plan.json"), plan)
-        print(f"{moved} files went to a free name (<name>_<n>): their planned place was taken since `plan`")
+        print(f"{plural(moved, 'file')} went to a free name (<name>_<n>): their planned place was taken since `plan`")
     left = [os.path.join(r, f) for r, _, fs in os.walk(raw) for f in fs]
     if not left and os.path.isdir(raw):  # a second apply finds raw/ already removed: nothing to do
         shutil.rmtree(raw)
-    print(dict(c), f"left in raw: {len(left)}")
+    done = [plural(c["filed"], "file") + " filed" if c["filed"] else "",
+            plural(c["deleted (exact duplicate)"], "exact duplicate") + " dropped" if c["deleted (exact duplicate)"] else "",
+            f"{c['quarantined']:,} quarantined" if c["quarantined"] else "",
+            f"{c['to review']:,} set aside for review" if c["to review"] else ""]
+    print("apply: " + (", ".join(x for x in done if x) or "nothing to move (already applied)"))
+    if left:
+        taken = c["left in raw (its quarantine place is taken)"]
+        print(f"{plural(len(left), 'file')} left in the batch folder {os.path.abspath(raw)}"
+              + (f" ({taken:,} because their quarantine place is taken)" if taken else ""))
     if c["quarantined"]:
         print(f"quarantine (you open it, nobody else): xdg-open {os.path.abspath(quar)}")
     if c["to review"]:
@@ -609,20 +723,41 @@ def cmd_apply(a):
 
 # ---------------------------------------------------------------- quarantine review
 def cmd_quarantine(a):
+    need_batch(a.batch, staged=False)
     quar = os.path.join(STATE, "quarantine", a.batch)
-    q = load(os.path.join(quar, "quarantine.json"), {})
+    q = load(os.path.join(quar, "quarantine.json"), {}) or {}
+    if not q:
+        print(f"nothing in quarantine for {a.batch}.")
+        return
     c = collections.Counter(r for v in q.values() for r in v["reasons"])
-    print(f"{len(q)} files in quarantine: {quar}")
+    print(f"{plural(len(q), 'file')} in quarantine: {quar}")
     for k, v in c.most_common():
         print(f"  {k:28} {v}")
-    print(f"Open it yourself:\n  xdg-open {os.path.abspath(quar)}\nFor any false positive, run\n"
-          f"  media-intake release {a.batch} <file>...\n"
-          f"then erase the rest with\n  media-intake erase {a.batch} --phone <device root>")
+    man = load(os.path.join(bdir(a.batch), "manifest.json"), {}) or {}
+    erase = ["media-intake", "erase", a.batch]
+    if man.get("kind") in ("phone", "gopro") and man.get("root"):
+        # erase --phone also deletes the originals on the phone or camera the batch came from. A laptop folder
+        # batch is refused there (folder_refusal), erase's device checks are the phone layout's (not a source
+        # drive's), and a quarantine-only batch has no source: plain erase for those.
+        erase += ["--phone", man["root"]]
+    elif man.get("kind") == "drive" and man.get("root"):
+        # The originals are on the drive the batch was staged from: erase --drive deletes identical copies anywhere
+        # under that folder (checked to be a mounted drive before anything is asked or deleted).
+        erase += ["--drive", man["root"]]
+    print(f"Open it yourself:\n  xdg-open {shlex.quote(os.path.abspath(quar))}\nFor any false positive, run\n"
+          f"  media-intake release {shlex.quote(a.batch)} <file>...\n"
+          f"then erase the rest with\n  {' '.join(shlex.quote(x) for x in erase)}"
+          + ("\n  (--phone also deletes them from the phone or camera)" if "--phone" in erase else "")
+          + ("\n  (--drive also deletes them from the drive they came from, then overwrites its free space)"
+             if "--drive" in erase else ""))
 
 
 def cmd_release(a):
+    need_batch(a.batch, staged=False)
     quar = os.path.join(STATE, "quarantine", a.batch)
-    q = load(os.path.join(quar, "quarantine.json"), {})
+    if not os.path.isdir(quar):  # nothing went to quarantine, or erase has removed it
+        sys.exit(f"nothing in quarantine for {a.batch}: it is empty or already erased")
+    q = load(os.path.join(quar, "quarantine.json"), {}) or {}
     index = load(os.path.join(STATE, "index.json"), {})
     for f in a.files:
         rel = os.path.relpath(os.path.abspath(f), quar) if os.path.isabs(f) or f.startswith(".") else f
@@ -640,8 +775,11 @@ def cmd_release(a):
         os.chmod(dst, 0o666 & ~_umask())
         if os.path.isfile(sidecar(os.path.join(quar, rel))):  # a near-duplicate's own tags; none are created
             shutil.move(sidecar(os.path.join(quar, rel)), sidecar(dst))
-        dh = dhash(dst)[0] if os.path.splitext(dst)[1].lower() in IMG else None
-        index[dst] = dict(sha=q[rel]["sha"], size=q[rel]["size"], dhash=dh, released=True)
+        # Hashed from the released file, as plan hashes a staged one: quarantine.json keeps no hashes.
+        ext = os.path.splitext(dst)[1].lower()
+        dh = dhash(dst)[0] if ext in IMG else None
+        vh, vnote = videohash.video_hash(dst) if ext in VID else (None, None)
+        index[dst] = index_entry(q[rel]["sha"], q[rel]["size"], dh, vh, vnote, released=True)
         thumb_forget(os.path.join(quar, rel))
         del q[rel]
         print(f"released -> {dst}" + (f"   ({os.path.basename(want)} is taken there: kept both)" if dst != want else ""))
@@ -1264,6 +1402,40 @@ def phone_thumbnails(targets):
     return len(files.intersection(done)), len(targets) - len(done)
 
 
+DRIVE_HINT = "Mount the drive and pass its folder, e.g. /run/media/$USER/<label>."
+
+
+def not_a_drive(mount):
+    """Why mount is not a backup drive's folder (on the laptop's own disk, or findmnt can't tell), or None."""
+    try:
+        target = subprocess.run(["findmnt", "-n", "-o", "TARGET", "-T", mount], capture_output=True,
+                                text=True).stdout.strip()
+    except OSError:  # no findmnt: can't tell, so not a drive
+        target = ""
+    if not target or LAPTOP_MOUNTS.match(target):
+        return f"is on the laptop's own disk ({target or 'unknown'}), not a backup drive"
+    return None
+
+
+def need_device(a):
+    """Exit with one plain line unless --phone and --drive name what they should. Called before any prompt or
+    delete, so a typo'd path is refused up front instead of found out after the erase: --phone an existing
+    folder; --drive an existing folder and, when its free space will be wiped, a mounted drive (wipe_free's
+    own check)."""
+    phone = getattr(a, "phone", None)
+    if phone and not os.path.isdir(phone):
+        sys.exit(f"--phone {phone}: no such folder. Plug the phone in, unlock it, set USB to File transfer, "
+                 "and pass the folder it shows (e.g. .../Internal storage).")
+    drive = getattr(a, "drive", None)
+    if not drive:
+        return
+    if not os.path.isdir(drive):
+        sys.exit(f"--drive {drive}: no such folder, so not a mounted drive. {DRIVE_HINT}")
+    if (not getattr(a, "no_wipe_free", True) and os.environ.get("MEDIA_INTAKE_WIPE_ANY_DEST") != "1"
+            and (why := not_a_drive(os.path.abspath(drive)))):
+        sys.exit(f"--drive {drive}: {why}. {DRIVE_HINT}")
+
+
 def wipe_free(mount):
     """Overwrite a backup drive's free space with zeros (exFAT deletes only free clusters).
 
@@ -1272,11 +1444,10 @@ def wipe_free(mount):
     import errno, time
     mount = os.path.abspath(mount)
     if not os.path.isdir(mount):
-        sys.exit(f"no such directory: {mount}")
-    target = subprocess.run(["findmnt", "-n", "-o", "TARGET", "-T", mount], capture_output=True, text=True).stdout.strip()
+        sys.exit(f"no such folder: {mount}. {DRIVE_HINT}")
     override = os.environ.get("MEDIA_INTAKE_WIPE_ANY_DEST") == "1"  # tests only
-    if not override and (not target or LAPTOP_MOUNTS.match(target)):
-        sys.exit(f"{mount} is on the laptop's own disk ({target or 'unknown'}), not a backup drive: not wiping")
+    if not override and (why := not_a_drive(mount)):
+        sys.exit(f"{mount} {why}: not wiping. {DRIVE_HINT}")
     cap = int(os.environ.get("MEDIA_INTAKE_WIPE_MAX_MB", "0")) << 20
     chunk = bytes(64 << 20)
     t0, total, files, i = time.monotonic(), 0, [], 0
@@ -1378,7 +1549,11 @@ def verify_gone(sig, drive=None, left=None):
 
 
 def cmd_verify_gone(a):
+    need_device(a)
     sig, nosize = erase_log_sigs(a.batch)
+    if a.batch and not sig and not nosize and not erase_log_coverage(a.batch):
+        need_batch(a.batch, staged=False)  # an erased batch keeps no folder (forget-*): the log says it's real
+        sys.exit(f"nothing erased yet for {a.batch}: erase it first (media-intake erase {a.batch})")
     if nosize:
         print(f"{nosize} older erase-log entries have no size and can't be swept")
     if not sig:
@@ -1403,8 +1578,12 @@ CANT_REACH = (
     "filesystem snapshots (btrfs snapshots of /home) and blocks an SSD or flash drive keeps aside",
     "re-encoded or trimmed copies of a video (only exact copies are found)",
     "a cloud export's Google Takeout JSON or iCloud CSV row left beside an erased file on its source drive "
-    "(it can hold the date, place and description)",
+    "(it can hold the date, place and description), and a Telegram export's result.json (it holds the "
+    "chat's messages)",
 )
+# CANT_REACH in a few words, for erase's own short report (verify-gone BATCH prints the full list).
+CANT_REACH_SHORT = ("cloud and sync, chat apps and email, apps' own storage on a phone, other devices and drives, "
+                    "snapshots and SSD spare blocks, re-encoded videos, cloud-export notes on a source drive")
 COVERAGE_RX = re.compile(r"^(\S+ \S+) (\S+) coverage (\{.*\})$")
 
 
@@ -1441,7 +1620,8 @@ def erase_log_coverage(batch):
 
 
 def print_coverage(cov, full=False):
-    """A coverage record: erase prints the short form (places with a count), verify-gone the full one."""
+    """A coverage record: erase prints the short form (what was left, not checked, and CANT_REACH in a few words:
+    its own summary line has the counts), verify-gone the full one."""
     reached, left = cov.get("reached", {}), cov.get("left", {})
     if full:
         print("  reached:" + "".join(f"\n    {k:62} {v}" for k, v in reached.items()))
@@ -1450,11 +1630,10 @@ def print_coverage(cov, full=False):
             print("  not checked:" + "".join(f"\n    {x}" for x in cov["not_checked"]))
         print("  can't reach (nothing on this machine can):" + "".join(f"\n    {x}" for x in cov.get("cant_reach", [])))
         return
-    print("  reached: " + (", ".join(f"{k} {v}" for k, v in reached.items() if v) or "nothing"))
     print("  left: " + (", ".join(f"{k} {v}" for k, v in left.items()) or "nothing"))
     if cov.get("not_checked"):
         print("  not checked: " + "; ".join(cov["not_checked"]))
-    print("  can't reach: " + "; ".join(cov.get("cant_reach", [])))
+    print("  can't reach: " + CANT_REACH_SHORT)
 
 
 def ask(prompt):
@@ -1468,7 +1647,25 @@ def ask(prompt):
         return ""
 
 
+def erase_warning(first, a, lib=0, phone=0):
+    """What an erase deletes, said before its ERASE prompt (erase, forget): first is the line naming what was
+    asked for; then every place it also deletes from, with counts where known, and what it can't reach."""
+    also = [f"  - {plural(lib, 'identical copy', 'identical copies')} in your library"] if lib else []
+    also.append("  - every identical copy anywhere in your home folder (your photo folders and any folder you "
+                "imported from included)")
+    if a.phone:
+        also.append(f"  - {plural(phone, 'matching file')} on the phone or camera at {a.phone}"
+                    + ("" if getattr(a, "keep_phone_thumbnails", False) else ", and its thumbnail folders"))
+    if a.drive:
+        also.append(f"  - every identical copy on the drive at {a.drive}"
+                    + ("" if a.no_wipe_free else ", then its free space is overwritten"))
+    print(f"{first}\nThis also deletes:\n" + "\n".join(also) + "\n"
+          "It can't reach copies in the cloud, in chat apps or email, on other devices, or on a drive not named "
+          "with --drive.")
+
+
 def cmd_erase(a):
+    need_batch(a.batch, staged=False)
     quar = os.path.join(STATE, "quarantine", a.batch)
     q = load(os.path.join(quar, "quarantine.json"), {})
     man = load(os.path.join(bdir(a.batch), "manifest.json"), {"files": {}})
@@ -1477,9 +1674,16 @@ def cmd_erase(a):
         sys.exit(refusal + " (run erase without --phone)")
     if not q:
         sys.exit("quarantine is empty")
+    need_device(a)
     if not a.yes:
-        if ask(f"Erase {len(q)} quarantined files for good{' and from the phone' if a.phone else ''}"
-               f"{' and the drive' if a.drive else ''}? Type ERASE: ") != "ERASE":
+        index = load(os.path.join(STATE, "index.json"), {}) or {}
+        erased = {v["sha"] for v in q.values()} - {v["sha"] for v in index.values() if v.get("released")}
+        rels = [r for r in q if q[r]["sha"] in erased] + [p["rel"] for p in plan if p["sha"] in erased
+                                                          and p["rel"] not in q]
+        erase_warning(f"Erase {plural(len(q), 'quarantined file')} for good.", a,
+                      lib=sum(v["sha"] in erased for v in index.values()),
+                      phone=sum(bool(man["files"].get(r, {}).get("src")) for r in rels))
+        if ask("It cannot be undone. Type ERASE to go ahead: ") != "ERASE":
             sys.exit("nothing erased")
     # A checksum that is also in the library belongs to a released (or library)
     # copy: erase the quarantined file here, but never that content elsewhere.
@@ -1589,10 +1793,13 @@ def cmd_erase(a):
         thumbs += sum(len(fs) for _, _, fs in os.walk(tdir))
         shutil.rmtree(tdir)
     subprocess.run(["sync"])
-    print(f"erased {len(q)} files; library copies {lib}; phone {phone}; drive {drive}; "
-          f"thumbnail cache cleared ({thumbs + gthumbs} files)")
-    print(f"home sweep: {sum(found.values())} more copies deleted"
-          + "".join(f"\n  {k:28} {v}" for k, v in sorted(found.items())))
+    home, forgot = sum(found.values()), bool(getattr(a, "forget_paths", None))
+    print(f"erased {plural(len(q) + lib + home + phone + drive, 'file')}: {len(q)} "
+          + (f"from your library, {lib} more in your library" if forgot else f"quarantined, {lib} in your library")
+          + f", {home} in your home folder"
+          + (f", {phone} on the phone or camera" if root else "") + (f", {drive} on the drive" if a.drive else ""))
+    if found:
+        print("  in your home folder: " + ", ".join(f"{k} {v}" for k, v in sorted(found.items())))
     print("  (not swept: toolchains, package/build caches, container storage, .git, node_modules)")
     if in_git:
         print(f"{len(in_git)} exact copies inside git repos, not deleted: " + ", ".join(in_git))
@@ -1603,7 +1810,6 @@ def cmd_erase(a):
     if do_pthumbs:
         print(f"phone thumbnail folders removed ({pthumbs} files; Android rebuilds them)"
               + (f"; {prefused} the phone refused to delete (held open by Android's media service)" if prefused else ""))
-    print(f"recent files: {recent} entries removed; " + (", ".join(f"{k} {v}" for k, v in sorted(traces.items())) or "no app traces"))
     if near:
         rb = near_level(near_batch)[1]
         rb = rb[len("xcheck-"):] if rb.startswith("xcheck-") else rb
@@ -1615,7 +1821,6 @@ def cmd_erase(a):
         why = (f"near-duplicate chains stop at depth {NEAR_DEPTH}" if near_level(near_batch)[0] > NEAR_DEPTH
                else "a file already quarantined holds the same place")
         print(f"{near_left} near-duplicates of erased photos left where they are, not moved ({why})")
-    print("videos: only exact copies are found; re-encoded or trimmed copies are not matched")
     wiped = None
     if a.drive and not a.no_wipe_free:
         try:
@@ -1679,7 +1884,7 @@ def cmd_erase(a):
         not_checked.append("backup drive: no --drive")
     cov = erase_coverage(reached, left, not_checked)
     write_coverage(a.batch, cov)
-    print(f"coverage report (saved in the erase log; media-intake verify-gone {a.batch} shows it):")
+    print(f"coverage report saved (the full report: media-intake verify-gone {a.batch}):")
     print_coverage(cov)
     if not ok:
         sys.exit(1)
@@ -1694,9 +1899,11 @@ def cmd_forget(a):
     bad = [f for f in files if os.path.islink(f) or not os.path.isfile(f)]
     if bad:
         sys.exit(f"not forgetting anything: {len(bad)} of {len(files)} are missing or not regular files")
+    a.phone = None  # forget never deletes from a phone: erase_warning and need_device read it
+    need_device(a)
     if not a.yes:
-        if ask(f"Erase {len(files)} files everywhere for good{' and from the drive' if a.drive else ''}? "
-               "Type ERASE: ") != "ERASE":
+        erase_warning(f"Erase {plural(len(files), 'library file')} for good.", a)
+        if ask("It cannot be undone. Type ERASE to go ahead: ") != "ERASE":
             sys.exit("nothing erased")
         a.yes = True
     batch = datetime.datetime.now().strftime("forget-%Y%m%d-%H%M%S")
@@ -1732,11 +1939,17 @@ def cmd_offload(a):
     the staged copy and sits inside the allowlist; never deletes a folder. Refused
     for a laptop folder batch (kind folder): you delete that folder yourself.
     """
+    need_batch(a.batch)
     b = bdir(a.batch)
     man = load(os.path.join(b, "manifest.json"))
     if refusal := folder_refusal(man):
         sys.exit(refusal)
-    plan = {p["rel"]: p for p in load(os.path.join(b, "plan.json"))}
+    need_device(a)
+    rows = load(os.path.join(b, "plan.json"))
+    if rows is None:
+        sys.exit(f"nothing filed yet for {a.batch}, so nothing to delete: run media-intake plan {a.batch}, "
+                 f"then media-intake apply {a.batch}")
+    plan = {p["rel"]: p for p in rows}
     root = os.path.abspath(a.phone)
     check = sources.check
     if man.get("kind") == "drive":  # same drive (filesystem UUID) and never the backup drive
@@ -1756,12 +1969,30 @@ def cmd_offload(a):
         if ok and m["src"].startswith(root + os.sep):
             items.append((m["src"], m.get("size")))
     todo = device_targets(root, items, [m["src"] for m in man["files"].values()], check, skip_denied=False)
-    print(f"{len(todo)} of {len(man['files'])} phone files have a verified copy here")
+    dev = "drive" if man.get("kind") == "drive" else "phone"
+    if not todo:
+        print(f"nothing to delete from the {dev}: no file of {a.batch} left there has a checked copy in your library.")
+        return
+    print(f"{len(todo)} of {plural(len(man['files']), dev + ' file')} have a checked copy in your library")
     if not a.yes:
-        if ask("Delete them from the phone? Type DELETE: ") != "DELETE":
+        if ask(f"Delete {plural(len(todo), 'file')} from the {dev} for good? Back the library up to a drive "
+               "first (media-intake backup). Type DELETE to go ahead: ") != "DELETE":
             sys.exit("nothing deleted")
     done = device_remove(todo)
-    print(f"deleted {len(done)} files from the phone; quarantined and review files stay until erase/purge")
+    print(f"deleted {plural(len(done), 'file')} from the {dev}; quarantined and review files stay until "
+          "erase or purge-review")
+
+
+def rerun_with_yes(argv, ok=True):
+    """The dry-run footer of a delete command: nothing went, and the exact command that deletes. ok=False (the
+    dry run would refuse a file): no command to copy, since it would refuse the same files; what to fix first."""
+    if not ok:
+        print("dry run: nothing deleted. Some files would be refused (see above). Fix that first: take them "
+              "off the command (erase or keep a quarantined one on the review page, never trash it); then run "
+              "it again with --yes")
+        return
+    print("dry run: nothing deleted. To delete for good, run:")
+    print("  " + shlex.join(["media-intake", *argv, "--yes"]))
 
 
 def cmd_purge_review(a):
@@ -1769,6 +2000,10 @@ def cmd_purge_review(a):
         sys.exit(f"purge-review {a.batch!r}: not a batch name (letters, digits, '.', '_' and '-' only)")
     rv = os.path.join(bdir(a.batch), "review")
     n = sum(len(fs) for _, _, fs in os.walk(rv))
+    if not a.yes:  # a delete needs an explicit --yes; without it, say what would go
+        print(f"would delete {n} reviewed near-duplicates/junk from batch {a.batch}")
+        rerun_with_yes(["purge-review", a.batch])
+        return
     for r, _, fs in os.walk(rv):
         for f in fs:
             thumb_forget(os.path.join(r, f))
@@ -1839,10 +2074,18 @@ def mark_trashed_copies(shas, index):
     return len(todo), len(copies) - len(todo), None
 
 
-def trash_files(files, batch=None, phone=None):
+def trash_refusals(refused, quarantined):
+    return ((f"; refused {len(refused)} (not a library or review file)" if refused else "")
+            + (f"; refused {len(quarantined)} quarantined (sensitive: erase or keep them, never trash)"
+               if quarantined else ""))
+
+
+def trash_files(files, batch=None, phone=None, dry=False):
     """Delete each file, its sidecar, thumbnails, index entry and (with phone) its phone original.
     The sha256 goes in trashed.json first: the durable Owner|trash (never taken in again); library
-    copies of it left on disk get Owner|trash in their sidecar (mark_trashed_copies)."""
+    copies of it left on disk get Owner|trash in their sidecar (mark_trashed_copies).
+    dry: every check runs (folder, case and quarantine refusals included), then only the counts of
+    what would go are printed and nothing is written or deleted."""
     private_dir(STATE)
     index = load(os.path.join(STATE, "index.json"), {})
     trashed = load(TRASHED, {})
@@ -1870,6 +2113,10 @@ def trash_files(files, batch=None, phone=None):
         todo.append((p, srcs))
     known = [m["src"] for man in mans.values() for m in man["files"].values() if m.get("src")]
     phone_ok = set(device_targets(root, [x for _, srcs in todo for x in srcs], known)) if root else set()
+    if dry:
+        print(f"would trash {len(todo)} files" + (f"; phone originals {len(phone_ok)}" if root else "")
+              + trash_refusals(refused, quarantined))
+        return not refused and not quarantined
     n = sc = th = ph = 0
     gone = set()
     for p, srcs in todo:
@@ -1892,9 +2139,7 @@ def trash_files(files, batch=None, phone=None):
     print(f"trashed {n} files; sidecars {sc}; thumbnails {th}; phone {ph}"
           + (f"; copies left on disk marked Owner|trash {marked}" if marked else "")
           + (f"; copies you kept left alone {spared}" if spared else "")
-          + (f"; refused {len(refused)} (not a library or review file)" if refused else "")
-          + (f"; refused {len(quarantined)} quarantined (sensitive: erase or keep them, never trash)"
-             if quarantined else ""))
+          + trash_refusals(refused, quarantined))
     if err:
         print(err)
     return not refused and not quarantined and not err
@@ -1925,7 +2170,7 @@ def cmd_trash(a):
         for h in hits:
             print("  " + os.path.relpath(h, HOME))
         if not a.yes:
-            print("dry run: nothing deleted (--yes to trash them)")
+            rerun_with_yes(["trash", "--from-digikam", *(["--phone", a.phone] if a.phone else [])])
             return
         sys.exit(0 if trash_files(hits, phone=a.phone) else 1)
     args = list(a.args)
@@ -1935,7 +2180,13 @@ def cmd_trash(a):
         batch = args.pop(0)
     if not args:
         sys.exit("trash wants FILE... (or --from-digikam)")
-    sys.exit(0 if trash_files(args, batch, a.phone) else 1)
+    # A delete (and a phone delete above all) needs an explicit --yes; without it, a dry run that says what
+    # would go. It exits 1, as the real run would, when a file would be refused.
+    ok = trash_files(args, batch, a.phone, dry=not a.yes)
+    if not a.yes:
+        rerun_with_yes(["trash", *(["--batch", batch] if batch else []), *args,
+                        *(["--phone", a.phone] if a.phone else [])], ok)
+    sys.exit(0 if ok else 1)
 
 
 def keep_args(tags, owner_leaves=()):
@@ -2239,13 +2490,13 @@ def tag_files(items, labels=True, label="tag"):
     lab = guard_label()
     bad = set(lab.refused([i[0] for i in items], STATE))
     if bad:
-        print(f"skipped {len(bad)} files: quarantined, staged or flagged by scan (never tagged)")
+        print(f"skipped {plural(len(bad), 'file')}: quarantined, staged or flagged by scan (never tagged)")
     items = [i for i in items if i[0] not in bad and os.path.isfile(i[0])]
     if not items:
         print("nothing to tag")
         return
     paths = [i[0] for i in items]
-    prog = Progress(label, f"{len(items):,} files: GPS, place names{', content labels' if labels else ''}, "
+    prog = Progress(label, f"{plural(len(items), 'file')}: GPS, place names{', content labels' if labels else ''}, "
                            "then sidecars", unit="sidecars written", hits=None, total=len(items))
     gps = read_gps(paths)
     gps.update({i[0]: tuple(i[5]) for i in items if len(i) > 5 and i[5] and i[0] not in gps})
@@ -2294,7 +2545,8 @@ def tag_files(items, labels=True, label="tag"):
     for i in range(0, len(entries), WRITE_CHUNK):  # one exiftool run per chunk, each a progress tick
         write_tags(entries[i:i + WRITE_CHUNK])
         prog.tick(by=len(entries[i:i + WRITE_CHUNK]))
-    print(f"tagged {len(entries)} files (sidecars <file>.xmp); " + ", ".join(f"{k} {v}" for k, v in sorted(c.items())))
+    print(f"tagged {plural(len(entries), 'file')} (sidecars <file>.xmp)"
+          + ("; " + ", ".join(f"{k} {v}" for k, v in sorted(c.items())) if c else ""))
     if lc:
         print("labels: " + ", ".join(f"{k} {v}" for k, v in lc.most_common()))
     if lc.get("Review|child-in-shot"):
@@ -2306,10 +2558,11 @@ def tag_files(items, labels=True, label="tag"):
 
 
 def cmd_tag(a):
+    need_batch(a.batch)
     b = bdir(a.batch)
     plan = load(os.path.join(b, "plan.json"))
     if plan is None:
-        sys.exit("no plan.json: run plan and apply first")
+        sys.exit(f"plan and apply have not run for {a.batch}. Run: media-intake plan {a.batch}")
     flags = load(os.path.join(b, "scan.json"), {}) or {}
     items = []
     for p in plan:
@@ -2322,7 +2575,8 @@ def cmd_tag(a):
             src = (src, p["device_model"])
         items.append((p["dst"], project, src, p.get("event"),
                       dates.aware(datetime.datetime.fromisoformat(p["date"]), p.get("date_tz")), p.get("export_gps")))
-    print(f"{len(items)} filed files to tag" + (f"; {sum(1 for p in plan if p['rel'] in flags)} flagged by scan are never tagged" if flags else ""))
+    nflag = sum(1 for p in plan if p["rel"] in flags)
+    print(f"{plural(len(items), 'filed file')} to tag" + (f"; {nflag:,} flagged by scan are never tagged" if nflag else ""))
     tag_files(items, labels=not a.no_labels)
     # Plugins (docs/plugins.md) get the filed files, e.g. to register a project's clips.
     import plugins
@@ -2336,7 +2590,7 @@ def cmd_tag(a):
     if man.get("kind") == "folder":  # offload is refused for a laptop folder: browse what was filed
         next_hint(["gallery"])
     else:  # the end of the flow: back the library up, then free the device
-        next_hint(["backup", "<MOUNT>"], ["offload", a.batch, "--phone", man.get("root") or "<ROOT>"])
+        next_hint(["backup", "<DRIVE>"], ["offload", a.batch, "--phone", man.get("root") or "<ROOT>"])
 
 
 def sidecar_dates(paths):
@@ -2351,6 +2605,8 @@ def sidecar_dates(paths):
 
 
 def cmd_tag_files(a):
+    if a.event and not config.SLUG.match(a.event):  # before anything is read: same rule as plan --event
+        sys.exit(f"--event {a.event!r}: a slug is lowercase letters, digits and dashes")
     files = [os.path.abspath(f) for f in a.files]
     keep = sidecar_dates(files)
     live = [f for f in files if os.path.isfile(f)]
@@ -2452,6 +2708,7 @@ def share_copy_refusal(files, out):
 
 
 def cmd_share_copy(a):
+    import motion  # sibling module (sys.path set above); here so only share-copy loads it
     if refusal := share_copy_refusal(a.files, a.out):
         sys.exit(refusal)
     os.makedirs(a.out, exist_ok=True)
@@ -2481,6 +2738,17 @@ def cmd_share_copy(a):
             if ext in (".jpg", ".jpeg"):
                 kw["quality"] = 95
             out.save(dst, **kw)
+        if ext not in VID:
+            # A motion photo's appended video (Samsung, Google) must not ride along with the still. exiftool
+            # -all= drops a JPEG's trailer (its Trailer group; tests/test_motion.py checks) but may keep a
+            # HEIC's top-level mpvd/sefd box, and Pillow writes a fresh file; strip cuts whatever is left off
+            # this copy, never the original, and a copy it can't make safe is removed.
+            try:
+                motion.strip(dst)
+            except (motion.MotionError, OSError) as e:
+                if os.path.lexists(dst):
+                    os.remove(dst)
+                sys.exit(f"not copying {f}: its embedded video could not be removed from the copy ({e})")
         left = has_gps(dst)
         print(f"{dst}  gps={'STILL PRESENT' if left else 'none'}")
 
@@ -2497,54 +2765,244 @@ def clock_offset_arg(v):
 
 
 def build_parser(prog=None):
+    """intake.py's commands. Every command's description says what it does, what it touches and whether it
+    deletes ("Touches:" and "Deletes:" lines, tests/test_cli.py checks), and every argument has help text,
+    in the words of docs/words.md. `media-intake --help` (cli.py) lists them by task."""
+    # The words (docs/words.md): batch, source, phone, backup drive, library, quarantine, review folder.
+    h_batch = "the batch name: the one `stage` printed (or you gave with --batch)"
+    h_files = "library files (paths)"
+    h_phone = "its folder, e.g. under /run/user/$UID/gvfs/ (connected and unlocked)"
+    h_drive = "the backup drive: the folder it is mounted on, e.g. /run/media/$USER/<label>"
+    h_yes = "don't ask: delete now (without it you are asked to type {word})"
     ap = argparse.ArgumentParser(prog=prog, description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
-    sp = ap.add_subparsers(dest="cmd", required=True)
-    s = sp.add_parser("stage"); s.add_argument("src"); s.add_argument("--kind", choices=["phone", "gopro", "drive", "folder"], required=True,
-                                                         help="folder = a folder on the laptop's own disk (under HOME)")
-    s.add_argument("--batch", help="batch name (default: <device id>-<YYYYMMDD> from the files' Make/Model/serial)")
-    s.add_argument("--only", metavar="LISTFILE", help="stage only these relative paths (one per line; drive_queue.py chunks)")
-    s.add_argument("--origin", help="device root the files really came from, if SRC is an earlier copy (for erase --phone)")
-    s = sp.add_parser("plan"); s.add_argument("batch")
+    sp = ap.add_subparsers(dest="cmd", required=True, metavar="<command>", title="commands")
+
+    def cmd(name, summary, what, touches, deletes):
+        """One subcommand: summary for the command list; its --help opens with what it does, then its
+        Touches: and Deletes: lines, each wrapped for an 80-column terminal."""
+        import textwrap
+        para = [textwrap.fill(" ".join(s.split()), 78, subsequent_indent="  " if i else "")
+                for i, s in enumerate((what, f"Touches: {touches}", f"Deletes: {deletes}"))]
+        desc = "\n".join([para[0], "", *para[1:]])
+        return sp.add_parser(name, help=summary, formatter_class=argparse.RawDescriptionHelpFormatter,
+                             description=desc)
+
+    s = cmd("stage", "copy a source (phone, camera, drive, folder) into a new batch",
+            "Copy the photos and videos from a source (a phone, a camera, a drive you import from, or a folder on\n"
+            "this laptop) into a new batch, checking each copy's size. The first step of an import.",
+            "reads the source; writes the batch in the state folder (by default ~/.local/share/media-intake).",
+            "no. The source is only read.")
+    s.add_argument("src", metavar="SOURCE", help="the source's folder: the phone's storage folder (the one holding "
+                   "DCIM), a camera's card, a drive's folder, or a laptop folder")
+    s.add_argument("--kind", choices=["phone", "gopro", "drive", "folder"], required=True,
+                   help="what the source is: phone, gopro (a GoPro or its card), drive (a drive you import from, "
+                        "not the backup drive) or folder (a folder on the laptop's own disk, under HOME)")
+    s.add_argument("--batch", help="batch name (default: <device id>-<YYYYMMDD> from the files' camera details)")
+    s.add_argument("--only", metavar="LISTFILE", help="stage only these paths, relative to SOURCE, one per line "
+                   "(the queue uses it for its chunks)")
+    s.add_argument("--origin", metavar="PHONE", help="the phone or camera the files really came from, when SOURCE "
+                   "is an earlier copy of it (so erase --phone can reach it)")
+
+    s = cmd("plan", "work out dates, library folders and duplicates; moves nothing",
+            "Work out each staged file's date and library folder, and find exact and near duplicates.\n"
+            "Nothing moves yet: apply does that.",
+            "reads the batch and the library's index; writes the batch's plan.",
+            "no.")
+    s.add_argument("batch", metavar="BATCH", help=h_batch)
     s.add_argument("--event", action="append", metavar="[PROJECT/]SLUG@YYYY-MM-DD",
                    help="an event on that day: Event|SLUG tags; with a PROJECT/ prefix, or a slug matching a "
                         "project's events patterns in config.toml, that day's camera files go to the project's folder")
     s.add_argument("--clock-offset", action="append", metavar="DEVICE=+-Nh", type=clock_offset_arg,
                    help="shift dates from a camera whose clock was wrong (DEVICE: its Make, Model, 'Make Model' or "
                         "all; e.g. 'HERO11 Black=+3h'); GPS dates are never shifted; sidecars only")
-    s = sp.add_parser("scan"); s.add_argument("batch")
-    s = sp.add_parser("apply"); s.add_argument("batch"); s.add_argument("--no-scan", action="store_true"); s.add_argument("--allow-missing-detectors", action="store_true")
-    s = sp.add_parser("quarantine"); s.add_argument("batch")
-    s = sp.add_parser("release"); s.add_argument("batch"); s.add_argument("files", nargs="+")
-    s = sp.add_parser("erase"); s.add_argument("batch"); s.add_argument("--phone"); s.add_argument("--drive"); s.add_argument("--yes", action="store_true")
-    s.add_argument("--keep-phone-thumbnails", action="store_true", help="don't remove DCIM/.thumbnails and Pictures/.thumbnails (removed by default with --phone)")
-    s.add_argument("--no-wipe-free", action="store_true", help="skip overwriting the drive's free space")
-    s = sp.add_parser("forget"); s.add_argument("files", nargs="+"); s.add_argument("--drive"); s.add_argument("--yes", action="store_true")
-    s.add_argument("--no-wipe-free", action="store_true")
-    s = sp.add_parser("verify-gone"); s.add_argument("batch", nargs="?", help="one batch (default: every erase-log entry)"); s.add_argument("--drive")
-    s = sp.add_parser("wipe-free"); s.add_argument("mount")
-    s = sp.add_parser("offload"); s.add_argument("batch"); s.add_argument("--phone", required=True); s.add_argument("--yes", action="store_true")
-    s = sp.add_parser("purge-review"); s.add_argument("batch")
-    s = sp.add_parser("trash", help="plain delete of unwanted, non-sensitive files (no sweep, no erase log)")
-    s.add_argument("args", nargs="*", metavar="[BATCH] FILE"); s.add_argument("--batch", help="batch the files came from (for --phone)")
-    s.add_argument("--phone"); s.add_argument("--from-digikam", action="store_true"); s.add_argument("--yes", action="store_true")
-    s = sp.add_parser("not-trash", help="keep suggested files: Owner|keep + Owner|not-trash"); s.add_argument("files", nargs="+")
-    s = sp.add_parser("migrate-tags", help="one-shot, idempotent: legacy Review|not-trash -> Owner|not-trash")
+
+    s = cmd("scan", "look for private files (IDs, cards, codes, nudity) with local detectors; flags only",
+            "Run the local detectors (nudity, text on IDs and cards, QR codes and barcodes) on the batch.\n"
+            "It only flags files; apply moves the flagged ones to quarantine. Needs the venv (bash setup.sh).",
+            "reads the batch; writes the batch's scan results.",
+            "no.")
+    s.add_argument("batch", metavar="BATCH", help=h_batch)
+
+    s = cmd("apply", "file the batch into the library; flagged files go to quarantine",
+            "Carry out the plan: file each clean file into the library, drop exact duplicates, set\n"
+            "near-duplicates and junk aside in the review folder, and move flagged files to quarantine.\n"
+            "Refuses until scan has run.",
+            "the batch, the library, the review folder and quarantine.",
+            "only the batch's staged copies: exact duplicates are dropped, and the staged folder goes once "
+            "everything has moved. The source and the library lose nothing.")
+    s.add_argument("batch", metavar="BATCH", help=h_batch)
+    s.add_argument("--no-scan", action="store_true", help="file everything WITHOUT the sensitive-file check (IDs, "
+                   "cards, nudity); only for photos you already know are safe")
+    s.add_argument("--allow-missing-detectors", action="store_true", help="file even though the ID and card "
+                   "detectors are not installed (those files will not be checked)")
+
+    s = cmd("quarantine", "how many of a batch's files are in quarantine, and why; changes nothing",
+            "Count a batch's quarantined files by reason and print the folder to open and the next commands.",
+            "reads quarantine.",
+            "no.")
+    s.add_argument("batch", metavar="BATCH", help=h_batch)
+
+    s = cmd("release", "a false positive: move files from quarantine into the library",
+            "Move quarantined files you checked and found fine into the library, where apply would have\n"
+            "filed them. Same as Keep on the review page's Quarantine tab.",
+            "quarantine and the library.",
+            "no.")
+    s.add_argument("batch", metavar="BATCH", help=h_batch)
+    s.add_argument("files", nargs="+", metavar="FILE", help="quarantined files, as paths or names inside the "
+                   "batch's quarantine folder")
+
+    s = cmd("erase", "DELETES a batch's quarantined files and every copy, everywhere it can reach",
+            "Erase a batch's quarantined files for good, with every identical copy the tool can reach: your\n"
+            "home folder (your own photo folders included), thumbnails and caches, and with --phone and\n"
+            "--drive the phone and the backup drive. Ends with a check and a report of what it could not\n"
+            "reach. Asks you to type ERASE unless --yes.",
+            "quarantine, the library, your home folder, and the phone and backup drive you name.",
+            "YES, for good, every copy it finds.")
+    s.add_argument("batch", metavar="BATCH", help=h_batch)
+    s.add_argument("--phone", metavar="PHONE", help="also delete the matching files on this phone or camera: "
+                   + h_phone)
+    s.add_argument("--drive", metavar="DRIVE", help="also delete the matching files on " + h_drive
+                   + ", then overwrite its free space (checked before anything is asked)")
+    s.add_argument("--yes", action="store_true", help=h_yes.format(word="ERASE"))
+    s.add_argument("--keep-phone-thumbnails", action="store_true", help="don't remove DCIM/.thumbnails and "
+                   "Pictures/.thumbnails on the phone (removed by default with --phone)")
+    s.add_argument("--no-wipe-free", action="store_true", help="skip overwriting the backup drive's free space")
+
+    s = cmd("forget", "DELETES library files and every copy, as erase does (a private file found later)",
+            "Erase library files for good, the same way erase does for a batch: every identical copy in your\n"
+            "home folder, thumbnails and caches, and with --drive on the backup drive. For a private photo\n"
+            "found after its import. Asks you to type ERASE unless --yes.",
+            "the library, your home folder, and the backup drive you name.",
+            "YES, for good, every copy it finds.")
+    s.add_argument("files", nargs="+", metavar="FILE", help=h_files)
+    s.add_argument("--drive", metavar="DRIVE", help="also delete the matching files on " + h_drive
+                   + ", then overwrite its free space (checked before anything is asked)")
+    s.add_argument("--yes", action="store_true", help=h_yes.format(word="ERASE"))
+    s.add_argument("--no-wipe-free", action="store_true", help="skip overwriting the backup drive's free space")
+
+    s = cmd("verify-gone", "check that erased files left no copy behind; changes nothing (exit 1 if one is left)",
+            "Search your home folder (and the backup drive with --drive) for any copy of what was erased, and\n"
+            "show the last erase's report. Exits 1 if a copy is still there.",
+            "reads your home folder, the erase log and the backup drive you name.",
+            "no.")
+    s.add_argument("batch", nargs="?", metavar="BATCH", help="one batch (default: everything ever erased)")
+    s.add_argument("--drive", metavar="DRIVE", help="also search " + h_drive)
+
+    s = cmd("wipe-free", "overwrite a backup drive's free space with zeros",
+            "Fill the backup drive's free space with zeros, so files deleted from it can't be recovered.\n"
+            "Refused on the laptop's own disk.",
+            "the backup drive's free space (a temporary file, removed at the end).",
+            "no file; it overwrites space that deleted files left.")
+    s.add_argument("mount", metavar="DRIVE", help=h_drive)
+
+    s = cmd("offload", "DELETES a batch's files from the phone, camera or source drive once they are in the library",
+            "Free space on the source: delete each file of the batch that has a checked copy in the library\n"
+            "(or was dropped as a duplicate). Run it after a backup. Refused for a laptop folder batch:\n"
+            "delete that folder yourself. Asks you to type DELETE unless --yes.",
+            "the phone, camera or source drive you name.",
+            "YES, from the source, only files with a checked copy in the library.")
+    s.add_argument("batch", metavar="BATCH", help=h_batch)
+    s.add_argument("--phone", required=True, metavar="SOURCE", help="the source the batch was staged from: the "
+                   "phone's or camera's folder, or the source drive's folder (not the backup drive)")
+    s.add_argument("--yes", action="store_true", help=h_yes.format(word="DELETE"))
+
+    s = cmd("purge-review", "DELETES a batch's review folder (near-duplicates and junk); a dry run without --yes",
+            "Delete the batch's review folder: the near-duplicates and junk apply set aside.\n"
+            "Without --yes it only says what would go.",
+            "the batch's review folder.",
+            "YES with --yes; without it, nothing.")
+    s.add_argument("batch", metavar="BATCH", help=h_batch)
+    s.add_argument("--yes", action="store_true", help="delete now; without it, a dry run")
+
+    s = cmd("trash", "DELETES junk files (not private ones) and skips them on later imports; a dry run without --yes",
+            "Trash library or review-folder files: delete them with their sidecars and thumbnails (with\n"
+            "--phone their originals on the phone too), and remember them so the same photo is skipped\n"
+            "if it is imported again. Not for quarantined files: erase those. Without --yes it only says\n"
+            "what would go.",
+            "the library, the review folder, and the phone you name.",
+            "YES with --yes; without it, nothing.")
+    s.add_argument("args", nargs="*", metavar="[BATCH] FILE", help="the files; a batch name first says which batch "
+                   "they came from (for --phone)")
+    s.add_argument("--batch", metavar="BATCH", help="the batch the files came from (for --phone)")
+    s.add_argument("--phone", metavar="PHONE", help="also delete their originals from this phone or camera: "
+                   + h_phone)
+    s.add_argument("--from-digikam", action="store_true", help="trash the library files marked Rejected in digiKam")
+    s.add_argument("--yes", action="store_true", help="delete now; without it, a dry run")
+
+    s = cmd("not-trash", "Keep a suggested file: it is never suggested as junk again",
+            "Mark library files as kept (the review page's and gallery's Keep), so they are never suggested\n"
+            "as junk again.",
+            "the files' sidecars (tags).",
+            "no.")
+    s.add_argument("files", nargs="+", metavar="FILE", help=h_files)
+
+    s = cmd("migrate-tags", "one-off: rename an older tool tag in your sidecars",
+            "One-off and safe to repeat: rewrite the older Review|not-trash tag as Owner|not-trash in every\n"
+            "library sidecar. Nothing else changes.",
+            "the library's sidecars (tags).",
+            "no.")
     s.add_argument("--dry-run", action="store_true", help="count the sidecars, write nothing")
-    s = sp.add_parser("suggest-trash"); s.add_argument("--batch"); s.add_argument("--phone")
-    s.add_argument("--no-serve", action="store_true", help="write maybe-trash.json and stop")
+
+    s = cmd("suggest-trash", "list library files that look like junk (Suggested junk) and open them on the review page",
+            "Find library files the tool thinks are junk (Suggested junk) and open them on the review page's\n"
+            "Maybe trash tab, where you Keep or Trash each. Never suggests one you kept.",
+            "reads the library's sidecars; writes the list to the state folder.",
+            "no (Trash on the review page does).")
+    s.add_argument("--batch", metavar="BATCH", help="only files this batch filed")
+    s.add_argument("--phone", metavar="PHONE", help="passed to the review page, so Trash there also deletes the "
+                   "originals from this phone or camera")
+    s.add_argument("--no-serve", action="store_true", help="write the list and stop (no review page)")
+
     for name in ("share-copy", "social-copy"):
-        s = sp.add_parser(name, help="copy without GPS or metadata" + (" (alias of share-copy)" if name != "share-copy" else ""))
-        s.add_argument("files", nargs="+"); s.add_argument("--out", required=True)
-    s = sp.add_parser("tag", help="after apply: sidecar tags for the batch's filed files (CPU-heavy: labels)"); s.add_argument("batch")
-    s.add_argument("--no-labels", action="store_true", help="project/source/event/place/date only, no SigLIP labels")
-    s = sp.add_parser("tag-files", help="(re)tag library files; project/source/event from the path"); s.add_argument("files", nargs="+")
-    s.add_argument("--event", help="event slug for all of them"); s.add_argument("--no-labels", action="store_true")
-    s = sp.add_parser("mark-used"); s.add_argument("files", nargs="+"); s.add_argument("--post", required=True, help="post slug, YYYY-MM-DD-...")
-    s = sp.add_parser("find", help="search sidecars; prints matching media paths")
-    s.add_argument("--tag", action="append", help="hierarchical tag, e.g. 'Label|runner' or 'Label' (any label); repeat = all of them")
-    s.add_argument("--event"); s.add_argument("--place", help="substring of city, state or country"); s.add_argument("--project")
+        s = cmd(name, "copy files without GPS or other metadata, for sharing"
+                + (" (older name of share-copy)" if name != "share-copy" else ""),
+                "Copy files into a folder with their GPS position and other metadata removed, for posting\n"
+                "or sending. The originals are not changed.",
+                "reads the files; writes copies to --out.",
+                "no.")
+        s.add_argument("files", nargs="+", metavar="FILE", help="the photos or videos to copy")
+        s.add_argument("--out", required=True, metavar="DIR", help="folder for the copies (not inside the library "
+                       "or the state folder)")
+
+    s = cmd("tag", "after apply: write tags (source, date, place, event, labels) for the batch's filed files",
+            "Write each filed file's tags (project, source, event, place, date and content labels) to its\n"
+            "sidecar (<file>.<ext>.xmp). Labels are CPU-heavy: --no-labels skips them.",
+            "the sidecars next to the batch's library files; never the photos themselves.",
+            "no.")
+    s.add_argument("batch", metavar="BATCH", help=h_batch)
+    s.add_argument("--no-labels", action="store_true", help="project, source, event, place and date only; "
+                   "no content labels")
+
+    s = cmd("tag-files", "write tags again for library files (project, source and event from their folder)",
+            "Write tags again for library files, as tag does for a batch; project, source and event come\n"
+            "from each file's folder.",
+            "the files' sidecars; never the photos themselves.",
+            "no.")
+    s.add_argument("files", nargs="+", metavar="FILE", help=h_files)
+    s.add_argument("--event", metavar="SLUG", help="event slug for all of them (lowercase letters, digits and dashes)")
+    s.add_argument("--no-labels", action="store_true", help="no content labels (faster)")
+
+    s = cmd("mark-used", "record that library files were used in a post (a Used|<post> tag)",
+            "Tag library files as used in a post, so find --unused-since and --never-used can skip them.",
+            "the files' sidecars.",
+            "no.")
+    s.add_argument("files", nargs="+", metavar="FILE", help=h_files)
+    s.add_argument("--post", required=True, metavar="SLUG", help="post slug, starting with its date: YYYY-MM-DD-...")
+
+    s = cmd("find", "search the tags; prints the matching files' paths",
+            "Search the library's sidecar tags and print each matching file's path (the count goes to\n"
+            "stderr). Every option given must match.",
+            "reads the library's sidecars.",
+            "no.")
+    s.add_argument("--tag", action="append", help="hierarchical tag, e.g. 'Label|runner' or 'Label' (any label); "
+                   "repeat = all of them")
+    s.add_argument("--event", metavar="SLUG", help="part of an event's name")
+    s.add_argument("--place", help="part of a city, state or country name")
+    s.add_argument("--project", help="a project's name, as in config.toml")
     s.add_argument("--unused-since", metavar="Nd", help="not used in a post in the last N days")
-    s.add_argument("--never-used", action="store_true"); s.add_argument("--root", action="append", help="search here instead of the library folders")
+    s.add_argument("--never-used", action="store_true", help="never used in a post")
+    s.add_argument("--root", action="append", metavar="DIR", help="search this folder instead of the library "
+                   "(repeat for more)")
     return ap
 
 

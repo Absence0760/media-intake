@@ -181,7 +181,7 @@ class DeviceCase(unittest.TestCase):
         self.assert_refused(out, self.mtp, t_upper, t_lower)
         self.assert_on_device(self.m_plain, t_upper, t_lower)
         out = self.intake("erase", "2026-11-13-mtp", "--phone", self.mtp, "--yes", "--keep-phone-thumbnails")
-        self.assertIn("phone 1;", out)
+        self.assertIn(", 1 on the phone or camera\n", out)
         self.assertFalse(os.path.exists(self.m_plain))
         self.assert_on_device(self.m_upper, t_upper, t_lower)
 
@@ -190,7 +190,13 @@ class DeviceCase(unittest.TestCase):
         self.filed(self.gphoto, "2026-11-13-cam")
         kept = [os.path.join(r, f) for r, _, fs in os.walk(self.lib) for f in fs if f.lower() == "img_0001.jpg"]
         self.assertEqual(len(kept), 1, "the case twin is an exact duplicate: filed once")
+        # A dry run runs the same case check: refused, exit 1, no "would trash" line, nothing touched.
         out = self.intake("trash", "2026-11-13-cam", kept[0], "--phone", self.gphoto, code=1)
+        self.assert_refused(out, self.gphoto, self.g_upper, self.g_lower)
+        self.assertNotIn("would trash", out)
+        self.assertTrue(os.path.isfile(kept[0]))
+        self.assertFalse(os.path.exists(os.path.join(self.state, "trashed.json")))
+        out = self.intake("trash", "2026-11-13-cam", kept[0], "--phone", self.gphoto, "--yes", code=1)
         self.assert_refused(out, self.gphoto, self.g_upper, self.g_lower)
         self.assertTrue(os.path.isfile(kept[0]), "nothing trashed when a phone delete is refused")
         self.assertFalse(os.path.exists(os.path.join(self.state, "trashed.json")))
@@ -201,7 +207,7 @@ class DeviceCase(unittest.TestCase):
         self.filed(self.mtp, "2026-11-13-mtp")
         kept = [os.path.join(r, f) for r, _, fs in os.walk(self.lib) for f in fs
                 if f.lower() == "img_20261101_100000.jpg"]
-        out = self.intake("trash", kept[0], "--phone", self.mtp, code=1)
+        out = self.intake("trash", kept[0], "--phone", self.mtp, "--yes", code=1)
         self.assert_refused(out, self.mtp, self.m_upper, self.m_lower)
         self.assert_on_device(self.m_upper, self.m_lower, self.m_plain)
 
@@ -232,7 +238,7 @@ class DeviceCase(unittest.TestCase):
         self.filed(self.gphoto, "2026-11-13-cam")
         shutil.copyfile(self.g_upper, os.path.join(os.path.dirname(self.g_upper), "Img_0001.Jpg"))
         kept = [os.path.join(r, f) for r, _, fs in os.walk(self.lib) for f in fs if f.lower() == "img_0001.jpg"]
-        out = self.intake("trash", "2026-11-13-cam", kept[0], "--phone", self.gphoto, code=1)
+        out = self.intake("trash", "2026-11-13-cam", kept[0], "--phone", self.gphoto, "--yes", code=1)
         self.assert_refused(out, self.gphoto, self.g_upper, os.path.join(os.path.dirname(self.g_upper), "Img_0001.Jpg"))
         self.assertTrue(os.path.isfile(kept[0]), "nothing trashed when a phone delete is refused")
 

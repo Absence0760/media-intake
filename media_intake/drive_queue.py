@@ -1,19 +1,13 @@
 #!/usr/bin/env python3
-"""Process queue for folders of photos and videos: on an external (non-backup) drive or on the laptop.
+"""Import folders of photos and videos, on an external (non-backup) drive or on the laptop, in chunks.
 
-  drive_queue.py add PATH --label NAME [--kind drive|folder] [--event [PROJECT/]SLUG@YYYY-MM-DD ...]
+  media-intake queue add PATH --label NAME [--kind drive|folder] [--event [PROJECT/]SLUG@YYYY-MM-DD ...]
                                            register a folder (counts, size, free-space check);
                                            --kind folder = a folder on the laptop's own disk
-  drive_queue.py run [--chunk 2000] [--inhibit]   process every source in chunks (resumable)
-  drive_queue.py status [--json]           one row per source, what waits for you, the next command
-  drive_queue.py offload NAME [--yes]      delete the drive originals of finished, reviewed chunks
+  media-intake queue run [--chunk 2000] [--inhibit]   process every source in chunks (resumable)
+  media-intake queue status [--json]       one row per source, what waits for you, the next command
+  media-intake queue offload NAME [--yes]  DELETES the drive originals of finished, reviewed chunks
                                            (refused for --kind folder: you delete the folder yourself)
-
-Run as `media-intake queue <add|run|status|offload>`.
-
-Named drive_queue.py, not queue.py: media_intake/ goes on sys.path in intake.py,
-semantic.py and vlm_trash.py, and a queue.py there would shadow the standard
-library's `queue` (concurrent.futures and multiprocessing import it).
 
 Each chunk is an ordinary intake batch `<added date>-<label>-<n>` and goes
 through stage -> plan -> scan -> apply -> tag -> semantic index -> VLM trash
@@ -26,27 +20,32 @@ the queue itself under a locking wrapper (its inner calls would wait forever).
 State: <state>/queue.json (0600) plus <state>/queue/<label>/ (the frozen file
 list, chunk lists, step logs). A step is marked done only after it exits 0, so a
 killed run continues at the step it was in; a finished step is never redone.
+When a step fails, the run stops and says why in one line (the end of the
+step's log, without file names) and where the log is.
 The run STOPS before every decision that is yours: quarantine review, trash
 suggestions and offload (status prints the commands).
 
 --event days are passed to every chunk's plan (plan --event): Event|SLUG tags, and with
 a project, that day's camera files go to the project's folder.
 
-Kind folder (sources.check_folder_root): a real folder under HOME, never HOME itself,
-anything outside HOME, the media-intake state, the library, videos or a project folder,
-~/.local, ~/.config, ~/.cache, ~/.var, ~/.ssh, ~/.gnupg, common code and SDK trees, a
-hidden folder, a password-manager name or a git repository (nor inside or containing
-one); git trees inside it are skipped. No mount, no UUID. Its originals are never deleted.
+Kind folder: a real folder under HOME, never HOME itself, anything outside
+HOME, the media-intake state, the library, videos or a project folder,
+~/.local, ~/.config, ~/.cache, ~/.var, ~/.ssh, ~/.gnupg, common code and SDK
+trees, a hidden folder, a password-manager name or a git repository (nor inside
+or containing one); git trees inside it are skipped. Its originals are never
+deleted.
 
 Refused for kind drive: a root on the laptop's own disk, a drive that looks like the backup
 drive (<mount>/.media-intake-backup, or a [drive] backup_markers folder at its
 mount root, unless <mount>/.media-intake-source-ok exists), a drive without a filesystem UUID, a source
 that would leave the laptop under 50 GB free once copied, and offload when the
 drive's UUID differs, the drive looks like the backup or a batch's quarantine
-is not empty. Output is counts only, never file content.
-
-Test: python3 -I -m unittest discover -s tests -p test_drive_queue.py
+is not empty. Output is counts only, never file content. Guide: docs/queue.md.
 """
+# Named drive_queue.py, not queue.py: media_intake/ goes on sys.path in intake.py, semantic.py and
+# vlm_trash.py, and a queue.py there would shadow the standard library's `queue` (concurrent.futures and
+# multiprocessing import it). Kind folder's checks are sources.check_folder_root (no mount, no UUID).
+# Test: python3 -I -m unittest discover -s tests -p test_drive_queue.py
 import argparse, collections, datetime, fcntl, json, os, re, shutil, subprocess, sys
 
 HERE = os.path.dirname(os.path.abspath(__file__))
@@ -191,7 +190,7 @@ def cmd_add(a):
                                  events=list(a.event or []),
                                  files=len(files), bytes=total, chunk=None, chunks={}, offloaded=[])
     save(QFILE, q)
-    by = collections.Counter(sources.drive_category(r).split(":")[0] for r, _ in files)
+    by = collections.Counter(sources.drive_category(r, sources.export_app(root, r)).split(":")[0] for r, _ in files)
     print(f"queued {a.label}: {len(files)} files, {gb(total)} ({', '.join(f'{k} {v}' for k, v in sorted(by.items()))}); "
           f"{gb(free - total)} free after copying")
     print("next: media-intake queue run --inhibit")
@@ -255,7 +254,52 @@ def do_step(step, src, ch, batch, listfile, log):
         return True, f"{len(files)} judged"
     cmd = step_cmd(step, src, batch, listfile)
     rc = run_cmd((WRAPPER if step in HEAVY_STEPS else []) + cmd, log)
-    return rc == 0, f"exit {rc}"
+    return rc == 0, "done" if rc == 0 else f"exit {rc}"
+
+
+# Why a step failed, in one line for a person: the last line the step wrote to its log, with every path and
+# media file name taken out (a log line may name a user's file; status and the stop message never do).
+PATH_TOKEN = re.compile(r"""(?<![\w/.~])(?:~|\.\.?)?/[^\s'"`(),;:]*|[^\s'"`(),;:=/]+(?:/[^\s'"`(),;:/]+){2,}/?""")
+MEDIA_NAME = re.compile(r"[^\s'\"`/(),;:=]+(?:%s)\b" % "|".join(
+    re.escape(e) for e in sorted(sources.MEDIA_EXT | sources.CAMERA_JUNK_EXT | {".xmp"}, key=len, reverse=True)),
+    re.I)
+QUOTED_PATH = re.compile(r"""(['"`])([^'"`\n]*/[^'"`\n]*)\1""")  # a quoted path may hold spaces
+TOOL_FILE = re.compile(r"[\w.-]+\.(?:sh|py)")
+REASON_MAX = 160
+
+
+def plain_reason(line):
+    """line without paths or media file names: a path to one of the tool's own scripts keeps its name
+    (setup.sh), any other path becomes "(a path)", a media file name "(a file)"."""
+    def path(m):
+        tail = m.group(m.lastindex or 0).rstrip("/.").rsplit("/", 1)[-1]
+        return tail if TOOL_FILE.fullmatch(tail) else "(a path)"
+    line = MEDIA_NAME.sub("(a file)", PATH_TOKEN.sub(path, QUOTED_PATH.sub(path, line)))
+    line = re.sub(r"(\(a (?:path|file)\)['\"`]?\s*)+(?=\(a )", "", line)  # runs of them read as one
+    line = re.sub(r"['\"`]\((a (?:path|file))\)['\"`]", r"(\1)", line)
+    line = " ".join(line.split())
+    return line if len(line) <= REASON_MAX else line[:REASON_MAX - 1].rstrip() + "\u2026"
+
+
+def log_size(log):
+    try:
+        return os.path.getsize(log)
+    except OSError:
+        return 0
+
+
+def log_reason(log, start=0):
+    """The last non-empty line written to log after byte start (where the failed step began), made plain;
+    "" when the step wrote nothing. run_cmd's own `== <time> <command>` line is never the reason."""
+    try:
+        with open(log, "rb") as f:
+            f.seek(0, os.SEEK_END)
+            f.seek(max(start, f.tell() - 65536))
+            text = f.read().decode("utf-8", "replace")
+    except OSError:
+        return ""
+    last = next((x for x in reversed(text.splitlines()) if x.strip() and not x.startswith("== ")), "")
+    return plain_reason(last.strip())
 
 
 def summary(batch):
@@ -358,15 +402,20 @@ def run_queue(a):
                         sys.exit(f"[{label}] stopped: {ch['error']}")
                     with open(listfile, "w", opener=_private) as f:
                         f.write("".join(r + "\n" for r, _ in files))
+                start = log_size(log)
                 ok, note = do_step(step, src, ch, batch, listfile, log)
                 if not ok:
-                    ch["error"] = f"{step} failed ({note}); log {log}"
+                    why = log_reason(log, start)
+                    ch["error"] = f"{step} failed ({note})" + (f": {why}" if why else "")
+                    ch["log"] = log
                     save(QFILE, q)
-                    sys.exit(f"[{label}] stopped: {ch['error']}. Fix it, then run again: it resumes at {step}.")
+                    sys.exit(f"[{label}] stopped at {step}: {why or f'it failed ({note}) with no message'}. "
+                             f"Fix it, then run again: {ME} run --inhibit (it resumes at {step}; log: {log})")
                 ch["steps"][step] = dict(at=now(), note=note)
                 ch.pop("error", None)
+                ch.pop("log", None)
                 save(QFILE, q)
-                print(f"  {step}: {note}", flush=True)
+                print(f"  {step} done" if note == "done" else f"  {step}: {note}", flush=True)
             ch["summary"] = summary(batch)
             ch["done"] = now()
             save(QFILE, q)
@@ -451,6 +500,8 @@ def status_model(q):
                 d["step"] = next((s for s in STEPS if s not in ch.get("steps", {})), "-")
                 if ch.get("error"):
                     d["error"] = ch["error"]
+                    if ch.get("log"):
+                        d["log"] = ch["log"]
                     failed = failed or d
             detail.append(d)
         done = sum(1 for d in detail if d["done"])
@@ -461,7 +512,7 @@ def status_model(q):
         elif failed:
             state = "failed"
             waiting.append(dict(what="failed", label=label, chunk=failed["chunk"], batch=failed["batch"],
-                                step=failed["step"], reason=failed["error"],
+                                step=failed["step"], reason=failed["error"], log=failed.get("log"),
                                 commands=[f"{ME} run --inhibit"]))
         elif any(w["label"] == label and w["what"] == "review" for w in waiting):
             state = "needs your review"
@@ -503,17 +554,19 @@ def wrap(text, indent=""):
 
 def render_status(m):
     rows = m["sources"]
-    head = ("SOURCE", "STATE", "FILES", "QUAR", "REVIEW", "CHANGED")
-    cells = [[r["root"], r["state"], str(r["files"]), str(r["quarantined"]), str(r["in_review"]),
+    head = ("LABEL", "SOURCE", "STATE", "FILES", "QUAR", "REVIEW", "CHANGED")
+    cells = [[r["label"], r["root"], r["state"], str(r["files"]), str(r["quarantined"]), str(r["in_review"]),
               r["changed"].replace("T", " ")[:16]] for r in rows]
     widths = [max(len(head[i]), *(len(c[i]) for c in cells)) for i in range(len(head))]
-    widths[0] = max(len(head[0]), min(widths[0], WIDTH - sum(widths[1:]) - 2 * (len(head) - 1)))
-    right = {2, 3, 4}
+    src = 1  # the one column shortened to fit: the label is what queue offload takes, so it is never cut
+    rest = sum(w for i, w in enumerate(widths) if i != src)
+    widths[src] = max(len(head[src]), min(widths[src], WIDTH - rest - 2 * (len(head) - 1)))
+    right = {3, 4, 5}
 
     def line(vals):
         out = [(v.rjust(w) if i in right else v.ljust(w)) for i, (v, w) in enumerate(zip(vals, widths))]
         return "  ".join(out).rstrip()
-    out = [line(head)] + [line([shorten(c[0], widths[0]), *c[1:]]) for c in cells]
+    out = [line(head)] + [line([c[0], shorten(c[src], widths[src]), *c[src + 1:]]) for c in cells]
     out += ["", "Waiting for you:"]
     if not m["waiting"]:
         out.append("  nothing")
@@ -521,8 +574,8 @@ def render_status(m):
         if w["what"] == "review":
             out.append(wrap(f"{w['label']}, chunk {w['chunk']} ({w['batch']}): quarantine {w['quarantine']}, "
                             f"near and messaging copies {w['near_and_messaging']}, review folder "
-                            f"{w['review_folder']}, trash suggestions {w['trash_suggestions']}", "  "))
-            names = ["review page", "quarantine", "trash suggestions"]
+                            f"{w['review_folder']}, Suggested junk {w['trash_suggestions']}", "  "))
+            names = ["review page", "quarantine", "Suggested junk"]
             if not w["quarantine"]:
                 names.remove("quarantine")
             for name, c in zip(names, w["commands"]):
@@ -530,6 +583,8 @@ def render_status(m):
         elif w["what"] == "failed":
             out.append(wrap(f"{w['label']}, chunk {w['chunk']} ({w['batch']}) failed at {w['step']}: "
                             f"{w['reason']}", "  "))
+            if w.get("log"):
+                out.append(f"    {'log:':<20}{w['log']}")
             out.append(f"    {'fix it, then retry:':<20}{w['commands'][0]}")
         elif w["what"] == "offload":
             out.append(wrap(f"{w['label']}: every chunk is reviewed; OK to offload (delete the drive originals):",
@@ -597,22 +652,44 @@ def cmd_offload(a):
 
 def main(argv=None, prog=None):
     ap = argparse.ArgumentParser(prog=prog, description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
-    sp = ap.add_subparsers(dest="cmd", required=True)
-    s = sp.add_parser("add"); s.add_argument("path"); s.add_argument("--label", required=True)
+    sp = ap.add_subparsers(dest="queue_command", required=True, metavar="add|run|status|offload")
+    s = sp.add_parser("add", help="register a folder to import (counts and checks only; copies nothing yet)",
+                      description="Register a folder of photos and videos to import: counts its files and checks "
+                                  "there is room. Copies nothing yet; `run` does the work.")
+    s.add_argument("path", help="the folder: on an external drive, or with --kind folder on this laptop")
+    s.add_argument("--label", required=True,
+                   help="a short name for this source (lowercase letters, digits, dashes, e.g. old-drive); "
+                        "status, run and offload use it")
     s.add_argument("--kind", choices=["drive", "folder"], default="drive",
                    help="drive = an external drive (default); folder = a folder on the laptop's own disk")
     s.add_argument("--event", action="append", metavar="[PROJECT/]SLUG@YYYY-MM-DD",
                    help="an event (shoot day) in this source, passed to every chunk's plan --event")
-    s = sp.add_parser("run"); s.add_argument("--chunk", type=int, default=2000); s.add_argument("--inhibit", action="store_true")
-    s = sp.add_parser("status"); s.add_argument("--json", action="store_true", help="the same, as JSON for scripts")
-    s = sp.add_parser("offload"); s.add_argument("name"); s.add_argument("--yes", action="store_true")
+    s = sp.add_parser("run", help="import every queued source, a chunk at a time (stops when you must decide)",
+                      description="Import every queued source, one chunk at a time: copy, check, file and tag. "
+                                  "Resumes where it stopped; never deletes anything and stops before every "
+                                  "decision that is yours.")
+    s.add_argument("--chunk", type=int, default=2000, metavar="N",
+                   help="files per chunk (default 2000); fixed for a source at its first run")
+    s.add_argument("--inhibit", action="store_true",
+                   help="keep the laptop from sleeping while it runs (systemd-inhibit)")
+    s = sp.add_parser("status", help="what is queued, what waits for you, and the next command",
+                      description="One row per queued source, what waits for you, and the next command. "
+                                  "Changes nothing.")
+    s.add_argument("--json", action="store_true", help="the same, as JSON for scripts")
+    s = sp.add_parser("offload", help="DELETES the drive originals of finished, reviewed chunks (asks for --yes)",
+                      description="DELETES the originals on the drive for every finished chunk whose review is "
+                                  "done, but only files with a verified copy on this laptop. Without --yes it "
+                                  "only says what it would do. Refused for a laptop folder: you delete that "
+                                  "yourself.")
+    s.add_argument("name", metavar="LABEL", help="the source's label, as status shows it")
+    s.add_argument("--yes", action="store_true", help="really delete; without it nothing is deleted")
     a = ap.parse_args(argv)
-    if a.cmd == "run" and a.chunk < 1:
+    if a.queue_command == "run" and a.chunk < 1:
         sys.exit("--chunk must be at least 1")
-    if a.cmd == "run":
+    if a.queue_command == "run":
         cmd_run(a, argv)
     else:
-        globals()["cmd_" + a.cmd](a)
+        globals()["cmd_" + a.queue_command](a)
 
 
 if __name__ == "__main__":

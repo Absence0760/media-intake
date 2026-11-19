@@ -402,7 +402,7 @@ class ProxyTest(unittest.TestCase):
         other = os.path.join(self.proxies, "f" * 64 + ".mp4")
         for p in (pa, pk, other):
             open(p, "wb").close()
-        r = subprocess.run([G.PY, "-I", G.INTAKE, "trash", a], env=self.env, capture_output=True, text=True)
+        r = subprocess.run([G.PY, "-I", G.INTAKE, "trash", a, "--yes"], env=self.env, capture_output=True, text=True)
         self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
         self.assertFalse(os.path.exists(pa))
         r = subprocess.run([G.PY, "-I", G.INTAKE, "forget", k, "--yes"], env=self.env, capture_output=True,
