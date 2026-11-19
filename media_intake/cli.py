@@ -28,6 +28,7 @@ Erase and trash
   erase BATCH               DELETES quarantined files and all their copies
   forget FILE...            DELETES library files the same way (found later)
   verify-gone [BATCH]       check erased files left no copy; changes nothing
+  sweep-erased [BATCH]      DELETES copies erase missed, with --yes
   trash FILE...             DELETES junk (not private files), with --yes
   purge-review BATCH        DELETES a batch's review folder, with --yes
   suggest-trash             find Suggested junk; opens the review page

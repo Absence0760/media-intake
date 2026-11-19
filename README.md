@@ -139,7 +139,7 @@ media-intake offload phone-1 --phone <phone folder>   # after a backup: free the
 | --- | --- |
 | `stage`, `plan`, `scan`, `apply` | Copy in, plan (dates, dedupe, folders), detect, file |
 | `quarantine`, `release`, `review` | Decide on what the detectors flagged (quarantine) and the review folder |
-| `erase`, `forget`, `verify-gone`, `wipe-free` | Erase everywhere, check, overwrite the backup drive's free space |
+| `erase`, `forget`, `verify-gone`, `sweep-erased`, `wipe-free` | Erase everywhere, check, catch copies on a backup drive that was unplugged at erase time, overwrite the backup drive's free space |
 | `trash`, `suggest-trash`, `not-trash`, `purge-review` | Trash junk, find Suggested junk, Keep a suggestion, empty a review folder (`trash` and `purge-review` delete only with `--yes`; without it, a dry run) |
 | `tag`, `tag-files`, `mark-used`, `find` | Sidecar tags and searching them |
 | `migrate-tags` | One-shot: rewrite the legacy `Review\|not-trash` tag as `Owner\|not-trash` |

@@ -62,10 +62,14 @@ media-intake backup /run/media/$USER/<label> --skip videos   # leave one root ou
   next run overwrites a leftover partial). exFAT and FUSE mounts that refuse
   fsync are tolerated. A file that changes or vanishes while it is copied is skipped
   and counted ("run backup again").
-- **Nothing on the drive is deleted.** A file removed from the library stays
-  on the backup; the run only counts them. There is no `--prune`: erasing
-  goes through `erase --drive` / `forget --drive`, which delete matching
-  content anywhere on the drive by checksum ([intake.md](intake.md)). A file
+- **Nothing on the drive is deleted** by `backup`. A file removed from the
+  library stays on the backup; the run only counts them. There is no
+  `--prune`. The one exception is erased content, and only when you name the
+  drive: `erase --drive` / `forget --drive`, and `sweep-erased --drive` for a
+  drive that was unplugged at erase time, delete content on the erase log
+  anywhere on the drive by size and sha256 (`sweep-erased` only with
+  `--yes`, and never content still in the library index)
+  ([intake.md](intake.md), "Erasing, and what it can't reach"). A file
   that changed in the library (an edit in another tool) replaces its own
   older copy, as any mirror does.
 - **Never outside the backup folder.** Folders on the drive are created one
