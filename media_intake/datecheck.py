@@ -31,7 +31,7 @@ the gallery's Undo) puts exactly that back, refusing once a sidecar changed agai
 nothing in media-intake moves a filed file when its date changes, so a fixed file stays in its old
 YYYY/YYYY-MM folder (docs/dates.md, Limits).
 """
-import bisect, collections, datetime, hashlib, json, math, os, re, secrets, shutil, subprocess, sys
+import bisect, collections, contextlib, datetime, hashlib, json, math, os, re, secrets, shutil, subprocess, sys
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 if HERE not in sys.path:
@@ -157,7 +157,18 @@ def _num(v):
 
 
 def save_private(p, obj):
-    intake.save(p, obj)
+    """Write obj as JSON to p atomically, 0600 from the first byte (a temp file in the same folder, then a
+    rename): a crash leaves the old file or the new one, never half of one."""
+    tmp = f"{p}.{os.getpid()}.tmp"
+    fd = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+    try:
+        with os.fdopen(fd, "w") as f:
+            json.dump(obj, f, indent=1, ensure_ascii=False)
+        os.replace(tmp, p)
+    except BaseException:
+        with contextlib.suppress(OSError):
+            os.remove(tmp)
+        raise
     os.chmod(p, 0o600)
 
 
@@ -977,6 +988,81 @@ def write_undo(fid=None, state=None, now=None):
                                             f.get("path", "")))
         save_private(report_path(state), rep)
     return fx
+
+
+# ---------------------------------------------------------------- erase, forget, trash (intake.py calls these)
+def _names(paths):
+    return {os.path.basename(p) for p in paths}
+
+
+def _mentions(f, paths, names):
+    """A finding about one of paths, or one whose reason names one of them (a numbered neighbour, a copy)."""
+    if f.get("path") in paths:
+        return True
+    return f.get("kind") in ("sequence", "duplicate") and any(n and n in (f.get("reason") or "") for n in names)
+
+
+def forget_paths(paths, state=None):
+    """Erase / forget / trash / sweep-erased: drop every record of these paths from datecheck.json (their
+    findings, and a neighbour's finding that names them) and date-fixes.json (their entries, old and new
+    dates, and the findings a fix set aside). A fix left with no file goes. Both files are rewritten
+    atomically, 0600. The caller holds the library lock. Returns (records dropped, "" or why a file could not
+    be rewritten). Never raises."""
+    state = state or state_dir()
+    paths = {p for p in paths if isinstance(p, str)}
+    if not paths:
+        return 0, ""
+    names, n, err = _names(paths), 0, []
+    rep = load_report(state)
+    if rep:
+        keep = [f for f in rep["findings"] if not (isinstance(f, dict) and _mentions(f, paths, names))]
+        if len(keep) != len(rep["findings"]):
+            n += len(rep["findings"]) - len(keep)
+            rep["findings"] = keep
+            try:
+                save_private(report_path(state), rep)
+            except OSError as e:
+                err.append(f"{REPORT}: {e.strerror or e}")
+    elif os.path.exists(report_path(state)):
+        err.append(f"{REPORT} is unreadable: its records were not checked")
+    log = load_fixes(state)
+    changed, fixes = False, []
+    for fx in log["fixes"]:
+        files = [f for f in fx.get("files", []) if not (isinstance(f, dict) and f.get("path") in paths)]
+        dropped = [f for f in fx.get("dropped", []) if not (isinstance(f, dict) and _mentions(f, paths, names))]
+        if len(files) != len(fx.get("files", [])) or len(dropped) != len(fx.get("dropped", [])):
+            n += len(fx.get("files", [])) - len(files) + len(fx.get("dropped", [])) - len(dropped)
+            changed = True
+            fx = dict(fx, files=files, dropped=dropped)
+        if fx.get("files"):
+            fixes.append(fx)
+        else:
+            changed = True
+    if changed:
+        try:
+            save_private(fixes_path(state), dict(log, fixes=fixes))
+        except OSError as e:
+            err.append(f"{FIXES}: {e.strerror or e}")
+    return n, "; ".join(err)
+
+
+def recorded_paths(state=None):
+    """Every library path datecheck.json or date-fixes.json names (findings, fixes, set-aside findings)."""
+    out = {f["path"] for f in (load_report(state) or {}).get("findings", [])
+           if isinstance(f, dict) and isinstance(f.get("path"), str)}
+    for fx in load_fixes(state)["fixes"]:
+        for f in list(fx.get("files", [])) + list(fx.get("dropped", [])):
+            if isinstance(f, dict) and isinstance(f.get("path"), str):
+                out.add(f["path"])
+    return out
+
+
+def stale(roots, state=None):
+    """Recorded paths whose file is gone from a library folder that is there (an unplugged drive's files are
+    not gone)."""
+    live = [os.path.realpath(r) for r in roots if os.path.isdir(r)]
+    return {p for p in recorded_paths(state) if not os.path.lexists(p)
+            and any(os.path.realpath(p).startswith(r + os.sep) for r in live)}
 
 
 # ---------------------------------------------------------------- the commands (intake.py's parser calls these)

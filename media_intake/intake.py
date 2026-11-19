@@ -229,6 +229,20 @@ def recog_count(cnt):
     return sum(v for k, v in cnt.items() if k != "store unreadable")
 
 
+def date_forget(paths):
+    """check-dates' report and fix-dates' record (datecheck.py, docs/dates.md): drop these paths, and any
+    recorded file gone from a library folder that is there. (records dropped, "" or why not). The caller holds
+    the library lock."""
+    import datecheck
+    return datecheck.forget_paths(set(paths) | datecheck.stale(LIB_ROOTS, STATE), STATE)
+
+
+def date_stale_count():
+    """verify-gone: records in datecheck.json / date-fixes.json of files gone from a library folder there."""
+    import datecheck
+    return len(datecheck.stale(LIB_ROOTS, STATE))
+
+
 def sidecar(path):
     """The XMP sidecar of a media file: <file>.<ext>.xmp (digiKam and darktable naming)."""
     return path + ".xmp"
@@ -1602,11 +1616,16 @@ def verify_gone(sig, drive=None, left=None, home=True, names=True):
     if place_recs:
         print(f"PLACE RECORDS: {place_recs} entries in places.json name files no longer in the library "
               "(erase removes them; so does media-intake places tag)")
+    date_recs = date_stale_count() if home else 0
+    if date_recs:
+        print(f"DATE RECORDS: {date_recs} entries in datecheck.json or date-fixes.json name files no longer in "
+              "the library (erase removes them)")
     if left is not None:
         left["copies still present at verify-gone"] += sum(found.values())
         left["orphan sidecars at verify-gone"] += sum(orphans.values())
         left["your places' records of files gone at verify-gone"] += place_recs
-    return not found and not orphans and not place_recs
+        left["date records of files gone at verify-gone"] += date_recs
+    return not found and not orphans and not place_recs and not date_recs
 
 
 def cmd_verify_gone(a):
@@ -1680,6 +1699,14 @@ def cmd_sweep_erased(a):
     recent = prune_recent(uris, []) if home else 0
     traces = prune_app_traces(uris, []) if home else collections.Counter()
     backups, _, _ = prune_backup_records(paths, set(sig))
+    place_recs = date_recs = 0
+    if home:  # the deleted copies' records in places.json and the date files, so verify-gone finds none
+        try:
+            pstale = myplaces.Store(STATE, LIB_ROOTS).stale(LIB_ROOTS)
+        except myplaces.Unreadable:
+            pstale = set()
+        place_recs, _ = myplaces.forget_paths(STATE, set(paths) | pstale)
+        date_recs, _ = date_forget(set(paths))
     on_drive = sum(v for k, v in found.items() if k.startswith("drive:"))
     print(f"sweep-erased: {sum(found.values())} copies deleted in {where_}" + counts
           + (f"\n  sidecars (.xmp)              {stats['sidecars'] + sum(orphans.values())}"
@@ -1690,7 +1717,9 @@ def cmd_sweep_erased(a):
           + (f"\n  recognition rows and crops   {recog_count(rec)}" if recog_count(rec) else "")
           + (f"\n  recent files entries         {recent}" if recent else "")
           + (f"\n  app traces                   {sum(traces.values())}" if sum(traces.values()) else "")
-          + (f"\n  backup record entries        {backups}" if backups else ""))
+          + (f"\n  backup record entries        {backups}" if backups else "")
+          + (f"\n  your places' records         {place_recs}" if place_recs else "")
+          + (f"\n  date records                 {date_recs}" if date_recs else ""))
     if home:
         print("  (not swept: toolchains, package/build caches, container storage, .git, node_modules)")
     if in_git:
@@ -1927,6 +1956,7 @@ def cmd_erase(a):
     except myplaces.Unreadable:
         stale = set()
     place_recs, place_err = myplaces.forget_paths(STATE, gone | stale)
+    date_recs, date_err = date_forget(gone)  # datecheck.json and date-fixes.json (docs/dates.md)
     with open(os.path.join(STATE, "erase-log.txt"), "a") as f:
         for s, (size, _) in shas.items():
             f.write(f"{datetime.datetime.now():%Y-%m-%d %H:%M} {a.batch} sha256:{s} size:{size}\n")
@@ -1985,7 +2015,9 @@ def cmd_erase(a):
                                 "to that drive)": backups_unread,
                                 "recognition store that could not be read": rec["store unreadable"],
                                 "your places' records that could not be rewritten (places.json keeps the names)":
-                                    int(bool(place_err))})
+                                    int(bool(place_err)),
+                                "date records that could not be rewritten (datecheck.json or date-fixes.json "
+                                "keeps the names)": int(bool(date_err))})
     ok = verify_gone(sig, a.drive, left)
     # The coverage report: every place this erase reached (counts), what it left, what it could not check.
     reached = {"quarantined files (state folder, quarantine/)": len(q),
@@ -2002,7 +2034,8 @@ def cmd_erase(a):
                "localsearch error reports (~/.cache/tracker3/files/errors)": traces["localsearch error reports"],
                "near-duplicates moved to quarantine (not deleted)": near,
                "backup records: erased files dropped (state folder, backup/)": backups,
-               "your places' records: erased files dropped (state folder, places.json)": place_recs}
+               "your places' records: erased files dropped (state folder, places.json)": place_recs,
+               "date records: erased files dropped (state folder, datecheck.json and date-fixes.json)": date_recs}
     not_checked = []
     if gio_metadata_on():
         reached["gvfs-metadata entries cleared (~/.local/share/gvfs-metadata)"] = stats["gvfs-metadata cleared"]
@@ -2292,6 +2325,9 @@ def trash_files(files, batch=None, phone=None, dry=False):
     _, perr = myplaces.forget_paths(STATE, gone_paths)  # their records in places.json (the tag went with the sidecar)
     if perr:
         print(f"your places' records of the trashed files not dropped: {perr}")
+    _, derr = date_forget(gone_paths)  # their findings and fixes in datecheck.json / date-fixes.json
+    if derr:
+        print(f"date records of the trashed files not dropped: {derr}")
     marked, spared, err = mark_trashed_copies(gone, index)
     print(f"trashed {n} files; sidecars {sc}; thumbnails {th}; phone {ph}"
           + (f"; recognition rows and crops {recog_count(rec)}" if recog_count(rec) else "")

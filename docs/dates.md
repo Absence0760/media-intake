@@ -192,6 +192,16 @@ Nothing is fixed by itself. Name the files and how:
   writing nothing, when a file is gone or any of its sidecars changed since
   (a later tag, Keep, digiKam). The findings it took out of the report come
   back if the report is still the same run.
+- **Erase, forget, trash and sweep-erased clear both files**: every record of
+  the files they delete goes from `datecheck.json` (their findings, and a
+  numbered neighbour's or a copy's finding whose reason names them) and from
+  `date-fixes.json` (their entries with the old and new dates, and the
+  findings a fix set aside for them; a fix left with no file goes), with any
+  recorded file gone from a library folder that is there. Both files are
+  rewritten atomically, 0600, and erase's coverage report counts the records
+  dropped. A file under a folder that is not there (an unplugged drive) is
+  not gone. `verify-gone` fails, printing only a count ("DATE RECORDS: N
+  entries ..."), while a record of a gone file remains.
 - **`tag BATCH` keeps a fix**: a rerun writes the fixed date, not the plan's,
   for a file a fix covers (`datecheck.fixed_paths`). `tag-files` already
   keeps any sidecar date.

@@ -223,6 +223,75 @@ def set_side(path, *args):
 
 
 @unittest.skipUnless(HAVE, "exiftool and ffmpeg are needed")
+
+class ForgetRecordsTest(unittest.TestCase):
+    """Erase, forget, trash and sweep-erased drop a file's records from datecheck.json and date-fixes.json
+    (datecheck.forget_paths); verify-gone counts what is left of files gone from a library folder (stale)."""
+
+    def setUp(self):
+        self.tmp = tempfile.mkdtemp(prefix="datecheck-forget-")
+        self.addCleanup(shutil.rmtree, self.tmp, True)
+        self.state = os.path.join(self.tmp, "state")
+        self.lib = os.path.join(self.tmp, "lib")
+        os.makedirs(self.state, mode=0o700)
+        os.makedirs(self.lib)
+        self.a, self.b, self.c = (os.path.join(self.lib, n) for n in ("IMG_0101.JPG", "IMG_0102.JPG", "c.jpg"))
+        for p in (self.a, self.b, self.c):
+            open(p, "wb").close()
+        f = lambda p, kind, reason="x": dict(path=p, kind=kind, confidence="high", reason=reason,  # noqa: E731
+                                             date="2016-01-01T00:00:00")
+        datecheck.save_private(datecheck.report_path(self.state), dict(
+            version=1, id="r1", checked="2026-11-19T10:00:00", files=3, findings=[
+                f(self.a, "reset"), f(self.b, "sequence", "numbered after IMG_0101.JPG (2024-05-12 10:00)"),
+                f(self.c, "reset"), f(self.c, "duplicate", "the same content is in the library as IMG_0101.JPG")]))
+        fx = lambda i, *ps: dict(id=i, at="2026-11-19T10:01:00", reason="", report="r1", undone=None,  # noqa: E731
+                                 dropped=[f(p, "reset") for p in ps],
+                                 files=[dict(path=p, old="2016:01:01 00:00:00", new="2024-05-12T10:00:00", tz=None,
+                                             sha=None) for p in ps])
+        datecheck.save_private(datecheck.fixes_path(self.state), dict(version=1, fixes=[fx("f1", self.a),
+                                                                                        fx("f2", self.a, self.c)]))
+
+    def dump(self):
+        out = ""
+        for p in (datecheck.report_path(self.state), datecheck.fixes_path(self.state)):
+            with open(p) as fh:
+                out += fh.read()
+        return out
+
+    def test_forget_drops_paths_names_and_empty_fixes(self):
+        n, err = datecheck.forget_paths({self.a}, self.state)
+        self.assertEqual(err, "")
+        self.assertEqual(n, 3 + 4, "3 findings (its own, a neighbour's and a copy's that name it); in the fixes "
+                                   "its 2 file entries and the 2 findings set aside for it")
+        self.assertNotIn("IMG_0101", self.dump(), "no path, no name, no old or new date of it is left")
+        rep = datecheck.load_report(self.state)
+        self.assertEqual([(x["path"], x["kind"]) for x in rep["findings"]], [(self.c, "reset")])
+        fixes = datecheck.load_fixes(self.state)["fixes"]
+        self.assertEqual([(x["id"], [y["path"] for y in x["files"]]) for x in fixes], [("f2", [self.c])],
+                         "a fix left with no file goes")
+        for p in (datecheck.report_path(self.state), datecheck.fixes_path(self.state)):
+            self.assertEqual(os.stat(p).st_mode & 0o777, 0o600)
+        self.assertEqual([x for x in os.listdir(self.state) if x.endswith(".tmp")], [], "written atomically")
+        self.assertEqual(datecheck.forget_paths({self.a}, self.state), (0, ""), "a second run changes nothing")
+
+    def test_stale_counts_gone_files_only_under_a_folder_that_is_there(self):
+        self.assertEqual(datecheck.stale([self.lib], self.state), set())
+        os.remove(self.a)
+        self.assertEqual(datecheck.stale([self.lib], self.state), {self.a})
+        away = self.lib + "-unplugged"
+        os.rename(self.lib, away)  # its drive is not mounted: nothing is gone
+        self.assertEqual(datecheck.stale([self.lib], self.state), set())
+        os.rename(away, self.lib)
+        datecheck.forget_paths(datecheck.stale([self.lib], self.state), self.state)
+        self.assertEqual(datecheck.stale([self.lib], self.state), set())
+
+    def test_an_unreadable_report_is_said_not_guessed(self):
+        with open(datecheck.report_path(self.state), "w") as fh:
+            fh.write("{not json")
+        n, err = datecheck.forget_paths({self.a}, self.state)
+        self.assertIn("datecheck.json is unreadable", err)
+        self.assertEqual(n, 4, "the fixes file is still cleaned")
+
 class CheckDatesE2E(unittest.TestCase):
     def setUp(self):
         self.tmp = tempfile.mkdtemp(prefix="datecheck-test-")
