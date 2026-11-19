@@ -316,6 +316,14 @@ def write_verdicts(items, tags):
         sys.exit(f"vlm_trash: refused: {e}")
 
 
+def sidecar_writable(path):
+    """True when <path>.xmp can be written: it exists and is writable, or its folder is."""
+    x = path + ".xmp"
+    if os.path.lexists(x):
+        return os.access(x, os.W_OK) and os.access(os.path.dirname(x) or ".", os.W_OK)
+    return os.access(os.path.dirname(x) or ".", os.W_OK | os.X_OK)
+
+
 def _write_verdicts(items, tags):
     blocks = []
     for path, verdict, reason, conf in items:
@@ -422,6 +430,10 @@ def main(argv=None):
     decided = {f for f in files if owner_decided(tags.get(f, []))}  # you decided: hands off
     counts["owner-decided"] = len(decided)
     files = [f for f in files if f not in decided]
+    # a sidecar that can't be written would stop the run mid-batch: skip and count those up front
+    unwritable = {f for f in files if not sidecar_writable(f)}
+    counts["unwritable"] = len(unwritable)
+    files = [f for f in files if f not in unwritable]
     todo = files if a.redo else [f for f in files if not done_already(f, prog, tags)]
     counts["already"] = len(files) - len(todo)
     counts["todo"] = len(todo)
@@ -489,9 +501,10 @@ def main(argv=None):
 def summary(c, dry_run=False):
     """One counts-only line for a person; the JSON on stdout stays the machine form."""
     judged = c["keep"] + c["trash"] + c["trash-low"] - c["protected"]
-    skipped = c["already"] + c["owner-decided"] + c["refused"]
+    skipped = c["already"] + c["owner-decided"] + c["refused"] + c["unwritable"]
     why = ", ".join(f"{c[k]:,} {name}" for k, name in (("already", "already judged"), ("owner-decided", "your decision"),
-                                                        ("refused", "refused")) if c[k])
+                                                        ("refused", "refused"),
+                                                        ("unwritable", "sidecar not writable")) if c[k])
     skip = f"skipped {skipped:,}" + (f" ({why})" if why else "")
     if dry_run:
         return f"vlm-trash: would judge {c['todo']:,}, {skip}; nothing sent (--dry-run)"

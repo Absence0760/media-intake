@@ -339,6 +339,20 @@ class VlmTrash(unittest.TestCase):
         code, c, _ = self.run_v("--all")
         self.assertEqual((c["already"], c["todo"], c["keep"]), (4, 1, 1))
 
+    def test_all_skips_unwritable_sidecars(self):
+        ok = img(os.path.join(self.lib, "2026", "ok.jpg"))
+        ro = img(os.path.join(self.lib, "ro", "a.jpg"), color=(200, 10, 10))
+        os.chmod(os.path.dirname(ro), 0o500)
+        self.addCleanup(os.chmod, os.path.dirname(ro), 0o700)
+        if os.access(os.path.dirname(ro), os.W_OK):
+            self.skipTest("running as root: chmod doesn't stop writes")
+        Stub.reply = reply({"verdict": "KEEP", "reason": "other", "confidence": 0.9})
+        code, c, err = self.run_v("--all")
+        self.assertEqual((code, c["keep"], c["unwritable"]), (0, 1, 1))
+        self.assertEqual(len(self.gens()), 1)  # the unwritable one was never sent
+        self.assertIn(NS + "keep", ai(ok))
+        self.assertFalse(os.path.exists(ro + ".xmp"))
+
     def test_kill_midway_keeps_progress(self):
         for i in range(30):
             img(os.path.join(self.lib, "2026", f"{i:02}.jpg"), color=(i * 9, 10, 10))
@@ -407,9 +421,11 @@ class VlmTrash(unittest.TestCase):
     def test_summary_line(self):
         import vlm_trash
         c = collections.Counter({"todo": 6, "keep": 3, "protected": 1, "trash": 1, "trash-low": 1, "undecodable": 1,
-                                 "already": 2, "owner-decided": 1, "refused": 1, "seconds": 75.2})
+                                 "already": 2, "owner-decided": 1, "refused": 1, "unwritable": 1,
+                                 "seconds": 75.2})
         self.assertEqual(vlm_trash.summary(c), "vlm-trash: judged 4 (1 trash, 1 low-confidence trash, 2 keep), "
-                                               "skipped 4 (2 already judged, 1 your decision, 1 refused); "
+                                               "skipped 5 (2 already judged, 1 your decision, 1 refused, "
+                                               "1 sidecar not writable); "
                                                "1 protected (kept, not sent); 1 undecodable; took 1m 15s")
         c = collections.Counter({"todo": 3, "keep": 1, "stopped-not-on-gpu": 1, "seconds": 3})
         self.assertIn("stopped: the model is not fully on the GPU (--allow-cpu", vlm_trash.summary(c))
