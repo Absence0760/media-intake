@@ -117,8 +117,8 @@ animals in one photo (or one video frame) are never one pet, and two
 different names are never joined. Littermates or two black dogs may stay one
 cluster: name it "the dogs", ignore it, or tag by hand.
 
-Videos are scanned only once a frame source is installed (until then `pets
-scan` counts them as skipped). A video gets `Pets|<Name>` only when that pet
+Videos are scanned through a few sampled frames each (Videos, below). A
+video gets `Pets|<Name>` only when that pet
 is in at least `recognition.pet_min_frames` (default 3) of its sampled
 frames, so one passing glimpse doesn't tag it.
 
@@ -237,6 +237,10 @@ decoder.
 **Refused.** Anything under the state folder, and any file `scan` flagged,
 quarantined or erased (`label.refused`), raises `frames.Refused` before
 anything is decoded. A clip nothing can decode raises `frames.FramesError`.
+`people scan` and `pets scan` count such a video as unreadable (rows from the
+frames it read before failing are dropped) and go on with the next file; the
+sampler is always opened in a `with`, so its decoder is closed even when a
+crop for the naming view stops at the one frame it needs.
 
 Needs numpy (Fedora's `python3-numpy`, which the system Python has and the
 venv reuses); no OpenCV.

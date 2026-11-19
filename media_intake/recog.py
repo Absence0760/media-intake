@@ -25,8 +25,10 @@ Plug-in interface (what a kind module gives the core)
 Frames (videos): ingest() takes any iterable of (t_seconds, rgb) frames; a photo is the one frame
 (None, rgb). Videos are scanned only when a frame source exists: frames.sample(path) -> iterator of
 (t_seconds, numpy RGB array) from media_intake/frames.py when that module is present, or the frames=
-argument of scan() (tests pass a stub). Without one, videos are counted as skipped. A detection keeps
-its frame's t; two detections in one photo or one frame are never one individual.
+argument of scan() (tests pass a stub). Without one, videos are counted as skipped. A sampler that is a
+context manager is opened in a `with` (scan, crop_bytes), so its decoder is closed even on an early exit;
+a video whose sampler raises frames.FramesError (frames.Refused too) counts as unreadable and the scan goes
+on. A detection keeps its frame's t; two detections in one photo or one frame are never one individual.
 
 Store (biometric: laptop only, never in git, never backed up or synced):
   <recognition.dir> (config; default <state>/recognition), 0700, refused inside a library root
@@ -51,7 +53,7 @@ Never scanned, and dropped (rows and crops) before every command: label.refused(
 staging, anything scan flagged, quarantined or erased), trashed content (trashed.json), screenshots and
 screen recordings. erase, forget, trash and sweep-erased call forget(); verify-gone calls leftovers().
 """
-import collections, datetime, glob, io, json, os, re, sqlite3, sys, time
+import collections, contextlib, datetime, glob, io, json, os, re, sqlite3, sys, time
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 if HERE not in sys.path:
@@ -350,6 +352,24 @@ def default_frames():
     return getattr(frames, "sample", None)
 
 
+class _NoFrameSource(Exception):
+    """Stands in for frames.FramesError without media_intake/frames.py: never raised."""
+
+
+def frames_error():
+    """frames.FramesError (a video that can't be sampled, frames.Refused included), or a class never raised."""
+    if not os.path.isfile(os.path.join(HERE, "frames.py")):
+        return _NoFrameSource
+    import frames
+    return getattr(frames, "FramesError", _NoFrameSource)
+
+
+def opened(source):
+    """A frame source as a context manager: a sampler as it is (closed on the way out, so its decoder is
+    killed even when the caller stops early), a plain list or generator in a no-op one."""
+    return source if hasattr(source, "__enter__") else contextlib.nullcontext(source)
+
+
 # ---------------------------------------------------------------- images and crops
 def _pillow():
     from PIL import Image, ImageOps
@@ -496,8 +516,12 @@ def scan(c, spec, paths, engine=None, frames="default", limit=None, log=print, s
         else:
             if det is None:
                 det, embs = (engine or spec.engine)()
-            source = frames(p) if is_vid else photo_frames(p, spec.max_side)
-            n, size = ingest(c, spec.kind, sha, source, det, embs)
+            try:  # one video that can't be sampled is counted unreadable; the scan goes on
+                with opened(frames(p) if is_vid else photo_frames(p, spec.max_side)) as source:
+                    n, size = ingest(c, spec.kind, sha, source, det, embs)
+            except frames_error():
+                delete_detections(c, "sha=? AND kind=?", (sha, spec.kind))  # the frames before it failed
+                n, size = 0, None
             if size is None:
                 c.execute("INSERT OR REPLACE INTO scans(sha, kind, status, scanned) VALUES (?,?,?,?)",
                           (sha, spec.kind, "unreadable", today()))
@@ -1049,10 +1073,14 @@ def crop_bytes(c, det_id, frames="default", d=None, state=None):
     else:
         rgb = None
         frames = default_frames() if frames == "default" else frames
-        for t, img in (frames(r["path"]) if frames else ()):
-            if t is not None and abs(float(t) - r["t"]) < 1e-3:
-                rgb = img
-                break
+        try:
+            with opened(frames(r["path"]) if frames else ()) as source:  # closed when the loop breaks out
+                for t, img in source:
+                    if t is not None and abs(float(t) - r["t"]) < 1e-3:
+                        rgb = img
+                        break
+        except frames_error():
+            return None
     if rgb is None:
         return None
     import numpy as np

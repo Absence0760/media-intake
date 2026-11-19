@@ -254,6 +254,78 @@ class Store(Base):
             by_t[d["t"]].add(d["cluster"])
         self.assertEqual([len(v) for v in by_t.values()], [2, 2])
 
+    def test_a_video_that_cant_be_sampled_is_unreadable_and_the_scan_goes_on(self):
+        import frames as frames_mod
+        self.world.scene(5, ("ann", None))
+        rgb = np.zeros((100, 200, 3), dtype=np.uint8)
+        rgb[0, 0, 0] = 5
+        bad = write(os.path.join(self.vids, "2026/bad.mp4"), os.urandom(256))       # fails after one frame
+        refused = write(os.path.join(self.vids, "2026/refused.mp4"), os.urandom(256))
+        good = write(os.path.join(self.vids, "2026/good.mp4"), os.urandom(256))
+        photo = self.photo("2026/2026-11/p.png", 5)
+        opened = []
+
+        class Sampler:  # frames.sample's shape: an iterable context manager
+            def __init__(self, path):
+                self.path, self.closed = path, False
+                opened.append(self)
+
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *exc):
+                self.closed = True
+                return False
+
+            def __iter__(self):
+                yield 0.0, rgb
+                if self.path == bad:
+                    raise frames_mod.FramesError("decoder failed")
+                yield 1.0, rgb
+
+        def sample(path):
+            if path == refused:
+                raise frames_mod.Refused(frames_mod.REFUSED)
+            return Sampler(path)
+        cnt = self.scan([bad, refused, good, photo], frames=sample)
+        self.assertEqual((cnt["unreadable"], cnt["videos scanned"], cnt["photos scanned"]), (2, 1, 1), cnt)
+        self.assertEqual(self.det_of(bad), [], "the frames read before the failure are dropped")
+        self.assertEqual(len(self.det_of(good)), 2)
+        self.assertTrue(opened and all(s.closed for s in opened), "every sampler is closed")
+        status = {r["sha"]: r["status"] for r in self.c.execute("SELECT sha, status FROM scans")}
+        self.assertEqual((status[sha_of(bad)], status[sha_of(refused)]), ("unreadable", "unreadable"))
+
+    def test_crop_of_a_video_frame_closes_the_sampler(self):
+        self.world.scene(6, ("ann", None))
+        rgb = np.zeros((100, 200, 3), dtype=np.uint8)
+        rgb[0, 0, 0] = 6
+        vid = write(os.path.join(self.vids, "2026/long.mp4"), os.urandom(256))
+        self.scan([vid], frames=lambda p: [(0.0, rgb)])
+        det = self.det_of(vid)[0]["id"]
+        state = {"read": 0, "closed": False}
+
+        class Sampler:
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *exc):
+                state["closed"] = True
+                return False
+
+            def __iter__(self):
+                for i in range(100):
+                    state["read"] += 1
+                    yield float(i), rgb
+        out = recog.crop_bytes(self.c, det, frames=lambda p: Sampler(), state=self.state)
+        self.assertTrue(out and out[:2] == b"\xff\xd8", "a JPEG")
+        self.assertEqual(state, {"read": 1, "closed": True}, "stops at the frame and closes the decoder")
+        os.remove(os.path.join(recog.crops_dir(), f"{sha_of(vid)}-{det}.jpg"))
+        import frames as frames_mod
+
+        def broken(p):
+            raise frames_mod.FramesError("no decoder")
+        self.assertIsNone(recog.crop_bytes(self.c, det, frames=broken, state=self.state))
+
     def test_species_never_mix(self):
         spec = kind(self.world, "pet")
         self.world.scene(4, ("rex", "dog"))

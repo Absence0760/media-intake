@@ -27,9 +27,10 @@ object_detection_yolox/demo.py at the pinned commit), score = objectness x class
 at IoU 0.5 across the kept classes (one animal, one box), and a box whose short side is at least 96 px in
 the decoded photo (long side 1600; DINOv2 reads 224 px, smaller crops give weak vectors). Whole-body
 boxes: pets are photographed from behind and the side far more than people. The crop is the box with a
-10 % margin padded to a square (the core's square_crop: no tail or ear cut off), then DINOv2's own preprocessing (Xenova/dinov2-small
-preprocessor_config.json at the pinned revision: bicubic resize of the shortest edge to 256, centre crop
-224, x / 255, ImageNet mean and std; on a square crop that centre crop trims only margin). The SigLIP
+10 % margin padded to a square (the core's square_crop: no tail or ear cut off), then DINOv2's own
+preprocessing (Xenova/dinov2-small preprocessor_config.json at the pinned revision: bicubic resize of the
+shortest edge to 256, centre crop 224, x / 255, ImageNet mean and std; on a square crop that centre crop
+trims only margin). The SigLIP
 vision model setup.sh already installs embeds the same crop as a second vector (label.py's preprocessing),
 stored beside DINOv2's for `pets eval` only; clustering uses DINOv2's.
 
@@ -40,8 +41,8 @@ wrong pet): on one public sample (two tabby cats side by side, COCO val2017 0000
 puts the two cats at cosine 0.72 and each cat against its own mirror image at 0.92, so both thresholds sit
 between. `pets eval` measures them on your pets.
 
-Videos: scanned only once a frame source exists (recog.default_frames); a video gets Pets|<Name> only when
-that pet is in at least recognition.pet_min_frames of its sampled frames (default 3). Store, names,
+Videos: a few sampled frames each (frames.sample, via recog.default_frames); a video gets Pets|<Name> only
+when that pet is in at least recognition.pet_min_frames of its sampled frames (default 3). Store, names,
 suggestions, tags and erase: recog.py.
 """
 import json, os, sys
