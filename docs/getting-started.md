@@ -118,7 +118,8 @@ media-intake tag first-test
 | `review` | Starts a local review page for what `apply` set aside. | One `xdg-open 'http://127.0.0.1:<port>/?t=<token>'` line, or `nothing to review for first-test`. |
 | `tag` | Writes XMP sidecar tags (source, date, place, content labels) for the filed files. | Counts. `--no-labels` skips the content labels if you want it faster. |
 
-On the review page (open the printed link in a private browser window):
+On the review page (open the printed link in a private browser window;
+`xdg-open` opens a normal one, see [gallery.md](gallery.md)):
 the **Quarantine** tab holds what the detectors flagged, with **Keep** (it was
 a false positive) or **Erase** only; the **Review** tab holds the review
 folder's near-duplicates and junk, with **Keep**, **Delete this copy** or
@@ -179,7 +180,8 @@ media-intake gallery
 ```
 
 It prints one `xdg-open 'http://127.0.0.1:<port>/?t=<token>'` line; open it in
-a private browser window. It runs until Ctrl-C or the page's **Stop server**
+a private browser window (`xdg-open` opens a normal one; the private-window
+command is in [gallery.md](gallery.md)). It runs until Ctrl-C or the page's **Stop server**
 button. Flagged and quarantined files are never shown there.
 [gallery.md](gallery.md).
 
@@ -248,6 +250,7 @@ Use a LUKS-encrypted drive. [backup.md](backup.md).
 | A command waits, then exits 75 | Another command or job holds the library lock; it names the holder. Try again when it ends, or set `MEDIA_INTAKE_LOCK_WAIT` ([intake.md](intake.md), "One writer at a time"). |
 | A review run shows `crashed` | Run `media-intake review <batch>` again; it shows what is left ([review-ui.md](review-ui.md), "The run is a detached job"). |
 | A video won't play in the gallery | It may be HEVC: install an H.264 encoder (`doctor`'s optional line), or use **Open in the system player** ([gallery.md](gallery.md), "Video proxies"). |
+| An HEVC video says **Converting this video for the browser** | Its H.264 copy is being made; it starts within seconds. To skip the wait for good, run `media-intake proxies --inhibit` once (it makes every copy ahead of time; run it again after an import). |
 | `search` says the text model is missing | `bash setup.sh --build-labels`. |
 | The queue stopped | `media-intake queue status` shows the error and the log; `media-intake queue run` resumes at that step ([queue.md](queue.md), "What `run` does"). |
 | `backup` says `is the drive mounted?` | Mount the drive and pass its mount point ([backup.md](backup.md), "Rules"). |

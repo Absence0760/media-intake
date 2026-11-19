@@ -283,18 +283,22 @@ class VlmTrash(unittest.TestCase):
 
     def test_owner_decisions_skipped(self):
         decided = []
-        for i, t in enumerate(["Owner|not-trash", "Owner|keep", "Owner|trash", "Review|not-trash", None]):
+        for i, t in enumerate(["Owner|not-trash", "Owner|keep", "Owner|trash", "Review|not-trash", None, 5]):
             p = img(os.path.join(self.lib, "2026", f"o{i}.jpg"))
             add_tag(p, "Review|maybe-trash")
-            if t:
+            if isinstance(t, int):  # a favorite: xmp:Rating 5 (the gallery's star, digiKam's five stars)
+                subprocess.run(["exiftool", "-q", "-overwrite_original", f"-XMP-xmp:Rating={t}", p + ".xmp"],
+                               check=True)
+            elif t:
                 add_tag(p, t)
             else:  # digiKam pick label (1 = rejected)
                 subprocess.run(["exiftool", "-q", "-overwrite_original", "-XMP-digiKam:PickLabel=1", p + ".xmp"],
                                check=True)
             decided.append(p)
-        # candidate scan never lists kept files (Owner|not-trash, Owner|keep, legacy Review|not-trash: owner.kept);
-        # --all and explicit lists see all 5, and every one is owner-decided (never sent)
-        for mode, n in (((), 2), (("--all",), 5), (tuple(decided), 5)):
+        # candidate scan never lists kept files (Owner|not-trash, Owner|keep, legacy Review|not-trash, a favorite:
+        # owner.kept);
+        # --all and explicit lists see all 6, and every one is owner-decided (never sent): the favorite too
+        for mode, n in (((), 2), (("--all",), 6), (tuple(decided), 6)):
             code, c, _ = self.run_v(*mode)
             self.assertEqual((code, c["owner-decided"], c["todo"]), (0, n, 0), mode)
         self.assertEqual(self.gens(), [])

@@ -8,8 +8,13 @@ shift-click), the bottom selection bar (shown only while something is selected),
 views, the confirm dialogs (Trash; Erase with ERASE typed; the Stop server button's in-page confirm),
 the lightbox video playing by itself, Space pausing and resuming it, HTTP Range while the video
 loads and seeks, the detached-job dialog, including re-attaching to a running job after a reload,
-and the Events list (filter, Rename), Set event on a selection and a Share-safe copy (the real
-intake.py share-copy, which only reads the originals).
+and the Events list (filter, Rename, Display name), Set event on a selection and a Share (the real
+intake.py share-copy, which only reads the originals), and Share from a tile and from the large view: its
+dialog, the folder opened when the job ends (a fake xdg-open on PATH that only records its arguments, in every
+test here), Open folder again from the dialog and from the message, and a refused open saying why; Favorites
+(the tile's star, F on a focused tile, a selection and in the large view, the bar's Favorite / Unfavorite, the
+Favorites view and its count, Undo) and the When list's recent years with "All years (N)" remembered across a
+reload.
 
 Trash and Erase run a fake intake.py (MEDIA_REVIEW_INTAKE, tests/test_gallery.py's GATED) that
 deletes the files it is given; with a FIFO at FAKE_GATE it first waits until the test opens it,
@@ -24,7 +29,11 @@ output as its <pre>; the textbox named "Type ERASE"; the selection bar as role=t
 named "Selection actions"; the event bar as role=toolbar named "Event"; each sidebar event as
 #evlist [data-ev=<name>]; the dialog's text field by its label; buttons by their names (Confirm,
 Cancel, Trash N file(s), Erase N file(s), Hide (it keeps running), Close, Apply…, Suggested junk, Possible
-child, Library, Clear selection, Stop server, Rename…, Set event…, Share-safe copy).
+child, Library, Clear selection, Stop server, Rename…, Display name…, Set event…, Share, Open folder,
+Favorites); a tile's star as .star (aria-pressed, named "Favorite <name>"), the bar's #bfav / #bunfav, the large
+view's .favb; a tile's Share button named "Share <name>"; the job dialog's Open folder result as #mopened
+(role=status); an event's display name as its row's .lbl, its slug in the row's title and the event bar's
+#evslug.
 """
 import json, os, re, shutil, signal, sys, tempfile, unittest
 
@@ -45,6 +54,21 @@ with open(os.environ["FAKE_GATE2"]) as f:
 for p in sys.argv[2:]:
     if os.path.isabs(p) and os.path.lexists(p):
         os.remove(p)
+'''
+
+
+# A share-copy that waits until the test opens FAKE_GATE, then copies each file into --out and prints its line as
+# the real one does (no metadata stripped here: the HTTP tests and test_events_rename_bulk_event_and_share run the
+# real one). It only reads the files it is given.
+GATED_SHARE = r'''
+import os, shutil, sys
+args = sys.argv[2:]
+out = args[args.index("--out") + 1]
+with open(os.environ["FAKE_GATE"]) as f:
+    f.read()
+for p in args[:args.index("--out")]:
+    shutil.copyfile(p, os.path.join(out, os.path.basename(p)))
+    print(f"  {os.path.join(out, os.path.basename(p))}  gps=none", flush=True)
 '''
 
 
@@ -80,6 +104,7 @@ class GalleryBrowserTest(B.BrowserCase):
         G.img(self.c, (30, 30, 200))
         G.img(self.d, (90, 90, 90))
         G.write_tags(self.a, ["Project|Personal", "Review|maybe-trash"])  # a trash suggestion
+        self.opened = B.fake_opener(self.tmp, self.env, G.FAKE_OPENER)  # a Share's folder: never really opened
         self.servers = []
 
     def tearDown(self):
@@ -213,6 +238,131 @@ class GalleryBrowserTest(B.BrowserCase):
         B.expect(page.get_by_role("button", name="Remove Flags: Possible child")).to_be_visible()
         page.get_by_role("button", name="Library").click()
         B.expect(page.locator("[data-item]")).to_have_count(4)
+
+    # ------------------------------------------------------------ favorites
+    def rating(self, p):
+        return G.gallery_read(p).get("rating")
+
+    def test_favorites_star_keys_bar_and_view(self):
+        s = self.start()
+        page = self.new_page()
+        self.open(page, s)
+        views = page.get_by_role("navigation", name="Views")
+        fav_view = views.get_by_role("button", name="Favorites")
+        B.expect(fav_view.locator(".ct")).to_have_text("0")
+        star = lambda n: self.tile(page, n).locator(".star")  # noqa: E731
+        # the star shows on hover (and focus), not on an idle tile
+        page.mouse.move(1, 1)
+        B.expect(star("b.jpg")).to_have_css("opacity", "0")
+        self.tile(page, "b.jpg").hover()
+        B.expect(star("b.jpg")).to_have_css("opacity", "1")
+        B.expect(star("b.jpg")).to_have_attribute("aria-pressed", "false")
+        # a click stars it (xmp:Rating 5 in the sidecar only; the large view stays shut), and it stays shown
+        before = G.sha(self.b)
+        with page.expect_response(lambda r: r.url.endswith("/api/favorite")) as resp:
+            star("b.jpg").click()
+        self.assertEqual(resp.value.status, 200)
+        B.expect(star("b.jpg")).to_have_attribute("aria-pressed", "true")
+        B.expect(page.get_by_role("dialog", name="Item")).to_be_hidden()
+        self.assertEqual(self.rating(self.b), "5")
+        self.assertEqual(G.sha(self.b), before)
+        page.mouse.move(1, 1)
+        B.expect(star("b.jpg")).to_have_css("opacity", "1")
+        B.expect(fav_view.locator(".ct")).to_have_text("1")
+        # Undo on its message (Ctrl+Z) puts the sidecar back
+        B.expect(page.locator("#tundo")).to_be_visible()
+        with page.expect_response(lambda r: r.url.endswith("/api/undo")) as resp:
+            page.keyboard.press("Control+z")
+        self.assertEqual(resp.value.status, 200)
+        B.expect(star("b.jpg")).to_have_attribute("aria-pressed", "false")
+        self.assertIsNone(self.rating(self.b))
+        # F on the focused tile toggles it; F on a selection stars them all, again unstars them all
+        self.tile(page, "c.png").focus()
+        with page.expect_response(lambda r: r.url.endswith("/api/favorite")):
+            page.keyboard.press("f")
+        B.expect(star("c.png")).to_have_attribute("aria-pressed", "true")
+        box = lambda n: page.get_by_role("checkbox", name=f"select {n}")  # noqa: E731
+        box("c.png").click()
+        box("d.jpg").click()
+        with page.expect_response(lambda r: r.url.endswith("/api/favorite")):
+            page.keyboard.press("f")  # c is one already, d isn't: both starred
+        B.expect(star("d.jpg")).to_have_attribute("aria-pressed", "true")
+        self.assertEqual((self.rating(self.c), self.rating(self.d)), ("5", "5"))
+        with page.expect_response(lambda r: r.url.endswith("/api/favorite")):
+            page.keyboard.press("F")  # every one is: both unstarred
+        B.expect(star("c.png")).to_have_attribute("aria-pressed", "false")
+        B.expect(star("d.jpg")).to_have_attribute("aria-pressed", "false")
+        # the bar's buttons
+        bar = page.get_by_role("toolbar", name="Selection actions")
+        with page.expect_response(lambda r: r.url.endswith("/api/favorite")):
+            bar.locator("#bfav").click()
+        B.expect(star("d.jpg")).to_have_attribute("aria-pressed", "true")
+        with page.expect_response(lambda r: r.url.endswith("/api/favorite")):
+            bar.locator("#bunfav").click()
+        B.expect(star("d.jpg")).to_have_attribute("aria-pressed", "false")
+        self.assertIsNone(self.rating(self.d))
+        page.keyboard.press("Escape")
+        # the large view: its Favorite button and F
+        viewer = page.get_by_role("dialog", name="Item")
+        self.tile(page, "a.jpg").click()
+        B.expect(viewer).to_have_attribute("data-current", "a.jpg")
+        fb = viewer.locator(".favb")
+        B.expect(fb).to_have_attribute("aria-pressed", "false")
+        with page.expect_response(lambda r: r.url.endswith("/api/favorite")):
+            page.keyboard.press("f")
+        B.expect(viewer.locator(".favb")).to_have_attribute("aria-pressed", "true")
+        self.assertEqual(self.rating(self.a), "5")
+        with page.expect_response(lambda r: r.url.endswith("/api/favorite")):
+            viewer.locator(".favb").click()
+        B.expect(viewer.locator(".favb")).to_have_attribute("aria-pressed", "false")
+        with page.expect_response(lambda r: r.url.endswith("/api/favorite")):
+            page.keyboard.press("f")
+        B.expect(viewer.locator(".favb")).to_have_attribute("aria-pressed", "true")
+        page.keyboard.press("Escape")
+        # a.jpg was Suggested junk; as a favorite it isn't any more. The Favorites view lists it, with a chip
+        B.expect(views.get_by_role("button", name="Suggested junk").locator(".ct")).to_have_text("0")
+        fav_view.click()
+        B.expect(page.locator("[data-item]")).to_have_count(1)
+        B.expect(page.locator("[data-item]")).to_have_attribute("data-item", "a.jpg")
+        B.expect(page.locator("#vtitle")).to_have_text("Favorites")
+        B.expect(fav_view).to_have_attribute("aria-current", "page")
+        B.expect(page.get_by_role("button", name="Remove Flags: Favorite")).to_be_visible()
+        # Trash asks as always, and says it is a favorite
+        page.get_by_role("checkbox", name="select a.jpg").click()
+        page.get_by_role("toolbar", name="Selection actions").get_by_role("button", name="Trash").click()
+        B.expect(self.confirm(page)).to_contain_text("This one is a favorite.")
+        self.confirm(page).get_by_role("button", name="Cancel").click()
+        self.assertTrue(os.path.exists(self.a))
+        # Added in the last 30 days: its name says the window
+        B.expect(views.get_by_role("button", name="Added in the last 30 days")).to_be_visible()
+
+    def test_when_lists_recent_years_then_all(self):
+        for y in range(2018, 2026):  # eight more years, 2018-2025, beside 2026's
+            G.img(os.path.join(self.lib, f"{y}/{y}-06/y{y}.jpg"), (y % 255, 90, 90))
+        s = self.start()
+        page = self.new_page()
+        self.open(page, s)
+        when = page.locator("#when")
+        if when.is_hidden():
+            page.locator('.fs[data-s=when] .fs-h').click()
+        years = lambda: when.locator(".yr .opt").evaluate_all("els => els.map(e => e.dataset.val)")  # noqa: E731
+        B.expect(when.locator(".yr")).to_have_count(5)
+        self.assertEqual(years(), ["2026", "2025", "2024", "2023", "2022"])
+        more = when.get_by_role("button", name="All years (9)")
+        B.expect(more).to_have_attribute("aria-expanded", "false")
+        more.click()
+        B.expect(when.locator(".yr")).to_have_count(9)
+        B.expect(when.get_by_role("button", name="Fewer years")).to_be_focused()
+        # remembered per browser: a reload keeps every year shown
+        self.open(page, s)
+        if when.is_hidden():
+            page.locator('.fs[data-s=when] .fs-h').click()
+        B.expect(when.locator(".yr")).to_have_count(9)
+        # an older year chosen stays listed when the list is short again
+        when.locator('.yr .opt[data-val="2018"]').click()
+        when.get_by_role("button", name="Fewer years").click()
+        B.expect(when.locator(".yr")).to_have_count(6)
+        B.expect(page.locator("[data-item]")).to_have_count(1)
 
     # ------------------------------------------------------------ confirm dialogs
     def test_trash_and_erase_dialogs(self):
@@ -402,7 +552,7 @@ class GalleryBrowserTest(B.BrowserCase):
         ev("picnic").click()
         B.expect(page.locator("[data-item]")).to_have_count(2)
         self.assertEqual(sorted(self.tiles(page)), ["b.jpg", "c.png"])
-        B.expect(page.locator("#vtitle")).to_have_text("picnic")
+        B.expect(page.locator("#vtitle")).to_have_text("Picnic")  # the event's default display name
         B.expect(page.locator("#chips")).to_be_hidden()  # the event is the title and the bar, not a chip too
         evbar = page.get_by_role("toolbar", name="Event", exact=True)
         evbar.get_by_role("button", name="Rename…").click()
@@ -418,7 +568,7 @@ class GalleryBrowserTest(B.BrowserCase):
             dlg.get_by_role("button", name="Confirm").click()
         self.assertEqual(resp.value.status, 200)
         B.expect(dlg).to_be_hidden()
-        B.expect(page.locator("#vtitle")).to_have_text("park-day")
+        B.expect(page.locator("#vtitle")).to_have_text("Park day")
         B.expect(ev("park-day")).to_contain_text("2")
         B.expect(ev("picnic")).to_have_count(0)
         for p in (self.b, self.c):
@@ -439,12 +589,13 @@ class GalleryBrowserTest(B.BrowserCase):
         for p in (self.a, self.d):
             self.assertIn("Event|park-day", G.tags_of(p)[0], p)
         self.assertIn("Review|maybe-trash", G.tags_of(self.a)[0])  # every other tag stays
-        # a share-safe copy: the dialog names the destination folder and shows share-copy's own lines
+        # Share: the dialog names the destination folder and shows share-copy's own lines; the folder opens
         before = G.sha(self.d)
         page.get_by_role("checkbox", name="select d.jpg").click()
-        bar.get_by_role("button", name="Share-safe copy").click()
-        B.expect(dlg.get_by_role("heading")).to_have_text("Make share-safe copies of 1 item?")
+        bar.get_by_role("button", name="Share", exact=True).click()
+        B.expect(dlg.get_by_role("heading")).to_have_text("Share 1 item?")
         B.expect(dlg).to_contain_text("~/Pictures/share-safe")
+        B.expect(dlg).to_contain_text("opens that folder")
         dlg.get_by_role("button", name="Confirm").click()
         B.expect(dlg).to_have_attribute("data-job", "done")
         B.expect(dlg.get_by_role("heading")).to_have_text(
@@ -454,6 +605,152 @@ class GalleryBrowserTest(B.BrowserCase):
         (sub,) = os.listdir(share)
         self.assertEqual(os.listdir(os.path.join(share, sub)), ["d.jpg"])
         self.assertEqual(G.sha(self.d), before)  # the original is only read
+        B.expect(dlg.locator("#mopened")).to_have_text(re.compile(
+            r"^Opened ~/Pictures/share-safe/\d{4}-\d\d-\d\d-\d{6} in the file manager: drag the copies"))
+        self.assertEqual(B.opened(self.opened), [os.path.join(share, sub)])  # that folder, once, by itself
+
+    # ------------------------------------------------------------ Share from a tile and from the large view
+    def test_share_from_a_tile_and_the_large_view(self):
+        os.mkfifo(self.gate)
+        fake = os.path.join(self.tmp, "share_intake.py")
+        with open(fake, "w") as f:
+            f.write(GATED_SHARE)
+        self.env["MEDIA_REVIEW_INTAKE"] = fake
+        s = self.start()
+        page = self.new_page()
+        errors = []
+        page.on("pageerror", lambda e: errors.append(str(e)))
+        self.addCleanup(lambda: self.assertEqual(errors, [], "uncaught errors on the page"))
+        self.open(page, s)
+        dlg = self.confirm(page)
+        share = os.path.join(self.home, "Pictures/share-safe")
+        # a tile's Share: shown on hover, asks about that one item, selects nothing and opens nothing else
+        t = self.tile(page, "d.jpg")
+        btn = t.get_by_role("button", name="Share d.jpg")
+        B.expect(btn).to_have_css("opacity", "0")
+        t.hover()
+        B.expect(btn).to_have_css("opacity", "1")
+        B.expect(btn).to_have_attribute("title", re.compile(r"without location \(GPS\) or other hidden info.*"
+                                                             r"originals don't change"))
+        btn.click()
+        B.expect(dlg.get_by_role("heading")).to_have_text("Share 1 item?")
+        B.expect(dlg.locator(".mnames")).to_have_text("d.jpg")
+        B.expect(page.get_by_role("dialog", name="Item", exact=True)).to_be_hidden()
+        self.assertEqual(self.tiles_selected(page), 0)
+        dlg.get_by_role("button", name="Cancel").click()
+        B.expect(dlg).to_be_hidden()
+        self.assertFalse(os.path.exists(share))  # nothing made on Cancel
+        # the large view: Share in its header, the tools row without it
+        self.tile(page, "b.jpg").click()
+        viewer = page.get_by_role("dialog", name="Item", exact=True)
+        B.expect(viewer).to_have_attribute("data-current", "b.jpg")
+        vs = viewer.locator(".ihead").get_by_role("button", name="Share", exact=True)
+        B.expect(vs).to_be_visible()
+        B.expect(viewer.locator(".tools").get_by_role("button", name=re.compile("Share"))).to_have_count(0)
+        vs.click()
+        B.expect(dlg.get_by_role("heading")).to_have_text("Share 1 item?")
+        B.expect(dlg.locator(".mnames")).to_have_text("b.jpg")
+        dlg.get_by_role("button", name="Confirm").click()
+        B.expect(dlg).to_have_attribute("data-job", "running")
+        dlg.get_by_role("button", name="Hide (it keeps running)").click()
+        B.expect(dlg).to_be_hidden()
+        # it ends while hidden: the folder opens by itself, and the message names it and offers Open folder
+        B.open_gate(self.gate)
+        toast = page.locator("#toast")
+        B.expect(toast).to_contain_text(re.compile(r"^Opened ~/Pictures/share-safe/\d{4}-\d\d-\d\d-\d{6} in the file "
+                                                   r"manager: drag the copies into a chat or an email\."))
+        (sub,) = os.listdir(share)
+        out = os.path.join(share, sub)
+        self.assertEqual(os.listdir(out), ["b.jpg"])
+        B.until(lambda: B.opened(self.opened) == [out], "the folder to open after the Share click")
+        os.remove(self.opened)
+        with page.expect_response(lambda r: r.url.endswith("/api/share/open")) as resp:
+            toast.get_by_role("button", name="Open folder").click()
+        self.assertEqual(resp.value.status, 200)
+        B.expect(toast).to_contain_text("Opened ~/Pictures/share-safe/" + sub + " in the file manager")
+        B.until(lambda: B.opened(self.opened) == [out], "Open folder to open it again")
+        os.remove(self.opened)
+        # no xdg-open on the server (its 409, the server's words): a Share watched to its end says so in the
+        # dialog with where the copies are, and Open folder there asks again
+        missing = ("can't open the folder: xdg-open is not installed (Fedora package xdg-utils; "
+                   "media-intake doctor checks it)")
+        asked = []
+        page.route("**/api/share/open", lambda r: (asked.append(r.request.post_data_json), r.fulfill(
+            status=409, content_type="application/json", body=json.dumps({"error": missing}))))
+        page.keyboard.press("Escape")  # the large view closed when the job ended; nothing else open
+        self.tile(page, "c.png").hover()
+        self.tile(page, "c.png").get_by_role("button", name="Share c.png").click()
+        dlg.get_by_role("button", name="Confirm").click()
+        B.open_gate(self.gate)
+        B.expect(dlg).to_have_attribute("data-job", "done")
+        dest = dlg.locator("#mdest").inner_text().removeprefix("Destination: ")
+        self.assertRegex(dest, r"^~/Pictures/share-safe/\d{4}-")
+        B.expect(dlg.locator("#mopened")).to_have_text(f"Couldn't open the folder: {missing} The copies are in {dest}.")
+        dlg.get_by_role("button", name="Open folder").click()
+        B.expect(dlg.locator("#mopened")).to_have_text(f"Couldn't open the folder: {missing}")
+        self.assertEqual(len(asked), 2)
+        self.assertEqual(set(asked[0]), {"job"})  # the page names the job, never a folder
+        self.assertIsNone(B.opened(self.opened))
+
+    def test_event_display_name(self):
+        """The sidebar and the title show an event's display name (escaped, never markup), its slug in the
+        tooltip and the event bar; Display name… sets and clears it; a default that would look like another
+        event's falls back to the slug; no sidecar changes."""
+        G.write_tags(self.b, ["Event|some-trip-2024"])
+        G.write_tags(self.c, ["Event|a-b"])
+        G.write_tags(self.d, [], extra=["-XMP-iptcExt:Event=A b"])  # another tool's text: "a-b" would look alike
+        tags = {p: G.tags_of(p) for p in (self.b, self.c, self.d)}
+        s = self.start()
+        page = self.new_page()
+        self.open(page, s)
+        ev = lambda n: page.locator(f'#evlist [data-ev="{n}"]')  # noqa: E731
+        B.expect(ev("some-trip-2024").locator(".lbl")).to_have_text("Some trip 2024")
+        B.expect(ev("some-trip-2024")).to_have_attribute("title", "Event: some-trip-2024")
+        B.expect(ev("a-b").locator(".lbl")).to_have_text("a-b")  # never "A b": that is the other event
+        B.expect(ev("A b").locator(".lbl")).to_have_text("A b")
+        ev("some-trip-2024").click()
+        title, evbar = page.locator("#vtitle"), page.get_by_role("toolbar", name="Event", exact=True)
+        B.expect(title).to_have_text("Some trip 2024")
+        B.expect(title).to_have_attribute("title", "Event: some-trip-2024")
+        B.expect(evbar.locator("#evname")).to_have_text("Event: Some trip 2024")
+        B.expect(evbar.locator("#evslug")).to_have_text("some-trip-2024")
+        B.expect(evbar.locator("#evslug")).to_be_visible()
+        dlg = self.confirm(page)
+        evbar.get_by_role("button", name="Display name…").click()
+        B.expect(dlg.get_by_role("heading")).to_have_text("Display name for the event some-trip-2024?")
+        field = dlg.get_by_label("Display name")
+        B.expect(field).to_have_value("")
+        field.fill("a_B")  # looks like another event's: refused, the dialog stays with the reason
+        dlg.get_by_role("button", name="Confirm").click()
+        B.expect(dlg.locator("pre")).to_contain_text("Refused:")
+        name = '<img src=x onerror="window.__evx=1"> Road & <b>trip</b>'
+        field.fill(name)
+        with page.expect_response(lambda r: r.url.endswith("/api/event/name")) as resp:
+            dlg.get_by_role("button", name="Confirm").click()
+        self.assertEqual(resp.value.status, 200)
+        B.expect(dlg).to_be_hidden()
+        B.expect(ev("some-trip-2024").locator(".lbl")).to_have_text(name)  # as text
+        B.expect(title).to_have_text(name)
+        B.expect(evbar.locator("#evname")).to_have_text("Event: " + name)
+        B.expect(evbar.locator("#evslug")).to_have_text("some-trip-2024")
+        B.expect(page.locator("#evlist img, #vtitle img, #evbar img, #evlist b, #vtitle b")).to_have_count(0)
+        self.assertIsNone(page.evaluate("window.__evx"))
+        page.reload()  # kept by the server, not the page
+        B.expect(ev("some-trip-2024").locator(".lbl")).to_have_text(name)
+        ev("some-trip-2024").click()
+        evbar.get_by_role("button", name="Display name…").click()
+        B.expect(field).to_have_value(name)
+        field.fill("")  # empty: back to the default
+        with page.expect_response(lambda r: r.url.endswith("/api/event/name")) as resp:
+            dlg.get_by_role("button", name="Confirm").click()
+        self.assertEqual(resp.value.status, 200)
+        B.expect(ev("some-trip-2024").locator(".lbl")).to_have_text("Some trip 2024")
+        B.expect(title).to_have_text("Some trip 2024")
+        ev("A b").click()  # an event shown by its own text: no second line in the bar, no tooltip on the title
+        B.expect(title).to_have_text("A b")
+        B.expect(evbar.locator("#evslug")).to_be_hidden()
+        self.assertEqual(title.get_attribute("title"), "")
+        self.assertEqual({p: G.tags_of(p) for p in tags}, tags)  # never a sidecar
 
     def test_crashed_job_is_shown(self):
         os.mkfifo(self.gate)

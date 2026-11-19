@@ -89,9 +89,10 @@ media-intake similar ~/Videos/personal/2026/2026-05/GX010123.MP4 -n 20
   `--project P` (`Project|P`), `--unused-since Nd` (no
   `Used|<YYYY-MM-DD-slug>` in the last N days, same rule as `media-intake
   find`), `--clean` (drops `Review|child-in-shot`, `Review|maybe-trash` and
-  `AI|vlm/*/trash/*` unless you kept the file: `Owner|keep`, `Owner|not-trash`
-  or the legacy `Review|not-trash` outrank a trash flag; `Owner|trash` is always
-  dropped, and `Review|child-in-shot` is never cleared by a keep).
+  `AI|vlm/*/trash/*` unless you kept the file: `Owner|keep`, `Owner|not-trash`,
+  the legacy `Review|not-trash` or a favorite (`xmp:Rating` >= 5) outrank a
+  trash flag; `Owner|trash` is dropped unless the file is a favorite, and
+  `Review|child-in-shot` is never cleared by a keep or a favorite).
 - Output, best first; the score is the cosine (SigLIP text-image cosines
   are small, about 0.05-0.2; compare within one query only). Two forms
   (`--format`):
@@ -145,7 +146,7 @@ A second opinion on Suggested junk from a local vision model; its verdict
 shows in the gallery as the Junk check and Junk score ([words.md](words.md)).
 
 ```
-media-intake vlm-trash                    # Suggested junk (files tagged Review|maybe-trash)
+media-intake vlm-trash                    # files Tagged as junk (`Review|maybe-trash`)
 media-intake vlm-trash FILE...            # an explicit list
 media-intake vlm-trash --all --dry-run    # how many an overnight run would judge
 media-intake vlm-trash --all --inhibit    # the whole library, holding a sleep inhibitor
@@ -205,7 +206,8 @@ AI|vlm/qwen3-vl-2b/conf/<0.0-1.0>     the model's confidence, one decimal
   included).
 - Skipped entirely (not sent, not tagged): any owner decision
   (`media_intake/owner.py`): `Owner|not-trash`, `Owner|keep`, `Owner|trash`,
-  the legacy `Review|not-trash` or a digiKam pick label. The default candidate
+  the legacy `Review|not-trash`, a digiKam pick label or a favorite
+  (`xmp:Rating` >= 5, the gallery's star). The default candidate
   scan (no `--all`, no FILE) lists only `Review|maybe-trash` files you haven't
   kept.
 - Files tagged `Used|*` or a protected project's `Project|<name>`

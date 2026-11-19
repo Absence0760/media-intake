@@ -7,8 +7,8 @@ own states, the phone's sidebar rail.
 Suggested junk: every tile carries Keep and Trash buttons (aria-pressed; a second tap unmarks), a mark in words
 on the tile, a tap or click on the photo opens the large view, no checkboxes and no selection bar there, the
 view's note under the title, and Apply keeping what was marked (the sidecar read back; nothing deleted). On a
-390 px phone with touch, every control the grid shows (rail, header, tile checkbox, ×N, "more", the selection
-bar, Keep / Trash, Apply, a filter chip's ×, the dialog's buttons) takes a 44 x 44 px tap: the points 21 px
+390 px phone with touch, every control the grid shows (rail, header, tile checkbox, a tile's star and Share, ×N,
+"more", the selection bar, Keep / Trash, Apply, a filter chip's ×, the dialog's buttons) takes a 44 x 44 px tap: the points 21 px
 from its centre each way all land on it. The states: loading (the list request held by the test, so no sleep),
 an empty library naming the commands that fill it, no results naming what to clear (a search, a filter, an
 empty quick view), Find similar without the search index, an item gone since the list loaded, and a load
@@ -187,6 +187,8 @@ class GalleryGridBrowserTest(B.BrowserCase):
         self.assert_target(page.locator("#close"), "Stop server")
         self.assert_target(page.locator("#tsize"), "the size slider")
         self.assert_target(self.tile(page, "lone.jpg").locator(".ckw"), "a tile's checkbox")
+        self.assert_target(self.tile(page, "lone.jpg").locator(".star"), "a tile's star (shown with no hover)")
+        self.assert_target(self.tile(page, "lone.jpg").get_by_role("button", name="Share lone.jpg"), "a tile's Share")
         self.assert_target(self.tile(page, COVER).locator(".bx"), "the ×N button")
         self.assert_target(page.locator("#hmore"), "the burst help's more")
         # a tap beside the 22 px box, inside the hit area, still ticks it
@@ -327,7 +329,8 @@ class GalleryGridBrowserTest(B.BrowserCase):
         self.library()
         page = self.page(self.server(), PHONE)
         views = self.views(page)
-        for name, word in (("Library", "Library"), ("Suggested junk", "Junk"), ("Recently added", "Recent"),
+        for name, word in (("Library", "Library"), ("Suggested junk", "Junk"), ("Favorites", "Favorites"),
+                           ("Added in the last 30 days", "Recent"),
                            ("Possible child", "Child"), ("Untagged", "No tags")):
             b = views.get_by_role("button", name=name)
             B.expect(b.locator(".rl")).to_have_text(word)

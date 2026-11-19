@@ -106,9 +106,14 @@ The goal: someone else can install it on Fedora, import a phone, and trust it.
       H.264 proxy (GStreamer GPU decode → x264), cached by sha256 in the private cache
       and cleaned by erase/trash/forget/verify-gone like thumbnails (gallery only; the
       review page keeps serving batch files as they are: docs/gallery.md, "Video proxies").
+- [x] Fast HEVC playback: the proxy is streamed to the player as fragments while it is made
+      (starts in ~2 s instead of after the whole transcode), `vah264enc` on the GPU first and
+      scaled there, an unwatched transcode cancelled for the next video, a "converting" note
+      in the large view, and `media-intake proxies` to make them all ahead of time.
 - [x] Burst groups: show bursts as one stack, pick the best, trash the rest (review page
       and gallery; docs/gallery.md, "Burst stacks").
-- [x] Albums/events as first-class views (from `Event|` tags), with rename and merge.
+- [x] Albums/events as first-class views (from `Event|` tags), with rename and merge, and display
+      names you can set (docs/gallery.md, "What it shows", its Events item).
 - [x] Burst stacks in the gallery (the review page has them; `media_intake/bursts.py` is shared;
       docs/gallery.md, "Burst stacks").
 - [x] Record a camera's `BurstUUID` as `burst_id` in plan entries (Apple `BurstUUID`, Google

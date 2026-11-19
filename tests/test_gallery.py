@@ -62,6 +62,12 @@ def tags_of(p):
     return as_l(row.get("HierarchicalSubject")), as_l(row.get("Subject")), row.get("Orientation")
 
 
+def gallery_read(p):
+    """The gallery's own sidecar reader (stdlib XML) on p's sidecar, or {} without one."""
+    import gallery
+    return gallery.read_xmp(p + ".xmp") if os.path.exists(p + ".xmp") else {}
+
+
 def write_tags(p, hier, extra=()):
     x = p + ".xmp"
     with open(x, "w") as f:
@@ -345,6 +351,42 @@ class GalleryTest(unittest.TestCase):
         f = s.get("/api/facets")["facets"]
         self.assertIn(["food", 1], f["label"])
 
+    def test_suggested_junk_why_and_score(self):
+        """Suggested junk lists the vision check's verdicts from 0.7 up by default and lower on request (?jmin=),
+        narrows by reason (?why=), and says in `junk` what each reason holds, how many more a lower score adds,
+        and how many it holds without the other filters. Kept, used and protected files never, at any score."""
+        s = self.start()
+        names, j = self.names(s, view="suggest")
+        self.assertEqual(names, ["a.jpg"])
+        self.assertEqual(next(i for i in j["items"] if i["n"] == "a.jpg")["r"], "blurry")  # the tile's reason
+        jk = j["junk"]
+        self.assertEqual((jk["all"], jk["unfiltered"], jk["lower"], jk["floor"], jk["line"]), (1, 1, 1, 0.7, 0.7))
+        self.assertEqual(dict(map(tuple, jk["why"])), {"blurry": 1, "label": 1})
+        # a lower score: lo.jpg (0.5, dark) after a.jpg, most confident first; k.jpg (kept), c.png (used) and
+        # clip.mp4 (a protected project) stay out even at any score
+        names, j = self.names(s, view="suggest", jmin="0")
+        self.assertEqual(names, ["a.jpg", "lo.jpg"])
+        self.assertEqual(j["junk"]["lower"], 0)
+        self.assertEqual(dict(map(tuple, j["junk"]["why"])), {"blurry": 1, "label": 1, "dark": 1})
+        # Why: a reason, the content label's tag, a reason below the score (and how many a lower one adds)
+        self.assertEqual(self.names(s, view="suggest", why="dark", jmin="0")[0], ["lo.jpg"])
+        self.assertEqual(self.names(s, view="suggest", why="label")[0], ["a.jpg"])
+        names, j = self.names(s, view="suggest", why="dark")
+        self.assertEqual((names, j["junk"]["lower"]), ([], 1))
+        for bad in ("x", "", "nan"):  # not a number: the usual line
+            self.assertEqual(self.names(s, view="suggest", jmin=bad)[0], ["a.jpg"], bad)
+        self.assertEqual(self.names(s, view="suggest", jmin="-3")[0], ["a.jpg", "lo.jpg"])  # clamped to 0
+        # other filters narrow it; `unfiltered` keeps the view's own count for "N suggested, M shown"
+        names, j = self.names(s, view="suggest", kind="video")
+        self.assertEqual((names, j["junk"]["unfiltered"]), ([], 1))
+        # the sidebar: the view's count, how many a lower score adds, and Judged junk by score for the slider
+        f = s.get("/api/facets")
+        self.assertEqual((f["counts"]["suggest"], f["counts"]["suggest:lower"]), (1, 1))
+        self.assertEqual(f["ai_scores"], [[0.5, 1], [0.9, 1]])
+        for lo in ("0.7", "0.4"):
+            self.assertEqual(sum(n for sc, n in f["ai_scores"] if sc >= float(lo)),
+                             len(self.names(s, ai="trash", aimin=lo)[0]), lo)
+
     # ------------------------------------------------------------ sidecar actions
     def test_keep_tag_rotate(self):
         s = self.start()
@@ -404,6 +446,47 @@ class GalleryTest(unittest.TestCase):
         self.assertEqual(code, 400)
         code, _ = s.post("/api/keep", {"ids": [999]})
         self.assertEqual(code, 400)
+        for p, h0 in self.originals.items():
+            self.assertEqual(sha(p), h0, p)  # originals never written
+
+    def test_favorites(self):
+        """The star: xmp:Rating 5 in the sidecar and nothing else; a favorite (also five stars from digiKam) is
+        never Suggested junk; the Favorites view (review=favorite) and its count; four stars are no favorite."""
+        subprocess.run(["exiftool", "-q", "-overwrite_original", "-XMP-xmp:Rating=5", self.clip + ".xmp"], check=True)
+        subprocess.run(["exiftool", "-q", "-overwrite_original", "-XMP-xmp:Rating=4", self.lo + ".xmp"], check=True)
+        s = self.start()
+        ida, idb = self.id_of(s, "a.jpg"), self.id_of(s, "b.jpg")
+        rating = lambda p: gallery_read(p).get("rating")  # noqa: E731
+        self.assertEqual(self.names(s, review="favorite")[0], ["clip.mp4"])  # digiKam's five stars
+        self.assertEqual(s.get("/api/facets")["counts"]["review:favorite"], 1)
+        sug = self.names(s, view="suggest")[0]
+        self.assertNotIn("clip.mp4", sug)  # Review|maybe-trash, but a favorite
+        self.assertIn("a.jpg", sug)
+        before = tags_of(self.a)
+        code, j = s.post("/api/favorite", {"ids": [ida, idb], "on": True})
+        self.assertEqual(code, 200, j)
+        self.assertEqual(j["result"], "Added 2 to Favorites. They won't be suggested as junk.")
+        self.assertIn("undo", j)
+        self.assertEqual({i["id"]: i["fav"] for i in j["items"]}, {ida: True, idb: True})
+        self.assertEqual((rating(self.a), rating(self.b)), ("5", "5"))  # b's sidecar made for it
+        self.assertEqual(tags_of(self.a), before)  # no tag, leaf or orientation touched
+        self.assertNotIn("Owner|keep", tags_of(self.b)[0])
+        self.assertEqual(sorted(self.names(s, review="favorite")[0]), ["a.jpg", "b.jpg", "clip.mp4"])
+        self.assertNotIn("a.jpg", self.names(s, view="suggest")[0])
+        self.assertTrue(s.get(f"/api/item/{ida}")["fav"])
+        self.assertEqual(s.get("/api/facets")["counts"]["review:favorite"], 3)
+        # starring again changes nothing (no token); unstarring deletes the rating
+        code, j = s.post("/api/favorite", {"ids": [ida], "on": True})
+        self.assertEqual((code, j["result"]), (200, "Already in Favorites: nothing changed."))
+        self.assertNotIn("undo", j)
+        code, j = s.post("/api/favorite", {"ids": [ida], "on": False})
+        self.assertEqual((code, j["result"]), (200, "Removed 1 from Favorites."), j)
+        self.assertIsNone(rating(self.a))
+        self.assertIn("a.jpg", self.names(s, view="suggest")[0])  # a suggestion again
+        self.assertEqual(s.get(f"/api/item/{self.id_of(s, 'lo.jpg')}")["fav"], False)  # four stars
+        for bad in ({"ids": [ida], "on": "yes"}, {"ids": [ida]}, {"ids": [999], "on": True}):
+            code, _ = s.post("/api/favorite", bad)
+            self.assertEqual(code, 400, bad)
         for p, h0 in self.originals.items():
             self.assertEqual(sha(p), h0, p)  # originals never written
 
@@ -471,6 +554,72 @@ class GalleryTest(unittest.TestCase):
             self.assertEqual(r.returncode, 1, r.stdout)
             self.assertIn("STILL PRESENT: 1 copies: gallery thumbnails (~/.cache/media-intake/thumbs) 1", r.stdout)
             os.remove(left)
+
+    def test_apply_skips_a_trash_mark_starred_or_kept_since(self):
+        """Suggested junk's Apply (/api/decide) re-reads each sidecar marked Trash: one starred (this page) or kept
+        (another tool) since the mark is skipped and said so, the rest trashed. Plain Trash on a favorite stays
+        allowed: it is asked for item by item and confirmed."""
+        s = self.start()
+        ida, idb, idlo = self.id_of(s, "a.jpg"), self.id_of(s, "b.jpg"), self.id_of(s, "lo.jpg")
+        code, j = s.post("/api/favorite", {"ids": [ida], "on": True})
+        self.assertEqual(code, 200, j)
+        write_tags(self.b, ["Owner|keep"])  # kept elsewhere (digiKam, the CLI) after the page loaded
+        code, j = s.post("/api/decide", {"keep": [], "trash": [ida, idb, idlo]})
+        self.assertEqual(code, 400, j)  # Apply's trash still needs its confirm
+        code, j = s.post("/api/decide", {"keep": [], "trash": [ida, idb, idlo], "confirm": True})
+        self.assertEqual(code, 200, j)
+        self.assertEqual((j["result"], j["trashed"]), ("Trashing 1. Skipped 2: favorite/kept.", [idlo]))
+        self.assertTrue(self.wait_job(s)["ok"])
+        self.assertFalse(os.path.exists(self.lo))
+        self.assertTrue(os.path.exists(self.a) and os.path.exists(self.b))
+        # every mark skipped: no job at all
+        code, j = s.post("/api/decide", {"keep": [], "trash": [ida], "confirm": True})
+        self.assertEqual((code, j["result"], j["trashed"]), (200, "Skipped 1: favorite/kept.", []), j)
+        self.assertEqual(s.get("/api/job")["ids"], [idlo])  # still the last job
+        # plain Trash of a favorite: allowed (its own confirm already says what goes)
+        code, j = s.post("/api/trash", {"ids": [ida], "confirm": True})
+        self.assertEqual(code, 200, j)
+        self.assertTrue(self.wait_job(s)["ok"])
+        self.assertFalse(os.path.exists(self.a))
+
+    def test_display_name_goes_with_the_last_file_of_its_event(self):
+        """Erase or Trash of an event's last file, or Set event moving the last one out, drops the display name
+        you typed from event-names.json; the event made again later shows its default; Undo bringing an
+        event back brings it back with its default name. Another event's name stays."""
+        names = os.path.join(self.state, "event-names.json")
+        def stored():
+            with open(names) as f:
+                return next(iter(json.load(f)["libraries"].values()), {})
+        write_tags(self.b, ["Event|beach"])
+        write_tags(self.lo, ["Project|Personal", "Event|hike"])
+        s = self.start()
+        for ev, n in (("city-expo", "The expo"), ("beach", "Sea days"), ("hike", "Mountain walk")):
+            code, j = s.post("/api/event/name", {"event": ev, "name": n})
+            self.assertEqual(code, 200, j)
+        idclip, idb, idlo = self.id_of(s, "clip.mp4"), self.id_of(s, "b.jpg"), self.id_of(s, "lo.jpg")
+        code, j = s.post("/api/erase", {"ids": [idclip], "confirm": "ERASE"})
+        self.assertEqual(code, 200, j)
+        self.assertTrue(self.wait_job(s)["ok"])
+        s.get("/api/facets")  # any request after the job reconciles it
+        self.assertEqual(stored(), {"beach": "Sea days", "hike": "Mountain walk"})
+        with open(names) as f:
+            self.assertNotIn("The expo", f.read())  # the typed text is gone from the file
+        code, j = s.post("/api/trash", {"ids": [idb], "confirm": True})
+        self.assertEqual(code, 200, j)
+        self.assertTrue(self.wait_job(s)["ok"])
+        s.get("/api/facets")
+        self.assertEqual(stored(), {"hike": "Mountain walk"})
+        # Set event "" on the last file: the name goes; Undo makes the event again, with its default name
+        code, j = s.post("/api/event/set", {"ids": [idlo], "event": ""})
+        self.assertEqual(code, 200, j)
+        self.assertEqual(stored(), {})
+        code, u = s.post("/api/undo", {"undo": j["undo"]})
+        self.assertEqual(code, 200, u)
+        self.assertEqual(s.get("/api/facets")["event_names"]["hike"], {"label": "Hike", "name": ""})
+        # an event made again by another path (Set event here; apply or tag-files the same) starts plain
+        code, j = s.post("/api/event/set", {"ids": [self.id_of(s, "k.jpg")], "event": "city-expo"})
+        self.assertEqual(code, 200, j)
+        self.assertEqual(s.get("/api/facets")["event_names"]["city-expo"], {"label": "City expo", "name": ""})
 
     def test_twins_keep_their_own_rotation(self):
         """Byte-identical copies share a thumbnail only while turned alike: rotating one copy (its sidecar) shows
@@ -672,7 +821,8 @@ class GalleryTest(unittest.TestCase):
         self.assertEqual(r.status, 200)
         for needle in (b'<aside id="sidebar"', b'<nav id="views"', b'id="filters"', b'id="q"', b'id="chips"',
                        b'id="tsize"', b'id="actionbar" hidden', b'aria-label="Selection actions"', b'<aside id="info"',
-                       b'data-v="recent"', b'data-v="child"', b'data-v="untagged"', b'data-dialog="confirm"'):
+                       b'data-v="fav"', b'data-v="recent"', b'data-v="child"', b'data-v="untagged"',
+                       b'data-dialog="confirm"', b'id="bfav"', b'id="bunfav"'):
             self.assertIn(needle, b)
         self.assertNotIn(b"://", b)  # no URL of any kind, so nothing loads from anywhere else
         for bad in (b"<link", b"@import", b"url(", b"<iframe", b"@font-face"):
@@ -684,13 +834,15 @@ class GalleryTest(unittest.TestCase):
         self.assertEqual((c["kind:photo"], c["kind:video"]), (5, 2))
         self.assertEqual(c["review:maybe-trash"], 3)
         for k, flt in (("review:child-in-shot", dict(review="child-in-shot")),
-                       ("review:untagged", dict(review="untagged")),
+                       ("review:untagged", dict(review="untagged")), ("review:favorite", dict(review="favorite")),
                        ("ai:trash", dict(ai="trash", aimin="0")), ("ai:none", dict(ai="none")),
                        ("used:used", dict(used="used")), ("suggest", dict(view="suggest"))):
             self.assertEqual(c.get(k, 0), len(self.names(s, **flt)[0]), k)  # each count is what its filter lists
         self.assertEqual(c["used:used"] + c["used:unused"], f["total"])
-        # Recently added: every file in this fresh HOME was filed (its inode changed) just now
+        # Added in the last 30 days: every file in this fresh HOME was filed (its inode changed) just now, so it
+        # counts them all; its name says the window (WORDS)
         self.assertEqual(f["recent_days"], 30)
+        self.assertIn(b"Added in the last 30 days", b)
         self.assertEqual(c["recent"], f["total"])
         self.assertEqual(len(self.names(s, added=str(f["recent_days"]))[0]), f["total"])
         for bad in ("0", "-3", "x", ""):  # not a positive day count: no filter
@@ -852,6 +1004,69 @@ class GalleryTest(unittest.TestCase):
         for p, h0 in self.originals.items():
             self.assertEqual(sha(p), h0, p)
 
+    def test_display_name_follows_rename_and_merge(self):
+        """Rename moves an event's display name to the new slug (a stale name left for that slug never attaches);
+        merge keeps the target's name and drops the merged events'."""
+        write_tags(self.b, ["Event|beach"])
+        write_tags(self.lo, ["Project|Personal", "Event|hike"])
+        names = os.path.join(self.state, "event-names.json")
+        s = self.start()
+        for ev, n in (("beach", "Sea days"), ("hike", "Mountain walk"), ("city-expo", "The expo")):
+            code, j = s.post("/api/event/name", {"event": ev, "name": n})
+            self.assertEqual(code, 200, j)
+        # a name stored for "coast" from before (an event since emptied): never picked up by the rename
+        with open(names) as f:
+            d = json.load(f)
+        (key, lib), = d["libraries"].items()
+        lib["coast"] = "Stale"
+        with open(names, "w") as f:
+            json.dump(d, f)
+        code, j = s.post("/api/event/rename", {"from": "beach", "to": "coast"})
+        self.assertEqual(code, 200, j)
+        en = s.get("/api/facets")["event_names"]
+        self.assertEqual(en["coast"], {"label": "Sea days", "name": "Sea days"})
+        self.assertNotIn("beach", en)
+        with open(names) as f:
+            self.assertNotIn("beach", json.load(f)["libraries"][key])
+        code, j = s.post("/api/event/merge", {"from": ["coast", "city-expo"], "into": "hike"})
+        self.assertEqual(code, 200, j)
+        en = s.get("/api/facets")["event_names"]
+        self.assertEqual(en, {"hike": {"label": "Mountain walk", "name": "Mountain walk"}})
+        with open(names) as f:
+            self.assertEqual(json.load(f)["libraries"][key], {"hike": "Mountain walk"})
+        self.assertEqual(stat.S_IMODE(os.stat(names).st_mode), 0o600)
+        # Set event making a new event: a name left over for that slug never attaches either
+        with open(names) as f:
+            d = json.load(f)
+        d["libraries"][key]["picnic"] = "Stale"
+        with open(names, "w") as f:
+            json.dump(d, f)
+        code, j = s.post("/api/event/set", {"ids": [self.id_of(s, "a.jpg")], "event": "picnic"})
+        self.assertEqual(code, 200, j)
+        self.assertEqual(s.get("/api/facets")["event_names"]["picnic"], {"label": "Picnic", "name": ""})
+        with open(names) as f:
+            self.assertEqual(json.load(f)["libraries"][key], {"hike": "Mountain walk"})
+        # Set event into an event that exists keeps its name
+        code, j = s.post("/api/event/set", {"ids": [self.id_of(s, "b.jpg")], "event": "hike"})
+        self.assertEqual(code, 200, j)
+        self.assertEqual(s.get("/api/facets")["event_names"]["hike"]["label"], "Mountain walk")
+        # an unreadable names file: rename and merge still rewrite the sidecars, say the names weren't
+        # updated, and leave the file as it was
+        with open(names, "w") as f:
+            f.write("{not json")
+        code, j = s.post("/api/event/rename", {"from": "hike", "to": "trail"})
+        self.assertEqual(code, 200, j)
+        self.assertIn("display names not updated", j["result"])
+        self.assertIn("Event|trail", tags_of(self.lo)[0])
+        code, j = s.post("/api/event/merge", {"from": ["picnic"], "into": "trail"})
+        self.assertEqual(code, 200, j)
+        self.assertIn("display names not updated", j["result"])
+        self.assertIn("Event|trail", tags_of(self.a)[0])
+        with open(names) as f:
+            self.assertEqual(f.read(), "{not json")
+        for p, h0 in self.originals.items():
+            self.assertEqual(sha(p), h0, p)
+
     # ------------------------------------------------------------ bulk edits on a selection
     def test_bulk_edits(self):
         """Tags, event and rotate on several items at once, through the same endpoints as one item."""
@@ -1008,8 +1223,30 @@ class ViewsEndpointsTest(unittest.TestCase):
         return {"/api/event/set": {"ids": [ida, idb], "event": "picnic"},
                 "/api/event/rename": {"from": "beach", "to": "coast"},
                 "/api/event/merge": {"from": ["hike"], "into": "beach"},
+                "/api/event/name": {"event": "beach", "name": "Beach day"},
                 "/api/share": {"ids": [ida]},
+                "/api/favorite": {"ids": [ida, idb], "on": True},
                 "/api/undo": {"undo": "not-a-token"}}
+
+    def test_display_names_of_emptied_events_dropped_at_start(self):
+        """An event emptied while no gallery ran (a CLI erase): the next gallery drops its display name at start,
+        but only when every library folder is there and nothing was left out as flagged."""
+        s = self.start()
+        code, j = s.post("/api/event/name", {"event": "beach", "name": "Sea days"})
+        self.assertEqual(code, 200, j)
+        s.stop()
+        names = os.path.join(self.state, "event-names.json")
+        def stored():
+            with open(names) as f:
+                return next(iter(json.load(f)["libraries"].values()), {})
+        os.remove(self.a)
+        os.remove(self.a + ".xmp")
+        self.start().stop()  # the videos and project folders are missing (an unmounted drive): kept
+        self.assertEqual(stored(), {"beach": "Sea days"})
+        os.makedirs(self.env["PERSONAL_FOOTAGE"])
+        os.makedirs(os.path.join(self.home, "Videos/demo-footage/originals"))
+        self.start().stop()
+        self.assertEqual(stored(), {})
 
     def test_events_listed_and_filtered(self):
         s = self.start()
@@ -1022,6 +1259,73 @@ class ViewsEndpointsTest(unittest.TestCase):
         r, page = s.req("GET", "/")
         for needle in (b'id="evlist"', b'id="evbar"', b'id="bevent"', b'id="bshare"', b'id="mfield"'):
             self.assertIn(needle, page)
+
+    def test_event_display_names(self):
+        """A display name is stored in <state>/event-names.json (0600, per library), survives a restart, never
+        touches a sidecar, and is refused when it would look like another event's slug or name."""
+        raw_xmp(self.b2, ["Event|some-trip-2024"])
+        c = os.path.join(self.lib, "2026/2026-08/c.jpg")
+        img(c, (90, 90, 90))
+        raw_xmp(c, [], event="Hike day")  # another tool's event text, not a slug
+        s = self.start()
+        en = s.get("/api/facets")["event_names"]
+        self.assertEqual(en["some-trip-2024"], {"label": "Some trip 2024", "name": ""})  # the default
+        self.assertEqual(en["beach"], {"label": "Beach", "name": ""})
+        self.assertEqual(en["Hike day"]["label"], "Hike day")
+        before = self.files()
+        names = os.path.join(self.state, "event-names.json")
+        # bad input: nothing stored
+        for body in ({"event": "beach", "name": "x" * 65}, {"event": "beach", "name": "a\nb"},
+                     {"event": "beach", "name": "be\u200bach"}, {"event": "beach", "name": 5},
+                     {"event": "no-such", "name": "Nope"}, {"event": "", "name": "Nope"}, {"name": "Nope"},
+                     {"event": "beach", "name": "HIKE"},                 # another event's slug, but for case
+                     {"event": "beach", "name": "  some  TRIP_2024 "},   # spacing, dashes, underscores
+                     {"event": "beach", "name": "hike-day"}):            # another tool's event text
+            code, j = s.post("/api/event/name", body)
+            self.assertEqual(code, 400, (body, j))
+        code, j = s.post("/api/event/name", {"event": "beach", "name": ""})  # clearing none: nothing written
+        self.assertEqual(code, 200, j)
+        self.assertIn("already shows its default name", j["result"])
+        self.assertFalse(os.path.exists(names))
+        code, j = s.post("/api/event/name", {"event": "beach", "name": "  Summer   at <b>the</b> sea "})
+        self.assertEqual(code, 200, j)
+        self.assertEqual(stat.S_IMODE(os.stat(names).st_mode), 0o600)
+        with open(names) as f:
+            d = json.load(f)
+        self.assertEqual(d["version"], 1)
+        (key, lib), = d["libraries"].items()
+        self.assertRegex(key, r"^[0-9a-f]{16}$")  # a hash of the library's folders, never a path
+        self.assertEqual(lib, {"beach": "Summer at <b>the</b> sea"})
+        # a name set for one event: another event can't take one that looks like it
+        code, j = s.post("/api/event/name", {"event": "hike", "name": "summer AT <b>the</b> sea"})
+        self.assertEqual(code, 400, j)
+        self.assertIn("looks like", j["error"])
+        code, j = s.post("/api/event/name", {"event": "hike", "name": "Mountain walk"})
+        self.assertEqual(code, 200, j)
+        # a default that looks like another event's text falls back to the slug: some-trip-2024 beside
+        # "Some Trip 2024" (another tool's), seen once the gallery restarts
+        img(os.path.join(self.lib, "2026/2026-07/d.jpg"), (10, 90, 90))
+        raw_xmp(os.path.join(self.lib, "2026/2026-07/d.jpg"), [], event="Some Trip 2024")
+        self.assertEqual(self.files(), before)  # never a sidecar
+        s.stop()
+        s = self.start()  # a restarted gallery shows the same names (and now sees d.jpg)
+        en = s.get("/api/facets")["event_names"]
+        self.assertEqual(en["beach"], {"label": "Summer at <b>the</b> sea", "name": "Summer at <b>the</b> sea"})
+        self.assertEqual(en["hike"]["label"], "Mountain walk")
+        self.assertEqual(en["some-trip-2024"]["label"], "some-trip-2024")
+        self.assertEqual(en["Some Trip 2024"]["label"], "Some Trip 2024")
+        # "" goes back to the default
+        code, j = s.post("/api/event/name", {"event": "hike", "name": ""})
+        self.assertEqual(code, 200, j)
+        self.assertEqual(s.get("/api/facets")["event_names"]["hike"], {"label": "Hike", "name": ""})
+        # an unreadable file is never overwritten (another library's names may be in it)
+        with open(names, "w") as f:
+            f.write("{not json")
+        self.assertEqual(s.get("/api/facets")["event_names"]["beach"]["label"], "Beach")
+        code, j = s.post("/api/event/name", {"event": "beach", "name": "Sea"})
+        self.assertEqual(code, 409, j)
+        with open(names) as f:
+            self.assertEqual(f.read(), "{not json")
 
     def test_share_out_flag_reaches_the_app(self):
         """gallery --share-out DIR: the page names DIR and an export lands in a new folder under it, never under
@@ -1057,6 +1361,7 @@ class ViewsEndpointsTest(unittest.TestCase):
             self.assertEqual(r.status, 415, path)
         self.assertEqual(self.files(), before)
         self.assertFalse(os.path.exists(self.share_root))
+        self.assertFalse(os.path.exists(os.path.join(self.state, "event-names.json")))  # no display name stored
         self.assertEqual(s.get("/api/job")["id"], None)  # no job started
 
     def test_rename_and_merge_refuse_an_unsafe_old_name_from_metadata(self):
@@ -1090,6 +1395,7 @@ class ViewsEndpointsTest(unittest.TestCase):
             self.assertEqual(code, 409, (path, j))
             self.assertEqual((j["error"], j.get("busy")), ("a Trash is still running; wait for it to finish, then try again", True), path)
         self.assertEqual(self.files(), before)
+        self.assertFalse(os.path.exists(os.path.join(self.state, "event-names.json")))
         self.assertEqual(os.listdir(self.share_root), [])  # the export's folder went with the refusal
         fd = os.open(gate, os.O_WRONLY)  # the fake is waiting on it: this returns at once
         os.write(fd, b"go")
@@ -1110,7 +1416,7 @@ class ViewsEndpointsTest(unittest.TestCase):
         self.assertFalse(os.path.exists(self.share_root))
         code, j = s.post("/api/share", {"ids": [ida, idb]})
         self.assertEqual(code, 200, j)
-        self.assertEqual(set(j), {"result", "dest"})  # the destination folder, nothing of the copies
+        self.assertEqual(set(j), {"result", "dest", "job"})  # the folder and the job, nothing of the copies
         self.assertRegex(j["dest"], r"^~/Pictures/share-safe/\d{4}-\d\d-\d\d-\d{6}$")
         out = os.path.join(self.home, j["dest"][2:])
         self.assertEqual(stat.S_IMODE(os.stat(out).st_mode), 0o700)
@@ -1137,6 +1443,115 @@ class ViewsEndpointsTest(unittest.TestCase):
             f.write(f"2026-11-02 10:00 b0 sha256:{sha(self.b)} size:{os.path.getsize(self.b)}\n")
         code, _ = s.post("/api/share", {"ids": [idb]})
         self.assertEqual(code, 400)
+
+    def test_share_opens_its_own_folder(self):
+        """Open folder (POST /api/share/open) names a job, never a path: it runs xdg-open (a fake here, which only
+        records its arguments) on the folder this server made for that Share, and refuses anything else."""
+        fdir = os.path.join(self.tmp, "fakebin")
+        os.makedirs(fdir)
+        opener = os.path.join(fdir, "xdg-open")
+        with open(opener, "w") as f:
+            f.write(FAKE_OPENER)
+        os.chmod(opener, 0o700)
+        log = os.path.join(self.tmp, "opened.json")
+        self.env.update(PATH=fdir + os.pathsep + self.env["PATH"], FAKE_OPEN_LOG=log)
+        s = self.start()
+        ida = self.ids(s)[("a.jpg", "2026-11")]
+        os.makedirs(os.path.join(self.share_root, "planted"))
+        for body in ({}, {"job": None}, {"job": 1}, {"job": ["x"]}, {"job": "x"}, {"job": "../../.."},
+                     {"job": os.path.join(self.share_root, "planted")}, {"path": os.path.join(self.share_root, "planted")}):
+            code, j = s.post("/api/share/open", body)
+            self.assertEqual(code, 400, (body, j))  # no Share of this server's: nothing to open
+        code, j = s.post("/api/share", {"ids": [ida]})
+        self.assertEqual(code, 200, j)
+        out = os.path.join(self.home, j["dest"][2:])
+        job = self.wait_job(s)
+        self.assertTrue(job["ok"], job)
+        self.assertEqual((job["dest"], job["id"]), (j["dest"], j["job"]))  # a page that re-attached finds it too
+        self.assertFalse(os.path.exists(log))  # the server never opens it by itself
+        # only from the page: no CSRF value, or another Origin, never runs it
+        r, _ = s.req("POST", "/api/share/open", body={"job": j["job"]})
+        self.assertEqual(r.status, 403)
+        r, _ = s.req("POST", "/api/share/open", headers={"X-CSRF": s.csrf(), "Origin": "http://evil.example"},
+                     body={"job": j["job"]})
+        self.assertEqual(r.status, 403)
+        self.assertFalse(os.path.exists(log))
+        code, o = s.post("/api/share/open", {"job": j["job"]})
+        self.assertEqual(code, 200, o)
+        self.assertEqual(o["dest"], j["dest"])
+
+        def opened():
+            if not os.path.exists(log):
+                return None
+            with open(log) as f:
+                return json.load(f)
+        self.assertEqual(until(opened, "the fake opener to record its arguments"), [out])
+        os.remove(log)
+        # the folder swapped for a symlink that leads elsewhere, then gone: refused, nothing opened
+        shutil.rmtree(out)
+        os.symlink(self.lib, out)
+        code, o = s.post("/api/share/open", {"job": j["job"]})
+        self.assertEqual(code, 400, o)
+        os.remove(out)
+        code, o = s.post("/api/share/open", {"job": j["job"]})
+        self.assertEqual(code, 400, o)
+        self.assertFalse(os.path.exists(log))
+
+
+class ShareOpenGuardTest(unittest.TestCase):
+    """App.open_share in-process, with jobs.status, shutil.which and Popen mocked (nothing is launched): only the
+    folder this server made for that job, directly inside --share-out after resolving links, once the job ended."""
+
+    def setUp(self):
+        import gallery
+        self.g = gallery
+        self.tmp = tempfile.mkdtemp(prefix="gallery-share-open-")
+        self.addCleanup(shutil.rmtree, self.tmp, True)
+        self.root = os.path.join(self.tmp, "share-out")
+        self.app = gallery.App([], share_out=self.root)
+        self.d = os.path.join(self.root, "2026-01-02-030405")
+        os.makedirs(self.d)
+        self.app.shares["j1"] = self.d
+        self.status = {"id": "j1", "done": True}
+        for target, attr, kw in ((gallery.jobs, "status", dict(side_effect=lambda key: self.status)),
+                                 (gallery.shutil, "which", dict(return_value="/usr/bin/xdg-open")),
+                                 (gallery.subprocess, "Popen", {})):
+            m = mock.patch.object(target, attr, **kw)
+            setattr(self, attr, m.start())
+            self.addCleanup(m.stop)
+
+    def test_opens_that_folder_only(self):
+        r = self.app.open_share("j1")
+        self.assertEqual(r["dest"], self.d)
+        (args, kw), = self.Popen.call_args_list
+        self.assertEqual(args, ([self.g.OPENER, self.d],))  # an argument list: no shell, the folder as one argument
+        self.assertNotIn("shell", kw)
+        self.assertTrue(kw["start_new_session"])
+        self.assertIs(kw["stdin"], subprocess.DEVNULL)
+
+    def test_refusals(self):
+        elsewhere = os.path.join(self.tmp, "elsewhere")
+        os.makedirs(elsewhere)
+        nested = os.path.join(self.root, "a", "b")
+        os.makedirs(nested)
+        link = os.path.join(self.root, "2026-01-02-030406")
+        os.symlink(elsewhere, link)
+        self.app.shares.update(out=elsewhere, nested=nested, dots=os.path.join(self.root, "x", "..", "..", "elsewhere"),
+                               root=os.path.join(self.root, "a", ".."), link=link,
+                               gone=os.path.join(self.root, "2026-01-02-030407"))
+        for jid in ("j2", None, 1, ["j1"], self.d, "out", "nested", "dots", "root", "link", "gone"):
+            with self.assertRaises(ValueError, msg=jid):
+                self.app.open_share(jid)
+        self.status = {"id": "j1", "done": False}  # still copying
+        with self.assertRaisesRegex(ValueError, "still being made"):
+            self.app.open_share("j1")
+        self.Popen.assert_not_called()
+
+    def test_no_xdg_open(self):
+        self.which.return_value = None
+        with self.assertRaisesRegex(RuntimeError, "xdg-open is not installed.*xdg-utils.*doctor"):
+            self.app.open_share("j1")
+        self.Popen.assert_not_called()
 
 
 class EventBlockTest(unittest.TestCase):
@@ -1212,6 +1627,71 @@ class EventBlockTest(unittest.TestCase):
         self.assertFalse(os.path.exists(os.path.join(self.g.LIBRARY, "share")), "nothing created on refusal")
 
 
+class EventLabelsTest(unittest.TestCase):
+    """Display names in process: never two events that look alike, and the file kept per library."""
+
+    def setUp(self):
+        import gallery
+        self.g = gallery
+        self.tmp = tempfile.mkdtemp(prefix="gallery-evnames-test-")
+        self.addCleanup(shutil.rmtree, self.tmp, True)
+
+    def test_defaults_only_when_unique(self):
+        L = self.g.event_labels
+        self.assertEqual(L(["some-trip-2024", "beach"], {}), {"some-trip-2024": "Some trip 2024", "beach": "Beach"})
+        # a-b and "a b" (another tool's text) would look the same prettified: a-b keeps its slug
+        self.assertEqual(L(["a-b", "a b"], {}), {"a-b": "a-b", "a b": "a b"})
+        self.assertEqual(L(["trip", "Trip"], {}), {"trip": "trip", "Trip": "Trip"})
+        self.assertEqual(L(["a--b", "x-", "Mixed-Case"], {}), {"a--b": "a--b", "x-": "x-", "Mixed-Case": "Mixed-Case"})
+        # a set name is shown unless it looks like another event's slug or set name; then the defaults
+        self.assertEqual(L(["beach", "coast"], {"coast": "Sea"}), {"beach": "Beach", "coast": "Sea"})
+        self.assertEqual(L(["beach", "coast"], {"coast": "BEACH "}), {"beach": "Beach", "coast": "Coast"})
+        self.assertEqual(L(["beach", "coast"], {"beach": "Sea", "coast": "sea"}), {"beach": "Beach", "coast": "Coast"})
+        self.assertEqual(L(["beach"], {"gone-event": "Beach"}), {"beach": "Beach"})  # a name of no current event
+        self.assertEqual(L(["beach", "x"], {"beach": "beach"}), {"beach": "beach", "x": "X"})  # its slug, by choice
+        for events, names in ((["a-b", "a b", "A_B", "trip"], {"trip": "A  b"}),
+                              ([f"e-{i}" for i in range(30)] + ["E 3", "e 4"], {"e-5": "E 6", "e-7": "Seven"})):
+            shown = L(events, names)
+            self.assertEqual(sorted(shown), sorted(events))
+            self.assertEqual(len(set(shown.values())), len(events), shown)
+            k = self.g.look_key
+            for e, v in shown.items():  # a label other than its own slug looks like no other event's slug or label
+                if v != e:
+                    self.assertFalse([f for f in events if f != e and k(v) in (k(f), k(shown[f]))], (e, v))
+
+    def test_check_display_name(self):
+        c = self.g.check_display_name
+        self.assertEqual(c("  Summer   trip "), "Summer trip")
+        self.assertEqual(c(""), "")
+        for bad in ("x" * 65, "a\tb\x00", "be\u200bach", "\u202eevil", 3, None):
+            with self.assertRaises(ValueError, msg=repr(bad)):
+                c(bad)
+
+    def test_file_is_per_library_private_and_atomic(self):
+        st = os.path.join(self.tmp, "state")
+        one, two = [os.path.join(self.tmp, "lib1")], [os.path.join(self.tmp, "lib2"), os.path.join(self.tmp, "v")]
+        self.assertEqual(self.g.load_event_names(st, one), {})  # no file yet
+        self.g.save_event_names({"beach": "Sea"}, st, one)
+        self.g.save_event_names({"beach": "Lake"}, st, two)
+        self.assertEqual(self.g.load_event_names(st, one), {"beach": "Sea"})
+        self.assertEqual(self.g.load_event_names(st, two), {"beach": "Lake"})
+        p = os.path.join(st, self.g.EVENT_NAMES)
+        self.assertEqual(stat.S_IMODE(os.stat(p).st_mode), 0o600)
+        self.assertEqual(stat.S_IMODE(os.stat(st).st_mode), 0o700)
+        self.assertEqual(sorted(os.listdir(st)), [self.g.EVENT_NAMES])  # no temp file left behind
+        with open(p) as f:
+            self.assertNotIn(self.tmp, f.read())  # libraries by hash, never a path
+        with open(p) as f:  # a name edited by hand into one the page would refuse is left out
+            d = json.load(f)
+        d["libraries"][self.g.library_key(one)].update(bad="a\nb", sp="  x  ", zw="a\u200bb", ok="Fine")
+        with open(p, "w") as f:
+            json.dump(d, f)
+        self.assertEqual(self.g.load_event_names(st, one), {"beach": "Sea", "ok": "Fine"})
+        self.g.save_event_names({}, st, one)  # the last name gone: that library's entry goes
+        self.assertEqual(self.g.load_event_names(st, one), {})
+        self.assertEqual(self.g.load_event_names(st, two), {"beach": "Lake"})
+
+
 class SemanticArgvTest(unittest.TestCase):
     """The gallery asks semantic.py for --format machine explicitly (the `score  path` lines it parses), never
     relying on the auto default that turns human at a terminal."""
@@ -1264,13 +1744,13 @@ class PlainWordsTest(unittest.TestCase):
 
     def test_busy_text_names_what_runs(self):
         tail = " is still running; wait for it to finish, then try again"
-        for label, what in (("trash", "a Trash"), ("erase", "an Erase"), ("share", "a Share-safe copy")):
+        for label, what in (("trash", "a Trash"), ("erase", "an Erase"), ("share", "a Share")):
             st = dict(done=False, spec=dict(label=label), label="")
             self.assertEqual(self.busy(st, {"what": "job gallery", "pid": 510}), what + tail)
         done = dict(done=True, spec=dict(label="trash"))
         for holder, what in (({"what": "job review-phone-1", "pid": 7}, "a run from the review page"),
                              ({"what": "job maybe-trash"}, "a run from the review page"),
-                             ({"what": "job gallery"}, "a Trash, Erase or Share-safe copy from another gallery"),
+                             ({"what": "job gallery"}, "a Trash, Erase or Share from another gallery"),
                              ({"what": "gallery keep", "pid": 9}, "a change from another gallery page"),
                              ({"what": "intake.py apply", "pid": 3}, "the media-intake apply command"),
                              ({"what": "intake.py /tmp/x (PID"}, "another media-intake command"),
@@ -1284,7 +1764,7 @@ class PlainWordsTest(unittest.TestCase):
         shown = json.dumps({k: v for k, v in gallery.WORDS.items() if k != "tag"})
         shown += json.dumps(list(gallery.WORDS["tag"].values()))
         self.assertNotRegex(shown, r"(Owner|Review|Label|AI|Used|Project|Source|Event|Place)\|")
-        for f in ("maybe-trash", "child-in-shot", "kept", "trashed copy", "used"):  # summary()'s flags
+        for f in ("maybe-trash", "child-in-shot", "kept", "trashed copy", "used", "favorite"):  # summary(), Flags
             self.assertIn(f, gallery.WORDS["flag"])
         for k in ("trash", "erase", "share", "forget", "share-copy"):  # a job by its spec and by its step
             self.assertIn(k, gallery.WORDS["job"])

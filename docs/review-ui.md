@@ -10,7 +10,8 @@ Pass-throughs to `erase`: `--keep-phone-thumbnails`, `--no-wipe-free`.
 `--drive` the backup drive (the folder it is mounted on); the words are in
 [words.md](words.md). `--port 0` (a random free port) is the default. It prints one `xdg-open
 'http://127.0.0.1:<port>/?t=<token>'` line; open it in a private browser
-window to keep it out of your history. If the batch has no quarantined or
+window to keep it out of your history (`xdg-open` opens a normal one; the
+private-window command is in [gallery.md](gallery.md)). If the batch has no quarantined or
 review files it prints `nothing to review for BATCH` and exits 0.
 
 - **Quarantine** tab: `quarantine/BATCH` and every level of its near-copy
@@ -35,7 +36,7 @@ review files it prints `nothing to review for BATCH` and exits 0.
   place (`FLAG`, `GROUP`, `plain()` in the page script): scanner flags
   (`nudity` is "Possible nudity", `id-barcode` "Looks like an ID card",
   `secret-words:banking` "Private text: banking"), tag groups
-  (`Review|maybe-trash` is "Suggested junk", `Label|food` "Looks like:
+  (`Review|maybe-trash` is "Tagged as junk", `Label|food` "Looks like:
   food"; any other `Group|value` shows as "Group: value"), and the plan's
   `why` ("Tiny or empty image", "Near-copy of ..."). A card shows its path in
   the batch without the sub-batch prefix (`near-BATCH`, `xcheck-BATCH`), and

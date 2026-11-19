@@ -3,11 +3,11 @@
 
   python3 -I -m unittest discover -s tests -p test_gallery_undo.py
 
-Keep, my tags, Rotate and Set event reply with an undo token; /api/undo puts back exactly what that action
-changed in each sidecar (tags, dc:Subject leaves, XMP-tiff:Orientation, XMP-iptcExt:Event), under the library
+Keep, Favorite (xmp:Rating), my tags, Rotate and Set event reply with an undo token; /api/undo puts back exactly what that action
+changed in each sidecar (tags, dc:Subject leaves, XMP-tiff:Orientation, XMP-iptcExt:Event, XMP-xmp:Rating), under the library
 lock, and refuses (409, nothing written) once an item's sidecar changed again or the item left the library
 (removed or renamed); a token older than the last UNDO_KEEP actions is refused too (400). Trash, Erase,
-Share-safe copy and Trash suggestions' Apply never carry a token. Sidecars are written and read with exiftool (the server's own
+Share and Trash suggestions' Apply never carry a token. Sidecars are written and read with exiftool (the server's own
 writer); UndoBlockTest runs in-process and needs none.
 """
 import os, shutil, subprocess, sys, tempfile, unittest
@@ -32,6 +32,15 @@ def state(p):
     row = __import__("json").loads(r.stdout)[0]
     as_s = lambda v: frozenset() if v is None else frozenset(map(str, v if isinstance(v, list) else [v]))  # noqa: E731
     return as_s(row.get("HierarchicalSubject")), as_s(row.get("Subject")), row.get("Orientation"), row.get("Event")
+
+
+def rating(p):
+    """The sidecar's XMP-xmp:Rating (a number), or None (no rating, or no sidecar)."""
+    if not os.path.exists(p + ".xmp"):
+        return None
+    r = subprocess.run(["exiftool", "-j", "-q", "-n", "-XMP-xmp:Rating", p + ".xmp"], capture_output=True, text=True,
+                       check=True)
+    return __import__("json").loads(r.stdout)[0].get("Rating")
 
 
 def side(p):
@@ -149,6 +158,31 @@ class UndoTest(unittest.TestCase):
         self.assertEqual(self.snap(), before)
         self.assertEqual({p: G.sha(p) for p in self.originals}, self.originals)
 
+    def test_favorite_undo_puts_each_rating_back(self):
+        # d has four stars (digiKam), b no sidecar, a none: starring writes 5 on all three, nothing else
+        subprocess.run(["exiftool", "-q", "-overwrite_original", "-XMP-xmp:Rating=4", self.d + ".xmp"], check=True)
+        s = self.start()
+        ida, idb, idd = (self.ids[n] for n in ("a.jpg", "b.jpg", "d.jpg"))
+        before, stars = self.snap(), {p: rating(p) for p in (self.a, self.b, self.d)}
+        j = self.act(s, "/api/favorite", {"ids": [ida, idb, idd], "on": True})
+        self.assertEqual(j["result"], "Added 3 to Favorites. They won't be suggested as junk.")
+        self.assertEqual([rating(p) for p in (self.a, self.b, self.d)], [5, 5, 5])
+        self.assertEqual({i["id"]: i["fav"] for i in j["items"]}, {ida: True, idb: True, idd: True})
+        self.assertEqual(self.snap(), before)  # no tag, leaf, orientation or event (b's new sidecar holds none)
+        u = self.undo(s, j)
+        self.assertEqual(u["result"], "undid Favorite on 3")
+        self.assertEqual({p: rating(p) for p in (self.a, self.b, self.d)}, stars)  # 4 back on d, none on a and b
+        self.assertEqual(self.snap(), before)
+        self.assertEqual({i["id"]: i["fav"] for i in u["items"]}, {ida: False, idb: False, idd: False})
+        # unstar: the rating goes; undo puts the 5 back
+        self.act(s, "/api/favorite", {"ids": [ida], "on": True})
+        j = self.act(s, "/api/favorite", {"ids": [ida], "on": False})
+        self.assertEqual(j["result"], "Removed 1 from Favorites.")
+        self.assertIsNone(rating(self.a))
+        self.undo(s, j)
+        self.assertEqual(rating(self.a), 5)
+        self.assertEqual({p: G.sha(p) for p in self.originals}, self.originals)
+
     def test_undo_refuses_after_the_items_changed_again(self):
         s = self.start()
         ida, idd = self.ids["a.jpg"], self.ids["d.jpg"]
@@ -169,6 +203,12 @@ class UndoTest(unittest.TestCase):
         code, e = s.post("/api/undo", {"undo": j["undo"]})
         self.assertEqual(code, 409, e)
         self.assertEqual(self.snap(), after)
+        # a Favorite, then a rating set elsewhere (digiKam's stars): refused, the rating left as it is now
+        j = self.act(s, "/api/favorite", {"ids": [idd], "on": True})
+        subprocess.run(["exiftool", "-q", "-overwrite_original", "-XMP-xmp:Rating=3", self.d + ".xmp"], check=True)
+        code, e = s.post("/api/undo", {"undo": j["undo"]})
+        self.assertEqual(code, 409, e)
+        self.assertEqual(rating(self.d), 3)
         # an action on other items doesn't block an undo
         j = self.act(s, "/api/rotate", {"ids": [ida], "dir": "ccw"})
         self.act(s, "/api/tag", {"ids": [idd], "tag": "Trips|coast", "op": "remove"})
@@ -284,8 +324,8 @@ class UndoBlockTest(unittest.TestCase):
     """App.undo_block in-process: the reverse of a recorded change, and the refusal of anything outside what
     that kind of action writes (a record can't be turned into a write of the tools' namespaces)."""
 
-    def st(self, tags=(), subject=(), orient=None, xevent=""):
-        return dict(tags=frozenset(tags), subject=frozenset(subject), orient=orient, xevent=xevent)
+    def st(self, tags=(), subject=(), orient=None, xevent="", rating=None):
+        return dict(tags=frozenset(tags), subject=frozenset(subject), orient=orient, xevent=xevent, rating=rating)
 
     def test_reverse_of_keep(self):
         old = self.st(["Review|maybe-trash", "Label|food"], ["maybe-trash", "food"])
@@ -305,6 +345,11 @@ class UndoBlockTest(unittest.TestCase):
                                    self.st(["Event|b"], ["b"], xevent="b"), "/x.xmp")
         self.assertIn("-XMP-iptcExt:Event=a", b)
         self.assertIn("-XMP-lr:HierarchicalSubject+=Event|a", b)
+        b = gallery.App.undo_block("favorite", self.st(rating="3"), self.st(rating="5"), "/x.xmp")
+        self.assertEqual(b[-2:], ["-XMP-xmp:Rating=3", "/x.xmp"])
+        self.assertFalse([a for a in b if "Subject" in a])
+        b = gallery.App.undo_block("favorite", self.st(), self.st(rating="5"), "/x.xmp")
+        self.assertIn("-XMP-xmp:Rating=", b)
 
     def test_refuses_outside_the_actions_scope(self):
         cases = [("tag", self.st(), self.st(["Owner|keep"])),          # a tool namespace from "my tags"
@@ -313,6 +358,10 @@ class UndoBlockTest(unittest.TestCase):
                  ("event", self.st(), self.st(["Label|x"])),           # another namespace from Set event
                  ("keep", self.st(), self.st(["Project|x"])),          # Keep never writes Project|
                  ("keep", self.st(), self.st(xevent="x")),
+                 ("keep", self.st(), self.st(rating="5")),             # a rating only from Favorite
+                 ("favorite", self.st(), self.st(["Owner|keep"])),     # Favorite writes no tag
+                 ("favorite", self.st(), self.st(orient="6")),
+                 ("favorite", self.st(rating="-x"), self.st(rating="5")),  # never an exiftool option
                  ("tag", self.st(), self.st(["-bad"]))]                # never an exiftool option
         for kind, old, new in cases:
             with self.assertRaises(ValueError, msg=(kind, new)):

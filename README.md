@@ -46,7 +46,8 @@ backup drive, quarantine, review folder, Keep, Trash, Erase, ...).
   backup records, `jobs/`: each detached job's status, log and lock, `locks/`:
   the library lock, and `device-salt`) is `0700`. So are `backup/`, `jobs/`
   and `locks/`, whose files are `0600`; the lock's holder note names the
-  command and its PID, never a file name. `device-salt` is `0600`.
+  command and its PID, never a file name. `device-salt` is `0600`, and so is
+  `event-names.json` (the gallery's event display names, never in a sidecar).
 - **Raw camera serial numbers are never written anywhere** (folder names,
   tags, plans, logs). A device id is a salted HMAC pseudonym of make, model
   and serial, keyed by `device-salt`.
@@ -54,7 +55,10 @@ backup drive, quarantine, review folder, Keep, Trash, Erase, ...).
   token. The gallery can launch the desktop's default app (`xdg-open`, an
   argument list, no shell) on one library file, for media the browser can't
   play, and only from its "Open in the system player" button's POST (token,
-  CSRF and Origin checked); a quarantined or flagged file is refused.
+  CSRF and Origin checked); a quarantined or flagged file is refused. After
+  a Share it also opens the new share-safe folder it made in the file
+  manager: the page names the job, never a path, and the folder must still
+  sit directly inside the share-safe folder.
 - The gallery's H.264 copies of HEVC videos live in
   `~/.cache/media-intake/proxies` (`0700`, files `0600`); `erase`, `forget`
   and `trash` delete them, `verify-gone` reports any left, and quarantine and
@@ -107,9 +111,10 @@ It is safe to re-run (it only re-verifies checksums). Options:
 GeoNames snapshot), `--no-launcher`. For HEVC video (most phones) Fedora's
 `ffmpeg-free` has no decoder; the tool uses GStreamer's VA-API (`vah265dec`)
 or Vulkan decoder when one is installed, also to make the H.264 copy the
-gallery plays HEVC from (with an H.264 encoder: `x264enc`, `openh264enc` or
-`vah264enc`, which `doctor` reports as optional; [docs/gallery.md](docs/gallery.md),
-"Video proxies"). The optional trash second opinion
+gallery plays HEVC from (with an H.264 encoder: `vah264enc` on the GPU, else
+`x264enc` or `openh264enc`, which `doctor` reports as optional; the player starts
+within seconds while it converts, and `media-intake proxies` makes them all ahead
+of time; [docs/gallery.md](docs/gallery.md), "Video proxies"). The optional trash second opinion
 needs [Ollama](https://ollama.com/) and `ollama pull qwen3-vl:2b`. Every model
 pin (SigLIP file sha256s, the Ollama model digest) lives in
 `media_intake/pins.json`; `doctor` checks the files on disk and the local
@@ -146,7 +151,8 @@ media-intake offload phone-1 --phone <phone folder>   # after a backup: free the
 | `index`, `search`, `similar` | Local semantic search (SigLIP) |
 | `vlm-trash` | Local vision-model second opinion on Suggested junk |
 | `calibrate` | Report precision and recall of each label's threshold against your own marks; changes nothing |
-| `gallery` | Local web gallery: browse, Keep, Trash, Erase, tag, rotate, events, bulk edits, share-safe copies |
+| `gallery` | Local web gallery: browse, Keep, Favorite, Trash, Erase, tag, rotate, events, bulk edits, share-safe copies |
+| `proxies` | Make the gallery's H.264 copies of HEVC videos now, so they play at once (`--dry-run`, `--inhibit`) |
 | `prune-cache` | Delete gallery thumbnails and video proxies nothing in the library shows any more (`--dry-run` first) |
 | `backup` | Copy the library (photos, videos, sidecars) to the backup drive: incremental, never deletes there |
 | `queue add/run/status/offload` | Import a source drive or a big laptop folder in resumable chunks |

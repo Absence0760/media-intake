@@ -5,7 +5,7 @@
 
 Synthetic media in a throwaway HOME (tests/support.py): Pillow photos (JPEG, PNG) and ffmpeg
 H.264 clips in an .mp4 and an upper-case .MOV (QuickTime container), served by the real gallery
-server. Trash, Erase and Share-safe copy run the real intake.py against the throwaway HOME; Open
+server. Trash, Erase and Share run the real intake.py against the throwaway HOME; Open
 runs a fake xdg-open first on PATH that only records its arguments. Each test checks what really
 changed: the XMP sidecar (<file>.<ext>.xmp, read back with exiftool), files and sidecars gone,
 trashed.json, the erase log, index.json, the thumbnail cache, the job's status, the originals'
@@ -405,7 +405,7 @@ class MediaKindsTest(unittest.TestCase):
         self.assertFalse(os.path.exists(self.v2))
         self.assert_originals([self.v1, self.p2])
 
-    # ------------------------------------------------------------ Share-safe copy (the real intake.py share-copy)
+    # ------------------------------------------------------------ Share (the real intake.py share-copy)
     def test_share_copy_mixed_selection(self):
         subprocess.run(["exiftool", "-q", "-overwrite_original", "-GPSLatitude=37.5", "-GPSLatitudeRef=N",
                         "-GPSLongitude=77.4", "-GPSLongitudeRef=W", self.p1], check=True)
@@ -474,7 +474,8 @@ class MediaKindsTest(unittest.TestCase):
         os.remove(self.p1)  # a photo with one: its sidecar stays (as a CLI delete outside intake could leave it)
         x1 = G.sha(self.p1 + ".xmp")
         for path, body in (("/api/keep", {}), ("/api/tag", {"tag": "Trips|Spain", "op": "add"}),
-                           ("/api/rotate", {"dir": "cw"}), ("/api/event/set", {"event": "beach"})):
+                           ("/api/rotate", {"dir": "cw"}), ("/api/event/set", {"event": "beach"}),
+                           ("/api/favorite", {"on": True})):
             for gone in (self.v2, self.p1):
                 sel = [ids[self.p2], ids[gone], ids[self.v1]]
                 code, j = s.post(path, dict(body, ids=sel))

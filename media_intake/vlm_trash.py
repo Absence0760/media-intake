@@ -20,7 +20,7 @@ beside them; no other keyword is added or removed. Videos: 3 sampled frames (few
 for a clip under about 4 s), trash only when most of them (2 of 3) say TRASH >= 0.7
 (conf: the lowest of those).
 Skipped, never sent or tagged: files you decided on (owner.decided: Owner|keep,
-Owner|not-trash or its legacy spelling, Owner|trash, a digiKam pick label). Files tagged
+Owner|not-trash or its legacy spelling, Owner|trash, a digiKam pick label, a favorite: xmp:Rating >= 5). Files tagged
 Used|* or a protected project's Project|<name> (config.toml) are not sent either and get .../keep (never trash).
 Nothing else is stored: no description, no model text. Output is counts only.
 
@@ -254,26 +254,29 @@ def media_files():
 
 def read_tags(paths):
     """{media path: [HierarchicalSubject...]} for those with a sidecar; a digiKam pick label
-    shows up as "digiKam|pick/<n>"."""
+    shows up as "digiKam|pick/<n>", a favorite's xmp:Rating (owner.favorite) as "xmp|rating/<n>"."""
     xs = [p + ".xmp" for p in paths if os.path.isfile(p + ".xmp")]
     if not xs:
         return {}
     r = subprocess.run(["exiftool", "-j", "-n", "-q", "-q", "-HierarchicalSubject", "-XMP-digiKam:PickLabel",
-                        "-@", "-"], input="\n".join(xs) + "\n", capture_output=True, text=True)
+                        "-XMP-xmp:Rating", "-@", "-"], input="\n".join(xs) + "\n", capture_output=True, text=True)
     out = {}
     for row in json.loads(r.stdout or "[]"):
         v = row.get("HierarchicalSubject")
         t = [] if v is None else [str(x) for x in (v if isinstance(v, list) else [v])]
         if owner.pick_label(row.get("PickLabel")) not in ("", "0"):
             t.append(f"digiKam|pick/{owner.pick_label(row['PickLabel'])}")
+        if owner.favorite(row.get("Rating")):
+            t.append(f"xmp|rating/{owner.rating(row['Rating'])}")
         out[row["SourceFile"][:-4]] = t
     return out
 
 
 def owner_decided(t):
-    """t: read_tags() output, where a pick label shows as digiKam|pick/<n>."""
+    """t: read_tags() output, where a pick label shows as digiKam|pick/<n> and a favorite as xmp|rating/<n>."""
     pick = next((x.split("/", 1)[1] for x in t if x.startswith("digiKam|pick/")), "")
-    return owner.decided(t, pick)
+    stars = next((x.split("/", 1)[1] for x in t if x.startswith("xmp|rating/")), None)
+    return owner.decided(t, pick, stars)
 
 
 def protected(t):
@@ -285,14 +288,14 @@ def candidates():
     roots = [r for r in ROOTS if os.path.isdir(r)]
     if not roots:
         return []
-    r = subprocess.run(["exiftool", "-j", "-q", "-q", "-r", "-ext", "xmp", "-HierarchicalSubject", *roots],
-                       capture_output=True, text=True)
+    r = subprocess.run(["exiftool", "-j", "-n", "-q", "-q", "-r", "-ext", "xmp", "-HierarchicalSubject",
+                        "-XMP-xmp:Rating", *roots], capture_output=True, text=True)
     out = []
     for row in json.loads(r.stdout or "[]"):
         v = row.get("HierarchicalSubject")
         tags = [] if v is None else [str(x) for x in (v if isinstance(v, list) else [v])]
         media = row["SourceFile"][:-4]
-        if "Review|maybe-trash" in tags and not owner.kept(tags) and os.path.isfile(media):
+        if "Review|maybe-trash" in tags and not owner.kept(tags, "", row.get("Rating")) and os.path.isfile(media):
             out.append(media)
     return sorted(out)
 

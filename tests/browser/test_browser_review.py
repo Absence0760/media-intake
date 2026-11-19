@@ -773,7 +773,7 @@ class ReviewUxBrowserTest(ReviewCase):
             for chip in page.locator(".labels span").all_inner_texts():  # a raw code is one lowercase word
                 self.assertNotRegex(chip, r"^[a-z0-9-]+$", f"{name} tab")
         allt = "\n".join(seen)
-        for good in ("Possible nudity", "Looks like an ID card", "Private text: banking", "Suggested junk",
+        for good in ("Possible nudity", "Looks like an ID card", "Private text: banking", "Tagged as junk",
                      "Looks like: food", "Tiny or empty image", "Near-copy of DCIM/x.png", "DCIM/Camera/n1.jpg"):
             self.assertIn(good, allt)
 

@@ -106,7 +106,7 @@ close the PR.
   and fails if any test skips except the real-Ollama one (`VLM_REAL`, which
   needs a GPU; run it locally), the browser tests (the `browser` job in
   `ci.yml` runs those) and the HEVC proxy cases that need ffmpeg's libx265
-  (Fedora has no HEVC encoder; `ci.yml`'s `test` job runs those). It is not a required check and doesn't run on
+  (Fedora has no software HEVC encoder, only VA-API's on a GPU; `ci.yml`'s `test` job runs those). It is not a required check and doesn't run on
   pull requests: run it on your branch to model-test a pin bump, and on
   `main` before a release.
 - When a test fails, fix the test if it is wrong, or the code if it is; never
@@ -114,7 +114,9 @@ close the PR.
 - Real-browser tests (`tests/browser/`, Playwright + headless Chromium) drive
   the gallery and the review page: keys, selection and the bottom selection
   bar (every gallery view but Suggested junk, which has Keep and Trash on each
-  tile instead and no selection bar), the confirm dialogs (ERASE typed; the gallery's Close too), lightbox video autoplay and Space
+  tile instead and no selection bar), Favorites (the tile's star, F, the bar's
+  Favorite / Unfavorite, the large view's button, the Favorites view, Undo),
+  the When list's recent years and "All years (N)", the confirm dialogs (ERASE typed; the gallery's Close too), lightbox video autoplay and Space
   play / pause, Range seeking, and the detached job's
   progress, including re-attaching after a reload; on the review page also
   its keyboard and screen-reader hooks (`ReviewA11yBrowserTest`: the tablist,
@@ -134,19 +136,28 @@ close the PR.
   runs Select all: the button, Ctrl+A and Cmd+A, a closed stack adding its
   cover only, a filter respected, Ctrl+A in a text field left alone, Esc
   clearing, Trash and Erase keeping their confirmations, and a paged grid
-  saying how many more match. `test_browser_gallery_dialogs.py` fails on any native `alert`, `confirm` or
+  saying how many more match. `test_browser_gallery_drag_select.py` runs drag to select
+  (a closed stack's cover only, Shift / Ctrl adding, Esc, a click not taken,
+  no drag by touch, the bottom edge loading the next page) and Suggested
+  junk's bulk marks (Shift-click and Shift+T / Shift+K ranges, a drag from a
+  mark, Mark all shown as Trash, Clear marks, Apply still asking, marks kept
+  across views, the unload question, K / T in the large view marking). `test_browser_gallery_dialogs.py` fails on any native `alert`, `confirm` or
   `prompt` and runs the in-page ones: the tag field's suggestions and its
   refusal of the tools' namespaces, focus kept in a dialog and given back on
   Esc, an error message staying until dismissed (Playwright's clock, no sleep),
   a 409 while a job holds the library lock, the `?` shortcut list against the
   keys the page's handlers check, and Undo of Rotate, Keep, Set event and a
   tag restoring the sidecars (refused after a later change, never offered after
-  Trash, Erase or Share-safe copy). `test_browser_gallery_grid.py` runs the
+  Trash, Erase or Share). `test_browser_gallery_grid.py` runs the
   grid: Suggested junk marked by tap and click (Keep and Trash on each tile, a
-  second tap unmarking, Apply keeping what was marked), a 44 x 44 px target for
+  second tap unmarking, Apply keeping what was marked), a 44 x 44 px target (the tile's star too) for
   every control on a 390 px touch phone, the grid's loading, empty, no-results,
   item-gone and load-error states, and the phone's sidebar rail with a word
-  under each icon. `test_browser_gallery_layout.py` checks the
+  under each icon. `test_browser_gallery_junk.py` runs Suggested junk's bar
+  (Why, Junk score, Show N more with a lower junk score), the tile's score and
+  reason, the header with Library filters still set, the Judged junk count
+  following its slider, and marks with the filters and stars (what Apply
+  sends; a star taking a mark off). `test_browser_gallery_layout.py` checks the
   gallery at 390 px and 800 px: no sideways scroll, the header fitting, a burst
   badge clear of its tile's checkbox, and the last row above the selection
   bar; at 390 px the compact "×N" burst button (opening and closing the
@@ -155,7 +166,12 @@ close the PR.
   downward swipe closing it; the desktop keeping the full burst labels; and
   4.5:1 contrast for the labels on the accent colour, key hints and
   placeholders in light and dark, on the gallery and the review page (with
-  its `color-scheme`). They skip with a reason
+  its `color-scheme`); and the sidebar's width (its edge dragged, clamped,
+  remembered, reset by a double-click, resized by keys, absent in the rail
+  and on a phone), Keyboard shortcuts at the sidebar's foot and the search
+  placeholder fitting. `test_browser_gallery_proxy.py` plays an HEVC clip
+  while its H.264 proxy is still being made (the transcode held on a FIFO),
+  with the "converting" note, then from the cache with Range. They skip with a reason
   when Playwright or its Chromium is missing, so the commands above are
   unaffected; the `browser` job in `ci.yml` runs them (and fails, not skips,
   through `MEDIA_INTAKE_BROWSER_REQUIRED=1`). Locally, once:

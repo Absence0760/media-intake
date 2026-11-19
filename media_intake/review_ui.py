@@ -1233,7 +1233,7 @@ const FLAG={"nudity":"Possible nudity","unscanned-nudity":"Not checked for nudit
  "unscanned-barcode":"Barcodes not checked","unscanned-type":"File type not checked","unreadable":"Couldn't be read",
  "passport-mrz":"Looks like a passport","payment-card":"Looks like a payment card","id-barcode":"Looks like an ID card",
  "2fa-qr":"Two-factor code","wallet-qr":"Wallet code","near-duplicate":"Near-copy",
- "Review|maybe-trash":"Suggested junk","Review|child-in-shot":"Possible child","Review|vlm-trash":"Suggested junk",
+ "Review|maybe-trash":"Tagged as junk","Review|child-in-shot":"Possible child","Review|vlm-trash":"Suggested junk",
  "Review|vlm-keep":"Looked fine","Review|not-trash":"Marked Keep","Owner|keep":"Marked Keep","Owner|not-trash":"Marked Keep",
  "Owner|trash":"Marked Trash"};
 const GROUP={nudity:"Possible nudity",document:"Looks like a document",text:"Private text","secret-words":"Private text",Label:"Looks like",Review:"Flag"};

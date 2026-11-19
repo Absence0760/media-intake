@@ -9,6 +9,8 @@ Stdlib only, no side effects at import, so intake.py, gallery.py and the venv to
                    is still on disk (`trash` deletes the paths you name; other copies
                    of the same sha256 are marked, not deleted). The durable record is
                    the sha256 in <state>/trashed.json, which keeps it from coming back.
+  xmp:Rating >= 5  a favorite (the gallery's star writes 5; digiKam's five stars are the
+                   same field). Counts as kept: never suggested as junk, never judged.
 
 No tool removes an Owner| tag except a newer owner decision on the same file (Keep
 drops Owner|trash). AI tags never override them.
@@ -22,6 +24,7 @@ NOT_TRASH = "Owner|not-trash"
 TRASH = "Owner|trash"
 LEGACY = {"Review|not-trash": NOT_TRASH}
 ACCEPTED = "3"  # digiKam pick label Accepted (XMP-digiKam:PickLabel)
+FAVORITE = 5  # xmp:Rating (XMP-xmp:Rating, 0-5 stars) at or above this is a favorite; the gallery writes 5
 
 
 def normalise(tags):
@@ -34,10 +37,25 @@ def pick_label(v):
     return "" if v is None else str(v).strip()
 
 
-def kept(tags, pick=""):
-    """You kept it: Owner|keep, Owner|not-trash (or the legacy spelling), or digiKam Accepted."""
+def rating(v):
+    """xmp:Rating as an int (exiftool prints it as a number or text, "5" or "5.0"); None when unset or bad."""
+    try:
+        return int(float(str(v).strip()))
+    except (TypeError, ValueError, OverflowError):
+        return None
+
+
+def favorite(stars):
+    """A favorite: xmp:Rating at least FAVORITE (the gallery's star, or five stars set in digiKam)."""
+    r = rating(stars)
+    return r is not None and r >= FAVORITE
+
+
+def kept(tags, pick="", stars=None):
+    """You kept it: Owner|keep, Owner|not-trash (or the legacy spelling), digiKam Accepted, or a favorite
+    (stars: the sidecar's xmp:Rating)."""
     t = set(normalise(tags))
-    return KEEP in t or NOT_TRASH in t or pick_label(pick) == ACCEPTED
+    return KEEP in t or NOT_TRASH in t or pick_label(pick) == ACCEPTED or favorite(stars)
 
 
 def trashed(tags):
@@ -45,6 +63,6 @@ def trashed(tags):
     return TRASH in tags and not kept(tags)
 
 
-def decided(tags, pick=""):
-    """Any owner decision on the file: kept, trashed, or any digiKam pick label."""
-    return kept(tags, pick) or TRASH in tags or pick_label(pick) not in ("", "0")
+def decided(tags, pick="", stars=None):
+    """Any owner decision on the file: kept (a favorite too), trashed, or any digiKam pick label."""
+    return kept(tags, pick, stars) or TRASH in tags or pick_label(pick) not in ("", "0")

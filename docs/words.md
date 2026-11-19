@@ -28,6 +28,7 @@ buttons are named in **bold**, as they appear on screen.
 | **exact duplicate** | A file whose content is already in the library. `apply` drops the staged copy. |
 | **near-duplicate** | A photo that looks like one already in the library or in the batch (a re-save, a resize, a burst shot). Set aside in the review folder. |
 | **review folder** | A batch's near-duplicates and junk (tiny or empty images), set aside by `apply` for a glance. `purge-review` deletes it. |
+| **Added in the last 30 days** | The gallery's view of files filed into the library in the last 30 days, whatever their date. Right after a first import it holds the whole library. Was "Recently added". |
 | **offload** | Delete a batch's files from the source (phone, camera or source drive) once each has a checked copy in the library. Never for a laptop folder: you delete that yourself. |
 
 ## Deciding
@@ -35,11 +36,15 @@ buttons are named in **bold**, as they appear on screen.
 | Word | Means |
 | --- | --- |
 | **review page** | `media-intake review BATCH`: a page on this computer only where you decide on what an import set aside. Its tabs are **Quarantine** (flagged files), **Review** (the review folder) and, with `--maybe-trash`, **Maybe trash** (Suggested junk). |
-| **mark** | On the review page, a choice is only a mark until you apply it. Pressing a pressed button again clears it. |
+| **mark** | On the review page, and in the gallery's Suggested junk, a choice is only a mark until you apply it. Pressing a pressed button again clears it. **Mark all shown as Trash** marks every tile loaded, **Clear marks** takes every mark off; neither changes a file. |
+| **drag to select** | In the gallery, drawing a rectangle with the mouse over the grid: every tile it touches is selected (in Suggested junk, from a Keep or Trash button: marked). Nothing moves; no file is dragged anywhere. |
 | **Submit**, **Apply N decisions** | The review page's **Submit** opens the Apply dialog ("Apply 13 decisions?"); its **Apply N decisions** button runs every mark. When anything will be removed you type `ERASE` first. In the gallery's Suggested junk view, **Apply** does the same for its K / T marks. |
+| **Favorite** | A photo or video you starred: the gallery's star on a tile or in the large view, **F**, or five stars set in digiKam (the sidecar's rating). The gallery's **Favorites** view lists them. A favorite is never Suggested junk. **Unfavorite** takes the star off. |
 | **Keep** | Keep the file. In Quarantine: put it back in the library (`release`). In Review: leave it in the review folder for now. For Suggested junk: leave it in the library and never suggest it again (`not-trash`). In the gallery: mark it kept (the tile says "Kept"). |
 | **Trash** | Delete a file that is junk but not private: the file, its sidecar and thumbnails (and with `--phone` its original on the phone), and remember its content so the same photo is skipped if it is imported again. No search for other copies. Never offered for a quarantined file. Command: `trash`. |
 | **Erase** | Delete a private file for good with every copy the tool can reach: quarantine, the library, your whole home folder (your own photo folders included), thumbnails and caches, and the phone and backup drive when you name them. Ends with a check and a report of what it could not reach (cloud, chat apps, other devices). Asks you to type `ERASE`. Commands: `erase` (a batch's quarantine), `forget` (library files). |
+| **Share** | In the gallery: make share-safe copies (no location or other hidden info) in a new folder under `~/Pictures/share-safe`, then open that folder so you can drag them into a chat or an email. Your originals and their tags don't change. Command: `share-copy`. |
+| **Open folder** | After a Share: open its new folder in the desktop's file manager again. |
 | **Delete this copy** | Review tab only: delete just this file from the review folder. Nothing is remembered and no other copy is touched. |
 | **DELETES** | In `media-intake --help` and a command's summary: this command removes files. Its `--help` has a `Deletes:` line saying what. |
 
@@ -47,12 +52,23 @@ buttons are named in **bold**, as they appear on screen.
 
 | Word | Means |
 | --- | --- |
-| **Suggested junk** | Library files the tool thinks may be junk (a content label, the optional vision-model check, or a copy of something you trashed). Never a file you kept. The gallery shows them in its **Suggested junk** view; `suggest-trash` opens them on the review page's **Maybe trash** tab. Nothing happens until you Keep or Trash them. |
-| **Junk score** | How sure the optional vision-model check is that a file is junk, from 0 to 1. |
-| **Junk check** | The gallery filter for the vision model's verdict: Judged junk, Judged fine or Not checked. |
+| **Suggested junk** | Library files the tool thinks may be junk: the optional vision check's verdicts (`vlm-trash`), files Tagged as junk, and copies of something you trashed. Never a file you kept or made a favorite, used in a post or in a protected project. The gallery shows them in its **Suggested junk** view, most likely first; `suggest-trash` opens them on the review page's **Maybe trash** tab. Nothing happens until you Keep or Trash them and Apply. |
+| **Tagged as junk** | A file a content label marked as possible junk: one of the reasons a file is in Suggested junk (the gallery's Flags filter, its tile flag and Suggested junk's **Why**). Not the whole view, so its count is smaller. |
+| **Why** | Suggested junk's reason filter: the vision check's reason (Blurry, Accidental shot, Too dark, Packaging, Random object, Junk screenshot, Near-copy, Other), Tagged as junk, or Copy of a trashed photo. A tile shows its reason after its score: "Junk score 0.90 (blurry)". |
+| **Junk score** | How sure the optional vision check is that a file is junk, from 0 to 1, always shown to 2 decimals. Suggested junk lists verdicts of 0.70 or more by default (below that the model itself calls it low-confidence); its **Junk score** box goes lower, and **Show N more with a lower junk score** says how many that adds. |
+| **Junk check** | The gallery filter for the vision model's verdict: Judged junk (its count follows the "Junk score at least" slider), Judged fine or Not checked. |
 | **Possible child** | A content label for photos that may show a child. A hint only: it misses small or distant children. |
 | **Looks like** | A content label (dog, beach, food, ...) from the local SigLIP model. |
-| **Flags** | The gallery filter for Suggested junk, Possible child and Untagged. |
+| **Flags** | The gallery filter for Tagged as junk, Possible child and Untagged. |
+| **video proxy**, **converting** | The gallery's H.264 copy of a video this browser can't play (HEVC, most phones), made on this computer and kept in the cache. While one is made the large view says **Converting this video for the browser** and starts playing within seconds; `media-intake proxies` makes them ahead of time. |
+
+## Events
+
+| Word | Means | Not to be confused with |
+| --- | --- | --- |
+| **event** | A named group of photos and videos (a trip, a shoot), held in each file's sidecar as `Event\|<slug>`. **Set event…**, **Rename…** and **Merge into…** change it. | A batch. |
+| **slug** | An event's name in the sidecars: lowercase letters, digits and dashes, like `summer-2026` (`plan --event`, Set event, Rename). Always in the tooltip and the event bar. | The display name. |
+| **display name** | What the gallery shows for an event in the sidebar and the title: one you set with **Display name…**, else the slug made readable ("Summer 2026") when no other event looks like it, else the slug. Kept by the gallery in the state folder, never in a sidecar; two events never show alike. | The slug. |
 
 The tool's own tag names (`Review|maybe-trash`, `Owner|keep`, `Label|food`)
 appear only in sidecars and in the developer docs; the pages map them to the

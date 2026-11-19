@@ -13,7 +13,7 @@ Paths take `~` and `$VARS`.
 | --- | --- | --- |
 | `library` | `~/Pictures/library` | Photos, `Screenshots/`, `Messaging/<app>/` |
 | `videos` | `~/Videos/personal` | Videos (GoPro included), `Screen recordings/` |
-| `state` | `~/.local/share/media-intake` | Staging, quarantine, index, erase log, `jobs/` (each detached job's status, log and lock), `locks/` (the library lock), `device-salt` (the key of the device-id pseudonyms, `0600`), venv, models, GeoNames. Kept `0700` (`jobs/` and `locks/` too, their files `0600`); never sync or index it. Keep `device-salt` when you move or rebuild the state folder: a new salt gives every camera a new device id, so its next batches and folders no longer match the old ones. |
+| `state` | `~/.local/share/media-intake` | Staging, quarantine, index, erase log, `jobs/` (each detached job's status, log and lock), `locks/` (the library lock), `device-salt` (the key of the device-id pseudonyms, `0600`), `event-names.json` (the gallery's event display names, per library by a hash of its folders, `0600`, written atomically; [gallery.md](gallery.md), Events), venv, models, GeoNames. Kept `0700` (`jobs/` and `locks/` too, their files `0600`); never sync or index it. Keep `device-salt` when you move or rebuild the state folder: a new salt gives every camera a new device id, so its next batches and folders no longer match the old ones. |
 | `phone.extra_folders` | none | `{ "relative/folder" = "App" }`: extra exact folders on a phone that may be read, each filed under `Messaging/<App>/`. Everything else outside `DCIM/` and `Pictures/` stays unlisted. Entries for WhatsApp, Telegram and Signal: [intake.md](intake.md), "Messaging apps". |
 | `drive.backup_markers` | `[]` | Folder names at a drive's mount root that mark your backup drive; `stage --kind drive` and `queue add` refuse it. A `.media-intake-backup` file at the root does the same; `.media-intake-source-ok` overrides both. |
 | `queue.wrapper` | `[]` | Command prefix for the queue's heavy steps (plan, scan, tag, index, vlm). |
@@ -106,8 +106,8 @@ Changing a threshold stays your edit to `labels.yaml`.
    hundred items, with at least 20 yes and 20 no per label you want a
    suggestion for.
 3. **`maybe-trash` needs fewer marks**: your trash decisions count already.
-   A file you kept (Keep: `Owner|keep` / `Owner|not-trash`, or digiKam
-   Accepted) is a "no"; `Owner|trash` on a copy, or its sha256 in
+   A file you kept (Keep: `Owner|keep` / `Owner|not-trash`, digiKam
+   Accepted, or a favorite: `xmp:Rating` >= 5) is a "no"; `Owner|trash` on a copy, or its sha256 in
    `<state>/trashed.json`, is a "yes". Trash deletes the file, so a trashed
    item counts only until the next `media-intake index` drops its vector;
    run `calibrate` before re-indexing. A `Calibrate|maybe-trash|...` tag wins
