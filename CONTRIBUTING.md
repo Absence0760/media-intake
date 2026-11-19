@@ -128,7 +128,9 @@ close the PR.
   burst stacks (the cover, its X to open and close, the count badge, keep one,
   decide the rest, a near-copy never stacked) with a video beside each, the card
   shown for a file the browser can't decode, and a messaging copy of a video
-  beside its original. `test_browser_gallery_bursts.py` runs the gallery's
+  beside its original. `test_browser_gallery_dates.py` runs Dates to check and Fix date (the
+  suggestion, a typed date, Undo, a name holding HTML shown as text, no sideways scroll at phone width).
+  `test_browser_gallery_bursts.py` runs the gallery's
   burst stacks: the cover and its count badge, X and `x` to open and close
   with focus back on the cover, a closed stack's selection and Keep acting on
   the cover only, the large view stepping over hidden shots, and a near-copy

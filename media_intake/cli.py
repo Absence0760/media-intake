@@ -42,6 +42,8 @@ Library
   search "TEXT"             find photos by a description (venv)
   similar FILE              find photos that look like this one (venv)
   tag-files FILE...         write tags again for library files
+  check-dates [PATHS]       find files whose date looks wrong; changes nothing
+  fix-dates FILE...         correct dates in sidecars, with --yes; --undo
   mark-used FILE --post P   record that files were used in a post
   share-copy FILE --out D   copy without GPS or metadata (or social-copy)
   calibrate                 test content labels on your marks; changes nothing

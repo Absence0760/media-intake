@@ -2669,6 +2669,8 @@ def cmd_tag(a):
     if plan is None:
         sys.exit(f"plan and apply have not run for {a.batch}. Run: media-intake plan {a.batch}")
     flags = load(os.path.join(b, "scan.json"), {}) or {}
+    import datecheck
+    fixed = datecheck.fixed_paths()  # a date fix-dates set stays: written again instead of the plan's
     items = []
     for p in plan:
         if p["action"] != "file" or p["rel"] in flags or not os.path.isfile(p["dst"]):
@@ -2679,7 +2681,8 @@ def cmd_tag(a):
         if p.get("device_model"):
             src = (src, p["device_model"])
         items.append((p["dst"], project, src, p.get("event"),
-                      dates.aware(datetime.datetime.fromisoformat(p["date"]), p.get("date_tz")), p.get("export_gps")))
+                      fixed.get(p["dst"]) or dates.aware(datetime.datetime.fromisoformat(p["date"]), p.get("date_tz")),
+                      p.get("export_gps")))
     nflag = sum(1 for p in plan if p["rel"] in flags)
     print(f"{plural(len(items), 'filed file')} to tag" + (f"; {nflag:,} flagged by scan are never tagged" if nflag else ""))
     tag_files(items, labels=not a.no_labels)
@@ -2728,6 +2731,16 @@ def cmd_tag_files(a):
             src = (src, model[f])
         items.append((f, project, src, a.event or event, fresh[f].aware() if f in fresh else None))
     tag_files(items, labels=not a.no_labels, label="tag-files")
+
+
+def cmd_check_dates(a):
+    import datecheck  # docs/dates.md
+    datecheck.cmd_check_dates(a)
+
+
+def cmd_fix_dates(a):
+    import datecheck
+    datecheck.cmd_fix_dates(a)
 
 
 def cmd_mark_used(a):
@@ -3101,6 +3114,46 @@ def build_parser(prog=None):
     s.add_argument("--event", metavar="SLUG", help="event slug for all of them (lowercase letters, digits and dashes)")
     s.add_argument("--no-labels", action="store_true", help="no content labels (faster)")
 
+    s = cmd("check-dates", "find library files whose date looks wrong; changes nothing",
+            "Check every library file's date (or only the PATHS given): clock-reset defaults, a camera\n"
+            "newer than its date, a video format newer than its date, file numbers out of date order,\n"
+            "dates that disagree (GPS, file name, export, camera), copies with other dates, GPS at 0, 0\n"
+            "and a place far from the file's GPS. Each with a confidence, a reason and, when it can\n"
+            "tell, a suggested date (docs/dates.md). Quarantined and flagged files are never read.",
+            "reads the library, its sidecars and the batches' plans; writes only its report in the state "
+            "folder (datecheck.json, for the gallery's Dates to check view).",
+            "no.")
+    s.add_argument("paths", nargs="*", metavar="PATHS", help="library files or folders to check (default: the "
+                   "whole library); files are compared only with the others checked")
+    s.add_argument("--json", action="store_true", help="print the report as JSON instead of text")
+    s.add_argument("--quick", action="store_true", help="don't read GoPro GPS tracks (much faster on many "
+                   "videos; their GPS time is then not compared)")
+
+    s = cmd("fix-dates", "correct library files' dates in their sidecars; a dry run until --yes",
+            "Give library files a corrected date: --set one, --shift by an amount, take check-dates'\n"
+            "suggestion (--suggested) or its numbered neighbours' (--from-neighbours), or copy a good\n"
+            "file's clock offset (--like). Shows each old and new date and writes only with --yes. Each\n"
+            "write is recorded, so --undo puts it back. Files stay in their folders (docs/dates.md).",
+            "the files' sidecars (XMP-exif:DateTimeOriginal) and the fix record in the state folder "
+            "(date-fixes.json); never the photos or videos themselves.",
+            "no.")
+    s.add_argument("files", nargs="*", metavar="FILE", help=h_files)
+    g = s.add_mutually_exclusive_group(required=True)
+    g.add_argument("--set", metavar="YYYY-MM-DD[THH:MM]", help="this date (a date alone keeps each file's time "
+                   "of day; a time may end in a UTC offset like +02:00)")
+    g.add_argument("--shift", metavar="+-N(y|d|h|m)", help="move each date by this much, e.g. +8y, -3h30m, +2d "
+                   "(m: minutes)")
+    g.add_argument("--from-neighbours", action="store_true", help="the date check-dates worked out from the "
+                   "camera's numbered files before and after each one")
+    g.add_argument("--suggested", action="store_true", help="check-dates' suggested date for each file (GPS, the "
+                   "file name, a cloud export or its numbered neighbours)")
+    g.add_argument("--like", metavar="GOOD", help="apply GOOD's offset from its camera's clock (its corrected date "
+                   "minus its camera date) to each file's own camera date")
+    g.add_argument("--undo", nargs="?", const="last", metavar="ID", help="put back one earlier fix (default: the "
+                   "last one), unless its sidecars changed since")
+    s.add_argument("--reason", metavar="TEXT", help="why, kept in the fix record (optional)")
+    s.add_argument("--yes", action="store_true", help="write the sidecars (without it, a dry run)")
+
     s = cmd("mark-used", "record that library files were used in a post (a Used|<post> tag)",
             "Tag library files as used in a post, so find --unused-since and --never-used can skip them.",
             "the files' sidecars.",
@@ -3128,8 +3181,9 @@ def build_parser(prog=None):
 # The library lock (library_lock.py; docs/intake.md, "One writer at a time"): every subcommand is in exactly one
 # of these (tests/test_library_lock.py checks), and main() is the only place that takes it for the CLI.
 LOCKED = {"stage", "plan", "scan", "apply", "release", "erase", "forget", "sweep-erased", "offload", "purge-review",
-          "trash", "not-trash", "suggest-trash", "tag", "tag-files", "mark-used", "migrate-tags"}
-READ_ONLY = {"quarantine", "verify-gone", "wipe-free", "share-copy", "social-copy", "find"}
+          "trash", "not-trash", "suggest-trash", "tag", "tag-files", "mark-used", "migrate-tags", "fix-dates"}
+# check-dates writes only its own report in the state folder, so a long run never blocks the gallery's edits.
+READ_ONLY = {"quarantine", "verify-gone", "wipe-free", "share-copy", "social-copy", "find", "check-dates"}
 
 
 def main(argv=None, prog=None):

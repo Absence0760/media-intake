@@ -34,7 +34,7 @@ without one" (`/api/facets` gives `drive`, the mount or null).
   plugin tab; quick views **Favorites** (below), **Added in the last 30
   days** = filed into the library in the last 30 days, by the file's inode
   change time, Possible child = `Review|child-in-shot`,
-  Untagged; then **Events** with counts, the eight largest and "All N events"),
+  Untagged, **Dates to check** (below); then **Events** with counts, the eight largest and "All N events"),
   the search box (a one-line hint when semantic search is off, the
   full reason under "why"), then the filters as collapsible sections with
   counts (open / closed remembered per section) and "Clear filters (N)",
@@ -393,6 +393,36 @@ the large view. The **Favorites** quick view lists them, with its count, and
   each item's rating back as it was (four stars back as four, none as none),
   refusing after a later change.
 
+## Dates to check
+
+The files whose date looks wrong, as the last `media-intake check-dates` run
+found them ([dates.md](dates.md): clock-reset defaults, a camera newer than
+its date, a video format newer than its date, file numbers out of date
+order, dates that disagree, copies with other dates), with the count in the
+sidebar. Its tiles are grouped by the first thing found (that kind's words
+as the heading, the groups in [dates.md](dates.md)'s order), each with
+"Suggested YYYY-MM-DD HH:MM" (or "No suggested date") as its flag and every
+reason in its tooltip; the note above the grid says when the check ran.
+Before any run, and once everything is fixed, the view says to run
+`media-intake check-dates` in a terminal. `/api/list?dates=all` (or one kind,
+`dates=reset`, ...) lists them; each row carries `dk`, `dq`, `dd` (the date
+check-dates saw in use), `dr`, `ds` and `dsrc`. The report is re-read when
+it changes, so a CLI run or fix shows on the next reload of the grid.
+
+**Fix date…** in the selection bar (only in this view) asks how: **Use the
+suggested date** (disabled when none of the selection has one; the others are
+left as they are), **Set the date to** (YYYY-MM-DD, or with HH:MM; a date
+alone keeps each file's time of day) or **Shift by** (`+8y`, `-3h30m`, `+2d`),
+listing up to ten of the files with their date and suggestion.
+`POST /api/dates/fix` (`{"ids", "mode": "suggested"|"set"|"shift", "value"}`)
+runs fix-dates' own code under the library lock: the date goes to the
+sidecar only and the files stay in their folders; a file that can't take it
+is left as before and counted in the message, and a request where none can
+is refused (400, nothing written). The message has **Undo**, which puts
+exactly that fix back through fix-dates' record (`fix-dates --undo` sees it
+too), refusing (409) once a sidecar changed again. A fixed file leaves the
+view, and its tile shows the new date elsewhere.
+
 ## Filters (all combinable)
 
 Project, Source, Event, Place, year or month, Looks like (any `Label|*`), my
@@ -513,7 +543,8 @@ a scroll and a selection.
 ### Undo
 
 The message after **Keep**, **Favorite** / **Unfavorite**, a tag of yours
-added or removed (bar or large view), **Rotate** and **Set event** has an
+added or removed (bar or large view), **Rotate**, **Set event** and **Fix
+date** (Dates to check, above: undone through fix-dates' own record) has an
 **Undo** button (or Ctrl+Z / Cmd+Z
 while it shows). Trash, Erase and Share never offer it: a deleted
 file can't come back, and a copy made is out of the library.
@@ -869,6 +900,15 @@ look-alike, and an unreadable `event-names.json` never overwritten (409).
 `ShareOpenGuardTest` runs `open_share` in-process with Popen, `shutil.which`
 and the job status mocked: the argument list, a folder outside or nested
 under `--share-out`, `..` in it, a running job, and no `xdg-open`.
+
+`tests/test_gallery_dates.py`: Dates to check over the real check-dates' report (the sidebar count, the
+groups in order, each tile's suggestion, `dates=<kind>`), Fix date by the suggestion, a set date and a shift
+writing only the sidecar (the originals' sha256 unchanged), its refusals (a bad date or amount, an impossible
+date, no suggestion: 400, no sidecar made), Undo putting it back and refusing after a later change (409), a
+gallery fix undone by `fix-dates --undo`, and no report yet. `tests/browser/test_browser_gallery_dates.py`
+runs the same in Chromium: the sidebar entry, the groups and flags, Fix date only in this view, the
+suggestion and a typed date (a bad one refused in the dialog), Undo, a file name holding HTML shown as text,
+and at phone width no sideways scroll in the view or the dialog.
 
 `tests/test_gallery_undo.py`: Undo of Keep (every tag and leaf it removed back,
 a file that had no sidecar), Favorite and Unfavorite (each rating back: four

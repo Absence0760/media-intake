@@ -190,6 +190,9 @@ media-intake tag BATCH [--no-labels]
 media-intake tag-files FILE... [--event SLUG] [--no-labels]
 media-intake mark-used FILE... --post SLUG
 media-intake find [--tag T] [--event E] [--place P] [--project P] [--unused-since 30d] [--never-used]
+media-intake check-dates [PATHS...] [--json] [--quick]   # wrong-looking dates; report only (dates.md)
+media-intake fix-dates FILE... --set W|--shift ±N|--suggested|--from-neighbours|--like GOOD [--reason T] [--yes]
+media-intake fix-dates --undo [ID] [--yes]    # sidecars only; a dry run without --yes (dates.md)
 media-intake gallery [--drive DRIVE] [--share-out DIR]
 media-intake proxies [--dry-run] [--inhibit]  # make the gallery's HEVC video proxies ahead of time (gallery.md)
 media-intake prune-cache [--dry-run]          # gallery thumbnails and proxies nothing shows any more
@@ -365,9 +368,10 @@ run and a CLI `apply` never interleave (`media_intake/library_lock.py`):
 - **CLI:** `intake.py main()` takes it for every subcommand in
   `intake.LOCKED` (stage, plan, scan, apply, release, erase, forget,
   sweep-erased, offload, purge-review, trash, not-trash, suggest-trash, tag, tag-files, mark-used,
-  migrate-tags).
+  migrate-tags, fix-dates).
   The read-only ones in `intake.READ_ONLY` (quarantine, verify-gone, wipe-free,
-  share-copy, find) never do; a new subcommand counts as locked until
+  share-copy, social-copy, find, check-dates) never do (check-dates writes only its own report in the
+  state folder, so a long run never blocks the gallery); a new subcommand counts as locked until
   it is listed there, and `tests/test_library_lock.py` fails on one in neither.
   `media-intake gallery` is cli.py's, not intake.py's (gallery.py imports
   intake.py, never the reverse); it takes the lock itself, per write.
@@ -496,6 +500,11 @@ original keeps its own EXIF and its sha256. `tag-files` keeps a
 `DateTimeOriginal` already in a sidecar (it may be a correction from the
 plan) and only fills in a missing one; to recompute it, clear it first
 (`exiftool -XMP-exif:DateTimeOriginal= FILE.xmp`).
+
+Files filed earlier, or whose clock-reset date had no GPS to check it, are
+found across the whole library by `media-intake check-dates` and corrected in
+their sidecars by `fix-dates` or the gallery's Fix date
+([dates.md](dates.md)).
 
 Without exiftool, Pillow (images) and ffprobe (videos) read the same tags,
 except a GoPro video's GPMF GPS time and any serial number: ffprobe can't
@@ -1080,7 +1089,8 @@ any plugin's `after_tag` hook ([plugins.md](plugins.md)).
   `XMP-photoshop:City/State/Country`, `XMP-iptcCore:CountryCode`,
   `XMP-exif:GPSLatitude/GPSLongitude` (read from the file: EXIF, QuickTime,
   GoPro GPMF with `-ee`) and `XMP-exif:DateTimeOriginal` (the plan's date,
-  with its UTC offset when known; see "Dates" above).
+  with its UTC offset when known; see "Dates" above; a date `fix-dates` set is
+  written instead, so a rerun never undoes a fix, [dates.md](dates.md)).
 - **Events**: `plan --event [PROJECT/]SLUG@YYYY-MM-DD`. With a `PROJECT/`
   prefix, or a slug matching one of a project's `events` fnmatch patterns,
   that day's camera files (photos, videos, GoPro; not screenshots or messaging
@@ -1365,7 +1375,7 @@ Rejected:
 
 `python3 -I -m unittest discover -s tests` (synthetic media, a throwaway HOME,
 a hermetic config), or one module: `python3 -I -m unittest discover -s tests -p test_intake.py`
-(also `test_intake_output`: the progress lines of stage, plan, apply and tag by count, none naming a file, and the `next:` line for a clean, quarantined and review batch, on a terminal and off it, the plan and apply summary lines in words, a wrong batch name on each command, a missing or empty source, steps out of order, the missing-detector message, and the quarantine hint by batch kind; `test_dates`, `test_devices`, `test_sources`, `test_exports` (Google Takeout and iCloud export metadata), `test_tagging`, `test_config`, and `test_device_case`: offload,
+(also `test_intake_output`: the progress lines of stage, plan, apply and tag by count, none naming a file, and the `next:` line for a clean, quarantined and review batch, on a terminal and off it, the plan and apply summary lines in words, a wrong batch name on each command, a missing or empty source, steps out of order, the missing-detector message, and the quarantine hint by batch kind; `test_dates`, `test_datecheck` (check-dates' rules and fix-dates' writes and undo, [dates.md](dates.md)), `test_devices`, `test_sources`, `test_exports` (Google Takeout and iCloud export metadata), `test_tagging`, `test_config`, and `test_device_case`: offload,
 erase and trash on fake MTP, gphoto2 and drive trees with case-only collisions, in the manifests or only in the live listing, and a listing that fails; `test_device_ops_media_kinds`:
 stage, plan, apply, erase, offload and verify-gone with photos, videos and a mix from a phone, a GoPro card,
 a drive, a laptop folder and the drive queue, and erase's and offload's prompts (a wrong answer or closed
