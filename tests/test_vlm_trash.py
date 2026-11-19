@@ -342,8 +342,8 @@ class VlmTrash(unittest.TestCase):
     def test_all_skips_unwritable_sidecars(self):
         ok = img(os.path.join(self.lib, "2026", "ok.jpg"))
         ro = img(os.path.join(self.lib, "ro", "a.jpg"), color=(200, 10, 10))
-        os.chmod(os.path.dirname(ro), 0o555)
-        self.addCleanup(os.chmod, os.path.dirname(ro), 0o755)
+        os.chmod(os.path.dirname(ro), 0o500)
+        self.addCleanup(os.chmod, os.path.dirname(ro), 0o700)
         if os.access(os.path.dirname(ro), os.W_OK):
             self.skipTest("running as root: chmod doesn't stop writes")
         Stub.reply = reply({"verdict": "KEEP", "reason": "other", "confidence": 0.9})
