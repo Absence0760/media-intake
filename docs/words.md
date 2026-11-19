@@ -58,6 +58,10 @@ buttons are named in **bold**, as they appear on screen.
 | **Junk score** | How sure the optional vision check is that a file is junk, from 0 to 1, always shown to 2 decimals. Suggested junk lists verdicts of 0.70 or more by default (below that the model itself calls it low-confidence); its **Junk score** box goes lower, and **Show N more with a lower junk score** says how many that adds. |
 | **Junk check** | The gallery filter for the vision model's verdict: Judged junk (its count follows the "Junk score at least" slider), Judged fine or Not checked. |
 | **Possible child** | A content label for photos that may show a child. A hint only: it misses small or distant children. |
+| **Dates to check** | The gallery's view of the files `check-dates` found with a date that looks wrong (a clock-reset default, a camera newer than its date, out of order with the camera's numbering, dates that disagree), grouped by reason. Nothing changes until you **Fix date**. |
+| **suggested date** | The date `check-dates` thinks a file was really taken, and where it came from: its GPS time, a date in its name, a cloud export, or its numbered neighbours (the camera's files before and after it). |
+| **Fix date** | Give library files a corrected date, in their sidecars only (the photo or video and its folder don't change): the suggested date, a date you type, or a shift (`+8y`). Undo puts it back. Commands: `fix-dates` (a dry run until `--yes`; `--undo`). |
+| **clock-reset default** | A date a camera starts from when its clock was never set, such as a GoPro's 2016-01-01: files filed under it were taken some other time. |
 | **Looks like** | A content label (dog, beach, food, ...) from the local SigLIP model. |
 | **Flags** | The gallery filter for Tagged as junk, Possible child and Untagged. |
 | **video proxy**, **converting** | The gallery's H.264 copy of a video this browser can't play (HEVC, most phones), made on this computer and kept in the cache. While one is made the large view says **Converting this video for the browser** and starts playing within seconds; `media-intake proxies` makes them ahead of time. |

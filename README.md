@@ -157,6 +157,7 @@ media-intake offload phone-1 --phone <phone folder>   # after a backup: free the
 | `trash`, `suggest-trash`, `not-trash`, `purge-review` | Trash junk, find Suggested junk, Keep a suggestion, empty a review folder (`trash` and `purge-review` delete only with `--yes`; without it, a dry run) |
 | `tag`, `tag-files`, `mark-used`, `find` | Sidecar tags and searching them |
 | `places list/add/rename/remove/suggest/tag` | My places: your own named places (Home, ...) as `Place\|<name>` tags beside the city; kept only in the state folder ([docs/places.md](docs/places.md)) |
+| `check-dates`, `fix-dates` | Find library files whose date looks wrong (clock-reset defaults, a camera newer than its date, numbering out of order, disagreeing dates; changes nothing), and correct them in their sidecars (a dry run until `--yes`; `--undo`) ([docs/dates.md](docs/dates.md)) |
 | `migrate-tags` | One-shot: rewrite the legacy `Review\|not-trash` tag as `Owner\|not-trash` |
 | `index`, `search`, `similar` | Local semantic search (SigLIP) |
 | `vlm-trash` | Local vision-model second opinion on Suggested junk |
@@ -174,7 +175,7 @@ media-intake offload phone-1 --phone <phone folder>   # after a backup: free the
 whether it deletes, and its options; `media-intake` alone (or `--help`) lists
 the commands by task, and a mistyped command exits 2 with the nearest real
 one. Details:
-[getting started](docs/getting-started.md), [words used](docs/words.md), [intake](docs/intake.md), [review page](docs/review-ui.md),
+[getting started](docs/getting-started.md), [words used](docs/words.md), [intake](docs/intake.md), [wrong dates](docs/dates.md), [review page](docs/review-ui.md),
 [gallery](docs/gallery.md), [my places](docs/places.md), [search and VLM](docs/search.md), [recognition](docs/recognition.md),
 [drive and folder queue](docs/queue.md), [backup](docs/backup.md), [configuration](docs/configuration.md),
 [plugins](docs/plugins.md), [releases](docs/release.md).

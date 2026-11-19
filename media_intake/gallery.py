@@ -19,7 +19,8 @@ only), Set event, all on one item or a selection, and Share (share-safe copies: 
 share-copy into a new folder under --share-out, default ~/Pictures/share-safe, as a
 job, then that folder opened in the file manager; also on each tile and in the large view). A left sidebar holds the views with counts (/api/facets): Library, Trash
 suggestions, any tab a plugin adds (plugins.py gallery_views(), docs/plugins.md),
-the quick views Favorites, Added in the last 30 days, Possible child, Untagged, and the Events (Event|
+the quick views Favorites, Added in the last 30 days, Possible child, Untagged, Dates to check (check-dates'
+report, datecheck.py; Fix date writes through fix-dates' code, undoable), and the Events (Event|
 tags; rename and merge rewrite only those, in the sidecars that have them; each shown by
 a display name kept in <state>/event-names.json, never two alike), and Places (your named places,
 places.py: Add a place here… in the large view, "probably here" for a file without GPS; the page
@@ -38,7 +39,7 @@ The paths go to the worker on a pipe; the status file names the files only by
 (device, inode), and an Erase's output is scrubbed of names when it ends.
 Favorites: a star on each tile and in the large view (F), xmp:Rating = 5 in the sidecar (digiKam's five
 stars; owner.favorite: rating >= 5 is a favorite, kept from Suggested junk like Keep), and a Favorites quick view.
-Keep, Favorite, my tags, Rotate and Set event can be undone (/api/undo: the server records each sidecar's
+Keep, Favorite, my tags, Rotate, Set event and Fix date can be undone (/api/undo: the server records each sidecar's
 fields before and after and puts back exactly that change, refusing once a sidecar changed
 again); Trash, Erase and Share can't. No native alert/confirm/prompt: in-page
 dialogs, an error message that stays until dismissed, and a "?" list of every key.
@@ -55,6 +56,7 @@ import xml.etree.ElementTree as ET
 HERE = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, HERE)
 import bursts  # noqa: E402  (burst groups: pure functions over date, device, dHash, burst id)
+import datecheck  # noqa: E402  (Dates to check: check-dates' report; Fix date writes through fix-dates' code)
 import intake  # noqa: E402  (constants, sidecar helpers, trash_allowed, exiftool_batch)
 import jobs  # noqa: E402  (trash / erase run as a detached job: <state>/jobs/gallery.*)
 import library_lock  # noqa: E402  (Keep, my tags, Rotate write sidecars under the library lock)
@@ -842,7 +844,7 @@ WORDS = {
     # filter sections and their chips
     "filter": {"kind": "Kind", "ym": "When", "project": "Project", "source": "Source", "place": "Place",
                "event": "Event", "label": "Looks like", "mine": "My tag", "review": "Flags", "ai": "Junk check",
-               "used": "Used", "added": "Added", "myplace": "My place"},
+               "used": "Used", "added": "Added", "myplace": "My place", "dates": "Date check"},
     # a tool tag's namespace, shown as "<word>: <value>" in the large view (Owner| is not shown there:
     # the Details row says "Marked Keep")
     "ns": {"Project": "Project", "Source": "Source", "Event": "Event", "Place": "Place", "Label": "Looks like",
@@ -859,7 +861,10 @@ WORDS = {
             "forget": "Erase", "share-copy": "Share"},
     # the sidebar views
     "view": {"lib": "Library", "sug": "Suggested junk", "fav": "Favorites",
-             "recent": f"Added in the last {RECENT_DAYS} days", "child": "Possible child", "untagged": "Untagged"},
+             "recent": f"Added in the last {RECENT_DAYS} days", "child": "Possible child", "untagged": "Untagged",
+             "dates": "Dates to check"},
+    # Dates to check's groups: check-dates' kinds (datecheck.TITLES)
+    "dates": {k: datecheck.TITLES[k] for k in datecheck.DATE_KINDS},
 }
 
 
@@ -1038,6 +1043,7 @@ class App:
         self.search_cache = {}
         self.undos = collections.OrderedDict()  # token -> what an undoable action changed (App.journal)
         self.shares = collections.OrderedDict()  # job id -> the folder its Share made (share_dir), for Open folder
+        self.dc_key, self.dc_report, self.dc = None, None, {}  # check-dates' report, as last read (date_findings)
         self.text_why = None
         self.text_checked = threading.Event()
         self.stop = threading.Event()
@@ -1228,6 +1234,7 @@ class App:
         counts = collections.Counter()  # the sidebar's view and option counts (whole library, not cross-filtered)
         scores = collections.Counter()  # Judged junk by junk score: the page counts those at or above its slider
         recent = time.time() - RECENT_DAYS * 86400
+        dated = self.date_findings()
         n = 0
         for it in self.items:
             if it["gone"]:
@@ -1248,6 +1255,7 @@ class App:
             counts["suggest"] += self.suggested(it)
             counts["suggest:lower"] += self.suggested(it, 0.0) and not self.suggested(it)
             counts["recent"] += it.get("ctime", 0) >= recent
+            counts["dates"] += it["path"] in dated
             for k in ("project", "source", "place"):
                 if it[k]:
                     c[k][it[k]] += 1
@@ -1274,7 +1282,8 @@ class App:
         mine, mine_err = self.my_places()
         return dict(total=n, facets=out, counts=dict(counts), ai_scores=sorted(scores.items()), recent_days=RECENT_DAYS,
                     search=search, share_out=share, drive=drive, event_names=event_names,
-                    places=mine, places_error=mine_err, radii=list(places.RADII), radius=places.RADIUS_DEFAULT)
+                    places=mine, places_error=mine_err, radii=list(places.RADII), radius=places.RADIUS_DEFAULT,
+                    dates_checked=(self.dc_report or {}).get("checked"))
 
     def suggested(self, it, floor=SUGGEST_MIN):
         """Suggested junk: a copy of something you trashed, a content label's junk flag, or a vision-check trash
@@ -1312,6 +1321,10 @@ class App:
         if f.get("view") == "suggest":
             floor = self.junk_floor(f)
             if not self.suggested(it, floor) or (f.get("why") and f["why"] not in self.junk_why(it, floor)):
+                return False
+        if f.get("dates"):
+            fs = self.date_findings().get(it["path"])
+            if not fs or (f["dates"] != "all" and f["dates"] not in {x.get("kind") for x in fs}):
                 return False
         if f.get("kind") in ("photo", "video") and it["media"] != f["kind"]:
             return False
@@ -1437,6 +1450,13 @@ class App:
             if f.get("view") == "suggest":
                 ids.sort(key=lambda i: -(self.items[i]["ai_trash"] if self.items[i]["ai_trash"] is not None else 0.5))
                 ranked = True
+            dated = self.date_findings() if f.get("dates") else {}
+            if f.get("dates"):  # grouped by what check-dates found (its first kind), then by date
+                ids.sort(key=lambda i: (self.date_info(self.items[i])["rank"], self.items[i]["date"], i))
+                ranked = True
+                checked = (self.dc_report or {}).get("checked")
+                note = note or (f"From check-dates on {checked.replace('T', ' ')[:16]}. A fix goes to the sidecar "
+                                "only; the files stay in their folders." if checked else None)
             try:
                 off = max(0, int(f.get("offset") or 0))
                 lim = max(1, min(500, int(f.get("limit") or 200)))
@@ -1449,6 +1469,8 @@ class App:
             for i in ids[off:off + lim]:
                 row = self.summary(i, self.items[i])
                 row.update(info.get(i, {}))
+                if self.items[i]["path"] in dated:
+                    row.update({k: v for k, v in self.date_info(self.items[i]).items() if k != "rank"})
                 page.append(row)
         out = dict(total=len(ids), items=page, note=note, ranked=ranked)
         if junk is not None:
@@ -1503,6 +1525,65 @@ class App:
         return out, info
 
     # ---------------------------------------------- your actions (sidecars only)
+    # ---------------------------------------------- Dates to check (check-dates' report; fixes: datecheck.py)
+    def date_findings(self):
+        """{library path: [date findings]} from the last check-dates report (datecheck.visible), re-read when the
+        report file changes (a check-dates run, a fix-dates or Fix date write, an undo)."""
+        try:
+            st = os.stat(datecheck.report_path())
+            key = (st.st_mtime_ns, st.st_size, st.st_ino)
+        except OSError:
+            key = None
+        if key != self.dc_key:
+            self.dc_report = datecheck.load_report() if key else None
+            self.dc, self.dc_key = datecheck.visible(self.dc_report), key
+        return self.dc
+
+    def date_info(self, it):
+        """A tile's Dates to check fields: dk its first kind, dq that kind's words, dd the date check-dates saw in
+        use (the sidecar's, else the file's own: the tile's d may be a folder guess), dr every reason, ds the
+        suggested date ("YYYY-MM-DD HH:MM", or None) and dsrc where it came from; rank orders the groups."""
+        fs = self.date_findings().get(it["path"]) or []
+        if not fs:
+            return dict(rank=99)
+        first = min(fs, key=lambda x: datecheck.KINDS.index(x["kind"]))
+        s, src = datecheck.best_suggestion(fs)
+        d = datecheck.from_iso(first.get("date"))
+        return dict(rank=datecheck.KINDS.index(first["kind"]), dk=first["kind"], dq=WORDS["dates"][first["kind"]],
+                    dd=d.strftime("%Y-%m-%d %H:%M") if d else None,
+                    dr="; ".join(str(x.get("reason") or "") for x in fs), dc=first.get("confidence"),
+                    ds=s.strftime("%Y-%m-%d %H:%M") if s else None, dsrc=src)
+
+    def fix_dates(self, ids, mode, value=None):
+        """Fix date: the same code as fix-dates (datecheck.plan_fix and write_fix), under the library lock. mode
+        set (value a date), shift (value like +8y) or suggested (check-dates' suggestion). Sidecars only; a file
+        that can't take the date is left as it is and counted. Undoable (/api/undo, datecheck.write_undo)."""
+        if mode not in ("set", "shift", "suggested"):
+            raise ValueError("set, shift or suggested")
+        if mode != "suggested" and (not isinstance(value, str) or not value.strip() or len(value) > 40):
+            raise ValueError("a date (YYYY-MM-DD or YYYY-MM-DD HH:MM)" if mode == "set" else "an amount, like +8y")
+        with self.writing("fix date"), self.lock:
+            ids = self.targets(ids)
+            paths = {self.items[i]["path"]: i for i in ids}
+            changes, refused = datecheck.plan_fix(list(paths), mode, value, what="Date" if mode == "set" else "Shift",
+                                                  report=self.dc_report if mode == "suggested" else None)
+            if not changes:
+                why = next(iter(refused.values()), "nothing to change")
+                raise ValueError(f"nothing was changed: {why}")
+            fid = datecheck.write_fix(changes, "gallery Fix date")
+            done = [paths[os.path.abspath(c["path"])] for c in changes if os.path.abspath(c["path"]) in paths]
+            self.refresh(ids)
+            self.date_findings()
+            n = len(changes)
+            msg = f"Fixed the date of {intake.plural(n, 'file')}" + (f"; {intake.plural(len(refused), 'file')} left as before "
+                                                                f"({next(iter(refused.values()))})" if refused else "") \
+                + ". In the sidecar only: the files stay in their folders."
+            token = secrets.token_urlsafe(12)
+            self.undos[token] = dict(kind="date", fix=fid, ids=done)
+            while len(self.undos) > UNDO_KEEP:
+                self.undos.popitem(last=False)
+            return dict(result=msg, undo=token)
+
     def targets(self, ids):
         if not isinstance(ids, list) or not ids or len(ids) > 5000:
             raise ValueError("no items")
@@ -2026,6 +2107,16 @@ class App:
             rec = self.undos.get(token)
             if rec is None:
                 raise ValueError("nothing to undo: it was undone already, or is too old")
+            if rec["kind"] == "date":  # a Fix date: fix-dates' own undo (all its sidecars, or none)
+                del self.undos[token]
+                try:
+                    datecheck.write_undo(rec["fix"])
+                except datecheck.Changed as e:
+                    raise Changed(str(e)) from None
+                ids = [i for i in rec["ids"] if self.live(i)]
+                self.refresh(ids)
+                self.date_findings()
+                return dict(result=f"undid Fix date on {len(rec['ids'])}", ids=ids, kind="date", thumbs=False)
             ids = list(rec["items"])
             for i in ids:
                 if not self.live(i) or not os.path.isfile(self.items[i]["path"]):
@@ -2343,7 +2434,7 @@ def page(app):
 
 
 # Sidecar edits on a selection whose reply carries the items' new grid summaries ("items").
-REDRAW = ("/api/keep", "/api/favorite", "/api/tag", "/api/rotate", "/api/event/set")
+REDRAW = ("/api/keep", "/api/favorite", "/api/tag", "/api/rotate", "/api/event/set", "/api/dates/fix")
 
 
 class Handler(R.Handler):
@@ -2535,6 +2626,7 @@ class Handler(R.Handler):
             "/api/place/probable": lambda: app.place_probable(body.get("id"), body.get("place"), body.get("yes")),
             "/api/decide": lambda: app.decide(body.get("keep") or [], body.get("trash") or [], body.get("confirm")),
             "/api/undo": lambda: app.undo(body.get("undo")),
+            "/api/dates/fix": lambda: app.fix_dates(body.get("ids"), body.get("mode"), body.get("value")),
         }
         if path == "/api/close":
             self.json(200, {"result": "closing"})
@@ -2908,6 +3000,8 @@ body.marqing,body.marqing *{user-select:none;-webkit-user-select:none}
    stays under it however many rows its buttons wrap to */
 #actionbar{position:sticky;margin:0 16px;bottom:16px;z-index:12;display:flex;flex-wrap:wrap;gap:8px 16px;align-items:center;justify-content:center;padding:10px 14px;background:var(--panel);border:1px solid var(--line);border-radius:14px;box-shadow:var(--shadow)}
 .grp{display:flex;flex-wrap:wrap;gap:6px;align-items:center}
+.fixopt{display:flex;flex-wrap:wrap;gap:6px 8px;align-items:center;margin:8px 0}.fixopt input:not([type=radio]){flex:1 1 12em;min-width:0;max-width:100%}.fixopt input[type=radio]{height:auto;padding:0;margin:0}
+.fixlist{margin:4px 0 8px;padding-left:1.2em;max-height:9em;overflow:auto;overflow-wrap:anywhere}
 #seln,#sugn{font-weight:650;font-size:14px;margin-right:4px;white-space:nowrap}
 .sep{width:1px;height:22px;background:var(--line)}
 #toast{position:fixed;left:50%;bottom:24px;transform:translateX(-50%);z-index:40;background:var(--fg);color:var(--bg);padding:8px 14px;border-radius:8px;font-size:14px;max-width:min(560px,90vw);box-shadow:var(--shadow);opacity:0;pointer-events:none;transition:opacity .2s;display:flex;align-items:center;gap:12px}
@@ -3083,6 +3177,7 @@ dl.dt dd{margin:0;word-break:break-word}
   <button type="button" class="nv" data-v="recent" title="Added in the last 30 days"><svg class="ic"><use href="#i-clock"/></svg><span class="lbl">Added in the last 30 days</span><span class="rl" aria-hidden="true">Recent</span><span class="ct" id="c-recent"></span></button>
   <button type="button" class="nv" data-v="child" title="Possible child"><svg class="ic"><use href="#i-child"/></svg><span class="lbl">Possible child</span><span class="rl" aria-hidden="true">Child</span><span class="ct" id="c-child"></span></button>
   <button type="button" class="nv" data-v="untagged" title="Untagged"><svg class="ic"><use href="#i-tag"/></svg><span class="lbl">Untagged</span><span class="rl" aria-hidden="true">No tags</span><span class="ct" id="c-untagged"></span></button>
+  <button type="button" class="nv" data-v="dates" title="Dates to check"><svg class="ic"><use href="#i-cal"/></svg><span class="lbl">Dates to check</span><span class="rl" aria-hidden="true">Dates</span><span class="ct" id="c-dates"></span></button>
   <div id="evsec"><div class="nvhead">Events</div><div id="evlist"></div></div>
   <div id="plsec"><div class="nvhead">Places</div><div id="pllist"></div></div>
   <button type="button" class="nv railonly" id="rsearch" title="Search (/)"><svg class="ic"><use href="#i-search"/></svg><span class="vh">Search</span><span class="rl" aria-hidden="true">Search</span></button>
@@ -3125,7 +3220,7 @@ dl.dt dd{margin:0;word-break:break-word}
    <button type="button" class="btn keep" id="bkeep">Keep <kbd>K</kbd></button><button type="button" class="btn trash" id="btrash">Trash <kbd>T</kbd></button><button type="button" class="btn erase" id="berase">Erase <kbd>E</kbd></button>
    <span class="sep"></span>
    <button type="button" class="btn" id="bfav" title="Star the selection as favorites (F toggles)">★ Favorite <kbd>F</kbd></button><button type="button" class="btn" id="bunfav" title="Take the selection out of Favorites">☆ Unfavorite</button>
-   <button type="button" class="btn" id="btag">+ tag</button><button type="button" class="btn" id="buntag">− tag</button><button type="button" class="btn" id="bevent">Set event…</button><button type="button" class="btn" id="brot">Rotate ⟳</button><button type="button" class="btn" id="bshare">Share</button><button type="button" class="btn" id="bnone">Clear selection <kbd>Esc</kbd></button>
+   <button type="button" class="btn" id="btag">+ tag</button><button type="button" class="btn" id="buntag">− tag</button><button type="button" class="btn" id="bevent">Set event…</button><button type="button" class="btn" id="bfixdate" hidden>Fix date…</button><button type="button" class="btn" id="brot">Rotate ⟳</button><button type="button" class="btn" id="bshare">Share</button><button type="button" class="btn" id="bnone">Clear selection <kbd>Esc</kbd></button>
   </div>
   <div class="grp" id="suggrp" role="group" aria-label="Decisions" hidden><span id="sugn"></span><span class="note" style="margin:0">Mark Keep or Trash on each, then Apply<span class="kbonly"> (keys: K, T, arrows)</span></span><button type="button" class="btn" id="bmarkall" title="Mark every tile shown Trash (a tile marked Keep keeps its mark); nothing changes until Apply">Mark all shown as Trash</button><button type="button" class="btn" id="bclearm" title="Take every Keep and Trash mark off (asks first)">Clear marks</button><button type="button" class="btn primary" id="sugapply">Apply…</button></div>
  </div>
@@ -3198,7 +3293,7 @@ let F={aimin:"0.7"};
 // Suggested junk's own narrowing (the bar above its grid): Why (a reason) and the vision check's Junk score floor
 const JLINE="0.7",JMINS=[["0.9","0.9 or more"],["0.8","0.8 or more"],[JLINE,"0.7 or more (default)"],["0.5","0.5 or more"],["0.3","0.3 or more"],["0","Any score"]];
 let J={why:"",min:JLINE};
-const ACTIVE=["kind","ym","project","source","place","myplace","event","label","mine","review","ai","used","added"];
+const ACTIVE=["kind","ym","project","source","place","myplace","event","label","mine","review","ai","used","added","dates"];
 // internal names -> the words shown: gallery.py WORDS, the one place (no Owner|, Review|, Label| in the page's text)
 const WORDS=__WORDS__;
 const NAMES=WORDS.filter;
@@ -3227,7 +3322,7 @@ function monthName(k){const [y,m]=k.split("-");return new Date(+y,+m-1,1).toLoca
 function monthOnly(k){const [y,m]=k.split("-");return new Date(+y,+m-1,1).toLocaleString(undefined,{month:"long"})}
 function chipVal(k){const v=F[k];if(k==="kind")return v==="photo"?"Photos":"Videos";if(k==="ym")return v.length===4?v:monthName(v);if(k==="review")return REVIEW[v]||v;
  if(k==="ai")return v==="trash"?WORDS.score+" ≥ "+(+F.aimin||0).toFixed(2):AIV[v]||v;if(k==="used")return v==="used"?"in a post":(F.days?"not in "+F.days+" days":"never");
- if(k==="added")return "last "+v+" days";if(k==="myplace")return plName(v);return v}
+ if(k==="added")return "last "+v+" days";if(k==="myplace")return plName(v);if(k==="dates")return v==="all"?"all":WORDS.dates[v]||v;return v}
 // ---------------------------------------------------------------- sidebar: layout
 const mqPhone=matchMedia("(max-width:760px)");let railPref=LS.get("rail","0")==="1",drawer=false;
 function layout(){const ph=mqPhone.matches,col=ph?!drawer:railPref;document.body.classList.toggle("collapsed",col);document.body.classList.toggle("overlay",ph&&drawer);
@@ -3319,7 +3414,7 @@ async function loadFacets(tries){facets=await api("/api/facets");const fc=facets
  $("#ck-all").textContent=fmt(facets.total);$("#ck-photo").textContent=fmt(c["kind:photo"]);$("#ck-video").textContent=fmt(c["kind:video"]);
  $("#c-lib").textContent=fmt(facets.total);$("#c-sug").textContent=fmt(c.suggest);$("#c-recent").textContent=fmt(c.recent);$("#c-fav").textContent=fmt(c["review:favorite"]);
  $('.nv[data-v=sug]').title=WORDS.view.sug+": the vision check's junk verdicts, files tagged as junk and copies of photos you trashed"+(c["suggest:lower"]?" ("+fmt(c["suggest:lower"])+" more with a lower junk score inside)":"");
- $("#c-child").textContent=fmt(c["review:child-in-shot"]);$("#c-untagged").textContent=fmt(c["review:untagged"]);
+ $("#c-child").textContent=fmt(c["review:child-in-shot"]);$("#c-untagged").textContent=fmt(c["review:untagged"]);$("#c-dates").textContent=fmt(c.dates||0);
  $('.nv[data-v=recent]').title=WORDS.view.recent+" (by when each file was filed, not when it was taken)";
  const h=$("#qhint");h.replaceChildren();h.hidden=!facets.search;
  if(facets.search){const checking=/^checking/.test(facets.search);const d=el("details"),s=el("summary",null,checking?"Checking the search model…":"Semantic search off: tags and names only");
@@ -3363,7 +3458,7 @@ $("#evmerge").onclick=()=>{const src=F.event;askField("Merge "+src+" into anothe
 // ---------------------------------------------------------------- filter state
 function setF(k,v){if(v)F[k]=v;else delete F[k];simId=null;if(plugView()){setView("lib");return}syncUI();reset()}
 function clearAll(){F={aimin:F.aimin||"0.7"};$("#q").value="";simId=null;syncUI();reset()}
-function navActive(){if(view!=="lib")return view;const a=activeKeys();if(a.length===1&&!$("#q").value.trim()&&simId===null){if(F.event)return "ev";if(F.myplace)return "pl";if(F.added)return "recent";if(F.review==="favorite")return "fav";if(F.review==="child-in-shot")return "child";if(F.review==="untagged")return "untagged"}return "lib"}
+function navActive(){if(view!=="lib")return view;const a=activeKeys();if(a.length===1&&!$("#q").value.trim()&&simId===null){if(F.event)return "ev";if(F.myplace)return "pl";if(F.added)return "recent";if(F.review==="favorite")return "fav";if(F.review==="child-in-shot")return "child";if(F.review==="untagged")return "untagged";if(F.dates)return "dates"}return "lib"}
 function syncUI(){$$("button[data-k]").forEach(b=>b.setAttribute("aria-pressed",String((F[b.dataset.k]||"")===b.dataset.val)));
  $$(".fs").forEach(s=>{const k=SECKEY[s.dataset.s]||s.dataset.s;s.querySelector(".fs-v").textContent=F[k]?chipVal(k):""});
  const n=activeKeys().length;$("#clear").hidden=!n;$("#clear").textContent=`Clear filters (${n})`;$("#rbadge").hidden=!n;$("#rbadge").textContent=n;
@@ -3408,12 +3503,13 @@ function listState(kind,head,o){o=o||{};const d=el("div","state"+(kind==="error"
  if(o.act){const b=el("button","btn",o.act.label);b.type="button";b.onclick=o.act.fn;d.append(b)}$("#list").replaceChildren(d);return d}
 function loadingState(){const d=listState("loading"),p=el("p"),sp=el("span","spin");sp.setAttribute("aria-hidden","true");p.append(sp,"Loading your library…");d.append(p);
  $("#main").setAttribute("aria-busy","true")}
-const QUICK=["fav","recent","child","untagged","ev","pl"];
+const QUICK=["fav","recent","child","untagged","dates","ev","pl"];
 function emptyState(note){const q=$("#q").value.trim(),nf=activeKeys().length,na=navActive();
  if(simId!==null)return listState("none",note||"No photos look like this one.",{act:{label:"Back to the "+TITLES.lib.toLowerCase(),fn:()=>{simId=null;syncUI();reset()}}});
  if(facets&&facets.total===0)return listState("none","Your library is empty.",{lines:["To add photos and videos, run these in a terminal, with the folder they are in:"],
   cmd:"media-intake stage <folder> --kind folder --batch first\nmedia-intake plan first\nmedia-intake scan first\nmedia-intake apply first",
   after:["Then reload this page. Getting started (docs/getting-started.md) explains each step."]});
+ if(view==="lib"&&na==="dates")return listState("none","No dates to check right now.",{lines:[facets&&facets.dates_checked?"The last check found nothing more to look at. To check the library again, run this in a terminal, then reload this page:":"To look for photos and videos with a wrong date, run this in a terminal, then reload this page:"],cmd:"media-intake check-dates",act:{label:"Show the whole "+TITLES.lib.toLowerCase(),fn:clearAll}});
  if(view==="lib"&&QUICK.includes(na))return listState("none","Nothing in "+(na==="ev"?evLabel(F.event):na==="pl"?plName(F.myplace):TITLES[na])+" right now.",{act:{label:"Show the whole "+TITLES.lib.toLowerCase(),fn:clearAll}});
  if(q||nf)return listState("none","Nothing matches "+(q&&nf?"this search and these filters":q?"this search":"these filters")+".",
   {act:{label:q&&nf?"Clear search and filters":q?"Clear search":"Clear filters",fn:clearAll}});
@@ -3439,7 +3535,7 @@ async function more(){if(loading||done||failed||plugView())return;loading=true;c
  catch(e){if(g===gen){failed=true;loadError(e)}}finally{loading=false}
  if(stale){more();return}
  if(!done&&$("#sentinel").getBoundingClientRect().top<innerHeight+600)more()}
-function groupKey(it){return ranked?(view==="sug"?"Most likely junk first":"Best matches first"):it.mo}
+function groupKey(it){if(F.dates&&it.dq&&view==="lib")return it.dq;return ranked?(view==="sug"?"Most likely junk first":"Best matches first"):it.mo}
 function render(start){const L=$("#list");let sec=L.lastElementChild,g=sec&&sec.querySelector(".grid"),gk=sec?sec.dataset.k:null;
  for(let n=start;n<items.length;n++){const it=items[n],k=groupKey(it);
   if(k!==gk){sec=el("section");sec.dataset.k=k;sec.append(el("h2","month",ranked?k:monthName(k)));g=el("div","grid");sec.append(g);L.append(sec);gk=k}
@@ -3457,7 +3553,7 @@ function toggleStack(n){const it=items[n];if(!it||it.b==null)return;const b=it.b
  if(last!==null&&hiddenAt(last))last=null;if(cur>=0&&hiddenAt(cur))cur=c;
  const ct=c>=0?$("#t"+items[c].id):null;if(ct){ct.classList.toggle("stack",!openB[b]);const x=ct.querySelector(".x");if(x)x.textContent=stackLabel(items[c]);const bx=ct.querySelector(".bx");if(bx)paintBx(bx,items[c]);ct.focus({preventScroll:false})}
  if(dropped)toast(`Stack closed: ${dropped} hidden shot${dropped>1?"s":""} unselected (actions act on the cover only).`);paintSel()}
-function tile(it,n){const t=el("div","tile"),sug=view==="sug";t.id="t"+it.id;t.dataset.n=n;t.dataset.item=it.n;t.tabIndex=0;t.title=it.n;
+function tile(it,n){const t=el("div","tile"),sug=view==="sug";t.id="t"+it.id;t.dataset.n=n;t.dataset.item=it.n;t.tabIndex=0;t.title=it.n+(it.dr?"\n"+it.dr:"");
  const im=el("img");im.loading="lazy";im.decoding="async";im.alt=it.n;im.src="/t/"+it.id;im.onerror=()=>{im.replaceWith(el("div","ph",(it.m==="video"?"video: ":"")+it.n))};t.append(im);
  // the checkbox in a larger hit area (a tap beside the 22 px box still ticks it); none in Suggested junk, whose Keep / Trash marks are the only choice there
  if(!sug){const w=el("span","ckw"),cb=el("input","ck");cb.type="checkbox";cb.tabIndex=-1;cb.setAttribute("aria-label","select "+it.n);
@@ -3505,7 +3601,7 @@ function clearMarks(){const n=Object.keys(dec).length;if(!n)return;
 function say(s){$("#selsay").textContent=s}
 // marks the page would lose on a reload or close: the browser asks first
 addEventListener("beforeunload",ev=>{if(Object.keys(dec).length){ev.preventDefault();ev.returnValue=""}});
-function flagsOf(it){const fl=[];if(it.c!=null)fl.push(WORDS.score+" "+it.c.toFixed(2)+(it.r?" ("+whyWord(it.r).toLowerCase()+")":""));fl.push(...it.f.map(f=>WORDS.flag[f]||f));return fl.join(" · ")}
+function flagsOf(it){const fl=[];if(it.dq)fl.push(it.ds?"Suggested "+it.ds:"No suggested date");if(it.c!=null)fl.push(WORDS.score+" "+it.c.toFixed(2)+(it.r?" ("+whyWord(it.r).toLowerCase()+")":""));fl.push(...it.f.map(f=>WORDS.flag[f]||f));return fl.join(" · ")}
 // after an edit: the reply's summaries replace those items and their tiles' flags (kept, ...);
 // the tile, its focus and the selection stay
 function patchTiles(fresh){(fresh||[]).forEach(s=>{const n=items.findIndex(i=>i.id===s.id);if(n<0)return;const o=items[n];items[n]=o.b!=null?Object.assign(s,{b:o.b,bn:o.bn,bc:o.bc,mo:o.mo}):s;const t=$("#t"+s.id);if(!t)return;
@@ -3527,7 +3623,7 @@ function paintSel(){const sugOn=view==="sug";$$(".tile").forEach(t=>{const id=+t
   // a mark in words too (top left), not by the outline's colour alone
   t.querySelectorAll("[data-dec]").forEach(b=>b.setAttribute("aria-pressed",String(b.dataset.dec===d)));
   let m=t.querySelector(".mark");if(d){if(!m){m=el("span");t.append(m)}m.className="mark "+d;m.textContent=d==="keep"?"Keep":"Trash"}else if(m)m.remove()});
- const selOn=sel.size>0&&!plugView()&&view!=="sug";$("#selgrp").hidden=!selOn;$("#suggrp").hidden=!sugOn;$("#actionbar").hidden=!(selOn||sugOn);
+ const selOn=sel.size>0&&!plugView()&&view!=="sug";$("#selgrp").hidden=!selOn;$("#bfixdate").hidden=navActive()!=="dates";$("#suggrp").hidden=!sugOn;$("#actionbar").hidden=!(selOn||sugOn);
  document.body.classList.toggle("selecting",sel.size>0);
  $("#seln").textContent=allSel&&allSel.n===sel.size?allSel.text:fmt(sel.size)+" selected";$("#ball").hidden=!canSelectAll();
  // the counts (and Apply) are the listed tiles' marks; marks on items not listed now wait, and the line says so
@@ -3622,7 +3718,7 @@ async function refused(what,e){let act=null;if(e.busy){try{const j=await api("/a
    exactly that back, under the library lock, and refuses (nothing written) when those items changed again since.
    Trash, Erase and Share never offer it. */
 async function doUndo(){const tok=undoTok;if(!tok)return;undoTok=null;const b=$("#tundo");if(b)b.remove();
- try{const j=await api("/api/undo",{undo:tok});toast(j.result);loadFacets();if(j.kind==="event"&&vi<0){patchTiles(j.items);reset()}else refreshAfter(j.ids,j.thumbs,j.items)}
+ try{const j=await api("/api/undo",{undo:tok});toast(j.result);loadFacets();if((j.kind==="event"||j.kind==="date")&&vi<0){patchTiles(j.items);reset()}else refreshAfter(j.ids,j.thumbs,j.items)}
  catch(e){refused("Undo",e)}}
 async function doKeep(ids){try{const j=await api("/api/keep",{ids});toast(j.result,j.undo);refreshAfter(ids,false,j.items);loadFacets()}catch(e){refused("Keep",e)}}
 /* In-page dialogs (the confirm / job dialog, the shortcut list): focus moves in, Tab stays in, Esc closes, and
@@ -3672,6 +3768,19 @@ function askErase(ids){const n=ids.length,dr=facets&&facets.drive;confirmBox(`Er
  ()=>runJob("/api/erase",{ids,confirm:$("#mtyped").value},ids),"Erase "+plural(n,"file"))}
 function askSetEvent(ids){if(!ids.length)return;askField("Set the event on "+plural(ids.length,"item")+"?",[names(ids),"Each one goes into this event and out of any other. The photos and your other tags don't change. Leave it empty to take them out of every event."],"Event name (lowercase letters, digits and dashes, like summer-2026)",F.event||"",
  async()=>{const ev=$("#mfield").value.trim(),j=await api("/api/event/set",{ids,event:ev});if(vi>=0){closeModal();toast(j.result,j.undo);loadFacets();openViewer(vi,{keep:true})}else afterEvent(j)})}
+/* Fix date (Dates to check): check-dates' suggested date, a date you type, or a shift, on the selection. The server runs
+   fix-dates' own code (sidecars only; files stay in their folders) and answers with an Undo token. */
+function askFixDate(ids){if(!ids.length)return;const its=ids.map(id=>items.find(i=>i.id===id)).filter(Boolean),ns=its.filter(i=>i.ds).length,n=ids.length;
+ const opt=(v,l,field)=>{const p=el("p","fixopt"),r=el("input"),lab=el("label",null,l);r.type="radio";r.name="fixmode";r.value=v;r.id="fix-"+v;lab.htmlFor=r.id;p.append(r,lab);
+  if(field){const f=el("input");f.id="fixv-"+v;f.autocomplete="off";f.spellcheck=false;f.placeholder=field;f.setAttribute("aria-label",l+" ("+field+")");f.onfocus=()=>{r.checked=true};p.append(f)}return [p,r]};
+ const [ps,rs]=opt("suggested",ns===n?"Use the suggested date":`Use the suggested date (${fmt(ns)} of ${fmt(n)} have one; the others stay as they are)`);rs.disabled=!ns;
+ const [pd,rd]=opt("set","Set the date to","YYYY-MM-DD or YYYY-MM-DD HH:MM"),[ph]=opt("shift","Shift by","+8y, -3h30m, +2d");(ns?rs:rd).checked=true;
+ const list=el("ul","fixlist");its.slice(0,10).forEach(i=>list.append(el("li",null,i.n+": "+(i.dd||i.d)+" → "+(i.ds?i.ds+" suggested":"no suggestion"))));if(its.length>10)list.append(el("li",null,`and ${fmt(its.length-10)} more`));
+ confirmBox("Fix the date of "+plural(n,"item")+"?",[list,"The new date goes to each file's sidecar only: the photo or video itself and its folder don't change. A date alone keeps each file's time of day; a shift uses y (years), d (days), h (hours) and m (minutes). Undo puts it back.",ps,pd,ph],false,
+  async()=>{const mode=($('input[name=fixmode]:checked')||rs).value,value=mode==="suggested"?null:$("#fixv-"+mode).value.trim();
+   const j=await api("/api/dates/fix",{ids,mode,value});closeModal();toast(j.result,j.undo);sel.clear();await loadFacets();reset()},"Fix dates");
+ $("#mno").focus()}
+$("#bfixdate").onclick=()=>askFixDate(selIds());
 /* Share: share-safe copies (intake.py share-copy as a job, one at a time with Trash and Erase) into a new folder; the
    page shows the folder and share-copy's own lines (each copy's path and "gps=none"), never the copies themselves.
    When the job this click started ends cleanly, the server opens that folder in the file manager (POST
@@ -3896,7 +4005,7 @@ function setView(v){view=v;simId=null;sugFocus=v==="sug";document.body.dataset.v
 $$(".nv[data-v]").forEach(b=>b.onclick=()=>{const v=b.dataset.v;
  if(v==="lib"){if(QUICK.includes(navActive()))F={aimin:F.aimin};setView("lib")}
  else if(v==="sug"||v.startsWith("p-")){if(v==="sug"&&view!=="sug")J={why:"",min:JLINE};setView(v)}
- else{F={aimin:F.aimin};if(v==="recent")F.added=String((facets&&facets.recent_days)||30);if(v==="child")F.review="child-in-shot";if(v==="untagged")F.review="untagged";if(v==="fav")F.review="favorite";$("#q").value="";setView("lib")}
+ else{F={aimin:F.aimin};if(v==="recent")F.added=String((facets&&facets.recent_days)||30);if(v==="child")F.review="child-in-shot";if(v==="untagged")F.review="untagged";if(v==="fav")F.review="favorite";if(v==="dates")F.dates="all";$("#q").value="";setView("lib")}
  if(mqPhone.matches&&drawer){drawer=false;layout()}});
 let qt=null;$("#q").oninput=()=>{clearTimeout(qt);qt=setTimeout(()=>{simId=null;syncUI();reset()},500)};
 $("#close").onclick=()=>{confirmBox("Stop the gallery server?",["The page stops working until you run media-intake gallery again. A Trash, Erase or Share that is already running keeps going on its own."],false,

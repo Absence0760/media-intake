@@ -72,6 +72,12 @@ The goal: someone else can install it on Fedora, import a phone, and trust it.
 - [x] Device identity from Make/Model/serial: tag `Source|<model>` and name batches by it;
       two GoPros with the same file numbers go to separate device folders, never `_1`.
 - [x] GoPro chapters (GX01xxxx, GX02xxxx...) dated and grouped by the first chapter.
+- [x] Wrong dates already in the library: `check-dates` (clock-reset defaults, device era, video
+      format, numbering order, disagreeing sources, copies, GPS 0,0, place), `fix-dates` and the
+      gallery's Dates to check / Fix date, sidecars only, undoable (`docs/dates.md`).
+- [ ] Re-file a fixed file into its right YYYY/YYYY-MM folder: an explicit step with its own dry run
+      (index, plans and backup record rekeyed); today a fix leaves the file where it is.
+- [ ] Device era for more makers (DJI, Insta360, Sony, Canon), and HEVC 10-bit / HDR vs the model.
 - [x] Source kind `folder` for laptop folders (refuse HOME itself, hidden/config dirs, repos,
       the state dir, library roots, password-manager paths; offload refuses folder sources).
 

@@ -43,6 +43,8 @@ Library
   similar FILE              find photos that look like this one (venv)
   tag-files FILE...         write tags again for library files
   places list|add|tag|...   your own named places (Home, ...) as tags
+  check-dates [PATHS]       find files whose date looks wrong; changes nothing
+  fix-dates FILE...         correct dates in sidecars, with --yes; --undo
   mark-used FILE --post P   record that files were used in a post
   share-copy FILE --out D   copy without GPS or metadata (or social-copy)
   calibrate                 test content labels on your marks; changes nothing
