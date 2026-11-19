@@ -14,9 +14,11 @@ label on an accent colour, the key hints and the placeholders at 4.5:1 or more i
 The sidebar's width: its right edge (role=separator named "Sidebar width") dragged wider and narrower with the
 grid following, clamped to 240 px .. min(560 px, half the window) and again when the window shrinks, kept
 across a reload, a double-click putting the default 300 px back, Left / Right / Shift / Home / End on it, a
-visible focus line in both schemes, working with localStorage throwing, and no edge in the collapsed rail or
-at phone width (rail or drawer); Keyboard shortcuts at the sidebar's foot, not in the Views nav among the
-events; the search placeholder fitting its box at the default width, a tenth to spare.
+visible focus line in both schemes and in forced colours, no edge key with a modifier or while the shortcut
+list is open, a bad stored width falling back or clamped, an interrupted drag (pointercancel, lost capture)
+putting the width back, a right-button press not dragging, working with localStorage throwing, and no edge in
+the collapsed rail or at phone width (rail or drawer); Keyboard shortcuts at the sidebar's foot, not in the Views nav among the
+events, its list naming the Sidebar keys; the search placeholder fitting its box at the default width, a tenth to spare.
 Review page: the burst badge, a pressed Keep and Submit at 4.5:1 or more in both schemes.
 
 The gallery's library is tests/test_gallery_bursts.py's BURST_LIBRARY in a throwaway HOME (a stack of three
@@ -391,6 +393,85 @@ class GalleryLayoutBrowserTest(LayoutCase):
                 edge.dblclick()
                 self.assert_width(page, SBW0, f"{scheme}: reset")
 
+    def test_sidebar_edge_ignores_modified_keys_and_keys_behind_a_dialog(self):
+        page = self.page(DESKTOP)
+        edge = self.edge(page)
+        edge.focus()
+        for key in ("Control+ArrowRight", "Meta+ArrowRight", "Alt+ArrowRight", "Control+ArrowLeft", "Alt+ArrowLeft"):
+            page.keyboard.press(key)
+            self.assert_width(page, SBW0, f"{key} on the edge")
+        page.keyboard.press("?")  # the shortcut list opens over the page
+        keys = page.get_by_role("dialog", name="Keyboard shortcuts")
+        B.expect(keys).to_be_visible()
+        edge.evaluate("e => e.focus()")  # focus left on the edge behind it
+        for key in ("ArrowRight", "Shift+ArrowRight", "End", "Home"):
+            page.keyboard.press(key)
+            self.assert_width(page, SBW0, f"{key} while the shortcut list is open")
+        B.expect(keys).to_be_visible()
+        page.keyboard.press("Escape")
+        B.expect(keys).to_be_hidden()
+        edge.focus()
+        page.keyboard.press("ArrowRight")  # and acts again once it is closed
+        self.assert_width(page, SBW0 + 16, "ArrowRight after the list closed")
+
+    def test_sidebar_edge_bad_stored_widths(self):
+        for stored, want in (("abc", SBW0), ("100", SBW0), ("9999", SBW0), ("600", SBWMAX), ("", SBW0)):
+            with self.subTest(stored=stored):
+                ctx = self.browser.new_context(**DESKTOP)
+                ctx.set_default_timeout(B.STEP_MS)
+                self.addCleanup(ctx.close)
+                ctx.add_init_script(f"try {{ localStorage.setItem('gallery.sbw', {stored!r}) }} catch (e) {{}}")
+                page = ctx.new_page()
+                page.on("pageerror", lambda e: self.errors.append(str(e)))
+                self.open(page, self.server)
+                self.assert_width(page, want, f"stored {stored!r}")
+
+    def test_sidebar_edge_interrupted_drag_puts_the_width_back(self):
+        page = self.page(DESKTOP)
+        edge = self.edge(page)
+        drag = re.compile(r"(^|\s)sbdrag(\s|$)")
+        page.evaluate("() => document.querySelector('#sbresize').addEventListener('pointerdown',"
+                      " e => { window.__pid = e.pointerId })")
+        for how in ("pointercancel", "lost capture"):
+            with self.subTest(how=how):
+                self.drag_edge(page, 450, up=False)
+                B.expect(page.locator("body")).to_have_class(drag)
+                self.assert_width(page, 450, f"{how}: mid-drag")
+                if how == "pointercancel":
+                    edge.evaluate("e => e.dispatchEvent(new PointerEvent('pointercancel', {pointerId: window.__pid, bubbles: true}))")
+                else:
+                    edge.evaluate("e => e.releasePointerCapture(window.__pid)")
+                B.expect(page.locator("body")).not_to_have_class(drag)
+                self.assert_width(page, SBW0, f"{how}: put back")
+                page.mouse.move(500, 300)  # the pointer goes on moving: no drag any more
+                page.mouse.up()
+                self.assert_width(page, SBW0, f"{how}: after the button is let go")
+        page.reload()  # the interrupted width was never kept
+        B.expect(page.locator("body")).to_have_attribute("data-ready", "1")
+        self.assert_width(page, SBW0, "after a reload")
+        # a right-button press on the edge starts no drag
+        box = edge.bounding_box()
+        y = box["y"] + box["height"] / 2
+        page.mouse.move(box["x"] + box["width"] / 2, y)
+        page.mouse.down(button="right")
+        page.mouse.move(450, y, steps=6)
+        B.expect(page.locator("body")).not_to_have_class(drag)
+        self.assert_width(page, SBW0, "right-button drag")
+        page.mouse.up(button="right")
+        page.keyboard.press("Escape")  # a context menu, if any
+
+    def test_sidebar_edge_line_in_forced_colours(self):
+        page = self.page(DESKTOP)
+        page.emulate_media(forced_colors="active")
+        edge = self.edge(page)
+        edge.focus()
+        page.keyboard.press("ArrowRight")
+        hl = page.evaluate("() => { const d = document.createElement('div'); d.style.cssText = 'forced-color-adjust:none;color:Highlight';"
+                           " document.body.append(d); const c = getComputedStyle(d).color; d.remove(); return c }")
+        got = edge.evaluate("async e => { await Promise.all(e.getAnimations({subtree: true}).map(a => a.finished));"
+                            " return getComputedStyle(e, '::after').backgroundColor }")
+        self.assertEqual(got, hl, "no Highlight line on the focused edge in forced colours")
+
     def test_sidebar_edge_without_storage(self):
         ctx = self.browser.new_context(**DESKTOP)
         ctx.set_default_timeout(B.STEP_MS)
@@ -431,6 +512,15 @@ class GalleryLayoutBrowserTest(LayoutCase):
         # after the search box and the filters, at the bottom of the sidebar
         self.assertTrue(entry.evaluate("b => !!(document.querySelector('#filters').compareDocumentPosition(b)"
                                        " & Node.DOCUMENT_POSITION_FOLLOWING) && b.closest('#sidebar') !== null"))
+        # it opens the shortcut list, which names the sidebar's keys; Esc closes it and focus comes back
+        entry.click()
+        keys = page.get_by_role("dialog", name="Keyboard shortcuts")
+        B.expect(keys).to_be_visible()
+        B.expect(keys.get_by_role("heading", name="Sidebar", exact=True)).to_be_visible()
+        B.expect(keys).to_contain_text("On the sidebar's edge")
+        page.keyboard.press("Escape")
+        B.expect(keys).to_be_hidden()
+        B.expect(entry).to_be_focused()
         page.locator("#rail").click()  # the rail keeps its icon
         B.expect(entry).to_be_visible()
 

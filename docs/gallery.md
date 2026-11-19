@@ -38,6 +38,9 @@ without one" (`/api/facets` gives `drive`, the mount or null).
   Events) and a heavier one above the search box set the views apart from
   search and filters.
   Counts are for the whole library, not narrowed by the other filters.
+  Collapsed to the rail, each icon has a short word under it (Library, Junk,
+  Recent, Child, No tags, Search, Filters); the full name stays its tooltip
+  and the name a screen reader reads.
 - **Sidebar width**: 300 px by default; on a desktop, with the sidebar
   expanded, drag its right edge to make it wider or narrower (the grid
   follows), or Tab to the edge and use Left / Right (16 px; with Shift,
@@ -45,10 +48,9 @@ without one" (`/api/facets` gives `drive`, the mount or null).
   300 px back. It stays between 240 px and 560 px or half the window,
   whichever is less, and narrows when the window does; the width you chose
   comes back when the window widens again. The collapsed rail and the phone's
-  rail and drawer keep their own widths and have no edge to drag.
-  Collapsed to the rail, each icon has a short word under it (Library, Junk,
-  Recent, Child, No tags, Search, Filters); the full name stays its tooltip
-  and the name a screen reader reads.
+  rail and drawer keep their own widths and have no edge to drag. A drag
+  the browser interrupts (a cancelled pointer, lost capture) puts back the
+  width from before it; no edge key acts while a dialog is open.
 - **Main area**: a slim header (view, item count, **Select all**,
   thumbnail-size slider, **Stop server**, and while a Trash, Erase or
   Share-safe copy runs with its dialog hidden, a "Trash running… Show" button
@@ -683,9 +685,13 @@ of tiles above the selection bar at the end of the page. At 1440 px it drags
 the sidebar's edge (the grid following mid-drag), clamps it at 240 px and
 560 px and to half a 1000 px window, keeps it across a reload, resets it on a
 double-click, resizes it by Left / Right / Shift / Home / End with a visible
-focus line in light and dark, works with `localStorage` throwing, and finds no
+focus line in light and dark and a Highlight one in forced colours, ignores
+the keys with Ctrl, Meta or Alt and while the shortcut list is open, falls
+back from or clamps a bad stored width, puts the width back after an
+interrupted drag (pointercancel, lost capture), starts no drag on a right-button
+press, works with `localStorage` throwing, and finds no
 edge in the collapsed rail or on a phone; Keyboard shortcuts sits at the
-sidebar's foot (not in the Views nav), and the search placeholder fits its box
+sidebar's foot (not in the Views nav) and opens the list with its Sidebar keys, and the search placeholder fits its box
 at the default width with a tenth to spare.
 
 `tests/test_gallery_media_kinds.py` runs every operation on a photo, a video and

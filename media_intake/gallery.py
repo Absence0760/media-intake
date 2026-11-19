@@ -1904,6 +1904,8 @@ kbd{font:600 11px/1 ui-monospace,monospace;border:1px solid currentColor;border-
 #sbresize:hover::after,#sbresize:focus-visible::after,.sbdrag #sbresize::after{background:var(--acc)}
 #sbresize:focus-visible{outline:none}
 #sbresize:focus-visible::after{left:2px;width:4px}
+/* high contrast: the line in the system's highlight colour (a forced background would hide it) */
+@media (forced-colors:active){#sbresize::after{forced-color-adjust:none}#sbresize:hover::after,#sbresize:focus-visible::after,.sbdrag #sbresize::after{background:Highlight}}
 .sbdrag,.sbdrag *{cursor:col-resize!important;user-select:none}
 .fhead{display:flex;align-items:baseline;justify-content:space-between;padding:10px 16px 4px}
 .fhead b{font-size:12px;font-weight:650;letter-spacing:.06em;text-transform:uppercase;color:var(--mut)}
@@ -2346,14 +2348,15 @@ addEventListener("resize",()=>sbWidth(sbwPref,false));
  h.addEventListener("pointermove",ev=>{if(!drag||ev.pointerId!==drag.id)return;nx=ev.clientX;
   if(!raf)raf=requestAnimationFrame(()=>{raf=0;if(drag)sbWidth(drag.w+nx-drag.x,false)})});
  const end=ev=>{if(!drag||ev.pointerId!==drag.id)return;if(raf){cancelAnimationFrame(raf);raf=0}
-  if(ev.type!=="pointercancel")sbWidth(drag.w+ev.clientX-drag.x,true);else sbWidth(drag.w,true);
+  // a drag the browser interrupts (pointercancel, or the capture lost before pointerup) puts the width from before it back
+  if(ev.type==="pointerup")sbWidth(drag.w+ev.clientX-drag.x,true);else sbWidth(drag.w,false);
   drag=null;document.body.classList.remove("sbdrag")};
- h.addEventListener("pointerup",end);h.addEventListener("pointercancel",end);
- h.addEventListener("lostpointercapture",ev=>{if(drag&&ev.pointerId===drag.id){sbWidth(parseFloat(h.getAttribute("aria-valuenow"))||SBW0,true);drag=null;document.body.classList.remove("sbdrag")}});
+ h.addEventListener("pointerup",end);h.addEventListener("pointercancel",end);h.addEventListener("lostpointercapture",end);
  h.addEventListener("dblclick",()=>sbWidth(SBW0,true));
  h.addEventListener("keydown",ev=>{const now=parseFloat(h.getAttribute("aria-valuenow"))||SBW0,step=ev.shiftKey?64:16;let w=null;
   if(ev.key==="ArrowLeft")w=now-step;else if(ev.key==="ArrowRight")w=now+step;else if(ev.key==="Home")w=SBWMIN;else if(ev.key==="End")w=sbMax();
-  if(w===null||ev.ctrlKey||ev.metaKey||ev.altKey)return;ev.preventDefault();ev.stopPropagation();sbWidth(w,true)})}
+  // no edge key while a dialog is open (the shortcut list, a confirm, the large view): the page's own rule
+  if(w===null||ev.ctrlKey||ev.metaKey||ev.altKey||topDialog())return;ev.preventDefault();ev.stopPropagation();sbWidth(w,true)})}
 $("#rfilter").onclick=()=>{expandSidebar();const f=$("#filters");if(!f.hidden){f.scrollIntoView({block:"start"});const h=f.querySelector(".fs-h");if(h)h.focus()}};
 // ---------------------------------------------------------------- sidebar: filter sections
 const SECS=[["kind","Kind","1"],["when","When","1"],["project","Project","1"],["source","Source","1"],["place","Place","0"],["event","Event","0"],
