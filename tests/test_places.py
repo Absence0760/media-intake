@@ -289,6 +289,22 @@ class StoreTest(unittest.TestCase):
         self.assertEqual(again.declined[pid], set())
         self.assertEqual(places.stale_count(self.state, self.roots), 0)
 
+    def test_an_empty_mountpoint_is_not_a_library_that_lost_its_files(self):
+        """A drive unmounted with its empty folder left behind: nothing of it is stale; with the folder
+        populated again and one file really gone, only that one is."""
+        st = self.store()
+        pid = st.add("Home", *P)
+        drive = os.path.join(self.tmp, "drive")
+        a, b = os.path.join(drive, "a.jpg"), os.path.join(drive, "b.jpg")
+        os.makedirs(drive)
+        st.tagged[pid] |= {a, b}
+        st.save()
+        roots = self.roots + [drive]
+        self.assertEqual(st.stale(roots), set(), "an empty root is an unplugged drive")
+        self.assertEqual(places.stale_count(self.state, roots), 0)
+        open(b, "w").close()  # mounted again: b is there, a is really gone
+        self.assertEqual(st.stale(roots), {a})
+
     def test_probable(self):
         import datetime
         st = self.store()

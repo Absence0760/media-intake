@@ -457,6 +457,9 @@ class NamesAndTags(Base):
         away = os.path.join(self.tmp, "unplugged")
         os.rename(self.lib, away)  # the library's drive is not mounted
         self.assertEqual(recog.prune(self.c, state=self.state)["gone or moved"], 0)
+        os.makedirs(self.lib)  # ...and its empty mountpoint folder is left behind
+        self.assertEqual(recog.prune(self.c, state=self.state)["gone or moved"], 0)
+        os.rmdir(self.lib)
         self.assertEqual(sorted(tuple(r) for r in self.c.execute("SELECT id, sha, name, how FROM detections")), before)
         self.assertEqual(self.c.execute("SELECT COUNT(*) FROM files").fetchone()[0], files)
         os.rename(away, self.lib)  # back again

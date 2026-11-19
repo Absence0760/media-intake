@@ -311,14 +311,15 @@ class Store:
         return n
 
     def stale(self, roots):
-        """Recorded paths whose file is gone from a library folder that is there (an unplugged drive's files
-        are not gone)."""
-        live = [os.path.realpath(r) for r in roots if os.path.isdir(r)]
+        """Recorded paths whose file is gone from a library folder that is there (sources.root_present: an
+        unplugged drive's files, or its empty mountpoint's, are not gone)."""
+        import sources
+        live = sources.present_roots(roots)
         out = set()
         for rec in (self.tagged, self.declined):
             for ps in rec.values():
                 for p in ps:
-                    if not os.path.lexists(p) and any(p.startswith(r + os.sep) for r in live):
+                    if sources.file_gone(p, roots, live):
                         out.add(p)
         return out
 

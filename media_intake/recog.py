@@ -276,28 +276,17 @@ def trashed_shas(state=None):
         return set()
 
 
-def gone_from_disk(path, roots):
-    """True when path is no longer there: missing while the library folder holding it (roots: the library
-    folders) is present. A file under a folder that is not there (an unplugged drive, an unmounted videos
-    folder) is not gone; one under no library folder (a file scanned by name) is gone once its own folder is
-    there without it."""
-    if os.path.isfile(path):
-        return False
-    rp = os.path.realpath(path)
-    under = [r for r in roots if rp.startswith(os.path.realpath(r) + os.sep)]
-    if not under:
-        return os.path.isdir(os.path.dirname(path))
-    return os.path.isdir(max(under, key=lambda r: len(os.path.realpath(r))))  # the innermost: a project drive
-
-
 def prune(c, state=None, d=None, flagged=None, roots=None):
     """Drop content flagged, quarantined, erased or trashed since, and file rows gone from disk or now under
     quarantine/ or batches/. A file whose library folder is not there (roots: the library folders, by default
-    config.library_roots()) is kept with its names, rejects and take-outs: it comes back with the drive.
+    config.library_roots(); sources.root_present: missing, empty, or a drive's folder with no drive mounted) is
+    kept with its names, rejects and take-outs: it comes back with the drive.
     Returns {reason: count}."""
     import label
     state = state or state_dir()
+    import sources
     roots = config.library_roots() if roots is None else list(roots)
+    present = set(sources.present_roots(roots))
     flagged = label.flagged(state) if flagged is None else flagged
     gone = set(flagged) | trashed_shas(state)
     out = collections.Counter()
@@ -309,7 +298,7 @@ def prune(c, state=None, d=None, flagged=None, roots=None):
     private = [os.path.realpath(os.path.join(state, x)) + os.sep for x in ("quarantine", "batches")]
     for r in c.execute("SELECT path FROM files").fetchall():
         rp = os.path.realpath(r["path"])
-        if any(rp.startswith(x) for x in private) or gone_from_disk(r["path"], roots):
+        if any(rp.startswith(x) for x in private) or sources.file_gone(r["path"], roots, present, outside=True):
             c.execute("DELETE FROM files WHERE path=?", (r["path"],))
             c.execute("DELETE FROM written WHERE path=?", (r["path"],))
             out["gone or moved"] += 1

@@ -424,6 +424,49 @@ def _home():
     return os.path.realpath(os.path.expanduser("~"))
 
 
+def root_present(root):
+    """A library folder (library, videos, a project folder) is there to judge "this file is gone" by: it exists,
+    holds at least one entry (an unmounted drive often leaves its empty mountpoint folder behind, and an empty
+    folder can't hold the files we have records of), and, when it is where drives mount (FOLDER_DRIVE_PREFIXES),
+    the mount holding it is a drive there, not the laptop's own disk under a stale folder (drive_mount: findmnt).
+    Recognition's prune, My places' stale records and the date records all ask this before dropping anything."""
+    try:
+        if not os.path.isdir(root):
+            return False
+        with os.scandir(root) as it:
+            if next(it, None) is None:
+                return False
+    except OSError:
+        return False
+    rp = os.path.realpath(root)
+    if any(_within(rp, d) for d in FOLDER_DRIVE_PREFIXES):
+        try:
+            mount = drive_mount(rp)
+        except OSError:  # no findmnt: the non-empty folder is all there is to go by
+            return True
+        return bool(mount) and any(_within(os.path.realpath(mount), d) for d in FOLDER_DRIVE_PREFIXES) \
+            and mount.rstrip(os.sep) not in [d.rstrip(os.sep) for d in FOLDER_DRIVE_PREFIXES]
+    return True
+
+
+def present_roots(roots):
+    """The realpaths of the library folders that are there (root_present), for "missing means gone"."""
+    return [os.path.realpath(r) for r in roots if root_present(r)]
+
+
+def file_gone(path, roots, present, outside=False):
+    """True when a recorded file is gone for good: missing while the innermost library folder holding it
+    (roots; present: present_roots(roots)) is there. A project drive inside the library counts on its own.
+    outside: what to say for a file under no library folder (recognition: gone once its own folder is there)."""
+    if os.path.lexists(path):
+        return False
+    rp = os.path.realpath(path)
+    under = [os.path.realpath(r) for r in roots if _within(rp, os.path.realpath(r)) and rp != os.path.realpath(r)]
+    if not under:
+        return outside and os.path.isdir(os.path.dirname(path))
+    return max(under, key=len) in present
+
+
 def _within(p, base, fold=False):
     """p is base or under it. fold: compare case-insensitively (stricter on a case-insensitive disk)."""
     if fold:

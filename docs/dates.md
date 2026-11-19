@@ -200,7 +200,9 @@ Nothing is fixed by itself. Name the files and how:
   recorded file gone from a library folder that is there. Both files are
   rewritten atomically, 0600, and erase's coverage report counts the records
   dropped. A file under a folder that is not there (an unplugged drive) is
-  not gone. `verify-gone` fails, printing only a count ("DATE RECORDS: N
+  not gone. A library folder counts as there only when it exists, is not empty and, under
+  /run/media, /media, /mnt or /Volumes, sits on a mounted drive (findmnt): an
+  empty mountpoint left by an unplugged drive drops nothing. `verify-gone` fails, printing only a count ("DATE RECORDS: N
   entries ..."), while a record of a gone file remains.
 - **`tag BATCH` keeps a fix**: a rerun writes the fixed date, not the plan's,
   for a file a fix covers (`datecheck.fixed_paths`). `tag-files` already

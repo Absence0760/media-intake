@@ -281,6 +281,10 @@ class ForgetRecordsTest(unittest.TestCase):
         away = self.lib + "-unplugged"
         os.rename(self.lib, away)  # its drive is not mounted: nothing is gone
         self.assertEqual(datecheck.stale([self.lib], self.state), set())
+        os.makedirs(self.lib)  # ...nor with its empty mountpoint folder left behind
+        self.assertEqual(datecheck.stale([self.lib], self.state), set())
+        self.assertEqual(datecheck.forget_paths(datecheck.stale([self.lib], self.state), self.state), (0, ""))
+        os.rmdir(self.lib)
         os.rename(away, self.lib)
         datecheck.forget_paths(datecheck.stale([self.lib], self.state), self.state)
         self.assertEqual(datecheck.stale([self.lib], self.state), set())

@@ -1058,11 +1058,11 @@ def recorded_paths(state=None):
 
 
 def stale(roots, state=None):
-    """Recorded paths whose file is gone from a library folder that is there (an unplugged drive's files are
-    not gone)."""
-    live = [os.path.realpath(r) for r in roots if os.path.isdir(r)]
-    return {p for p in recorded_paths(state) if not os.path.lexists(p)
-            and any(os.path.realpath(p).startswith(r + os.sep) for r in live)}
+    """Recorded paths whose file is gone from a library folder that is there (sources.root_present: an unplugged
+    drive's files, or its empty mountpoint's, are not gone)."""
+    import sources
+    live = sources.present_roots(roots)
+    return {p for p in recorded_paths(state) if sources.file_gone(p, roots, live)}
 
 
 # ---------------------------------------------------------------- the commands (intake.py's parser calls these)

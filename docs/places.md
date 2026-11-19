@@ -34,7 +34,9 @@ any file the tool shares:
   plugged in, and its coverage report counts them ("your places' records:
   erased files dropped"). `verify-gone` fails with "PLACE RECORDS: N" when
   `places.json` still names a file that is gone (a file deleted by hand);
-  `places tag` drops those records.
+  `places tag` drops those records. A library folder counts as there only when it exists, is not empty and, under
+  /run/media, /media, /mnt or /Volumes, sits on a mounted drive (findmnt): an
+  empty mountpoint left by an unplugged drive drops nothing.
 
 `places.json` holds, per place, its name, point and radius, and which files
 the tool tagged with it or must never tag with it again (paths: you took the

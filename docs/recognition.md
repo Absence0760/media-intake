@@ -186,6 +186,9 @@ life. They stay on this laptop.
 - Every command first drops the rows of files gone from disk, but only when
   the library folder holding them is there: with a drive or the videos
   folder unplugged, its files keep their names, rejections and take-outs.
+  A library folder counts as there only when it exists, is not empty and, under
+  /run/media, /media, /mnt or /Volumes, sits on a mounted drive (findmnt): an
+  empty mountpoint left by an unplugged drive drops nothing.
 - To turn it off and drop everything: delete `recognition.dir`. The
   `People|` and `Pets|` tags already written stay in your sidecars.
 
