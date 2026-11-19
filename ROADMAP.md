@@ -144,7 +144,8 @@ The goal: someone else can install it on Fedora, import a phone, and trust it.
 - [ ] Optional local face grouping (off by default): face data counts as personal data,
       so erase/verify-gone must cover it; never names faces automatically. Core and CLI built
       (`recog.py`, `media-intake people`; names propagate only as suggestions until confirmed;
-      docs/recognition.md); the gallery's naming view is still to come.
+      docs/recognition.md); the gallery's People & Pets section and naming view are built too
+      (docs/gallery.md, "People and pets").
 - [ ] Pet recognition (`Pet|<Name>`) alongside face grouping, sharing one scan, naming page
       and erase path: proposal and model choices in docs/research-pets.md (awaiting approval).
 - [x] Video near-duplicates (perceptual video hash) for re-encoded or trimmed copies

@@ -159,7 +159,7 @@ media-intake offload phone-1 --phone <phone folder>   # after a backup: free the
 | `vlm-trash` | Local vision-model second opinion on Suggested junk |
 | `people` | Recognise people in photos, offline: you name them, it suggests and tags `People\|<Name>` once you confirm (off until `setup.sh --recognition`; [docs/recognition.md](docs/recognition.md)) |
 | `calibrate` | Report precision and recall of each label's threshold against your own marks; changes nothing |
-| `gallery` | Local web gallery: browse, Keep, Favorite, Trash, Erase, tag, rotate, events, bulk edits, share-safe copies |
+| `gallery` | Local web gallery: browse, Keep, Favorite, Trash, Erase, tag, rotate, events, bulk edits, share-safe copies, naming people and pets (once recognition is on) |
 | `proxies` | Make the gallery's H.264 copies of HEVC videos now, so they play at once (`--dry-run`, `--inhibit`) |
 | `prune-cache` | Delete gallery thumbnails and video proxies nothing in the library shows any more (`--dry-run` first) |
 | `backup` | Copy the library (photos, videos, sidecars) to the backup drive: incremental, never deletes there |
