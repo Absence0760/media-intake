@@ -980,3 +980,75 @@ class RunnerRefusesQuarantineTrash(unittest.TestCase):
         self.assertEqual(job.calls, [], "neither trash nor erase (nor anything else) ran")
         self.assertTrue(any("other than keep or erase" in x for x in job.lines), job.lines)
 
+
+
+# setup.sh's venv (the one with pillow-heif), read-only: the HEIC preview runs there, as the page does.
+REAL_VENV_PY = os.path.join(os.path.expanduser("~/.local/share/media-intake"), "venv", "bin", "python")
+HEIC_PROBE = r'''
+import io, json, os, sys
+sys.path.insert(0, sys.argv[1])
+import pillow_heif
+from PIL import Image
+import review_ui as ru
+d = sys.argv[2]
+p = os.path.join(d, "IMG_0001.HEIC")
+pillow_heif.from_pillow(Image.new("RGB", (3000, 2000), "red")).save(p, quality=50)
+data = ru.heic_preview(p)
+with open(os.path.join(d, "bad.heic"), "wb") as f:
+    f.write(b"not an image")
+with Image.open(io.BytesIO(data)) as im:
+    size = im.size
+print(json.dumps(dict(heif=ru.HEIF, kind=ru.kind_of(p), wh=ru.heic_size(p), jpeg=data[:2] == b"\xff\xd8",
+                      preview=size, bad=ru.heic_preview(os.path.join(d, "bad.heic")),
+                      res=ru.meta(p, "image")["res"])))
+'''
+
+
+class HeicPreviewTest(unittest.TestCase):
+    """HEIC can't show in a browser: it is converted to an upright JPEG in memory as it is served."""
+
+    @unittest.skipUnless(os.access(REAL_VENV_PY, os.X_OK), "setup.sh not run (no venv with pillow-heif)")
+    def test_heic_converted_to_jpeg_in_memory(self):
+        d = tempfile.mkdtemp()
+        self.addCleanup(shutil.rmtree, d)
+        env = dict(os.environ, HOME=d, MEDIA_INTAKE_STATE=os.path.join(d, "state"))
+        r = subprocess.run([REAL_VENV_PY, "-I", "-c", HEIC_PROBE, HERE, d], env=env, capture_output=True,
+                           text=True, timeout=120)
+        self.assertEqual(r.returncode, 0, r.stderr)
+        got = json.loads(r.stdout)
+        self.assertTrue(got["heif"], "the venv has pillow-heif (requirements.txt)")
+        self.assertEqual(got["kind"], ["image", "image/jpeg"])
+        self.assertEqual(got["wh"], [3000, 2000])
+        self.assertEqual(got["res"], "3000x2000")
+        self.assertTrue(got["jpeg"])
+        self.assertEqual(got["preview"], [1600, 1067])
+        self.assertIsNone(got["bad"])
+        self.assertEqual(sorted(os.listdir(d)), ["IMG_0001.HEIC", "bad.heic"], "nothing written beside them")
+
+    def test_without_pillow_heif_the_page_reruns_under_the_venv(self):
+        import review_ui
+        if review_ui.HEIF:
+            self.skipTest("this python has pillow-heif, so the page never re-runs")
+        d = tempfile.mkdtemp()
+        self.addCleanup(shutil.rmtree, d)
+        state, log = os.path.join(d, "state"), os.path.join(d, "argv.json")
+        venv_py = os.path.join(state, "venv", "bin", "python")
+        os.makedirs(os.path.dirname(venv_py))
+        with open(venv_py, "w") as f:  # a fake venv python: records how it was started, serves nothing
+            f.write(f"#!{PY} -I\nimport json, sys\njson.dump(sys.argv, open({log!r}, 'w'))\n")
+        os.chmod(venv_py, 0o700)
+        env = dict(os.environ, HOME=d, MEDIA_INTAKE_STATE=state)
+        env.pop("MEDIA_REVIEW_NO_VENV", None)
+        r = subprocess.run([PY, "-I", UI, BATCH, "--port", "0"], env=env, capture_output=True, text=True,
+                           timeout=60, stdin=subprocess.DEVNULL)
+        self.assertEqual(r.returncode, 0, r.stderr)
+        with open(log) as f:
+            argv = json.load(f)
+        self.assertEqual(argv[1:], ["-I", UI, BATCH, "--port", "0"])  # the shebang's python gets -I itself
+        # Turned off, the page runs under this python (and stops at once here: the batch doesn't exist).
+        os.remove(log)
+        r = subprocess.run([PY, "-I", UI, BATCH, "--port", "0"], env=dict(env, MEDIA_REVIEW_NO_VENV="1"),
+                           capture_output=True, text=True, timeout=60, stdin=subprocess.DEVNULL)
+        self.assertEqual(r.returncode, 0, r.stderr)
+        self.assertIn(f"nothing to review for {BATCH}", r.stdout)
+        self.assertFalse(os.path.exists(log))

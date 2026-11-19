@@ -16,6 +16,7 @@ pinned), system programs from your distribution.
 | [ONNX Runtime](https://github.com/microsoft/onnxruntime) | Runs NudeNet and SigLIP | MIT | pip wheel, hash-pinned |
 | [OpenCV](https://opencv.org/) (`opencv-python-headless`) | NudeNet image handling | Apache-2.0 | pip wheel, hash-pinned |
 | [SciPy](https://scipy.org/) | Nearest-place lookup (`cKDTree`) in `geocode.py` | BSD-3-Clause | pip wheel, hash-pinned |
+| [pillow-heif](https://github.com/bigcat88/pillow_heif) | HEIC/HEIF decoding for `scan_sensitive.py`, `label.py`, `vlm_trash.py` and the review page | Source BSD-3-Clause. The Linux wheel bundles libheif and libde265 (LGPL-3.0) and x265 (GPL-2.0-or-later, see the wheel's `LICENSES_bundled.txt`), so the installed wheel is GPL-2.0-or-later, which combines with AGPL-3.0. | pip wheel, hash-pinned |
 | [protobuf](https://github.com/protocolbuffers/protobuf), [flatbuffers](https://github.com/google/flatbuffers) | ONNX Runtime dependencies | BSD-3-Clause, Apache-2.0 | pip wheels, hash-pinned |
 | [Hugging Face tokenizers](https://github.com/huggingface/tokenizers) | Only for `setup.sh --build-labels` (search queries, rebuilding `labels.npz`) | Apache-2.0 | pip wheel into a build cache, hash-pinned |
 | [zxing-cpp](https://github.com/zxing-cpp/zxing-cpp) | QR / barcode detector (2FA and payment codes) | Apache-2.0 | `python3-zxing-cpp` from your distribution |

@@ -4,6 +4,7 @@
 media-intake backup /run/media/$USER/<label> --dry-run   # what would be copied; writes nothing
 media-intake backup /run/media/$USER/<label>             # copy what is new or changed
 media-intake backup /run/media/$USER/<label> --verify    # then re-read every copy and compare sha256
+media-intake backup /run/media/$USER/<label> --skip videos   # leave one root out this run (no room yet)
 ```
 
 `media_intake/backup.py`; tests: `python3 -I -m unittest discover -s tests -p test_backup.py`.
@@ -73,7 +74,11 @@ media-intake backup /run/media/$USER/<label> --verify    # then re-read every co
 - **Letter case.** exFAT and FAT ignore case, so two library paths that
   differ only by case would be one file there: the second is not copied and
   is listed (rename one in the library).
-- **Free space** is checked before the first copy.
+- **Free space** is checked before the first copy. When the drive can't hold
+  it all, `--skip PART` (repeatable) leaves a whole root out of the run:
+  `library`, `videos` or `projects/<key>`. A skipped root is neither copied
+  nor verified; its copy on the drive and its entries in the record stay as
+  they were, and it is not counted as "no longer in the library".
 - **Output is counts and relative paths only**, never file contents.
 
 ## `--verify`

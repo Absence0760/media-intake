@@ -5,7 +5,8 @@
   media-intake queue add|run|status|offload ...   external-drive process queue (drive_queue.py)
   media-intake review BATCH ...          local review page for a batch (review_ui.py)
   media-intake prune-cache [--dry-run]   delete gallery thumbnails and proxies nothing shows (cache_prune.py)
-  media-intake backup MOUNT [--verify] [--dry-run]   copy the library to a mounted drive (backup.py)
+  media-intake backup MOUNT [--verify] [--dry-run] [--skip PART]   copy the library to a drive (backup.py)
+  media-intake zip-check ROOT [--known DIR] [--out JSON]   what export zips hold that you lack (zip_check.py)
   media-intake index                     build or update the semantic search index  (venv)
   media-intake search "TEXT" ...         semantic search                             (venv)
   media-intake similar FILE ...          nearest neighbours of a file                (venv)
@@ -290,6 +291,11 @@ def _backup(rest):
     return backup.main(rest)
 
 
+def _zip_check(rest):
+    import zip_check
+    return zip_check.main(rest)
+
+
 def _gallery(rest):  # here, not in intake.py: gallery imports intake, so intake never imports gallery
     import gallery
     return gallery.main(rest)
@@ -302,7 +308,7 @@ def _prune_cache(rest):  # cli.py's too: it reads the library as the gallery doe
 
 # cli.py's own commands; VENV_SCRIPTS run in the venv; everything else goes to intake.py's parser.
 COMMANDS = {"doctor": lambda rest: doctor(), "queue": _queue, "review": _review, "backup": _backup,
-            "gallery": _gallery, "prune-cache": _prune_cache}
+            "gallery": _gallery, "prune-cache": _prune_cache, "zip-check": _zip_check}
 HELP = ("-h", "--help", "help")
 
 

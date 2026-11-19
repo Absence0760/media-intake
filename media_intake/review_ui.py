@@ -56,7 +56,8 @@ import jobs  # noqa: E402  (detached, re-attachable runs: <state>/jobs/)
 HOME = os.path.expanduser("~")
 STATE = config.get()["state"]
 BATCH_RE = re.compile(r"^[A-Za-z0-9_][A-Za-z0-9._-]*$")
-# What a browser can show; anything else (HEIC, DNG, GPR) gets a "no preview" card.
+# What a browser can show; HEIC/HEIF is converted (CONVERT_IMG) when pillow-heif is there; anything else
+# (DNG, GPR, or HEIC without pillow-heif) gets a "no preview" card.
 SHOW_IMG = {".jpg": "image/jpeg", ".jpeg": "image/jpeg", ".png": "image/png", ".gif": "image/gif",
             ".webp": "image/webp", ".avif": "image/avif", ".bmp": "image/bmp"}
 SHOW_VID = {".mp4": "video/mp4", ".m4v": "video/mp4", ".mov": "video/mp4", ".webm": "video/webm",
@@ -108,8 +109,52 @@ def inside(root, p):
             and os.path.realpath(p).startswith(r + os.sep))
 
 
+# HEIC/HEIF (iPhone photos): browsers can't show them, so they are converted to JPEG in memory as they are
+# served, never written to disk. Needs Pillow + pillow-heif: setup.sh's venv has both (requirements.txt),
+# and main() re-runs this page under that venv's python when the running one lacks them.
+CONVERT_IMG = {".heic", ".heif"}
+PREVIEW_MAX = 1600
+VENV_PY = os.path.join(STATE, "venv", "bin", "python")
+try:
+    from PIL import Image, ImageOps
+    import pillow_heif
+    pillow_heif.register_heif_opener()
+    HEIF = True
+except ImportError:
+    HEIF = False
+
+
+def heic_preview(path):
+    """JPEG bytes of a HEIC/HEIF, upright and at most PREVIEW_MAX px; None if it can't be decoded."""
+    if not HEIF:
+        return None
+    import io
+    try:
+        with Image.open(path) as im:
+            im = ImageOps.exif_transpose(im)
+            im.thumbnail((PREVIEW_MAX, PREVIEW_MAX))
+            buf = io.BytesIO()
+            im.convert("RGB").save(buf, "JPEG", quality=85)
+            return buf.getvalue()
+    except Exception:
+        return None
+
+
+def heic_size(path):
+    """(w, h) of a HEIC/HEIF, or None (no pillow-heif, or not decodable)."""
+    if not HEIF:
+        return None
+    try:
+        with Image.open(path) as im:
+            return im.size
+    except Exception:
+        return None
+
+
 def kind_of(path):
     ext = os.path.splitext(path)[1].lower()
+    if ext in CONVERT_IMG and HEIF:
+        return "image", "image/jpeg"
     if ext in SHOW_IMG:
         return "image", SHOW_IMG[ext]
     if ext in SHOW_VID:
@@ -189,7 +234,10 @@ def human(n):
 
 def meta(path, kind, date=None):
     """What you compare: resolution, size, date, folder (relative to HOME)."""
-    wh = image_size(path) if kind == "image" else video_size(path) if kind == "video" else None
+    if os.path.splitext(path)[1].lower() in CONVERT_IMG:
+        wh = heic_size(path)
+    else:
+        wh = image_size(path) if kind == "image" else video_size(path) if kind == "video" else None
     st = os.stat(path)
     if date:
         date = date.replace("T", " ")[:16]
@@ -758,8 +806,20 @@ class Handler(http.server.BaseHTTPRequestHandler):
         else:
             self.reply(404, "404\n")
 
+    def converted(self, p):
+        """A HEIC/HEIF as a JPEG made in memory (no Range: the bytes exist only for this reply)."""
+        data = heic_preview(p)
+        if data is None:
+            return self.reply(404, "404\n")
+        try:
+            self.reply(200, data, "image/jpeg", headers=[("Content-Disposition", "inline")])
+        except (BrokenPipeError, ConnectionResetError):
+            pass
+
     def media(self, it):
         p = it["path"]
+        if os.path.splitext(p)[1].lower() in CONVERT_IMG:
+            return self.converted(p)
         try:
             f = open(p, "rb")
         except OSError:
@@ -860,6 +920,17 @@ def serve(app, port=0):
     return httpd, url
 
 
+def venv_reexec(args):
+    """Without pillow-heif here (the system python), re-run this page under setup.sh's venv so HEIC
+    previews work. MEDIA_REVIEW_NO_VENV=1 turns this off; without a venv the page runs as it is."""
+    if HEIF or os.environ.get("MEDIA_REVIEW_NO_VENV") or not os.access(VENV_PY, os.X_OK):
+        return
+    if os.path.realpath(sys.prefix) == os.path.realpath(os.path.dirname(os.path.dirname(VENV_PY))):
+        return  # already the venv: it lacks pillow-heif (re-run setup.sh), so no HEIC previews
+    sys.stdout.flush()
+    os.execv(VENV_PY, [VENV_PY, "-I", os.path.abspath(__file__), *args])
+
+
 def main(argv=None):
     ap = argparse.ArgumentParser(description="Local-only review page for a batch's quarantine and review folder.")
     ap.add_argument("batch", nargs="?")
@@ -870,6 +941,7 @@ def main(argv=None):
     ap.add_argument("--no-wipe-free", action="store_true", help="passed to erase")
     ap.add_argument("--port", type=int, default=0, help="0 = a random free port (default)")
     a = ap.parse_args(argv)
+    venv_reexec(sys.argv[1:] if argv is None else list(argv))
     if a.batch is None and not a.maybe_trash:
         sys.exit("give a BATCH, --maybe-trash, or both")
     if a.batch is not None and not BATCH_RE.match(a.batch):
