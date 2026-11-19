@@ -174,7 +174,7 @@ life. They stay on this laptop.
 | What | Where | Kept |
 | --- | --- | --- |
 | Store: files (path, sha256, size, mtime), detections (box, score, kind, species, frame time), vectors (DINOv2 and SigLIP for pets), names, merges, rejections, the tags it wrote | `recognition.dir/recognition.db` (default `<state>/recognition/`; [configuration.md](configuration.md)) | folder `0700`, file `0600` |
-| 160 px crops for the naming page | `recognition.dir/crops/`, made only when a page asks for one | `0600` |
+| 320 px crops and the zoom's whole pictures (at most 1280 px) for the naming page | `recognition.dir/crops/`, made only when a page asks for one (a 160 px crop an older version left is replaced when next shown) | `0600` |
 | Names you confirmed | your sidecars, as `People\|<Name>` and `Pets\|<Name>` | as your sidecars |
 
 - Never in git, never in a backup: `backup` never enters the state folder or

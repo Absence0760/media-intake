@@ -11,7 +11,9 @@ feature off without a store (no section, every route off or 404, no store create
 the ?who= filter, naming, Undo, ignore, unname, merge (by number and by name; across species refused),
 take out and put back, suggestions confirmed and rejected after a re-cluster, 409 for a page listed before
 that re-cluster, 403 / 415 on a POST without CSRF or JSON, crops served by detection id only (0600 in a
-0700 folder, no-store) and never for a flagged file, and the large view's names and a video's times.
+0700 folder, no-store) and never for a flagged file, the zoom's /api/rec/det and /r/<id>/frame (turned after
+a Rotate, 404 when flagged, removed by forget with the crops), clusters of one listed after the others, paged,
+hinted and named, and the large view's names and a video's times.
 """
 import os, shutil, stat, sys, tempfile, unittest, urllib.parse
 import unittest.mock as mock
@@ -179,7 +181,7 @@ class PeopleApiTest(unittest.TestCase):
         self.assertEqual((face["names"], face["unnamed"], face["suggestions"]), ([], 3, 0))
         j = self.rec(s, kind="face")
         run, ann = j["run"], w.cluster_of(w.ann[0])
-        self.assertEqual(j["counts"], dict(todo=3, named=0, ignored=0, sugg=0))
+        self.assertEqual(j["counts"], dict(todo=3, named=0, ignored=0, sugg=0, single=0))
         self.assertFalse(any(d.get("like") for d in j["clusters"]), "no hint before anyone is named")
         card = next(d for d in j["clusters"] if d["id"] == ann)
         self.assertEqual(card["count"], 4, "flag.png's face was dropped (prune) once it was flagged")
@@ -363,6 +365,108 @@ class PeopleApiTest(unittest.TestCase):
         for path in [f"/r/{d}" for d in w.dets(w.flag)] + ["/r/999999", "/r/x", "/r/-1", f"/r/{det}/../1"]:
             self.assertEqual(s.req("GET", path)[0].status, 404, path)
         self.assertEqual(len(os.listdir(crops)), 1, "no crop was made for the flagged file")
+
+    def test_single_photo_clusters_listed_paged_hinted_and_named(self):
+        """A pet seen once is a cluster of one: listed in To name after the clusters of two or more (counted in the
+        tab, in "single" and in the sidebar), paged with single=1, "looks like" a name you gave, and nameable."""
+        w = self.world(video=False)
+        r = w.world.vec("rex")
+        o = w.world.rng.normal(size=TR.DIM)
+        o -= (o @ r) * r
+        w.world.base["rex3"] = 0.8 * r + (1 - 0.8 ** 2) ** 0.5 * o / TR.np.linalg.norm(o)
+        w.world.scene(8, ("solo", "dog"))
+        w.world.scene(9, ("rex3", "dog"))
+        solo = TR.image(os.path.join(w.lib, "2026/2026-05/solo.png"), 8)
+        rex3 = TR.image(os.path.join(w.lib, "2026/2026-05/rexc.png"), 9)
+        recog.scan(w.c, w.pet, [solo, rex3], frames=None, log=lambda *a: None, state=w.state)
+        recog.recluster(w.c, w.pet)
+        s = self.start(w.env)
+        pet = next(k for k in s.get("/api/facets")["rec"]["kinds"] if k["kind"] == "pet")
+        self.assertEqual(pet["unnamed"], 5, "3 clusters of two and 2 seen once")
+        j = self.rec(s, kind="pet")
+        self.assertEqual((j["counts"]["todo"], j["counts"]["single"]), (5, 2))
+        order = [d["single"] for d in j["clusters"]]
+        self.assertEqual(order, [False, False, False, True, True], "the clusters of two or more first")
+        singles = {d["id"]: d for d in j["clusters"] if d["single"]}
+        self.assertEqual(set(singles), {w.cluster_of(solo, "pet"), w.cluster_of(rex3, "pet")})
+        self.assertTrue(all(d["count"] == 1 and len(d["crops"]) == 1 for d in singles.values()))
+        # paging: 2 a page, the cursor holding across the step from the clusters of two to the singles
+        seen, after, single = [], 0, False
+        for _ in range(5):
+            q = dict(kind="pet", limit=2, after=after)
+            if single:
+                q["single"] = "1"
+            page = self.rec(s, **q)
+            seen += [d["id"] for d in page["clusters"]]
+            if not page["more"]:
+                break
+            after, single = page["clusters"][-1]["id"], page["clusters"][-1]["single"]
+        self.assertEqual(seen, [d["id"] for d in j["clusters"]], "every cluster once, in order")
+        # name rex: the single look-alike "looks like Rex"; then name it
+        run = j["run"]
+        rex = w.cluster_of(w.rex[0], "pet")
+        self.assertEqual(self.post(s, "name", dict(kind="pet", run=run, cluster=rex, name="Rex"))[0], 200)
+        like = next(d for d in self.rec(s, kind="pet")["clusters"] if d["id"] == w.cluster_of(rex3, "pet"))
+        self.assertEqual([(x["cluster"], x["name"]) for x in like["like"]], [(rex, "Rex")])
+        code, r = self.post(s, "name", dict(kind="pet", run=run, cluster=w.cluster_of(solo, "pet"), name="Solo"))
+        self.assertEqual(code, 200, r)
+        self.assertIn("Pets|Solo", hier(solo))
+        j = self.rec(s, kind="pet")
+        self.assertEqual((j["counts"]["todo"], j["counts"]["single"]), (3, 1))
+        named = [d["id"] for d in self.rec(s, kind="pet", show="named")["clusters"]]
+        self.assertEqual(named, sorted([rex, w.cluster_of(solo, "pet")]), "a named cluster of one stays listed")
+        # Named pages by cluster number only: a single= flag sent with it changes nothing
+        first = self.rec(s, kind="pet", show="named", limit=1)
+        self.assertTrue(first["more"])
+        nxt = self.rec(s, kind="pet", show="named", limit=1, after=first["clusters"][0]["id"], single="1")
+        self.assertEqual([d["id"] for d in first["clusters"] + nxt["clusters"]], named)
+
+    def test_zoom_det_info_and_whole_picture(self):
+        """/api/rec/det/<id>: the item and the box; /r/<id>/frame: the whole picture, 0600 in crops/ beside the
+        crops, turned (box too) after a Rotate; both 404 for a flagged file; erase's globs cover every file."""
+        w = self.world()
+        s = self.start(w.env)
+        items = {i["n"]: i["id"] for i in s.get("/api/list?limit=500")["items"]}
+        det = w.dets(w.ann[0])[0]
+        row = w.c.execute("SELECT x, y, w, h FROM detections WHERE id=?", (det,)).fetchone()
+        d = s.get(f"/api/rec/det/{det}")
+        self.assertEqual((d["item"], d["name"], d["video"], d["t"], d["kind"]),
+                         (items["ann0.png"], "ann0.png", False, None, "face"))
+        self.assertEqual(d["box"], [round(v, 5) for v in row])
+        r, data = s.req("GET", f"/r/{det}/frame")
+        self.assertEqual((r.status, r.getheader("Content-Type")), (200, "image/jpeg"))
+        self.assertIn("no-store", r.getheader("Cache-Control"))
+        from PIL import Image
+        import io
+        self.assertEqual(Image.open(io.BytesIO(data)).size, (200, 100))
+        r, crop = s.req("GET", f"/r/{det}")
+        self.assertEqual(Image.open(io.BytesIO(crop)).size, (recog.CROP_PX, recog.CROP_PX))
+        crops = recog.crops_dir(w.store)
+        sha = G.sha(w.ann[0])
+        self.assertEqual(sorted(os.listdir(crops)), sorted([f"{sha}-frame-r0.jpg", f"{sha}-{det}-{recog.CROP_PX}.jpg"]))
+        for f in os.listdir(crops):
+            self.assertEqual(stat.S_IMODE(os.stat(os.path.join(crops, f)).st_mode), 0o600)
+        # a Rotate in the gallery: the whole picture and its box turn with it
+        self.assertEqual(s.post("/api/rotate", {"ids": [items["ann0.png"]], "dir": "cw"})[0], 200)
+        d = s.get(f"/api/rec/det/{det}")
+        self.assertEqual(d["box"], [round(v, 5) for v in recog.turn_box(tuple(row), 90)])
+        r, data = s.req("GET", f"/r/{det}/frame")
+        self.assertEqual(Image.open(io.BytesIO(data)).size, (100, 200))
+        # a video's detection: its second, and the poster's item
+        vd = w.dets(w.video)
+        info = [s.get(f"/api/rec/det/{i}") for i in vd]
+        self.assertEqual(sorted(x["t"] for x in info), [1.5, 12.0])
+        self.assertTrue(all(x["video"] and x["item"] == items["clip.mp4"] for x in info))
+        # never for a flagged file, an unknown id or anything but a number
+        for path in [f"/api/rec/det/{i}" for i in w.dets(w.flag)] + [f"/r/{i}/frame" for i in w.dets(w.flag)] + \
+                ["/api/rec/det/999999", "/r/999999/frame", "/api/rec/det/x", "/r/1/frame/x"]:
+            self.assertEqual(s.req("GET", path)[0].status, 404, path)
+        # erase / verify-gone: every crop and picture of that content is counted and removed
+        self.assertEqual(recog.leftovers({sha}, w.store)["crops"], 3)
+        w.c.close()
+        self.assertEqual(recog.forget({sha}, w.store)["crops"], 3)
+        self.assertFalse([f for f in os.listdir(crops) if f.startswith(sha)])
+        w.c = recog.connect()
 
     def test_large_view_names_and_video_times(self):
         w = self.world()

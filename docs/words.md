@@ -82,6 +82,9 @@ Off until `bash setup.sh --recognition`; [recognition.md](recognition.md).
 | **ignore** | A cluster of strangers, posters or statues: never named, never tagged. In the gallery the button is **Not a person** / **Not a pet**, and **Not ignored** undoes it. | Trash. |
 | **People & Pets** | The gallery sidebar's section: each name you gave or confirmed with its item count, and **Name new faces/pets**. Shown only once the recognition store exists. | Quick views. |
 | **Name faces and pets** | The gallery's naming view (its **Name new faces/pets** entry): the clusters to name, the suggestions, the named and the ignored ones. | The review page. |
+| **Single photos** | In the naming view's To name: the faces or pets seen only once (one photo, or one frame of a video), listed after the clusters of two or more. Each is a cluster of one and is named the same way. | A burst. |
+| **Zoom** | In the naming view: the magnifier on a crop (or Z) shows it large beside the whole photo, the face or pet outlined. | The large view. |
+| **Crop size** | The naming view's slider for how big the crops show; remembered per browser. | Thumbnail size (the grid's). |
 | **Looks like _Name_** | In the naming view only: a cluster close to one you named ("Looks like Ann.", with Merge into Ann…), or the suggestions waiting for a name ("Looks like Ann: 42"). | **Looks like** the content label (dog, beach). |
 
 ## Events

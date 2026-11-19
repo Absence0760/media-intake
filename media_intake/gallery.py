@@ -47,7 +47,8 @@ People & Pets (recog.py's store, only once it exists; never created here): the s
 with their item counts (a filter by the People|<Name> / Pets|<Name> tag) and Name new faces/pets, a naming view in
 this page (name, merge, ignore, take out, confirm or reject suggestions; each POST names the cluster run it was made
 against, 409 after a re-cluster; tags written at once under the library lock). Crops by detection id only (/r/<id>,
-recog.crop_bytes: 0600 in the store's crops/, never for a file the gallery doesn't list). The large view names
+recog.crop_bytes; the zoom's whole picture /r/<id>/frame, recog.frame_bytes: 0600 in the store's crops/, never for
+a file the gallery doesn't list). The large view names
 them, and for a video links the times they appear at.
 
 Server security is review_ui.py's: stdlib only, everything inline, 127.0.0.1 on a
@@ -1153,7 +1154,7 @@ class Rec:
                         "AND name IS NOT NULL AND name != ?", (k, *recog.OWNER_HOW, recog.IGNORED))),
                         key=lambda x: (-x[1], x[0].casefold()))
                     todo = c.execute("SELECT COUNT(*) FROM (SELECT cluster FROM detections WHERE kind=? AND cluster IS "
-                                     "NOT NULL GROUP BY cluster HAVING COUNT(*) >= 2 AND SUM(name IS NOT NULL) = 0)",
+                                     "NOT NULL GROUP BY cluster HAVING SUM(name IS NOT NULL) = 0)",
                                      (k,)).fetchone()[0]
                     sugg = c.execute("SELECT COUNT(*) FROM detections WHERE kind=? AND how='suggested' AND name != ?",
                                      (k, recog.IGNORED)).fetchone()[0]
@@ -1180,9 +1181,12 @@ class Rec:
             raise ValueError("show is todo, sugg, named or ignored")
         try:
             after = max(0, int(f.get("after") or 0))
+            # To name lists the clusters of two or more first, then those seen once (single): the page after a
+            # single one is asked for with single=1, so the cursor holds even when a cluster shrank since
+            after_key = (show == "todo" and f.get("single") == "1", after)
             lim = max(1, min(200, int(f.get("limit") or REC_PAGE)))
         except ValueError:
-            after, lim = 0, REC_PAGE
+            after, lim, after_key = 0, REC_PAGE, (False, 0)
         with self.lock:
             c = self.conn()
             if c is None:
@@ -1194,13 +1198,15 @@ class Rec:
                 kind = kinds[0]
             self.maybe_prune(c)
             spec = self.spec(c, kind)
-            cl = recog.clusters(c, kind, min_size=2, samples=0)
-            groups = dict(todo=[d for d in cl if not d["name"] and not d["ignored"]],
+            cl = [dict(d, single=d["count"] < 2) for d in recog.clusters(c, kind, min_size=1, samples=0)]
+            todo = sorted((d for d in cl if not d["name"] and not d["ignored"]), key=lambda d: (d["single"], d["id"]))
+            groups = dict(todo=todo,
                           named=[d for d in cl if d["how"] == "owner" and not d["ignored"]],
                           ignored=[d for d in cl if d["ignored"]])
             sugg = recog.suggestions(c, kind)
             counts = {k: len(v) for k, v in groups.items()}
             counts["sugg"] = len(sugg)
+            counts["single"] = sum(1 for d in todo if d["single"])
             out = dict(on=True, kind=kind, kinds=kinds, show=show, run=self.run(c, kind), counts=counts,
                        names=[n for n, _, _ in recog.names(c, kind)], clusters=[], more=False, suggestions=[])
             if show == "sugg":
@@ -1210,11 +1216,11 @@ class Rec:
                 out["suggestions"] = [dict(name=n, ids=ids) for n, ids in
                                       sorted(by.items(), key=lambda x: (-len(x[1]), x[0].casefold()))]
                 return out
-            rest = [d for d in groups[show] if d["id"] > after]
+            rest = [d for d in groups[show] if (show == "todo" and d["single"], d["id"]) > after_key]
             hints = {}
             if show == "todo" and spec.same is not None and spec.model:
                 try:
-                    hints = recog.cluster_hints(c, spec)
+                    hints = recog.cluster_hints(c, spec, min_size=1)  # a face or pet seen once may look like one too
                 except (ImportError, ValueError):
                     hints = {}  # numpy missing in this Python: no "looks like" hints
             for d in rest[:lim]:
@@ -1225,22 +1231,35 @@ class Rec:
             out["more"] = len(rest) > lim
             return out
 
-    def crop(self, app, det):
-        """A detection's 160 px JPEG (recog.crop_bytes, cached 0600 in the store's crops/), or None: no store, no
-        such detection, or none of its files is an item the gallery may serve (live, not in a running job, never
-        flagged, quarantined, erased or trashed: crop_bytes checks the last ones again)."""
+    def served(self, app, det):
+        """(detection row, the item index the gallery may serve it from, that item) or None: no store, no such detection, or
+        none of its files is an item the gallery may serve (live, not in a running job, never flagged,
+        quarantined, erased or trashed: recog checks the last ones again)."""
         with self.lock:
             c = self.conn()
             if c is None:
                 return None
-            r = c.execute("SELECT sha FROM detections WHERE id=?", (det,)).fetchone()
+            r = c.execute("SELECT id, sha, kind, t, x, y, w, h FROM detections WHERE id=?", (det,)).fetchone()
             if not r:
                 return None
-            paths = [p for (p,) in c.execute("SELECT path FROM files WHERE sha=? AND skip IS NULL", (r["sha"],))]
+            paths = [p for (p,) in c.execute("SELECT path FROM files WHERE sha=? AND skip IS NULL ORDER BY path",
+                                             (r["sha"],))]
         with app.lock:
-            if not any(app.by_path.get(p) is not None and app.servable(app.by_path[p]) for p in paths):
-                return None
-        # the decode on a connection of its own, so the naming view's other requests never wait behind it
+            for p in paths:
+                i = app.by_path.get(p)
+                if i is not None and app.servable(i):
+                    return r, i, app.items[i]
+        return None
+
+    @staticmethod
+    def turn_of(it):
+        """The clockwise turn the large view shows this item with, on top of the picture recog decoded (a
+        photo's sidecar turn over its EXIF one; a video's sidecar turn over its upright frames)."""
+        return css_delta(it) if it["media"] == "photo" else DEG[effective_orientation(it)]
+
+    def decode(self, make):
+        """make(connection) -> bytes or None, on a connection of its own (so the naming view's other requests
+        never wait behind a decode), at most two at a time."""
         with self.crop_sem:
             try:
                 cc = recog.connect(recog.db_path(), threads=True) if os.path.isfile(recog.db_path()) else None
@@ -1249,11 +1268,38 @@ class Rec:
             if cc is None:
                 return None
             try:
-                return recog.crop_bytes(cc, det, state=STATE)
+                return make(cc)
             except (ImportError, OSError, ValueError, sqlite3.Error):
                 return None
             finally:
                 cc.close()
+
+    def crop(self, app, det):
+        """A detection's recog.CROP_PX JPEG (recog.crop_bytes, cached 0600 in the store's crops/), or None
+        (served() refuses it)."""
+        if not self.served(app, det):
+            return None
+        return self.decode(lambda cc: recog.crop_bytes(cc, det, state=STATE))
+
+    def frame(self, app, det):
+        """The whole photo (or the video frame) a detection was found in, turned as the large view shows it
+        (recog.frame_bytes, cached 0600 in the store's crops/), or None (served() refuses it)."""
+        got = self.served(app, det)
+        if not got:
+            return None
+        turn = self.turn_of(got[2])
+        return self.decode(lambda cc: recog.frame_bytes(cc, det, turn=turn, state=STATE))
+
+    def det_info(self, app, det):
+        """The naming view's zoom: the item a detection is served from, its box on the whole picture (/r/<id>/frame,
+        as fractions, turned as that picture is) and, for a video, its second. None as served()."""
+        got = self.served(app, det)
+        if not got:
+            return None
+        r, i, it = got
+        box = recog.turn_box((r["x"], r["y"], r["w"], r["h"]), self.turn_of(it))
+        return dict(id=r["id"], kind=r["kind"], item=i, name=os.path.basename(it["path"]),
+                    video=it["media"] == "video", t=r["t"], box=[round(v, 5) for v in box])
 
     def appearances(self, sha):
         """[(kind, name, [seconds])] of the owner names in a video, by first appearance (each detection keeps its
@@ -2910,8 +2956,15 @@ class Handler(R.Handler):
                 self.json(200, app.rec.listing(f))
             except ValueError as e:
                 self.json(400, {"error": str(e)})
-        elif m := re.fullmatch(r"/r/([0-9]{1,12})", path):  # a face or pet crop, by detection id only (biometric)
-            data = app.rec.crop(app, int(m.group(1)))
+        elif m := re.fullmatch(r"/api/rec/det/([0-9]{1,12})", path):  # the zoom: where a crop is on its picture
+            d = app.rec.det_info(app, int(m.group(1)))
+            if not d:
+                self.reply(404, "404\n")
+                return
+            self.json(200, d)
+        elif m := re.fullmatch(r"/r/([0-9]{1,12})(/frame)?", path):  # a crop (or its whole picture), by detection id
+            det = int(m.group(1))  # only (biometric)
+            data = app.rec.frame(app, det) if m.group(2) else app.rec.crop(app, det)
             if not data:
                 self.reply(404, "404\n")
                 return
@@ -3391,7 +3444,7 @@ output{font-variant-numeric:tabular-nums;color:var(--fg);font-weight:600}
 #top>.btn,#top>.size{flex:none}
 .grow{flex:1}
 .size{display:flex;align-items:center;gap:8px;color:var(--mut)}
-#tsize{width:120px;accent-color:var(--acc)}
+#tsize,#csize{width:120px;accent-color:var(--acc)}
 #chips{display:flex;flex-wrap:wrap;gap:6px;align-items:center;padding:12px 24px 0}
 .chip{display:inline-flex;align-items:center;gap:2px;height:28px;padding:0 4px 0 10px;border-radius:999px;background:var(--acc-soft);color:var(--acc);font-size:13px;max-width:100%}
 .chip>span{overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
@@ -3550,8 +3603,38 @@ dl.dt dd{margin:0;word-break:break-word}
 .rcard h3{margin:0 0 8px;font-size:15px;overflow-wrap:anywhere}
 .rcard h3 .rsub{color:var(--mut);font-weight:400}
 .rlike{margin:0 0 8px;font-size:14px;color:var(--mut);overflow-wrap:anywhere}
-.rcrops{display:grid;grid-template-columns:repeat(auto-fill,minmax(72px,1fr));gap:6px;align-items:center}
-.rcrop{position:relative;padding:0;border:2px solid transparent;border-radius:8px;background:var(--card);aspect-ratio:1;overflow:hidden;min-width:44px;min-height:44px}
+/* --crop: the header's Crop size (#csize); never wider than the card, so no sideways scroll */
+.rcrops{display:grid;grid-template-columns:repeat(auto-fill,minmax(min(var(--crop,160px),100%),1fr));gap:6px;align-items:center}
+.rcropw{position:relative;min-width:0}
+.rcrop{position:relative;display:block;width:100%;padding:0;border:2px solid transparent;border-radius:8px;background:var(--card);aspect-ratio:1;overflow:hidden;min-width:44px;min-height:44px}
+/* the zoom: its own button in the crop's corner (a click on the crop still takes it out) */
+.rzb{position:absolute;right:4px;bottom:4px;width:32px;height:32px;display:inline-flex;align-items:center;justify-content:center;padding:0;border:0;border-radius:8px;background:rgba(0,0,0,.62);color:#fff}
+.rzb:hover{background:rgba(0,0,0,.8)}
+.rzb .ic{width:18px;height:18px}
+.rsingle{margin:6px 0 0;font-size:15px}
+.rsingle+.note{margin:0}
+/* the zoom dialog: the crop large and the whole picture with the box outlined */
+#rzoom .box{max-width:1100px;display:flex;flex-direction:column;gap:10px}
+#rzoom .rzhead{display:flex;align-items:flex-start;gap:8px}
+#rzoom .rzhead h3{flex:1;min-width:0;margin:0;overflow-wrap:anywhere}
+#rzoom .rzhead .icon{flex:none;width:44px;height:44px}
+#rzsub{margin:0;color:var(--mut);font-size:14px;overflow-wrap:anywhere}
+.rzbody{display:flex;flex-wrap:wrap;gap:12px;align-items:flex-start;min-width:0}
+.rzbody figure{margin:0;min-width:0;display:flex;flex-direction:column;align-items:flex-start;gap:4px}
+.rzbody figcaption{color:var(--mut);font-size:13px}
+#rzcrop{width:min(320px,100%);aspect-ratio:1;border-radius:10px;background:var(--card);object-fit:cover;display:block}
+#rzcropf{flex:0 1 320px}
+#rzwholef{flex:1 1 360px}
+/* shrink-wrapped to the picture, so the box's percentages are the picture's */
+.rzpic{position:relative;display:block;width:fit-content;max-width:100%;line-height:0}
+.rzpic img{max-width:100%;max-height:60vh;width:auto;height:auto;display:block;border-radius:8px;background:var(--card)}
+#rzbox{position:absolute;border:3px solid #ffd400;box-shadow:0 0 0 2px rgba(0,0,0,.7);border-radius:4px;pointer-events:none}
+#rzposter{max-width:min(320px,100%);max-height:30vh;border-radius:8px;display:block;background:var(--card)}
+#rzout[aria-pressed=true]{border-color:var(--erase);color:var(--erase)}
+#rzoom .mbtns{flex-wrap:wrap;justify-content:space-between;align-items:center}
+#rzoom .mbtns span{display:flex;gap:8px;flex-wrap:wrap;min-width:0;max-width:100%}
+/* the toggle carries the name (up to 64 characters): it wraps instead of running off a phone */
+#rzout{white-space:normal;height:auto;min-height:34px;max-width:100%;overflow-wrap:anywhere;text-align:left}
 .rcrop img{width:100%;height:100%;object-fit:cover;display:block}
 .rcrop[aria-pressed=true]{border-color:var(--erase)}
 .rcrop[aria-pressed=true] img{opacity:.4}
@@ -3562,7 +3645,7 @@ dl.dt dd{margin:0;word-break:break-word}
 .racts input::placeholder{color:var(--mut)}
 #rpage{align-self:flex-start}
 @media (max-width:760px){#names{padding:12px 12px 40px}}
-@media (max-width:760px),(pointer:coarse){.rseg button,.racts input{min-height:44px}#who .link{min-height:44px}}
+@media (max-width:760px),(pointer:coarse){.rseg button,.racts input{min-height:44px}#who .link{min-height:44px}.rzb{width:44px;height:44px}#rzoom .mbtns .btn{min-height:44px}}
 
 /* ---------------------------------------------------------------- confirm / job dialog */
 .modal{position:fixed;inset:0;background:rgba(0,0,0,.55);z-index:30;display:none;align-items:center;justify-content:center;padding:16px}
@@ -3583,16 +3666,16 @@ dl.dt dd{margin:0;word-break:break-word}
 
 /* ---------------------------------------------------------------- narrow: the header's controls fit beside the title */
 @media (max-width:900px){
- #tsize{width:72px}
+ #tsize,#csize{width:72px}
  #close .lbl2{display:none}#close{padding:0 8px}
- #jobpill{padding:0 8px}#jobpill .pr{display:none}body.jobpill #tsizew{display:none}
+ #jobpill{padding:0 8px}#jobpill .pr{display:none}body.jobpill #tsizew,body.jobpill #csizew{display:none}
  #etoast{flex-wrap:wrap}#etoast span{flex-basis:100%}
 }
 /* the same when a wide sidebar leaves the main column as narrow as a 900 px window used to (900 - 280) */
 @container app (max-width:620px){
- #tsize{width:72px}
+ #tsize,#csize{width:72px}
  #close .lbl2{display:none}#close{padding:0 8px}
- #jobpill{padding:0 8px}#jobpill .pr{display:none}body.jobpill #tsizew{display:none}
+ #jobpill{padding:0 8px}#jobpill .pr{display:none}body.jobpill #tsizew,body.jobpill #csizew{display:none}
 }
 /* ---------------------------------------------------------------- phone */
 @media (max-width:760px){
@@ -3621,7 +3704,7 @@ dl.dt dd{margin:0;word-break:break-word}
  .nv,.collapsed .nv{min-height:44px}
  .fs-h,.opt,.yr .caret{min-height:44px}
  .caret{width:44px}
- #tsize{height:44px}
+ #tsize,#csize{height:44px}
  .chip{height:44px}.chip .x{width:44px;height:44px}
  #junkbar select{height:44px}
  .tile .ckw{width:44px;height:44px}
@@ -3657,6 +3740,7 @@ dl.dt dd{margin:0;word-break:break-word}
  <symbol id="i-paw" viewBox="0 0 24 24"><circle cx="7" cy="9" r="1.8"/><circle cx="11" cy="5.8" r="1.8"/><circle cx="15.5" cy="6.5" r="1.8"/><circle cx="18" cy="10.5" r="1.8"/><path d="M8.5 17.5c0-3 2-5.5 4-5.5s4 2.5 4 5c0 1.8-1.5 2.5-4 2.5s-4-.4-4-2z"/></symbol>
  <symbol id="i-tag" viewBox="0 0 24 24"><path d="M3.5 12.5V4h8.5l8.5 8.5-8.5 8.5z"/><circle cx="8" cy="8.5" r="1.4"/></symbol>
  <symbol id="i-search" viewBox="0 0 24 24"><circle cx="11" cy="11" r="6.5"/><path d="M20 20l-4.3-4.3"/></symbol>
+ <symbol id="i-zoom" viewBox="0 0 24 24"><circle cx="11" cy="11" r="6.5"/><path d="M20 20l-4.3-4.3M11 8.3v5.4M8.3 11h5.4"/></symbol>
  <symbol id="i-filter" viewBox="0 0 24 24"><path d="M4 5h16l-6 7.5V19l-4 1.5v-8z"/></symbol>
  <symbol id="i-chev" viewBox="0 0 24 24"><path d="M6 9l6 6 6-6"/></symbol>
  <symbol id="i-size" viewBox="0 0 24 24"><rect x="4" y="4" width="16" height="16" rx="2"/><path d="M4 14l4-4 5 5 2-2 5 5"/></symbol>
@@ -3708,6 +3792,7 @@ dl.dt dd{margin:0;word-break:break-word}
   <h1 id="vtitle">Library</h1><span id="count"></span><span class="grow"></span>
   <button type="button" class="btn" id="ball" aria-keyshortcuts="Control+A Meta+A" title="Select every tile shown (Ctrl+A, or Cmd+A on a Mac); Esc clears" hidden>Select all</button>
   <label class="size" id="tsizew" title="Thumbnail size"><svg class="ic"><use href="#i-size"/></svg><span class="vh">Thumbnail size</span><input id="tsize" type="range" min="80" max="320" step="8"></label>
+  <label class="size" id="csizew" title="Crop size" hidden><svg class="ic"><use href="#i-size"/></svg><span class="vh">Crop size</span><input id="csize" type="range" min="80" max="320" step="8"></label>
   <button type="button" class="btn" id="jobpill" aria-haspopup="dialog" hidden></button>
   <button type="button" class="btn" id="close" title="Stop the gallery server" aria-label="Stop server"><svg class="ic"><use href="#i-power"/></svg><span class="lbl2">Stop server</span></button>
  </header>
@@ -3744,6 +3829,16 @@ dl.dt dd{margin:0;word-break:break-word}
  <p id="mtype" hidden>Type <b>ERASE</b> to confirm: <input id="mtyped" autocomplete="off" spellcheck="false" aria-label="Type ERASE"></p>
  <p id="mstatus" role="status" hidden></p><pre id="mout" hidden></pre>
  <div class="mbtns"><button type="button" class="btn" id="mno">Cancel</button><button type="button" class="btn primary" id="mgo">Confirm</button></div></div></div>
+<div class="modal" id="rzoom" role="dialog" aria-modal="true" aria-labelledby="rzh"><div class="box">
+ <div class="rzhead"><h3 id="rzh"></h3><button type="button" class="icon" id="rzclose" aria-label="Close (Esc)" title="Close (Esc)"><svg class="ic"><use href="#i-x"/></svg></button></div>
+ <p id="rzsub" role="status"></p>
+ <div class="rzbody">
+  <figure id="rzcropf"><img id="rzcrop" alt=""><figcaption>Close up</figcaption></figure>
+  <figure id="rzwholef"><div class="rzpic"><img id="rzwhole" alt=""><div id="rzbox" hidden></div></div><figcaption id="rzwholec"></figcaption></figure>
+  <figure id="rzposterf" hidden><img id="rzposter" alt=""><figcaption>The video's poster</figcaption></figure>
+ </div>
+ <div class="mbtns"><span><button type="button" class="btn" id="rzprev" aria-keyshortcuts="ArrowLeft">← Previous</button><button type="button" class="btn" id="rznext" aria-keyshortcuts="ArrowRight">Next →</button></span>
+  <span><button type="button" class="btn" id="rzout" aria-pressed="false"></button><button type="button" class="btn primary" id="rzdone">Close</button></span></div></div></div>
 <div class="modal" id="keys" role="dialog" aria-modal="true" aria-labelledby="kh"><div class="box"><h3 id="kh">Keyboard shortcuts</h3>
  <p class="note">Keys act on the page, never while you type in a field. Esc closes this list.</p>
  <h4>Grid</h4><dl>
@@ -3779,6 +3874,12 @@ dl.dt dd{margin:0;word-break:break-word}
   <dt><kbd>Shift</kbd>+<kbd>K</kbd> / <kbd>Shift</kbd>+<kbd>T</kbd></dt><dd>Mark every tile from the last one given that mark to the outlined one (a Shift-click on Keep or Trash does too; a tile marked the other way keeps its mark)</dd>
   <dt>Drag</dt><dd>From a tile's Keep or Trash: give that mark to every tile the rectangle touches</dd>
   <dt><kbd>Enter</kbd></dt><dd>Open the outlined tile (a click on the photo does too)</dd>
+ </dl>
+ <h4>Name faces and pets</h4><dl>
+  <dt><kbd>Space</kbd> / <kbd>Enter</kbd></dt><dd>On a crop: take that face or pet out (again: put it back); in Suggestions, mark it "Not <i>Name</i>"</dd>
+  <dt><kbd>Z</kbd></dt><dd>On a crop: zoom in (the crop large and the whole photo, the face or pet outlined); its corner button does too</dd>
+  <dt><kbd>←</kbd> <kbd>→</kbd></dt><dd>In the zoom: the previous / next crop of the cluster</dd>
+  <dt><kbd>Esc</kbd></dt><dd>Close the zoom</dd>
  </dl>
  <h4>Dialogs</h4><dl>
   <dt><kbd>Esc</kbd></dt><dd>Cancel and close (a running Trash, Erase or Share keeps going)</dd>
@@ -3980,15 +4081,43 @@ function whoLine(s,d){if(!d.who||!d.who.length)return;const wb=el("div");wb.id="
    x.times.forEach((t,i)=>{if(i)q.append(", ");const b=el("button","link",clock(t));b.type="button";b.dataset.t=t;b.setAttribute("aria-label",x.name+" at "+clock(t)+": play from there");
     b.onclick=()=>{const v=curVideo();if(v){v.currentTime=t;v.play().catch(()=>{})}};q.append(b)});wb.append(q)})});s.append(wb)}
 // the naming view: clusters to name (largest first), suggestions by name, named, ignored; one kind at a time
-const RNOTE={todo:(w)=>`Clusters of ${w.noun}s that look alike, largest first. Type a name and press Enter, merge a cluster into one you named, or mark it ${w.not}. Click a ${w.noun} to take it out of the cluster (click again to put it back). A name becomes a tag in the sidecars; a cluster you mark ${w.not} is never tagged.`,
+const RNOTE={todo:(w)=>`Clusters of ${w.noun}s that look alike, largest first, then the ${w.noun}s seen only once. Type a name and press Enter, merge a cluster into one you named, or mark it ${w.not}. Click a ${w.noun} to take it out of the cluster (click again to put it back); its magnifier (or Z) zooms in. A name becomes a tag in the sidecars; a cluster you mark ${w.not} is never tagged.`,
  sugg:(w)=>`${w.noun[0].toUpperCase()+w.noun.slice(1)}s that joined a cluster you named. Nothing is tagged until you confirm. Click any that isn't them to leave it out: Confirm rejects those, and that name is never suggested for them again.`,
  named:(w)=>`Clusters you named. Rename, merge or unname one; click a ${w.noun} that isn't them to take it out.`,
  ignored:(w)=>`Clusters you marked ${w.not}: never tagged. Not ignored puts one back among the clusters to name.`};
 function rseg(label,opts,cur,go){const g=el("div","rseg");g.setAttribute("role","group");g.setAttribute("aria-label",label);
  opts.forEach(([v,l])=>{const b=el("button",null,l);b.type="button";b.dataset.rv=v;b.setAttribute("aria-pressed",String(v===cur));b.onclick=()=>go(v);g.append(b)});return g}
 function cropLabel(w,out,name){return out?"Put this "+w.noun+" back"+(name?" into "+name:""):"Take this "+w.noun+" out"+(name?" of "+name:"")}
-function cropBtn(id,on,label){const b=el("button","rcrop");b.type="button";b.dataset.det=id;b.setAttribute("aria-pressed",String(!!on));b.setAttribute("aria-label",label);b.title=label;
+function cropBtn(id,on,label){const b=el("button","rcrop");b.type="button";b.dataset.det=id;b.setAttribute("aria-pressed",String(!!on));b.setAttribute("aria-label",label);b.title=label+" (Z: zoom in)";
  const im=el("img");im.alt="";im.loading="lazy";im.decoding="async";im.src="/r/"+id;im.onerror=()=>im.remove();b.append(im);return b}
+// a crop and its zoom button, side by side in one cell (a button never holds another)
+function cropCell(b){const c=el("div","rcropw"),z=el("button","rzb"),w=RW[rdata.kind];z.type="button";z.setAttribute("aria-label","Zoom in on this "+w.noun+" (Z)");z.title="Zoom in (Z)";
+ z.insertAdjacentHTML("beforeend",'<svg class="ic"><use href="#i-zoom"/></svg>');z.onclick=()=>openZoom(b);c.append(b,z);return c}
+// the zoom: one crop large, the whole photo (or the video's frame) with the box outlined, the cluster's crops by the arrows;
+// its toggle presses the crop's own button, so it takes out / puts back (or marks "Not <Name>") exactly as a click on it
+let RZ=null,rzReturn=null,rzGen=0;
+function openZoom(b){const g=b.closest(".rcrops");if(!g)return;if(!isOn("#rzoom"))rzReturn=document.activeElement;
+ RZ={g,list:[...g.querySelectorAll(".rcrop")],title:g.dataset.zt||""};RZ.i=Math.max(0,RZ.list.indexOf(b));$("#rzoom").classList.add("on");paintZoom();$("#rzout").focus()}
+function closeZoom(){if(!isOn("#rzoom"))return;$("#rzoom").classList.remove("on");rzGen++;const b=RZ&&RZ.list[RZ.i],r=b&&b.isConnected?b:rzReturn;RZ=null;rzReturn=null;
+ ["#rzcrop","#rzwhole","#rzposter"].forEach(q=>$(q).removeAttribute("src"));refocus(r)}
+function stepZoom(d){if(!RZ)return;const i=RZ.i+d;if(i<0||i>=RZ.list.length)return;RZ.i=i;paintZoom()}
+function paintOut(){const b=RZ&&RZ.list[RZ.i];if(!b)return;const o=$("#rzout");o.textContent=b.getAttribute("aria-label");o.setAttribute("aria-pressed",b.getAttribute("aria-pressed"))}
+async function paintZoom(){const b=RZ.list[RZ.i],id=+b.dataset.det,w=RW[rdata.kind],g=++rzGen,n=RZ.list.length;
+ $("#rzh").textContent=RZ.title+": "+w.noun+" "+fmt(RZ.i+1)+" of "+fmt(n);paintOut();
+ $("#rzprev").disabled=RZ.i<=0;$("#rznext").disabled=RZ.i>=n-1;
+ $("#rzcrop").src="/r/"+id;$("#rzcrop").alt="The "+w.noun+", close up";
+ const wh=$("#rzwhole"),bx=$("#rzbox");bx.hidden=true;wh.removeAttribute("src");$("#rzwholef").hidden=false;$("#rzposterf").hidden=true;$("#rzposter").removeAttribute("src");$("#rzsub").textContent="";$("#rzwholec").textContent="";
+ let d;try{d=await api("/api/rec/det/"+id)}catch(e){if(g!==rzGen)return;$("#rzwholef").hidden=true;$("#rzsub").textContent=e.status===404?"Its file can't be shown here any more.":"Couldn't load the whole picture: "+e.message;return}
+ if(g!==rzGen)return;
+ $("#rzsub").textContent="In "+d.name+(d.video&&d.t!=null?" at "+clock(d.t):"");
+ $("#rzwholec").textContent=d.video?"The frame at "+clock(d.t||0)+", the "+w.noun+" outlined":"The whole photo, the "+w.noun+" outlined";
+ wh.alt=$("#rzwholec").textContent;
+ const [x,y,bw,bh]=d.box;Object.assign(bx.style,{left:x*100+"%",top:y*100+"%",width:bw*100+"%",height:bh*100+"%"});
+ wh.onload=()=>{if(g===rzGen)bx.hidden=false};wh.onerror=()=>{if(g===rzGen){$("#rzwholef").hidden=true}};wh.src="/r/"+id+"/frame";
+ if(d.video){const p=$("#rzposter");p.alt="The video's poster";p.onerror=()=>{$("#rzposterf").hidden=true};p.src="/t/"+d.item;$("#rzposterf").hidden=false}}
+$("#rzprev").onclick=()=>stepZoom(-1);$("#rznext").onclick=()=>stepZoom(1);$("#rzclose").onclick=$("#rzdone").onclick=closeZoom;
+$("#rzoom").onclick=ev=>{if(ev.target===$("#rzoom"))closeZoom()};  // a click on the backdrop
+$("#rzout").onclick=async()=>{const b=RZ&&RZ.list[RZ.i];if(!b)return;await b.onclick();paintOut()};
 function recProblem(n){n=(n||"").trim().split(/\s+/).join(" ");return !n||[...n].length>64||/[\x00-\x1f\x7f|/\\,;]/.test(n)?"a name: 1-64 characters, no | / \\ , ; or control characters":""}
 async function recPost(act,body){const j=await api("/api/rec/"+act,Object.assign({kind:rdata.kind,run:rdata.run},body));closeModal();toast(j.result,j.undo);loadFacets().catch(()=>{});return j}
 function recErr(e){if(e.status===409&&!e.busy)errorToast(e.message,{label:"Reload the list",fn:()=>renderNames()});else refused("",e)}
@@ -4006,12 +4135,12 @@ function askMerge(d,into,name){const w=RW[rdata.kind];
 function askUnname(d){const w=RW[rdata.kind];
  confirmBox("Unname "+d.name+" (cluster "+d.id+")?",["Its "+w.noun+"s lose the name "+d.name+" and the tags written for them come out of the sidecars. Your own tags stay.","This can't be undone here: name the cluster again to put it back."],false,
   async()=>{await recPost("unname",{cluster:d.id});renderNames(true)},"Unname")}
-async function toggleOut(b,name){const out=b.getAttribute("aria-pressed")==="true",w=RW[rdata.kind];
- try{await recPost(out?"back":"out",{ids:[+b.dataset.det]});b.setAttribute("aria-pressed",String(!out));const l=cropLabel(w,!out,name);b.setAttribute("aria-label",l);b.title=l}catch(e){recErr(e)}}
+async function toggleOut(b,name){if(b.dataset.busy)return;b.dataset.busy="1";const out=b.getAttribute("aria-pressed")==="true",w=RW[rdata.kind];
+ try{await recPost(out?"back":"out",{ids:[+b.dataset.det]});b.setAttribute("aria-pressed",String(!out));const l=cropLabel(w,!out,name);b.setAttribute("aria-label",l);b.title=l+" (Z: zoom in)"}catch(e){recErr(e)}finally{delete b.dataset.busy}}
 function clusterCard(d){const w=RW[rdata.kind],s=el("section","rcard");s.dataset.cluster=d.id;s.setAttribute("aria-label",(d.name?d.name+", ":"")+"cluster "+d.id);
  const h=el("h3");h.append(el("span","rname",d.name||"Cluster "+d.id),el("span","rsub"," · "+(d.name?"cluster "+d.id+" · ":"")+plural(d.count,w.noun)+" in "+plural(d.photos,"file")));s.append(h);
  (d.like||[]).forEach(x=>{const p=el("p","rlike");p.append("Looks like "+x.name+". ");const b=el("button","link","Merge into "+x.name+"…");b.type="button";b.onclick=()=>askMerge(d,x.cluster,x.name);p.append(b);s.append(p)});
- const g=el("div","rcrops");d.crops.forEach(x=>{const b=cropBtn(x.id,x.out,cropLabel(w,x.out,d.name));b.onclick=()=>toggleOut(b,d.name);g.append(b)});
+ const g=el("div","rcrops");g.dataset.zt=d.name?d.name+", cluster "+d.id:"Cluster "+d.id;d.crops.forEach(x=>{const b=cropBtn(x.id,x.out,cropLabel(w,x.out,d.name));b.onclick=()=>toggleOut(b,d.name);g.append(cropCell(b))});
  if(d.count>d.crops.length)g.append(el("span","rmore","+"+fmt(d.count-d.crops.length)+" more"));s.append(g);
  const a=el("div","racts"),mk=(t,f,c)=>{const b=el("button","btn"+(c?" "+c:""),t);b.type="button";b.onclick=f;a.append(b);return b};
  if(!d.ignored){const inp=el("input");inp.setAttribute("list","recnames");inp.autocomplete="off";inp.spellcheck=false;inp.maxLength=64;inp.placeholder=d.name?"New name":"Name";
@@ -4024,10 +4153,10 @@ function clusterCard(d){const w=RW[rdata.kind],s=el("section","rcard");s.dataset
  s.append(a);return s}
 function suggCard(sg){const w=RW[rdata.kind],s=el("section","rcard"),marks=rmarks[sg.name]||(rmarks[sg.name]=new Set());s.setAttribute("aria-label","Looks like "+sg.name);
  s.append(el("h3",null,"Looks like "+sg.name+": "+fmt(sg.ids.length)));
- const g=el("div","rcrops"),a=el("div","racts"),cb=el("button","btn primary"),rb=el("button","btn","Reject all");cb.type=rb.type="button";let shown=REC_SHOW;
+ const g=el("div","rcrops"),a=el("div","racts"),cb=el("button","btn primary"),rb=el("button","btn","Reject all");cb.type=rb.type="button";let shown=REC_SHOW;g.dataset.zt="Looks like "+sg.name;
  const paint=()=>{const no=sg.ids.filter(i=>marks.has(i)).length,yes=sg.ids.length-no;cb.textContent=!yes?"Reject "+fmt(no):no?"Confirm "+fmt(yes)+", reject "+fmt(no):"Confirm all "+fmt(yes)};
  const draw=()=>{g.replaceChildren();sg.ids.slice(0,shown).forEach(id=>{const b=cropBtn(id,marks.has(id),"Not "+sg.name);
-   b.onclick=()=>{marks.has(id)?marks.delete(id):marks.add(id);b.setAttribute("aria-pressed",String(marks.has(id)));paint()};g.append(b)});
+   b.onclick=()=>{marks.has(id)?marks.delete(id):marks.add(id);b.setAttribute("aria-pressed",String(marks.has(id)));paint()};g.append(cropCell(b))});
   if(sg.ids.length>shown){const m=el("button","link rmore","Show all "+fmt(sg.ids.length));m.type="button";m.onclick=()=>{shown=sg.ids.length;draw();const x=g.querySelectorAll(".rcrop")[REC_SHOW];if(x)x.focus()};g.append(m)}};
  draw();paint();s.append(g);
  cb.onclick=()=>askAnswer(sg,sg.ids.filter(i=>!marks.has(i)),sg.ids.filter(i=>marks.has(i)));rb.onclick=()=>askAnswer(sg,[],sg.ids.slice());a.append(cb,rb);s.append(a);return s}
@@ -4037,13 +4166,16 @@ function askAnswer(sg,yes,no){const w=RW[rdata.kind],ls=[];
  ls.push("This can't be undone here (take a "+w.noun+" out later to correct a name).");
  confirmBox(yes.length?"Confirm "+plural(yes.length,w.noun)+" as "+sg.name+"?":"Reject "+plural(no.length,"suggestion")+" of "+sg.name+"?",ls,false,
   async()=>{await recPost("answer",{confirm:yes,reject:no});delete rmarks[sg.name];renderNames(true)},yes.length?"Confirm":"Reject")}
-async function renderNames(keep,after){const P=$("#plugin"),g=++rgen;delete P.dataset.ready;
+// To name: the clusters of two or more, then "Single photos (N)" (one face or pet: one photo, or one frame of a video)
+function addCards(box,list){const w=RW[rdata.kind];list.forEach(d=>{if(d.single&&rdata.show==="todo"&&!$("#rsingle")){const h=el("h2","rsingle","Single photos ("+fmt(rdata.counts.single)+")");h.id="rsingle";
+  box.append(h,el("p","note",`Each ${w.noun} here was seen once: in one photo, or one frame of a video. Name it, merge it into a name you gave, or mark it ${w.not}.`))}box.append(clusterCard(d))})}
+async function renderNames(keep,after,single){const P=$("#plugin"),g=++rgen;delete P.dataset.ready;closeZoom();
  const lim=keep&&rdata&&rdata.clusters&&rdata.kind===RV.kind&&rdata.show===RV.show?Math.min(200,Math.max(30,rdata.clusters.length)):30;let j;
- try{j=await api("/api/rec?"+qs(Object.assign({kind:RV.kind,show:RV.show,limit:lim},after?{after}:{})))}
+ try{j=await api("/api/rec?"+qs(Object.assign({kind:RV.kind,show:RV.show,limit:lim},after?{after}:{},single?{single:"1"}:{})))}
  catch(e){if(g!==rgen||view!=="names")return;const d=el("div","state err");d.setAttribute("role","alert");d.append(el("h2",null,"Couldn't load the clusters"),el("p",null,(e.message||"no answer")+"."));
   const b=el("button","btn","Try again");b.type="button";b.onclick=()=>renderNames();d.append(b);P.replaceChildren(d);return}
  if(g!==rgen||view!=="names")return;
- if(after&&rdata){rdata.clusters=rdata.clusters.concat(j.clusters);rdata.more=j.more;const box=$("#rcards");j.clusters.forEach(d=>box.append(clusterCard(d)));$("#rpage").hidden=!j.more;P.dataset.ready="1";return}
+ if(after&&rdata){rdata.clusters=rdata.clusters.concat(j.clusters);rdata.more=j.more;rdata.counts=j.counts;addCards($("#rcards"),j.clusters);$("#rpage").hidden=!j.more;P.dataset.ready="1";return}
  rdata=j;P.replaceChildren();const box=el("div");box.id="names";P.append(box);
  if(!j.on){box.append(el("p","note",RW.off));$("#count").textContent="";P.dataset.ready="1";return}
  RV.kind=j.kind;RV.show=j.show;const w=RW[j.kind],c=j.counts,bar=el("div","rbar");
@@ -4054,9 +4186,9 @@ async function renderNames(keep,after){const P=$("#plugin"),g=++rgen;delete P.da
  const cards=el("div");cards.id="rcards";cards.style.cssText="display:flex;flex-direction:column;gap:14px;min-width:0";box.append(cards);
  if(j.show==="sugg"){j.suggestions.forEach(sg=>cards.append(suggCard(sg)));$("#count").textContent=plural(c.sugg,"suggestion");
   if(!j.suggestions.length)cards.append(el("p","empty","No suggestions waiting. They appear after media-intake "+(j.kind==="pet"?"pets":"people")+" cluster, when new "+w.noun+"s join a cluster you named."))}
- else{j.clusters.forEach(d=>cards.append(clusterCard(d)));$("#count").textContent=plural(c[j.show],"cluster");
+ else{addCards(cards,j.clusters);$("#count").textContent=plural(c[j.show],"cluster");
   if(!j.clusters.length)cards.append(el("p","empty",j.show==="todo"?"Nothing to name right now.":"None yet."));
-  const m=el("button","btn","More clusters");m.type="button";m.id="rpage";m.hidden=!j.more;m.onclick=()=>{const l=rdata.clusters[rdata.clusters.length-1];renderNames(false,l?l.id:0)};box.append(m)}
+  const m=el("button","btn","More clusters");m.type="button";m.id="rpage";m.hidden=!j.more;m.onclick=()=>{const l=rdata.clusters[rdata.clusters.length-1];renderNames(false,l?l.id:0,!!(l&&l.single&&rdata.show==="todo"))};box.append(m)}
  P.dataset.ready="1"}
 // ---------------------------------------------------------------- filter state
 function setF(k,v){if(v)F[k]=v;else delete F[k];simId=null;if(plugView()){setView("lib");return}syncUI();reset()}
@@ -4335,10 +4467,10 @@ function closeModal(){if(!isOn("#modal"))return;$("#modal").classList.remove("on
  const a=document.activeElement;if(a&&a.closest&&a.closest("#modal"))a.blur()}  // never left on a hidden field: the next key goes to the page
 function openKeys(){if(isOn("#keys"))return;keysReturn=document.activeElement;$("#keys").classList.add("on");$("#kclose").focus()}
 function closeKeys(){if(!isOn("#keys"))return;$("#keys").classList.remove("on");const r=keysReturn;keysReturn=null;refocus(r)}
-function topDialog(){return isOn("#keys")?$("#keys"):isOn("#modal")?$("#modal"):vi>=0?$("#viewer"):null}
+function topDialog(){return isOn("#keys")?$("#keys"):isOn("#modal")?$("#modal"):isOn("#rzoom")?$("#rzoom"):vi>=0?$("#viewer"):null}
 function trapTab(ev,d){const vis=e=>!e.disabled&&e.getClientRects().length>0;
  let f=[...d.querySelectorAll('button,input,select,textarea,video[controls],a[href],[tabindex]:not([tabindex="-1"])')].filter(vis);
- if(d.id==="viewer")f=f.concat([...$$("#toast button,#etoast button")].filter(vis));
+ if(d.id==="viewer"||d.id==="rzoom")f=f.concat([...$$("#toast button,#etoast button")].filter(vis));
  if(!f.length){ev.preventDefault();return}
  const a=f[0],z=f[f.length-1],at=document.activeElement,inside=f.includes(at);
  if(!inside){ev.preventDefault();(ev.shiftKey?z:a).focus()}else if(ev.shiftKey&&at===a){ev.preventDefault();z.focus()}else if(!ev.shiftKey&&at===z){ev.preventDefault();a.focus()}}
@@ -4575,6 +4707,10 @@ document.addEventListener("keydown",ev=>{const tg=ev.target,modal=isOn("#modal")
   ev.preventDefault();selectAll();return}
  // Ctrl+Z / Cmd+Z: the Undo on the message shown (a text field keeps its own undo)
  if((ev.key==="z"||ev.key==="Z")&&(ev.ctrlKey||ev.metaKey)&&!ev.altKey&&!ev.shiftKey&&!typing&&!modal&&undoTok){ev.preventDefault();doUndo();return}
+ // the naming view's zoom: Esc closes, the arrows step through the cluster's crops; no other page key acts
+ if(isOn("#rzoom")&&!modal){if(ev.key==="Escape"){ev.preventDefault();closeZoom()}
+  else if(!typing&&!ev.ctrlKey&&!ev.metaKey&&!ev.altKey&&(ev.key==="ArrowLeft"||ev.key==="ArrowRight")){ev.preventDefault();stepZoom(ev.key==="ArrowRight"?1:-1)}
+  else if(ev.key==="?"&&!typing){ev.preventDefault();openKeys()}return}
  if(typing||ev.ctrlKey||ev.metaKey||ev.altKey||modal){
   if(ev.key==="Escape"){if(modal)closeModal()
    else if(tg.id==="q"&&tg.value){tg.value="";syncUI();reset()}}
@@ -4589,6 +4725,8 @@ document.addEventListener("keydown",ev=>{const tg=ev.target,modal=isOn("#modal")
   else if(k==="f"||k==="F")favToggle([id]);
   else if(k==="r")rot([id],"cw");else if(k==="R")rot([id],"ccw");else return;ev.preventDefault();return}
  if(k==="/"){ev.preventDefault();expandSidebar();$("#q").focus();return}
+ // Z on a crop (or its zoom button) in the naming view: the zoom
+ if((k==="z"||k==="Z")&&view==="names"&&!ev.shiftKey){const c=tg.closest&&tg.closest(".rcropw");if(c){ev.preventDefault();openZoom(c.querySelector(".rcrop"));return}}
  if(view==="sug"){if((k==="Enter"||k===" ")&&tg.tagName==="BUTTON")return;if(k==="ArrowRight"||k==="ArrowDown"||k==="j"){cur=Math.min(items.length-1,cur+1)}else if(k==="ArrowLeft"||k==="ArrowUp"){cur=Math.max(0,cur-1)}
   else if(k==="k"||k==="K"||k==="t"||k==="T"){const m=k.toLowerCase()==="k"?"keep":"trash";
    // no outline yet: the tile under the pointer, else outline the first and say how to go on
@@ -4602,7 +4740,7 @@ document.addEventListener("keydown",ev=>{const tg=ev.target,modal=isOn("#modal")
 // ---------------------------------------------------------------- views (plugin tabs go in the sidebar, after the built-in ones)
 VIEWS.forEach(v=>{const b=el("button","nv");b.type="button";b.dataset.v="p-"+v.id;b.title=v.title;b.insertAdjacentHTML("beforeend",'<svg class="ic"><use href="#i-plug"/></svg>');const rl=el("span","rl",v.title);rl.setAttribute("aria-hidden","true");b.append(el("span","lbl",v.title),rl);$("#ptabs").append(b)});
 function setView(v){view=v;simId=null;sugFocus=v==="sug";document.body.dataset.view=v;const plug=plugView();
- $("#list").hidden=plug;$("#sentinel").hidden=plug;$("#plugin").hidden=!plug;$("#filters").hidden=plug;$(".sb-search").hidden=plug;$("#tsizew").hidden=plug;
+ $("#list").hidden=plug;$("#sentinel").hidden=plug;$("#plugin").hidden=!plug;$("#filters").hidden=plug;$(".sb-search").hidden=plug;$("#tsizew").hidden=plug;$("#csizew").hidden=v!=="names";closeZoom();
  if(plug){sel.clear();paintSel();$("#count").textContent="";setNote("");$("#helpb").hidden=true;syncUI();const id=v.slice(2),P=$("#plugin"),pv=window.mediaIntakeViews[id];P.replaceChildren();
   if(v==="names"){RV.show=RV.show||"todo";renderNames();return}
   if(!pv||typeof pv.render!=="function"){P.append(el("p","warn","Plugin view "+id+" has no render()"));return}
@@ -4620,6 +4758,9 @@ new IntersectionObserver(es=>{if(es.some(e=>e.isIntersecting))more()},{rootMargi
 // thumbnail size (a per-browser convenience)
 let ts=+LS.get("tile",mqPhone.matches?"92":"168");if(!(ts>=80&&ts<=320))ts=168;$("#tsize").value=ts;document.documentElement.style.setProperty("--tile",ts+"px");
 $("#tsize").oninput=()=>{document.documentElement.style.setProperty("--tile",$("#tsize").value+"px");LS.set("tile",$("#tsize").value)};
+// the naming view's crop size (its own slider in the header, also per browser): about two crops a row on a phone
+const CROP0=mqPhone.matches?120:160;let cs=+LS.get("crop",String(CROP0));if(!(cs>=80&&cs<=320))cs=CROP0;$("#csize").value=cs;document.documentElement.style.setProperty("--crop",cs+"px");
+$("#csize").oninput=()=>{document.documentElement.style.setProperty("--crop",$("#csize").value+"px");LS.set("crop",$("#csize").value)};
 // ---------------------------------------------------------------- start
 layout();buildSections();syncUI();
 loadFacets().then(()=>reset()).then(attachJob).catch(loadError);

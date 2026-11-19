@@ -320,7 +320,7 @@ class Store(Base):
         out = recog.crop_bytes(self.c, det, frames=lambda p: Sampler(), state=self.state)
         self.assertTrue(out and out[:2] == b"\xff\xd8", "a JPEG")
         self.assertEqual(state, {"read": 1, "closed": True}, "stops at the frame and closes the decoder")
-        os.remove(os.path.join(recog.crops_dir(), f"{sha_of(vid)}-{det}.jpg"))
+        os.remove(os.path.join(recog.crops_dir(), f"{sha_of(vid)}-{det}-{recog.CROP_PX}.jpg"))
         import frames as frames_mod
 
         def broken(p):
@@ -612,6 +612,86 @@ class NamesAndTags(Base):
         self.assertEqual(recog.leftovers({s0}), {})
         self.c = recog.connect()
         self.assertEqual(len(self.det_of(self.p[1])), 1, "other content stays")
+
+    def test_crop_size_and_an_older_crop_replaced(self):
+        """Crops are CROP_PX (sharp at the naming view's largest size); a 160 px crop an older version cached
+        under <sha>-<det>.jpg is made again at the new size and removed."""
+        s0 = sha_of(self.p[0])
+        det = self.det_of(self.p[0])[0]["id"]
+        old = write(os.path.join(recog.crops_dir(), f"{s0}-{det}.jpg"), b"an older 160 px crop")
+        out = recog.crop_bytes(self.c, det, state=self.state)
+        self.assertEqual(Image.open(io.BytesIO(out)).size, (recog.CROP_PX, recog.CROP_PX))
+        self.assertGreaterEqual(recog.CROP_PX, 320)
+        self.assertFalse(os.path.exists(old), "the older crop is gone")
+        new = os.path.join(recog.crops_dir(), f"{s0}-{det}-{recog.CROP_PX}.jpg")
+        self.assertEqual(stat.S_IMODE(os.stat(new).st_mode), 0o600)
+        self.assertEqual(recog.crop_bytes(self.c, det, state=self.state), out, "cached")
+
+    def test_frame_bytes_turns_and_is_forgotten(self):
+        """The zoom's whole picture: the photo at most FRAME_PX, turned as asked, cached 0600 beside the crops,
+        and counted and removed by leftovers / forget with the crops (one glob: <sha>-*)."""
+        s0 = sha_of(self.p[0])
+        det = self.det_of(self.p[0])[0]["id"]
+        with Image.open(self.p[0]) as im:
+            w, h = im.size
+        for turn, size in ((0, (w, h)), (90, (h, w)), (180, (w, h)), (270, (h, w))):
+            out = recog.frame_bytes(self.c, det, turn=turn, state=self.state)
+            self.assertEqual(Image.open(io.BytesIO(out)).size, size, turn)
+        with self.assertRaises(ValueError):
+            recog.frame_bytes(self.c, det, turn=45, state=self.state)
+        files = sorted(os.listdir(recog.crops_dir()))
+        self.assertEqual(files, sorted(f"{s0}-frame-r{t}.jpg" for t in recog.TURNS))
+        for f in files:
+            self.assertEqual(stat.S_IMODE(os.stat(os.path.join(recog.crops_dir(), f)).st_mode), 0o600)
+        recog.crop_bytes(self.c, det, state=self.state)
+        self.assertEqual(recog.leftovers({s0})["crops"], len(recog.TURNS) + 1)
+        self.c.close()
+        self.assertEqual(recog.forget({s0})["crops"], len(recog.TURNS) + 1)
+        self.assertEqual(recog.leftovers({s0}), {})
+        self.assertFalse(os.listdir(recog.crops_dir()))
+        self.c = recog.connect()
+
+    def test_frame_of_a_video_is_its_own_second(self):
+        rgb = np.zeros((100, 200, 3), dtype=np.uint8)
+        rgb[0, 0, 0] = 1
+        vid = write(os.path.join(self.vids, "2026/clip.mp4"), os.urandom(256))
+        self.scan([vid], frames=lambda p: [(1.5, rgb), (12.0, rgb)])
+        dets = self.det_of(vid)
+        for d in dets:
+            out = recog.frame_bytes(self.c, d["id"], frames=lambda p: [(1.5, rgb), (12.0, rgb)], state=self.state)
+            self.assertEqual(Image.open(io.BytesIO(out)).size, (200, 100))
+        s = sha_of(vid)
+        self.assertEqual(sorted(os.listdir(recog.crops_dir())), [f"{s}-frame-12000-r0.jpg", f"{s}-frame-1500-r0.jpg"])
+
+    def test_turned_frame_puts_the_box_where_turn_box_says(self):
+        """A photo dark but for a white block where the box is: on every turn the block is inside turn_box's box."""
+        a = np.zeros((100, 200, 3), dtype=np.uint8)
+        a[0, 0, 0] = self.s_ann
+        box = (0.1, 0.2, 0.25, 0.3)
+        x, y, bw, bh = box
+        a[int(y * 100):int((y + bh) * 100), int(x * 200):int((x + bw) * 200)] = 255
+        p = os.path.join(self.lib, "2026/block.png")
+        Image.fromarray(a).save(p)
+        self.scan([p])
+        det = self.det_of(p)[0]["id"]
+        for turn in recog.TURNS:
+            im = np.asarray(Image.open(io.BytesIO(recog.frame_bytes(self.c, det, turn=turn, state=self.state))))
+            H, W = im.shape[:2]
+            tx, ty, tw, th = recog.turn_box(box, turn)
+            inside = im[int(ty * H) + 2:int((ty + th) * H) - 2, int(tx * W) + 2:int((tx + tw) * W) - 2]
+            self.assertGreater(float(inside.mean()), 200, turn)
+            self.assertLess(float(im.mean()), 255 * bw * bh + 20, turn)  # and the rest is dark
+
+    def test_turn_box(self):
+        b = (0.1, 0.2, 0.3, 0.4)
+        self.assertEqual(recog.turn_box(b, 0), b)
+        for t in recog.TURNS:
+            back = b
+            for _ in range(4):
+                back = recog.turn_box(back, 90)
+            self.assertEqual(tuple(round(v, 9) for v in back), b)
+            self.assertEqual(tuple(round(v, 9) for v in recog.turn_box(recog.turn_box(b, t), (360 - t) % 360)), b)
+        self.assertEqual(tuple(round(v, 9) for v in recog.turn_box(b, 90)), (0.4, 0.1, 0.4, 0.3))
 
     def test_stray_temp_crop_and_unreadable_store(self):
         s0 = sha_of(self.p[0])

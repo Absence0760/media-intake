@@ -35,7 +35,7 @@ Store (biometric: laptop only, never in git, never backed up or synced):
     recognition.db   sqlite, 0600: files (path, sha, size, mtime), scans (sha, kind), detections
                      (box as fractions of the image, score, kind, species, t, cluster, name, how),
                      embeddings (det, model, vector), merges, rejects, written, meta
-    crops/           160 px JPEG crops made on demand for the naming page, 0600
+    crops/           CROP_PX JPEG crops and FRAME_PX whole pictures made on demand for the naming page, 0600
 Files are keyed by path + size + mtime; the same content (sha256) at another path reuses its rows.
 
 how (who decided a detection's name):
@@ -64,7 +64,8 @@ DB_NAME = "recognition.db"
 IGNORED = "\x00ignored"       # the name of an ignored detection (never a real name)
 NAME_RE = re.compile(r"^[^\x00-\x1f\x7f|/\\,;]{1,64}$")
 SHA_RE = re.compile(r"[0-9a-f]{64}")
-CROP_PX = 160
+CROP_PX = 320                 # a crop's side: sharp at the naming view's largest crop size
+FRAME_PX = 1280               # the whole picture's long side in the naming view's zoom
 NEIGHBOURS = 30
 MARGIN = 0.10                 # square_crop's margin around a box, each side
 IMG = {".jpg", ".jpeg", ".png", ".heic", ".heif", ".webp"}
@@ -1077,9 +1078,12 @@ def cluster_hints(c, spec, min_size=2, top=3):
 
 
 # ---------------------------------------------------------------- crops (the gallery's naming view)
-def crop_bytes(c, det_id, frames="default", d=None, state=None):
-    """A 160 px JPEG of detection det_id (bytes), made on demand and cached 0600 under crops/, or None
-    (no such detection, refused or trashed content, unreadable file)."""
+# Every file under crops/ starts with its content's sha256 and a dash (drop_crops and leftovers glob on that):
+#   <sha>-<det>-<CROP_PX>.jpg              a detection's crop (an older <sha>-<det>.jpg, 160 px, is replaced)
+#   <sha>-frame[-<ms>]-r<turn>.jpg         the whole photo (or the video frame at <ms>), FRAME_PX, turned
+def _det_row(c, det_id, state=None):
+    """The detection's row (with the path of one live file), or None when there is no such detection or its
+    content is refused or trashed."""
     import label
     r = c.execute("SELECT d.*, (SELECT path FROM files f WHERE f.sha=d.sha AND f.skip IS NULL ORDER BY path LIMIT 1) "
                   "path FROM detections d WHERE d.id=?", (int(det_id),)).fetchone()
@@ -1088,23 +1092,53 @@ def crop_bytes(c, det_id, frames="default", d=None, state=None):
     state = state or state_dir()
     if r["sha"] in trashed_shas(state) or label.refused([r["path"]], state):
         return None
-    dst = os.path.join(crops_dir(d), f"{r['sha']}-{int(det_id)}.jpg")
+    return r
+
+
+def _det_rgb(r, frames="default"):
+    """The picture the detection was found in (a photo after EXIF rotation, or its video frame again), or None."""
+    if r["t"] is None:
+        return load_rgb(r["path"], max_side=4096)
+    frames = default_frames() if frames == "default" else frames
+    try:
+        with opened(frames(r["path"]) if frames else ()) as source:  # closed when the loop breaks out
+            for t, img in source:
+                if t is not None and abs(float(t) - r["t"]) < 1e-3:
+                    return img
+    except frames_error():
+        return None
+    return None
+
+
+def _cached(dst):
     if os.path.isfile(dst):
         with open(dst, "rb") as f:
             return f.read()
-    if r["t"] is None:
-        rgb = load_rgb(r["path"], max_side=4096)
-    else:
-        rgb = None
-        frames = default_frames() if frames == "default" else frames
-        try:
-            with opened(frames(r["path"]) if frames else ()) as source:  # closed when the loop breaks out
-                for t, img in source:
-                    if t is not None and abs(float(t) - r["t"]) < 1e-3:
-                        rgb = img
-                        break
-        except frames_error():
-            return None
+    return None
+
+
+def _save_private(dst, data):
+    private_dir(os.path.dirname(dst))
+    tmp = f"{dst}.{os.getpid()}.tmp"
+    fd = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+    with os.fdopen(fd, "wb") as f:
+        f.write(data)
+    os.replace(tmp, dst)
+    return data
+
+
+def crop_bytes(c, det_id, frames="default", d=None, state=None):
+    """A CROP_PX JPEG of detection det_id (bytes), made on demand and cached 0600 under crops/, or None
+    (no such detection, refused or trashed content, unreadable file)."""
+    r = _det_row(c, det_id, state)
+    if r is None:
+        return None
+    base = os.path.join(crops_dir(d), f"{r['sha']}-{int(det_id)}")
+    dst = f"{base}-{CROP_PX}.jpg"
+    data = _cached(dst)
+    if data:
+        return data
+    rgb = _det_rgb(r, frames)
     if rgb is None:
         return None
     import numpy as np
@@ -1113,14 +1147,54 @@ def crop_bytes(c, det_id, frames="default", d=None, state=None):
     box = (r["x"] * W, r["y"] * H, r["w"] * W, r["h"] * H)
     sq = square_crop(rgb, box, margin=0.35 if r["kind"] == "face" else MARGIN)
     buf = io.BytesIO()
-    Image.fromarray(np.ascontiguousarray(sq)).resize((CROP_PX, CROP_PX), Image.BILINEAR).save(buf, "JPEG", quality=82)
-    private_dir(os.path.dirname(dst))
-    tmp = f"{dst}.{os.getpid()}.tmp"
-    fd = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
-    with os.fdopen(fd, "wb") as f:
-        f.write(buf.getvalue())
-    os.replace(tmp, dst)
-    return buf.getvalue()
+    Image.fromarray(np.ascontiguousarray(sq)).resize((CROP_PX, CROP_PX), Image.BILINEAR).save(buf, "JPEG", quality=85)
+    with contextlib.suppress(FileNotFoundError):
+        os.remove(base + ".jpg")  # the smaller crop an older version cached
+    return _save_private(dst, buf.getvalue())
+
+
+TURNS = (0, 90, 180, 270)
+
+
+def turn_box(box, turn):
+    """A box (x, y, w, h as fractions of the picture) after the picture is turned `turn` degrees clockwise."""
+    x, y, w, h = box
+    if turn == 90:
+        return (1 - y - h, x, h, w)
+    if turn == 180:
+        return (1 - x - w, 1 - y - h, w, h)
+    if turn == 270:
+        return (y, 1 - x - w, h, w)
+    return (x, y, w, h)
+
+
+def frame_bytes(c, det_id, turn=0, frames="default", d=None, state=None):
+    """The whole picture detection det_id was found in (the photo, or the video frame at its second) as a JPEG
+    at most FRAME_PX on the long side, turned `turn` degrees clockwise, made on demand and cached 0600 under
+    crops/ (it shows the face too), or None as crop_bytes. Its box: turn_box(detection box, turn)."""
+    if turn not in TURNS:
+        raise ValueError("turn is 0, 90, 180 or 270")
+    r = _det_row(c, det_id, state)
+    if r is None:
+        return None
+    at = "" if r["t"] is None else f"-{int(round(float(r['t']) * 1000))}"
+    dst = os.path.join(crops_dir(d), f"{r['sha']}-frame{at}-r{turn}.jpg")
+    data = _cached(dst)
+    if data:
+        return data
+    rgb = _det_rgb(r, frames)
+    if rgb is None:
+        return None
+    import numpy as np
+    Image, _ = _pillow()
+    im = Image.fromarray(np.ascontiguousarray(rgb))
+    im.thumbnail((FRAME_PX, FRAME_PX), Image.BILINEAR)
+    if turn:
+        im = im.transpose({90: Image.Transpose.ROTATE_270, 180: Image.Transpose.ROTATE_180,
+                           270: Image.Transpose.ROTATE_90}[turn])  # PIL's turns are anticlockwise
+    buf = io.BytesIO()
+    im.save(buf, "JPEG", quality=85)
+    return _save_private(dst, buf.getvalue())
 
 
 # ---------------------------------------------------------------- eval (read-only)

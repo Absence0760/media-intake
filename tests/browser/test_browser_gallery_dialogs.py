@@ -264,7 +264,7 @@ class GalleryDialogsBrowserTest(B.BrowserCase):
         listed = set(keys.locator("kbd").all_inner_texts())
         self.assertGreaterEqual(len(handled), 15, handled)
         self.assertEqual(handled - listed, set(), "keys the page handles but the list doesn't name")
-        for section in ("Grid", "Bursts", "Large view", "Suggested junk", "Dialogs"):
+        for section in ("Grid", "Bursts", "Large view", "Suggested junk", "Name faces and pets", "Dialogs"):
             B.expect(keys.get_by_role("heading", name=section, exact=True)).to_be_visible()
         # Tab stays in it; a key for the page does nothing while it is open; Esc closes, focus back on the tile
         for _ in range(3):

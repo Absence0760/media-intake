@@ -12,12 +12,17 @@ and put back by Space (aria-pressed), the sidebar's name and its filtered grid, 
 rejected (a crop marked "Not <Name>", the confirm dialog saying it can't be undone) and the error after a
 re-cluster with Reload the list; a name with markup shown as text everywhere (no element made from it); the
 large view's People line filtering the grid and a video's "appears at" link seeking the player; the view at
-390 px with no sideways scroll and the rail's word; the pressed tab's contrast in light and dark.
+390 px with no sideways scroll and the rail's word; the pressed tab's contrast in light and dark; the crops about
+160 px on a desktop and two a row on a phone, the Crop size slider remembered after a reload; the zoom (its corner
+button, Z on a crop) showing the crop and the box on the whole photo, the arrows, its toggle taking a face out and
+Space putting it back, Tab kept inside, Esc back on the crop, a click on a crop still taking it out, and no sideways
+scroll at 390 px; a pet seen once listed under "Single photos (1)" after the clusters and named by Enter.
 
 Hooks: #recsec / #reclist (the sidebar section, a .nv[data-who] per name), .nv[data-v=names] with #c-names,
 #plugin[data-ready] after each render of the naming view, a cluster as role=region named "cluster N" (or
 "<Name>, cluster N"), a suggestion card as role=region "Looks like <Name>", crops as buttons (.rcrop) with
-aria-pressed, #who in the large view. Every test also fails on an uncaught page error.
+aria-pressed, each in a .rcropw with its zoom button (.rzb), the zoom #rzoom (role=dialog named "<card>: face N
+of M"; #rzwhole, #rzbox, #rzout, #rzdone), #csize, #rsingle, #who in the large view. Every test also fails on an uncaught page error.
 """
 import os, re, shutil, sys, tempfile, urllib.parse
 
@@ -106,7 +111,7 @@ class PeopleBrowserTest(B.BrowserCase):
         ann, bo, like = w.cluster_of(w.ann[0]), w.cluster_of(w.bo[0]), w.cluster_of(w.like[0])
         card = self.card(page, ann)
         B.expect(card.locator(".rcrop")).to_have_count(4)
-        B.expect(card.locator(".rcrop img").first).to_have_js_property("naturalWidth", 160)
+        B.expect(card.locator(".rcrop img").first).to_have_js_property("naturalWidth", GP.recog.CROP_PX)
         # name by Enter; Undo; name again
         card.get_by_role("combobox", name=f"Name cluster {ann}").fill("Ann")
         card.get_by_role("combobox", name=f"Name cluster {ann}").press("Enter")
@@ -231,6 +236,107 @@ class PeopleBrowserTest(B.BrowserCase):
         B.expect(page.locator("#viewer")).not_to_have_class(re.compile(r"\bon\b"))
         B.expect(page.locator("#vtitle")).to_have_text(EVIL)
 
+    def test_crop_size_zoom_and_click_still_takes_out(self):
+        w = self.world()
+        s = self.server(w)
+        page = self.page(s)
+        self.names_view(page)
+        B.expect(page.locator("#csize")).to_be_visible()
+        B.expect(page.locator("#tsize")).to_be_hidden()
+        ann = w.cluster_of(w.ann[0])
+        card = self.card(page, ann)
+        crop = card.locator(".rcrop").first
+        width = crop.bounding_box()["width"]
+        self.assertTrue(150 <= width <= 260, width)  # about 160 px on a desktop
+        # the slider: bigger crops, remembered after a reload
+        page.locator("#csize").fill("240")
+        page.wait_for_function("() => document.querySelector('#names .rcrop').getBoundingClientRect().width >= 240")
+        page.reload()
+        self.names_view(page)
+        B.expect(page.locator("#csize")).to_have_value("240")
+        self.assertGreaterEqual(self.card(page, ann).locator(".rcrop").first.bounding_box()["width"], 240)
+        page.locator("#csize").fill("160")
+        # the zoom button opens the zoom; the crop is not taken out
+        card = self.card(page, ann)
+        cells = card.locator(".rcropw")
+        first = cells.nth(0).locator(".rcrop")
+        zb = cells.nth(0).locator(".rzb")
+        self.assertGreaterEqual(zb.bounding_box()["width"], 32)
+        B.expect(zb).to_have_attribute("aria-label", "Zoom in on this face (Z)")
+        zb.click()
+        dlg = page.get_by_role("dialog", name=f"Cluster {ann}: face 1 of 4")
+        B.expect(dlg).to_be_visible()
+        B.expect(first).to_have_attribute("aria-pressed", "false")
+        B.expect(page.locator("#rzcrop")).to_have_js_property("naturalWidth", GP.recog.CROP_PX)
+        B.expect(page.locator("#rzbox")).to_be_visible()
+        B.expect(page.locator("#rzsub")).to_contain_text("In ")
+        # the box sits where the detection is on the whole picture
+        det = int(first.get_attribute("data-det"))
+        x, y, bw, bh = w.c.execute("SELECT x, y, w, h FROM detections WHERE id=?", (det,)).fetchone()
+        im, bx = page.locator("#rzwhole").bounding_box(), page.locator("#rzbox").bounding_box()
+        self.assertAlmostEqual(bx["x"], im["x"] + x * im["width"], delta=2)
+        self.assertAlmostEqual(bx["width"], bw * im["width"], delta=2)
+        self.assertAlmostEqual(bx["y"], im["y"] + y * im["height"], delta=2)
+        # arrows step through the cluster; the toggle takes that face out, as a click on it does
+        B.expect(page.locator("#rzprev")).to_be_disabled()
+        page.keyboard.press("ArrowRight")
+        B.expect(page.locator("#rzh")).to_have_text(f"Cluster {ann}: face 2 of 4")
+        second = cells.nth(1).locator(".rcrop")
+        out = page.locator("#rzout")
+        B.expect(out).to_have_text("Take this face out")
+        out.click()
+        B.expect(out).to_have_attribute("aria-pressed", "true")
+        B.expect(second).to_have_attribute("aria-pressed", "true")
+        B.expect(out).to_have_text("Put this face back")
+        self.toast(page, "taken out")
+        page.keyboard.press("Space")  # the toggle keeps focus: Space puts it back
+        B.expect(second).to_have_attribute("aria-pressed", "false")
+        for _ in range(3):  # Tab stays in the zoom
+            page.keyboard.press("Tab")
+            self.assertTrue(page.evaluate("() => !!document.activeElement.closest('#rzoom, #toast, #etoast')"))
+        page.keyboard.press("Escape")
+        B.expect(dlg).to_be_hidden()
+        B.expect(second).to_be_focused()
+        # Z on the focused crop opens it at that crop; a click on a crop still takes it out
+        page.keyboard.press("z")
+        B.expect(page.locator("#rzh")).to_have_text(f"Cluster {ann}: face 2 of 4")
+        page.locator("#rzdone").click()
+        B.expect(page.locator("#rzoom")).to_be_hidden()
+        first.click(position={"x": 20, "y": 20})
+        B.expect(first).to_have_attribute("aria-pressed", "true")
+        B.expect(page.locator("#rzoom")).to_be_hidden()
+
+    def test_single_photo_pets_are_nameable(self):
+        w = self.world()
+        w.world.scene(8, ("solo", "dog"))
+        solo = GP.TR.image(os.path.join(w.lib, "2026/2026-05/solo.png"), 8)
+        GP.recog.scan(w.c, w.pet, [solo], frames=None, log=lambda *a: None, state=w.state)
+        GP.recog.recluster(w.c, w.pet)
+        s = self.server(w)
+        page = self.page(s)
+        B.expect(page.locator("#c-names")).to_have_text("7")  # 3 people, 3 pets of two, 1 pet seen once
+        self.names_view(page)
+        page.locator("#names .rseg[aria-label=Kind] button", has_text="Pets").click()
+        B.expect(page.locator("#plugin")).to_have_attribute("data-ready", "1")
+        B.expect(page.locator("#names .rseg[aria-label=Show] button[aria-pressed=true]")).to_have_text("To name (4)")
+        head = page.locator("#rsingle")
+        B.expect(head).to_have_text("Single photos (1)")
+        cl = w.cluster_of(solo, "pet")
+        card = self.card(page, cl)
+        self.assertTrue(page.evaluate("""cl => { const h = document.querySelector('#rsingle'), c = [...document
+            .querySelectorAll('#rcards .rcard')]; return c.every(x => (x.dataset.cluster == cl) ===
+            !!(h.compareDocumentPosition(x) & Node.DOCUMENT_POSITION_FOLLOWING)) }""", cl))
+        B.expect(card.locator(".rcrop")).to_have_count(1)
+        B.expect(card.get_by_role("button", name="Merge into…")).to_be_visible()
+        B.expect(card.get_by_role("button", name="Not a pet")).to_be_visible()
+        box = card.get_by_role("combobox", name=f"Name cluster {cl}")
+        box.fill("Solo")
+        box.press("Enter")
+        self.toast(page, "named Solo")
+        self.assertIn("Pets|Solo", GP.hier(solo))
+        B.expect(page.locator(".nv[data-who='Pets|Solo'] .ct")).to_have_text("1")
+        B.expect(page.locator("#rsingle")).to_have_count(0)
+
     def test_phone_layout_and_contrast(self):
         w = self.world()
         s = self.server(w)
@@ -254,7 +360,21 @@ class PeopleBrowserTest(B.BrowserCase):
                 inp = card.get_by_role("combobox")
                 box, cbox = inp.bounding_box(), card.bounding_box()
                 self.assertLessEqual(box["x"] + box["width"], cbox["x"] + cbox["width"] + 0.5)
-                self.assertGreaterEqual(card.locator(".rcrop").first.bounding_box()["width"], 44)
+                cols = card.locator(".rcrops").evaluate("g => getComputedStyle(g).gridTemplateColumns.split(' ').length")
+                self.assertEqual(cols, 2, "two crops a row on a phone")
+                self.assertGreaterEqual(card.locator(".rcrop").first.bounding_box()["width"], 100)
+                zb = card.locator(".rzb").first
+                self.assertGreaterEqual(zb.bounding_box()["width"], 44)
+                zb.tap()
+                B.expect(page.locator("#rzoom")).to_be_visible()
+                B.expect(page.locator("#rzbox")).to_be_visible()
+                self.assertLessEqual(page.evaluate("document.documentElement.scrollWidth"),
+                                     page.evaluate("document.documentElement.clientWidth"), "zoom")
+                for q in ("#rzwhole", "#rzcrop", "#rzout"):
+                    bb = page.locator(q).bounding_box()
+                    self.assertLessEqual(bb["x"] + bb["width"], 390.5, q)
+                page.keyboard.press("Escape")
+                B.expect(page.locator("#rzoom")).to_be_hidden()
 
     def test_sidebar_order_and_no_sideways_scroll(self):
         """Quick views (Dates to check last), then Events, Places and People & Pets, at 1000 px and on a phone."""
