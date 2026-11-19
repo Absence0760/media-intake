@@ -59,14 +59,16 @@ MIN_UV = (0, 9, 17)
 INDEX = "https://pypi.org/simple"
 # Fedora packages the venv reuses (setup.sh: --system-site-packages): resolved against the
 # installed version, never listed in a requirements file.
-SYSTEM = ("numpy", "packaging")
+SYSTEM = ("numpy", "packaging", "pillow")
 # Deliberate holds, each with its reason. Lift one only after testing what it holds back.
 HOLDS = {"opencv-python-headless<5": "the pinned line is 4.x; move to 5.x only after testing NudeNet on it"}
 REQUIREMENTS = {
     "requirements.txt": {
-        "inputs": ["nudenet", "scipy"],
+        "inputs": ["nudenet", "scipy", "pillow-heif"],
         "about": "Hash-pinned deps for scan_sensitive.py (NudeNet), label.py and geocode.py. Install with setup.sh.",
-        "notes": {"scipy": "for geocode.py (cKDTree)"},
+        "notes": {"scipy": "for geocode.py (cKDTree)",
+                  "pillow-heif": "HEIC/HEIF decoding (without it scan flags every HEIC unreadable); "
+                                 "GPL-2.0-or-later wheel, THIRD_PARTY_NOTICES.md"},
         "no_deps": False,
     },
     "requirements-labels.txt": {

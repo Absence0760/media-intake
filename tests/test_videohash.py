@@ -19,17 +19,18 @@ INTAKE = os.path.join(support.PKG, "intake.py")
 PY = sys.executable
 
 
-def have_x264():
-    """ffmpeg and ffprobe on PATH, and an ffmpeg that encodes with libx264 (the clips here are H.264)."""
+def h264_encoder():
+    """The H.264 encoder to make the clips with: libx264, or libopenh264 (Fedora's ffmpeg-free has only
+    that one); None without ffmpeg and ffprobe on PATH or without either encoder."""
     if not (shutil.which("ffmpeg") and shutil.which("ffprobe")):
-        return False
+        return None
     r = subprocess.run(["ffmpeg", "-hide_banner", "-encoders"], capture_output=True, text=True,
                        stdin=subprocess.DEVNULL)
-    return " libx264 " in r.stdout
+    return next((e for e in ("libx264", "libopenh264") if f" {e} " in r.stdout), None)
 
 
-X264 = have_x264()
-NEEDS = "ffmpeg/ffprobe missing, or this ffmpeg has no libx264 encoder"
+H264 = h264_encoder()
+NEEDS = "ffmpeg/ffprobe missing, or this ffmpeg has no H.264 encoder (libx264 / libopenh264)"
 
 
 def sha(p):
@@ -43,14 +44,15 @@ def ff(*args):
 
 def clip(path, src="mandelbrot=size=320x180:rate=25", seconds=6, bitrate="1M"):
     os.makedirs(os.path.dirname(path), exist_ok=True)
-    ff("-f", "lavfi", "-i", src, "-t", str(seconds), "-c:v", "libx264", "-pix_fmt", "yuv420p", "-b:v", bitrate, path)
+    ff("-f", "lavfi", "-i", src, "-t", str(seconds), "-c:v", H264, "-pix_fmt", "yuv420p", "-b:v", bitrate, path)
     return path
 
 
 def reencode(src, dst, pre=(), post=()):
-    """dst: src through libx264 again; pre goes before -i (a seek), post after it (bitrate, scale, length)."""
+    """dst: src through the H.264 encoder again; pre goes before -i (a seek), post after it (bitrate, scale,
+    length)."""
     os.makedirs(os.path.dirname(dst), exist_ok=True)
-    ff(*pre, "-i", src, *post, "-c:v", "libx264", "-pix_fmt", "yuv420p", dst)
+    ff(*pre, "-i", src, *post, "-c:v", H264, "-pix_fmt", "yuv420p", dst)
     return dst
 
 
@@ -61,7 +63,7 @@ def junk(path):
     return path
 
 
-@unittest.skipUnless(X264, NEEDS)
+@unittest.skipUnless(H264, NEEDS)
 class Hash(unittest.TestCase):
     """video_hash and near on their own."""
 
@@ -150,7 +152,7 @@ class Hash(unittest.TestCase):
         self.assertFalse(videohash.near([], f))
 
 
-@unittest.skipUnless(X264, NEEDS)
+@unittest.skipUnless(H264, NEEDS)
 class Plan(unittest.TestCase):
     """intake.py plan: a near-copy video goes to review like a near-copy photo; nothing is deleted."""
 

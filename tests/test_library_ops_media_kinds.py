@@ -27,6 +27,9 @@ EMPTY = ("<?xpacket begin='﻿' id='W5M0MpCehiHzreSzNTczkc9d'?>\n<x:xmpmeta xmln
          "<rdf:RDF xmlns:rdf='http://www.w3.org/1999/02/22-rdf-syntax-ns#'>\n</rdf:RDF>\n</x:xmpmeta>\n"
          "<?xpacket end='w'?>\n")
 TOOLS = all(shutil.which(t) for t in ("exiftool", "ffmpeg", "ffprobe"))
+# Fedora's ffmpeg-free has no mov_text (MP4 subtitle) encoder; Ubuntu's ffmpeg does.
+MOV_TEXT = TOOLS and " mov_text " in subprocess.run(["ffmpeg", "-hide_banner", "-encoders"], capture_output=True,
+                                                    text=True, stdin=subprocess.DEVNULL).stdout
 
 
 def sha(p):
@@ -756,8 +759,15 @@ class ShareCopy(Base):
             f.write("1\n00:00:00,000 --> 00:00:01,000\nhello\n")
         v = os.path.join(self.vids, "2026/2026-11/covered.mp4")
         os.makedirs(os.path.dirname(v), exist_ok=True)
-        subprocess.run(["ffmpeg", "-v", "error", "-y", "-i", base, "-i", cover, "-i", srt, "-map", "0", "-map", "1",
-                        "-map", "2", "-c", "copy", "-c:s", "mov_text", "-disposition:v:1", "attached_pic", v], check=True)
+        # A timecode data track (tmcd, as cameras write) always; a subtitle track too where ffmpeg has the
+        # mov_text encoder (Ubuntu's does, Fedora's ffmpeg-free doesn't). share-copy must drop both.
+        sub_in, sub_map = (["-i", srt], ["-map", "2", "-c:s", "mov_text"]) if MOV_TEXT else ([], [])
+        subprocess.run(["ffmpeg", "-v", "error", "-y", "-i", base, "-i", cover, *sub_in, "-map", "0", "-map", "1",
+                        *sub_map, "-c:v", "copy", "-c:a", "copy", "-disposition:v:1", "attached_pic",
+                        "-timecode", "01:02:03:04", v], check=True)
+        kinds = [s["codec_type"] for s in streams(v)["streams"]]
+        self.assertIn("data", kinds)
+        self.assertEqual("subtitle" in kinds, MOV_TEXT)
         self.assertIn(1, [s.get("disposition", {}).get("attached_pic") for s in streams(v)["streams"]])
         out_dir = os.path.join(self.tmp, "share-out")
         self.out("share-copy", v, "--out", out_dir)
