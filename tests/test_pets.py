@@ -10,7 +10,7 @@ onnxruntime on the pinned YOLOX + DINOv2 and skips with a reason without them; w
 (PETS_SAMPLE=<path to a photo of two cats>) it also checks both are found.
 """
 import os, shutil, subprocess, sys, tempfile, unittest
-from unittest import mock
+import unittest.mock as mock
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import support  # noqa: E402  (hermetic config)

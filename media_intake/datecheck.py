@@ -771,6 +771,7 @@ def plan_fix(paths, how, value=None, like=None, report=None, now=None, state=Non
     paths = list(dict.fromkeys(os.path.abspath(p) for p in paths))
     refused = refusals(paths, state)
     ok = [p for p in paths if p not in refused]
+    shift = None  # set only for how == "shift"
     if how == "set":
         when, has_time, set_tz = parse_when(value, what or "--set")
     elif how == "shift":

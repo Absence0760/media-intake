@@ -55,7 +55,7 @@ random port, random token swapped for an HttpOnly SameSite=Strict cookie, Host
 check, CSRF value on every POST, no-store + strict CSP, media by opaque id only.
 Originals are never written: sidecars (<file>.<ext>.xmp) only. docs/gallery.md.
 """
-import argparse, collections, contextlib, datetime, hashlib, html, http.server, io, json, os, re, secrets, select
+import argparse, collections, contextlib, datetime, hashlib, html, http.server, io, json, math, os, re, secrets, select
 import shutil, sqlite3, subprocess, sys, tempfile, threading, time, unicodedata
 import xml.etree.ElementTree as ET
 
@@ -941,7 +941,7 @@ def load_event_names(state=None, roots=None):
             if check_display_name(n) == n and n:
                 out[e] = n
         except ValueError:
-            pass
+            pass  # a hand-edited name that fails the checks is ignored (docs/gallery.md, Events)
     return out
 
 
@@ -1715,7 +1715,7 @@ class App:
             v = float(f.get("jmin"))
         except (TypeError, ValueError):
             return SUGGEST_MIN
-        return min(1.0, max(0.0, v)) if v == v else SUGGEST_MIN
+        return min(1.0, max(0.0, v)) if not math.isnan(v) else SUGGEST_MIN
 
     def junk_why(self, it, floor):
         """The Why values an item is suggested for at this floor (a reason, WHY_LABEL, WHY_COPY)."""
@@ -2283,7 +2283,7 @@ class App:
             names = (read_event_names() or {}).get(library_key(), {})
             prune_event_names(live if gone is None else live | (set(names) - gone))
         except OSError:
-            pass
+            pass  # names stay until the next start's prune; never fail the user's action over them
 
     def event_block(self, it, new, drop):
         """The block that moves one item out of the events in drop (all of its events when drop is None) and

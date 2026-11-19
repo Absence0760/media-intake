@@ -28,7 +28,7 @@ sidecar of its own, git, a log or the terminal (only counts are printed; coordin
 
 Stdlib only; no network. intake.py imports this lazily (tag_files, erase), the gallery at start.
 """
-import argparse, collections, datetime, hashlib, json, math, os, re, secrets, sys, unicodedata
+import argparse, collections, hashlib, json, math, os, re, secrets, sys, unicodedata
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 if HERE not in sys.path:

@@ -888,7 +888,7 @@ def desired_tags(c, spec):
     want = collections.defaultdict(set)
     for r in c.execute("SELECT f.path FROM files f JOIN scans s ON s.sha=f.sha AND s.kind=? WHERE s.status='ok'",
                        (spec.kind,)):
-        want[r["path"]]
+        want.setdefault(r["path"], set())  # every scanned file gets a key, even with no names
     frames = collections.defaultdict(set)
     for r in c.execute("SELECT f.path, d.name, d.t FROM files f JOIN detections d ON d.sha=f.sha "
                        f"WHERE d.kind=? AND d.how IN ({','.join('?' * len(OWNER_HOW))}) AND d.name IS NOT NULL "

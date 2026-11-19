@@ -13,7 +13,7 @@ a fixed file that is flagged later is refused by a recognition scan; the gallery
 the favorite; "probably here" Yes and No change only Place|.
 """
 import json, os, shutil, subprocess, sys, tempfile, unittest, urllib.parse
-from unittest import mock
+import unittest.mock as mock
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import support  # noqa: E402  (hermetic config)
@@ -22,7 +22,6 @@ support.check_hermetic()
 import test_gallery as G  # noqa: E402  (the server wrapper)
 import test_places as TP  # noqa: E402  (gps_jpg, sidecar, hier, NAME, P, north)
 import test_recog as TR  # noqa: E402  (mock detector / embedder, synthetic scenes)
-import config  # noqa: E402
 import recog  # noqa: E402
 
 HAVE = bool(shutil.which("exiftool"))

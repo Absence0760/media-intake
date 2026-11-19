@@ -10,7 +10,7 @@ writer, except in the erase / trash / verify-gone cases, which run intake.py as 
 real-model case runs the venv's cv2 on the pinned YuNet + SFace and skips with a reason without them.
 """
 import collections, hashlib, io, json, os, shutil, sqlite3, stat, subprocess, sys, tempfile, unittest
-from unittest import mock
+import unittest.mock as mock
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import support  # noqa: E402  (hermetic config)
@@ -352,7 +352,7 @@ class Store(Base):
         self.assertEqual(cnt["videos scanned"], 1, cnt)
         dets = self.det_of(vid)
         self.assertEqual(sorted(d["t"] for d in dets)[:1], [real[0][0]], "the seconds the sampler gave")
-        self.assertTrue({d["t"] for d in dets} <= {t for t, _ in real})
+        self.assertLessEqual({d["t"] for d in dets}, {t for t, _ in real})
         d = dets[0]
         out = recog.crop_bytes(self.c, d["id"], state=self.state)  # the default frame source: frames.sample
         self.assertTrue(out and out[:2] == b"\xff\xd8", "a real crop, not None")

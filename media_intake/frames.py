@@ -464,7 +464,7 @@ class Sampler:
         try:
             self.close()
         except Exception:
-            pass
+            pass  # __del__ at interpreter exit: the decoder may already be gone; nothing to report to
 
 
 def sample(path, *, max_frames=48, min_gap=1.0, every=4.0, scene=0.3):

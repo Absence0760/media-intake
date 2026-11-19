@@ -14,7 +14,7 @@ that re-cluster, 403 / 415 on a POST without CSRF or JSON, crops served by detec
 0700 folder, no-store) and never for a flagged file, and the large view's names and a video's times.
 """
 import os, shutil, stat, sys, tempfile, unittest, urllib.parse
-from unittest import mock
+import unittest.mock as mock
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import support  # noqa: E402  (hermetic config)
