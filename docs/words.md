@@ -36,7 +36,8 @@ buttons are named in **bold**, as they appear on screen.
 | Word | Means |
 | --- | --- |
 | **review page** | `media-intake review BATCH`: a page on this computer only where you decide on what an import set aside. Its tabs are **Quarantine** (flagged files), **Review** (the review folder) and, with `--maybe-trash`, **Maybe trash** (Suggested junk). |
-| **mark** | On the review page, a choice is only a mark until you apply it. Pressing a pressed button again clears it. |
+| **mark** | On the review page, and in the gallery's Suggested junk, a choice is only a mark until you apply it. Pressing a pressed button again clears it. **Mark all shown as Trash** marks every tile loaded, **Clear marks** takes every mark off; neither changes a file. |
+| **drag to select** | In the gallery, drawing a rectangle with the mouse over the grid: every tile it touches is selected (in Suggested junk, from a Keep or Trash button: marked). Nothing moves; no file is dragged anywhere. |
 | **Submit**, **Apply N decisions** | The review page's **Submit** opens the Apply dialog ("Apply 13 decisions?"); its **Apply N decisions** button runs every mark. When anything will be removed you type `ERASE` first. In the gallery's Suggested junk view, **Apply** does the same for its K / T marks. |
 | **Favorite** | A photo or video you starred: the gallery's star on a tile or in the large view, **F**, or five stars set in digiKam (the sidecar's rating). The gallery's **Favorites** view lists them. A favorite is never Suggested junk. **Unfavorite** takes the star off. |
 | **Keep** | Keep the file. In Quarantine: put it back in the library (`release`). In Review: leave it in the review folder for now. For Suggested junk: leave it in the library and never suggest it again (`not-trash`). In the gallery: mark it kept (the tile says "Kept"). |
