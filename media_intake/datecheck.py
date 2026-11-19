@@ -992,14 +992,25 @@ def write_undo(fid=None, state=None, now=None):
 
 # ---------------------------------------------------------------- erase, forget, trash (intake.py calls these)
 def _names(paths):
-    return {os.path.basename(p) for p in paths}
+    """{base name: {the folders above it that a finding naming it may be in}}: its own folder's parent, so the
+    file's folder and its sibling month folders (YYYY/YYYY-MM: a numbered neighbour a month on)."""
+    out = collections.defaultdict(set)
+    for p in paths:
+        out[os.path.basename(p)].add(os.path.dirname(os.path.dirname(os.path.abspath(p))))
+    return out
 
 
 def _mentions(f, paths, names):
-    """A finding about one of paths, or one whose reason names one of them (a numbered neighbour, a copy)."""
+    """A finding about one of paths, or one whose reason names one of them (a numbered neighbour, a copy): the
+    whole name (1.jpg never matches in 11.jpg or 1.jpg.bak), and only from a file in the same folder or a
+    sibling one (a same-named file elsewhere is someone else)."""
     if f.get("path") in paths:
         return True
-    return f.get("kind") in ("sequence", "duplicate") and any(n and n in (f.get("reason") or "") for n in names)
+    if f.get("kind") not in ("sequence", "duplicate") or not isinstance(f.get("path"), str):
+        return False
+    reason, up = f.get("reason") or "", os.path.dirname(os.path.dirname(os.path.abspath(f["path"])))
+    return any(n and up in ups and re.search(rf"(?<![\w.-]){re.escape(n)}(?![\w-]|\.\w)", reason)
+               for n, ups in names.items())
 
 
 def forget_paths(paths, state=None):

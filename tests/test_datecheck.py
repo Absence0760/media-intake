@@ -289,6 +289,22 @@ class ForgetRecordsTest(unittest.TestCase):
         datecheck.forget_paths(datecheck.stale([self.lib], self.state), self.state)
         self.assertEqual(datecheck.stale([self.lib], self.state), set())
 
+    def test_a_name_is_matched_whole_and_only_nearby(self):
+        """Erasing 1.jpg drops a neighbour's finding that names it (same or sibling month folder), never one
+        naming 11.jpg or 1.jpg.bak, nor a same-named file's in another year."""
+        L = lambda *p: os.path.join(self.lib, *p)  # noqa: E731
+        gone = L("2024", "2024-05", "1.jpg")
+        seq = lambda p, why: dict(path=p, kind="sequence", confidence="high", reason=why, date="2024")  # noqa: E731
+        keep = [seq(L("2024", "2024-05", "12.jpg"), "numbered after 11.jpg (2024-05-12 10:00)"),
+                seq(L("2024", "2024-05", "13.jpg"), "numbered after 1.jpg.bak (2024-05-12 10:00)"),
+                seq(L("2019", "2019-07", "x.jpg"), "numbered after 1.jpg (2019-07-01 12:00)")]
+        drop = [seq(L("2024", "2024-06", "2.jpg"), "numbered after 1.jpg (2024-05-31 23:00)"),
+                seq(L("2024", "2024-05", "3.jpg"), "numbered before 1.jpg.")]
+        datecheck.save_private(datecheck.report_path(self.state), dict(version=1, id="r2", checked="x", files=5,
+                                                                       findings=keep + drop))
+        self.assertEqual(datecheck.forget_paths({gone}, self.state), (2, ""))
+        self.assertEqual(datecheck.load_report(self.state)["findings"], keep)
+
     def test_an_unreadable_report_is_said_not_guessed(self):
         with open(datecheck.report_path(self.state), "w") as fh:
             fh.write("{not json")
