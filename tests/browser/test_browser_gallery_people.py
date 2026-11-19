@@ -7,7 +7,7 @@ The store is tests/test_gallery_people.py's RecLibrary: built through recog's ow
 tests/test_recog.py's mock detector and embedder (no model), in a throwaway HOME; the gallery writes the tags
 with the real exiftool. Covered: no People & Pets section without a store; with one, the section's "Name new
 faces/pets" entry and its count, the naming view (To name, Suggestions, Named, Not a person; People / Pets):
-naming a cluster by Enter, its Undo, merging through a "Looks like" hint, Not a person, a crop taken out by click
+naming a cluster by Enter (a junk-flagged photo in it leaving Suggested junk), its Undo (and back), merging through a "Looks like" hint, Not a person, a crop taken out by click
 and put back by Space (aria-pressed), the sidebar's name and its filtered grid, suggestions confirmed and
 rejected (a crop marked "Not <Name>", the confirm dialog saying it can't be undone) and the error after a
 re-cluster with Reload the list; a name with markup shown as text everywhere (no element made from it); the
@@ -93,8 +93,10 @@ class PeopleBrowserTest(B.BrowserCase):
 
     def test_name_undo_merge_ignore_take_out(self):
         w = self.world()
+        G.write_tags(w.ann[2], ["Review|maybe-trash"])  # a content label's junk flag on a photo of ann
         s = self.server(w)
         page = self.page(s)
+        B.expect(page.locator("#c-sug")).to_have_text("1")
         B.expect(page.locator("#recsec")).to_be_visible()
         B.expect(page.locator("#recsec .nvhead")).to_have_text("People & Pets")
         B.expect(page.locator("#c-names")).to_have_text("6")  # 3 people clusters and 3 pets to name
@@ -111,9 +113,11 @@ class PeopleBrowserTest(B.BrowserCase):
         self.toast(page, "named Ann")
         B.expect(page.locator(".nv[data-who='People|Ann'] .ct")).to_have_text("4")
         self.assertIn("People|Ann", GP.hier(w.ann[0]))
+        B.expect(page.locator("#c-sug")).to_have_text("0")  # a confirmed name: never Suggested junk (owner.named)
         page.locator("#tundo").click()
         self.toast(page, "undid naming the cluster")
         B.expect(page.locator(".nv[data-who]")).to_have_count(0)
+        B.expect(page.locator("#c-sug")).to_have_text("1")  # the name is gone, so is the protection
         self.assertNotIn("People|Ann", GP.hier(w.ann[0]))
         card = self.card(page, ann)
         card.get_by_role("combobox", name=f"Name cluster {ann}").fill("Ann")
@@ -155,9 +159,12 @@ class PeopleBrowserTest(B.BrowserCase):
         B.expect(page.locator(".nv[data-who='People|Ann']")).to_have_attribute("aria-current", "page")
         B.expect(page.locator("[data-item]")).to_have_count(6)
         B.expect(page.locator("#chips")).to_be_hidden()
-        # TODO(pets lane): once owner.kept / decided treat a People| or Pets| tag as a decision, also assert that
-        # a tile named here never shows in Suggested junk (and its count). That rule is not on this branch; until
-        # it is, the People & Pets facet above is what this test pins.
+        # a tile named here never shows in Suggested junk, whatever its label said
+        self.assertIn("Review|maybe-trash", GP.hier(w.ann[2]))
+        page.locator(".nv[data-v=sug]").click()
+        B.expect(page.locator("#c-sug")).to_have_text("0")
+        B.expect(page.locator(f"[data-item]:has-text('{os.path.basename(w.ann[2])}')")).to_have_count(0)
+        B.expect(page.locator("[data-item]")).to_have_count(0)
 
     def test_suggestions_confirm_reject_and_a_stale_page(self):
         w = self.world()
@@ -216,6 +223,8 @@ class PeopleBrowserTest(B.BrowserCase):
         page.locator("[data-item]").first.click()
         who = page.locator("#who")
         B.expect(who).to_contain_text("People: " + EVIL)
+        B.expect(page.locator("#mytagl")).to_have_text("none")  # the name is in the People line only
+        self.assertEqual(page.locator("#tooltagl").count(), 0, "no tool tags shown either")
         self.assertEqual(page.evaluate("() => [document.querySelectorAll('img[src=x]').length, window.__pwned]"),
                          [0, None])
         who.get_by_role("button", name=EVIL).click()
@@ -246,6 +255,24 @@ class PeopleBrowserTest(B.BrowserCase):
                 box, cbox = inp.bounding_box(), card.bounding_box()
                 self.assertLessEqual(box["x"] + box["width"], cbox["x"] + cbox["width"] + 0.5)
                 self.assertGreaterEqual(card.locator(".rcrop").first.bounding_box()["width"], 44)
+
+    def test_sidebar_order_and_no_sideways_scroll(self):
+        """Quick views (Dates to check last), then Events, Places and People & Pets, at 1000 px and on a phone."""
+        w = self.world()
+        s = self.server(w)
+        self.api_name(s, w, w.cluster_of(w.ann[0]), "Ann")
+        for size in (dict(viewport={"width": 1000, "height": 800}), PHONE):
+            with self.subTest(width=size["viewport"]["width"]):
+                page = self.page(s, size)
+                B.expect(page.locator("#recsec")).to_be_attached()
+                order = page.evaluate("""() => ['.nv[data-v=fav]', '.nv[data-v=untagged]', '.nv[data-v=dates]',
+                    '#evsec', '#plsec', '#recsec', '.nv[data-v=names]'].map(q => document.querySelector(q))
+                    .every((e, i, a) => e && (i === 0 || (a[i - 1].compareDocumentPosition(e)
+                    & Node.DOCUMENT_POSITION_FOLLOWING)))""")
+                self.assertTrue(order, "sidebar sections out of order")
+                self.assertLessEqual(page.evaluate("document.documentElement.scrollWidth"),
+                                     page.evaluate("document.documentElement.clientWidth"))
+                B.expect(page.locator(".nv[data-who='People|Ann']")).to_be_attached()
 
     def test_video_appears_at_seeks_the_player(self):
         w = GP.RecLibrary(self.tmp, video=False)

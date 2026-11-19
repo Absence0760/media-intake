@@ -9,7 +9,7 @@ blobs around random unit vectors. exiftool is never needed: sidecars are a dict 
 writer, except in the erase / trash / verify-gone cases, which run intake.py as a subprocess. The one
 real-model case runs the venv's cv2 on the pinned YuNet + SFace and skips with a reason without them.
 """
-import collections, hashlib, json, os, shutil, sqlite3, stat, subprocess, sys, tempfile, unittest
+import collections, hashlib, io, json, os, shutil, sqlite3, stat, subprocess, sys, tempfile, unittest
 from unittest import mock
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
@@ -19,6 +19,7 @@ support.check_hermetic()
 import config  # noqa: E402
 import recog  # noqa: E402
 import people  # noqa: E402
+import test_frames as TF  # noqa: E402  (ffmpeg-made clips for the real frame source)
 
 try:
     import numpy as np
@@ -325,6 +326,44 @@ class Store(Base):
         def broken(p):
             raise frames_mod.FramesError("no decoder")
         self.assertIsNone(recog.crop_bytes(self.c, det, frames=broken, state=self.state))
+
+    def test_crop_of_a_real_video_frame(self):
+        """frames.py end to end: a scan through the real sampler keeps each frame's own second, and the naming
+        view's crop finds that frame again (no empty square). An ffmpeg testsrc clip; only the detector is a mock,
+        told the scene by pixel (0, 0) of a copy of each real frame."""
+        if not TF.H264:
+            self.skipTest(TF.NEEDS)
+        import frames as frames_mod
+        self.world.scene(8, ("ann", None))
+        vid = os.path.join(self.vids, "2026/real.mp4")
+        os.makedirs(os.path.dirname(vid))
+        TF.h264(vid, "testsrc=size=320x240:rate=10:duration=6")
+        with frames_mod.sample(vid) as s:
+            real = [(t, rgb.copy()) for t, rgb in s]
+        self.assertTrue(real)
+
+        def marked(p):  # the real frames, each with the mock detector's scene pixel
+            with frames_mod.sample(p) as s:
+                for t, rgb in s:
+                    rgb = rgb.copy()
+                    rgb[0, 0, 0] = 8
+                    yield t, rgb
+        cnt = self.scan([vid], frames=marked)
+        self.assertEqual(cnt["videos scanned"], 1, cnt)
+        dets = self.det_of(vid)
+        self.assertEqual(sorted(d["t"] for d in dets)[:1], [real[0][0]], "the seconds the sampler gave")
+        self.assertTrue({d["t"] for d in dets} <= {t for t, _ in real})
+        d = dets[0]
+        out = recog.crop_bytes(self.c, d["id"], state=self.state)  # the default frame source: frames.sample
+        self.assertTrue(out and out[:2] == b"\xff\xd8", "a real crop, not None")
+        im = np.asarray(Image.open(io.BytesIO(out)).convert("RGB"))
+        self.assertEqual(im.shape, (recog.CROP_PX, recog.CROP_PX, 3))
+        frame = dict(real)[d["t"]]
+        H, W = frame.shape[:2]
+        want = recog.square_crop(frame, (d["x"] * W, d["y"] * H, d["w"] * W, d["h"] * H), margin=0.35)
+        want = np.asarray(Image.fromarray(np.ascontiguousarray(want)).resize((recog.CROP_PX,) * 2, Image.BILINEAR))
+        self.assertLess(float(np.abs(im.astype(int) - want.astype(int)).mean()), 12, "the box of that frame")
+        self.assertGreater(float(im.std()), 10, "a picture, not an empty square")
 
     def test_species_never_mix(self):
         spec = kind(self.world, "pet")

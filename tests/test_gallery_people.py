@@ -24,9 +24,10 @@ import test_recog as TR  # noqa: E402  (mock detector / embedder, synthetic scen
 support.check_hermetic()
 import config  # noqa: E402
 import people  # noqa: E402
+import pets  # noqa: E402
 import recog  # noqa: E402
 
-PET_MODEL = "mock-pet"
+PET_MODEL = pets.MODEL  # the gallery reads pets.spec(): its model and its "looks like" threshold (SAME)
 
 
 class RecLibrary:
@@ -34,7 +35,8 @@ class RecLibrary:
 
     Individuals: ann (people; 3 photos alone, 1 with bo, a video at 1.5 s and 12 s), bo (2 alone + that
     one), a look-alike of ann (2 photos; cosine about 0.43: its own cluster at the mock's 0.5, but "looks like"
-    ann at SFace's 0.363), dogs rex and rex2 (2 photos each, unlike vectors: two clusters to merge) and a cat (2 photos).
+    ann at SFace's 0.363), dogs rex and rex2 (2 photos each; cosine about 0.80: two clusters at the mock's 0.85, but
+    "looks like" rex at pets.SAME, 0.75) and a cat (2 photos).
     flag.png shows ann too but is in the erase log: never listed, never a crop."""
 
     def __init__(self, tmp, video=True):
@@ -58,6 +60,10 @@ class RecLibrary:
         o = w.rng.normal(size=TR.DIM)
         o -= (o @ a) * a
         w.base["annlike"] = 0.45 * a + (1 - 0.45 ** 2) ** 0.5 * o / TR.np.linalg.norm(o)
+        r = w.vec("rex")
+        o = w.rng.normal(size=TR.DIM)
+        o -= (o @ r) * r
+        w.base["rex2"] = 0.82 * r + (1 - 0.82 ** 2) ** 0.5 * o / TR.np.linalg.norm(o)
         L = lambda *p: os.path.join(self.lib, "2026", *p)  # noqa: E731
         self.ann = [TR.image(L("2026-11", f"ann{i}.png"), 1) for i in range(3)]
         self.bo = [TR.image(L("2026-10", f"bo{i}.png"), 2) for i in range(2)]
@@ -78,7 +84,7 @@ class RecLibrary:
         self.face = recog.Kind(kind="face", command="people", prefix="People|", model=people.MODEL, link=0.6,
                                same=0.5, models=[], noun="face", max_side=400,
                                engine=lambda: (TR.MockDetector(w), {people.MODEL: TR.MockEmbedder(w)}))
-        self.pet = recog.Kind(kind="pet", command="pets", prefix="Pets|", model=PET_MODEL, link=0.6, same=0.5,
+        self.pet = recog.Kind(kind="pet", command="pets", prefix="Pets|", model=PET_MODEL, link=0.9, same=0.85,
                               models=[], noun="pet", max_side=400,
                               engine=lambda: (TR.MockDetector(w), {PET_MODEL: TR.MockEmbedder(w)}))
         rgb = TR.np.zeros((100, 200, 3), dtype=TR.np.uint8)
@@ -236,6 +242,11 @@ class PeopleApiTest(unittest.TestCase):
         rex, rex2, cat = (w.cluster_of(p, "pet") for p in (w.rex[0], w.rex2[0], w.cat[0]))
         self.assertEqual(self.post(s, "name", dict(kind="pet", run=prun, cluster=rex, name="Rex"))[0], 200)
         self.assertIn("Pets|Rex", hier(w.rex[0]))
+        hint = next(d for d in self.rec(s, kind="pet")["clusters"] if d["id"] == rex2)  # pets.py's own threshold
+        self.assertEqual([(x["cluster"], x["name"]) for x in hint["like"]], [(rex, "Rex")])
+        self.assertTrue(pets.SAME <= hint["like"][0]["score"] < 0.85, hint)
+        self.assertFalse(any(d.get("like") for d in self.rec(s, kind="pet")["clusters"] if d["id"] == cat),
+                         "never a cat for a dog")
         code, r = self.post(s, "merge", dict(kind="pet", run=prun, cluster=cat, into="rex"))
         self.assertEqual(code, 400)
         self.assertIn("different species", r["error"])
@@ -366,6 +377,17 @@ class PeopleApiTest(unittest.TestCase):
         self.assertEqual([(x["name"], x["times"]) for x in d["who"]], [("Ann", [])])
         self.assertEqual(s.get(f"/api/item/{items['bo0.png']}")["who"], [])
         self.assertNotIn("flag.png", items)
+        # a name is recognition's: only in the People line, never one of "Your tags", and "+ tag" refuses it
+        d = s.get(f"/api/item/{items['both.png']}")
+        self.assertIn("People|Ann", d["tags"])
+        self.assertNotIn("People|Ann", d["mine"])
+        self.assertNotIn("People|Ann", dict(s.get("/api/facets")["facets"]["mine"]))
+        for ida, tag, op in ((items["bo0.png"], "People|Bo", "add"), (items["bo0.png"], "pets|Rex", "add"),
+                             (items["both.png"], "People|Ann", "remove")):
+            code, j = s.post("/api/tag", {"ids": [ida], "tag": tag, "op": op})
+            self.assertEqual(code, 400, j)
+            self.assertIn("belong to the tools", j["error"])
+        self.assertIn("People|Ann", hier(w.both))
 
 
 if __name__ == "__main__":
