@@ -6,7 +6,7 @@ recommendations the same day ("Decisions" below). Built with them: a video is
 tagged only when the pet is in 3 or more of its frames
 (`recognition.pet_min_frames`); `pets eval` takes the owner's own names and
 `Pets|` tags as truth, plus `Calibrate|pets|<Name>` (not `Calibrate|pet|`).
-Date-aware propagation and the gallery view are not built.
+Date-aware propagation is not built.
 
 Goal: tag each of a household's own pets by name (`Pets|<Name>`), the same way a
 face pipeline tags people (`People|<Name>`), and move that face pipeline into
@@ -279,8 +279,8 @@ Later, by the owner, on the laptop:
 
 1. Turn pets on and run `pets scan` (detections and both vectors: DINOv2 and
    SigLIP crop vectors are stored side by side for the evaluation only).
-2. In the gallery, tag 20-50 photos per pet by hand with `Calibrate|pet|<Name>`,
-   spread over years and poses, plus 20 photos with other animals (`Calibrate|pet|other`).
+2. In the gallery, tag 20-50 photos per pet by hand with `Calibrate|pets|<Name>`,
+   spread over years and poses, plus 20 photos with other animals (`Calibrate|pets|other`).
 3. `media-intake pets eval` (read-only, like `calibrate`) prints, per embedder:
    ROC AUC and equal error rate over every same-pet / different-pet pair of
    labelled crops; the closest different-pet pair's cosine against the median
@@ -391,7 +391,7 @@ re-running. The NVIDIA GPU is not needed; CUDA could be an opt-in later
 |---|---|---|
 | 1 | Port the face prototype as `identities.py` + `people.py`, off by default; config keys, `setup.sh --with-people`, pins, doctor, erase / forget / trash / private / verify-gone hooks, backup test, synthetic tests, docs | M |
 | 2 | `pets.py`: YOLOX detection and int8 DINOv2 vectors in the same scan pass; species and same-photo constraints; suggestions and confirm; `Pets|` tags; `setup.sh --with-pets` | M |
-| 3 | `pets eval` / `people eval` (read-only, `Calibrate|pet|…` labels), threshold notes in `docs/configuration.md` | S |
+| 3 | `pets eval` / `people eval` (read-only, `Calibrate|pets|…` labels), threshold notes in `docs/configuration.md` | S |
 | 4 | Gallery "People & Pets": sidebar section, filters, the naming view in the gallery server | M |
 | 5 | Videos (section "Videos"): scene-change sampling on the GPU decode path, temporal linking, per-video tags with timestamps; the per-frame search index from the same frames | L |
 | 6 (only if `pets eval` says so) | Switch the pet embedder to fp32 DINOv2 (`setup.sh` fetches the second pinned file) | S |

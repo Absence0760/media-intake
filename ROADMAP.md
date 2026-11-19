@@ -165,11 +165,12 @@ The goal: someone else can install it on Fedora, import a phone, and trust it.
       (`recog.py`, `media-intake people`; names propagate only as suggestions until confirmed;
       docs/recognition.md); the gallery's People & Pets section and naming view are built too
       (docs/gallery.md, "People and pets").
-- [ ] Pet recognition (`Pets|<Name>`) alongside face grouping, sharing one store, naming and
-      erase path; suggestions only until the owner confirms: core and CLI built (`pets.py`,
+- [x] Pet recognition (`Pets|<Name>`) alongside face grouping, sharing one store, naming and
+      erase path; suggestions only until the owner confirms: core and CLI (`pets.py`,
       `media-intake pets`, YOLOX + DINOv2, `pets eval` against your own names;
-      docs/recognition.md, decisions in docs/research-pets.md), and named in the gallery's
-      naming view; date-aware propagation is still to come.
+      docs/recognition.md, decisions in docs/research-pets.md) and the gallery's naming view.
+- [ ] Pets: date-aware propagation (prefer photos close in date when growing a name, so a
+      kitten and the grown cat need fewer merges; docs/research-pets.md).
 - [ ] Search the text in photos: keep the OCR text the sensitive-content scan already reads
       (screenshots, receipts, signs) in a private local index and let `search` and the
       gallery find files by what they say; flagged and erased files never indexed, erase
@@ -243,8 +244,8 @@ The goal: someone else can install it on Fedora, import a phone, and trust it.
 ## Known limitations (documented, not bugs)
 
 - Face grouping (`media-intake people`) is a hint: its thresholds are uncalibrated starting points
-  (`people eval` measures them on your own `Calibrate|people|` tags), and videos are skipped until a
-  frame source exists (docs/recognition.md).
+  (`people eval` measures them on your own `Calibrate|people|` tags); videos are looked at through a
+  few sampled frames each (`frames.py`, docs/recognition.md, "Videos").
 
 - Motion photos: only JPEG and HEIC ones are read. A Samsung PNG or AVIF motion photo is
   scanned as a still, so its short video is not checked. HEIC stills need `pillow-heif`.

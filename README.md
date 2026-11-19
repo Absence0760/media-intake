@@ -53,7 +53,10 @@ backup drive, quarantine, review folder, Keep, Trash, Erase, ...).
   command and its PID, never a file name. `device-salt` is `0600`, and so is
   `event-names.json` (the gallery's event display names, never in a sidecar),
   `places.json` (your named places and their points: sensitive, never backed up
-  or printed; [docs/places.md](docs/places.md)).
+  or printed; [docs/places.md](docs/places.md)), and `datecheck.json` and
+  `date-fixes.json` (check-dates' last report and every fix-dates write, with
+  paths and dates; erase, forget, trash and sweep-erased drop their files'
+  records; [docs/dates.md](docs/dates.md)).
   Face and pet detections, vectors, names and crops (biometric) live in
   `recognition.dir` (default `<state>/recognition`, `0700`, files `0600`),
   are never backed up, and go with every `erase`, `forget`, `trash` and

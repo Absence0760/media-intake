@@ -62,7 +62,7 @@ there are none). Each check line starts with a status:
 | --- | --- |
 | `ok` | Present (and, for a model file, its sha256 matches the pin). |
 | `MISSING` | Required and not there. Doctor's `== Summary ==` ends with `Install the required packages:` and, on its own line, the `sudo dnf install -y ...` to copy; for the venv, models or GeoNames it says `(bash setup.sh)`, and the summary adds `Then run: bash setup.sh` (or `Run: ...` when no package is missing). |
-| `optional` | Not needed for a first run: the GStreamer HEVC decoder (most phone video), an H.264 encoder (the gallery's HEVC playback), the gvfs MTP backend (Android phones), `xdg-open`, the SigLIP text model (`bash setup.sh --build-labels`, for text search), the people recognition models (`bash setup.sh --recognition`, for `media-intake people`) and Ollama (`vlm-trash` only). The summary lists them under `Optional packages:` with their own `sudo dnf install -y ...` line. |
+| `optional` | Not needed for a first run: the GStreamer HEVC decoder (most phone video), an H.264 encoder (the gallery's HEVC playback), the gvfs MTP backend (Android phones), `xdg-open`, the SigLIP text model (`bash setup.sh --build-labels`, for text search), the people and pets recognition models (`bash setup.sh --recognition`, for `media-intake people` and `media-intake pets`) and Ollama (`vlm-trash` only). The summary lists them under `Optional packages:` with their own `sudo dnf install -y ...` line. |
 | `absent` | A configured folder (library, videos, state, a project) doesn't exist yet. Normal before the first import. |
 | `BAD` | A config error, or a file whose sha256 differs from its pin. Fix it before going on. |
 
