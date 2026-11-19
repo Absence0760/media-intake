@@ -325,7 +325,7 @@ class GalleryDialogsBrowserTest(B.BrowserCase):
         B.expect(toast).to_have_text("Kept 1. It won't be suggested as junk again.Undo")  # plain: no Owner|keep
         with page.expect_response(lambda r: r.url.endswith("/api/undo")):
             page.keyboard.press("Control+z")
-        B.expect(page.locator('[data-item="a.jpg"] .flag')).to_have_text("Suggested junk")
+        B.expect(page.locator('[data-item="a.jpg"] .flag')).to_have_text("Tagged as junk")
         self.assertEqual(self.sidecar("a.jpg"), before["a.jpg"])
         # Set event on two (one in another event, in both fields), then Undo
         page.keyboard.press("Escape")
@@ -438,12 +438,12 @@ class GalleryDialogsBrowserTest(B.BrowserCase):
                 self.assertNotIn(ns, text, where)
 
         scan("grid")
-        B.expect(page.locator('[data-item="b.jpg"] .flag')).to_have_text("Junk score 0.9 · Possible child · Kept · "
+        B.expect(page.locator('[data-item="b.jpg"] .flag')).to_have_text("Junk score 0.90 (blurry) · Possible child · Kept · "
                                                                        "Used in a post")
         page.locator(".fs-h").evaluate_all(  # every filter section open
             "hs => hs.forEach(h => h.getAttribute('aria-expanded') === 'false' && h.click())")
         B.expect(page.locator(".fs-h[aria-expanded=false]")).to_have_count(0)
-        B.expect(page.locator('.opts[data-k=review]')).to_contain_text("Suggested junk")
+        B.expect(page.locator('.opts[data-k=review]')).to_contain_text("Tagged as junk")
         scan("filters")
         page.locator('.opts[data-k=review] .opt[data-val="child-in-shot"]').click()
         page.locator('.opts[data-k=label] .opt[data-val="food"]').click()

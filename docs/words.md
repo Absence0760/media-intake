@@ -47,12 +47,14 @@ buttons are named in **bold**, as they appear on screen.
 
 | Word | Means |
 | --- | --- |
-| **Suggested junk** | Library files the tool thinks may be junk (a content label, the optional vision-model check, or a copy of something you trashed). Never a file you kept. The gallery shows them in its **Suggested junk** view; `suggest-trash` opens them on the review page's **Maybe trash** tab. Nothing happens until you Keep or Trash them. |
-| **Junk score** | How sure the optional vision-model check is that a file is junk, from 0 to 1. |
-| **Junk check** | The gallery filter for the vision model's verdict: Judged junk, Judged fine or Not checked. |
+| **Suggested junk** | Library files the tool thinks may be junk: the optional vision check's verdicts (`vlm-trash`), files Tagged as junk, and copies of something you trashed. Never a file you kept, used in a post or in a protected project. The gallery shows them in its **Suggested junk** view, most likely first; `suggest-trash` opens them on the review page's **Maybe trash** tab. Nothing happens until you Keep or Trash them and Apply. |
+| **Tagged as junk** | A file a content label marked as possible junk: one of the reasons a file is in Suggested junk (the gallery's Flags filter, its tile flag and Suggested junk's **Why**). Not the whole view, so its count is smaller. |
+| **Why** | Suggested junk's reason filter: the vision check's reason (Blurry, Accidental shot, Too dark, Packaging, Random object, Junk screenshot, Near-copy, Other), Tagged as junk, or Copy of a trashed photo. A tile shows its reason after its score: "Junk score 0.90 (blurry)". |
+| **Junk score** | How sure the optional vision check is that a file is junk, from 0 to 1, always shown to 2 decimals. Suggested junk lists verdicts of 0.70 or more by default (below that the model itself calls it low-confidence); its **Junk score** box goes lower, and **Show N more with a lower junk score** says how many that adds. |
+| **Junk check** | The gallery filter for the vision model's verdict: Judged junk (its count follows the "Junk score at least" slider), Judged fine or Not checked. |
 | **Possible child** | A content label for photos that may show a child. A hint only: it misses small or distant children. |
 | **Looks like** | A content label (dog, beach, food, ...) from the local SigLIP model. |
-| **Flags** | The gallery filter for Suggested junk, Possible child and Untagged. |
+| **Flags** | The gallery filter for Tagged as junk, Possible child and Untagged. |
 
 The tool's own tag names (`Review|maybe-trash`, `Owner|keep`, `Label|food`)
 appear only in sidecars and in the developer docs; the pages map them to the

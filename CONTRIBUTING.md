@@ -146,7 +146,10 @@ close the PR.
   second tap unmarking, Apply keeping what was marked), a 44 x 44 px target for
   every control on a 390 px touch phone, the grid's loading, empty, no-results,
   item-gone and load-error states, and the phone's sidebar rail with a word
-  under each icon. `test_browser_gallery_layout.py` checks the
+  under each icon. `test_browser_gallery_junk.py` runs Suggested junk's bar
+  (Why, Junk score, Show N more with a lower junk score), the tile's score and
+  reason, the header with Library filters still set and the Judged junk count
+  following its slider. `test_browser_gallery_layout.py` checks the
   gallery at 390 px and 800 px: no sideways scroll, the header fitting, a burst
   badge clear of its tile's checkbox, and the last row above the selection
   bar; at 390 px the compact "×N" burst button (opening and closing the
