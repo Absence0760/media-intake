@@ -56,8 +56,9 @@ media-intake people tag
 `take-out ID` takes one face out of a name for good (`put-back ID` undoes it);
 removing a `People|` tag the tool wrote from a sidecar (in digiKam, say) does
 the same, and `tag` never adds it back. A sidecar it could not read is never
-taken as that: a missing one gets the names again, one exiftool failed on is
-left as it is until a run can read it. `unname N` undoes `name` or `ignore`.
+taken as that: a missing one gets the names again, one that is empty, not
+XMP or cut off part-way (or that exiftool failed on) is left as it is, nothing
+written into it, until a run can read it. `unname N` undoes `name` or `ignore`.
 `tag` writes `People|<Name>` into `lr:HierarchicalSubject` and the leaf into
 `dc:Subject`, and removes only tags it wrote itself; your own `People|` tags
 are never touched. Cluster numbers change on every `cluster` run.

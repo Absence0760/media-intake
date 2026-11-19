@@ -455,18 +455,27 @@ def spots(points, radius=SUGGEST_RADIUS, min_n=SUGGEST_MIN):
 # ---------------------------------------------------------------- the library's sidecars (CLI)
 def library_rows(intake):
     """[dict(path, tags, gps, hour, city, leaves)] for every library file with a sidecar that tagging may
-    touch (never one scan flagged, quarantined or erased: label.refused), read with exiftool."""
+    touch (never one scan flagged, quarantined or erased: label.refused), read with exiftool. A sidecar exiftool
+    could not read (empty, junk, cut off: intake.sidecar_unreadable) is left out, as if its drive were away:
+    nothing is tagged into it and no tag missing from it is taken as one you removed."""
     import subprocess
     roots = [r for r in intake.LIB_ROOTS if os.path.isdir(r)]
     if not roots:
         return []
     r = subprocess.run(["exiftool", "-j", "-n", "-q", "-q", "-r", "-ext", "xmp", "-HierarchicalSubject",
                         "-XMP-exif:GPSLatitude", "-XMP-exif:GPSLongitude", "-XMP-exif:DateTimeOriginal",
-                        "-XMP-photoshop:City", "-XMP-digiKam:TagsList", *roots], capture_output=True, text=True)
+                        "-XMP-photoshop:City", "-XMP-digiKam:TagsList", *intake.READ_CHECK, *roots],
+                       capture_output=True, text=True)
     state = os.path.realpath(intake.STATE) + os.sep
     rows = []
-    for row in json.loads(r.stdout or "[]"):
+    try:
+        got = json.loads(r.stdout or "[]")
+    except ValueError:  # cut off mid-way: nothing of this run is trusted
+        got = []
+    for row in got:
         x = row.get("SourceFile", "")
+        if intake.sidecar_unreadable(row):
+            continue
         media = os.path.abspath(x[:-4])
         if not x.lower().endswith(".xmp") or not os.path.isfile(media) or os.path.islink(media) \
                 or os.path.realpath(media).startswith(state):

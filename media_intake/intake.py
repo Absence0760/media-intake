@@ -2254,7 +2254,8 @@ def mark_trashed_copies(shas, index):
     if not shutil.which("exiftool"):
         return 0, 0, f"{len(copies)} copies not marked Owner|trash: exiftool missing ({DEPS})"
     old = read_sidecar_tags(copies)
-    todo = [p for p in copies if not (p in old and owner.kept(old[p][0], old[p][1], old[p][3]))]
+    unread = unread_sidecars(copies, old)  # can't tell a Keep in it: never marked over it
+    todo = [p for p in copies if p not in unread and not (p in old and owner.kept(old[p][0], old[p][1], old[p][3]))]
     write_tags([(p, dict(hier=[owner.TRASH])) for p in todo])
     return len(todo), len(copies) - len(todo), None
 
@@ -2635,18 +2636,44 @@ def ai_owned(t):
     return t.startswith("Label|") or t == "Review|maybe-trash" or t.startswith("Review|untagged-")
 
 
+# Asked beside every sidecar read, so a sidecar exiftool could not read is told apart from one with no tags.
+READ_CHECK = ["-FileType", "-Error", "-Warning"]
+
+
+def sidecar_unreadable(row):
+    """An exiftool -j row (asked with READ_CHECK) of a sidecar that is not a readable XMP file: empty ("Error:
+    File is empty"), not XMP at all (junk: FileType TXT, or none), or cut off part-way ("XMP format error").
+    Its tags say nothing: no tool may take a tag missing from it as one the owner removed."""
+    return bool(row.get("Error")) or str(row.get("FileType") or "") != "XMP" \
+        or "XMP format error" in str(row.get("Warning") or "")
+
+
+def unread_sidecars(paths, got):
+    """The paths whose sidecar is there but not in got (a read_sidecar_tags result): unreadable, or the read
+    failed. A missing sidecar is not among them (it has no tags, and none were removed from it)."""
+    return {p for p in paths if p not in got and os.path.isfile(sidecar(p))}
+
+
 def read_sidecar_tags(paths):
     """{media path: ([HierarchicalSubject...], pick label, {owner leaves}, xmp:Rating or None)} for paths with a
-    sidecar. Owner leaves: digiKam's own TagsList ("a/b") leaves, which a dc:Subject removal must spare. The
-    rating makes a favorite (owner.favorite) count as kept."""
+    sidecar exiftool could read. Owner leaves: digiKam's own TagsList ("a/b") leaves, which a dc:Subject removal
+    must spare. The rating makes a favorite (owner.favorite) count as kept. A sidecar that is there but empty,
+    junk or cut off (sidecar_unreadable), or that a failed exiftool run returned nothing for, is left out:
+    unread_sidecars(paths, result) names those, so a caller never takes a tag missing from them as removed."""
     xs = [sidecar(p) for p in paths if os.path.isfile(sidecar(p))]
     if not xs:
         return {}
     r = subprocess.run(["exiftool", "-j", "-q", "-q", "-HierarchicalSubject", "-XMP-digiKam:PickLabel",
-                        "-XMP-digiKam:TagsList", "-XMP-xmp:Rating", "-@", "-"], input="\n".join(xs) + "\n",
-                       capture_output=True, text=True)
+                        "-XMP-digiKam:TagsList", "-XMP-xmp:Rating", *READ_CHECK, "-@", "-"],
+                       input="\n".join(xs) + "\n", capture_output=True, text=True)
+    try:
+        rows = json.loads(r.stdout or "[]")
+    except ValueError:  # cut off mid-way: nothing of this run is trusted
+        rows = []
     out = {}
-    for row in json.loads(r.stdout or "[]"):
+    for row in rows:
+        if not isinstance(row, dict) or not str(row.get("SourceFile", "")).endswith(".xmp") or sidecar_unreadable(row):
+            continue
         out[row["SourceFile"][:-4]] = (as_list(row.get("HierarchicalSubject")), str(row.get("PickLabel", "")).strip(),
                                        {t.split("/")[-1] for t in as_list(row.get("TagsList"))}, row.get("Rating"))
     return out
@@ -2712,6 +2739,9 @@ def tag_files(items, labels=True, label="tag"):
         lbl = venv_json("label.py", paths)
     entries, c, lc = [], collections.Counter(), collections.Counter()
     existing = read_sidecar_tags(paths)
+    unread = unread_sidecars(paths, existing)  # there, but empty, junk or cut off: left as they are
+    if unread:
+        c["sidecars unreadable, left as they are"] = len(unread)
     try:  # My places (places.py): Place|<name> for files inside a place you named; counts only in the output
         mine = myplaces.Store(STATE, LIB_ROOTS)
     except myplaces.Unreadable as e:
@@ -2721,6 +2751,8 @@ def tag_files(items, labels=True, label="tag"):
         mine = None
     named = {myplaces.tag_of(p["name"]) for p in mine.places.values()} if mine is not None else set()
     for path, project, source, event, dt, *_ in items:
+        if path in unread:
+            continue
         hier = [f"Project|{project}"]
         for s in (source if isinstance(source, (list, tuple)) else [source]):  # e.g. ("gopro", "HERO11 Black")
             if s and not any(h.casefold() == f"source|{s}".casefold() for h in hier):  # Make-only "GoPro"

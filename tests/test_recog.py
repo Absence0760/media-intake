@@ -473,6 +473,20 @@ class NamesAndTags(Base):
         self.assertEqual(self.c.execute("SELECT COUNT(*) FROM detections WHERE sha=?", (sha,)).fetchone()[0], 0)
         self.assertEqual(self.det_of(self.p[0])[0]["name"], "Ann")
 
+    def test_no_library_roots_prunes_nothing_as_gone(self):
+        """With no library folder configured there is nothing to tell gone from away by: rows stay, said once."""
+        import contextlib
+        sha = sha_of(self.p[0])
+        os.remove(self.p[0])
+        recog._NO_ROOTS_SAID.clear()
+        err = io.StringIO()
+        with contextlib.redirect_stderr(err):
+            for _ in range(2):
+                self.assertEqual(recog.prune(self.c, state=self.state, roots=[])["gone or moved"], 0)
+        self.assertEqual(err.getvalue().count("no library folders configured"), 1, err.getvalue())
+        self.assertEqual(self.c.execute("SELECT COUNT(*) FROM detections WHERE sha=?", (sha,)).fetchone()[0], 1)
+        self.assertEqual(recog.prune(self.c, state=self.state)["gone or moved"], 1, "with the roots: gone")
+
     def test_an_unread_sidecar_is_not_the_owner_removing_a_name(self):
         """A sidecar that is missing, or there but unreadable, never turns a name into how='out'."""
         import intake
@@ -493,6 +507,34 @@ class NamesAndTags(Base):
         self.tag()
         self.assertEqual(self.side.tags[p1], ["People|Ann"])
         self.assertEqual(self.det_of(p1)[0]["name"], "Ann")
+
+    @unittest.skipUnless(shutil.which("exiftool"), "exiftool missing")
+    def test_the_real_reader_on_empty_junk_and_cut_off_sidecars(self):
+        """intake.read_sidecar_tags (the real exiftool) leaves out an empty, a junk and a cut-off sidecar, and
+        write_tags on them infers no removal (no how='out') and writes nothing into them."""
+        import intake
+        self.tag()  # People|Ann written (recorded "on") for both photos
+        good = os.path.join(self.tmp, "good.png")
+        write(good, b"x")
+        intake.write_tags([(good, dict(hier=["People|Ann"]))])
+        with open(intake.sidecar(good), "rb") as f:
+            whole = f.read()
+        p0, p1 = self.p
+        for bad0, bad1 in ((b"not xmp at all", b""), (whole[:len(whole) // 2], b"")):
+            for p, b in ((p0, bad0), (p1, bad1)):
+                with open(intake.sidecar(p), "wb") as f:
+                    f.write(b)
+            got = intake.read_sidecar_tags([p0, p1, good])
+            self.assertEqual(sorted(got), [good], "only the readable sidecar is read")
+            self.assertEqual(intake.unread_sidecars([p0, p1, good], got), {p0, p1})
+            wrote = []
+            cnt = recog.write_tags(self.c, self.spec, reader=intake.read_sidecar_tags, writer=wrote.extend,
+                                   state=self.state)
+            self.assertNotIn("left off: the owner removed it", cnt)
+            self.assertEqual(cnt["left alone: sidecar unreadable"], 2)
+            self.assertEqual(wrote, [])
+            self.assertEqual([d["how"] for p in self.p for d in self.det_of(p)], ["cluster", "cluster"])
+            self.assertEqual({r[0] for r in self.c.execute("SELECT state FROM written")}, {"on"})
 
     def test_owner_removed_tag_never_re_added(self):
         self.tag()

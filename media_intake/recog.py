@@ -276,17 +276,26 @@ def trashed_shas(state=None):
         return set()
 
 
+_NO_ROOTS_SAID = []
+
+
 def prune(c, state=None, d=None, flagged=None, roots=None):
     """Drop content flagged, quarantined, erased or trashed since, and file rows gone from disk or now under
     quarantine/ or batches/. A file whose library folder is not there (roots: the library folders, by default
     config.library_roots(); sources.root_present: missing, empty, or a drive's folder with no drive mounted) is
-    kept with its names, rejects and take-outs: it comes back with the drive.
+    kept with its names, rejects and take-outs: it comes back with the drive. With no library folder configured
+    at all, nothing is dropped as gone (said once on stderr): there is nothing to tell "gone" from "away" by.
+    Flagged, erased and trashed content is dropped either way.
     Returns {reason: count}."""
     import label
     state = state or state_dir()
     import sources
     roots = config.library_roots() if roots is None else list(roots)
     present = set(sources.present_roots(roots))
+    if not [r for r in roots if r] and not _NO_ROOTS_SAID:
+        _NO_ROOTS_SAID.append(1)
+        print("recognition: no library folders configured, so no file is taken as gone (rows kept)",
+              file=sys.stderr, flush=True)
     flagged = label.flagged(state) if flagged is None else flagged
     gone = set(flagged) | trashed_shas(state)
     out = collections.Counter()
@@ -298,7 +307,8 @@ def prune(c, state=None, d=None, flagged=None, roots=None):
     private = [os.path.realpath(os.path.join(state, x)) + os.sep for x in ("quarantine", "batches")]
     for r in c.execute("SELECT path FROM files").fetchall():
         rp = os.path.realpath(r["path"])
-        if any(rp.startswith(x) for x in private) or sources.file_gone(r["path"], roots, present, outside=True):
+        if any(rp.startswith(x) for x in private) or \
+                (any(roots) and sources.file_gone(r["path"], roots, present, outside=True)):
             c.execute("DELETE FROM files WHERE path=?", (r["path"],))
             c.execute("DELETE FROM written WHERE path=?", (r["path"],))
             out["gone or moved"] += 1
@@ -898,7 +908,8 @@ def write_tags(c, spec, dry=False, reader=None, writer=None, state=None, only=No
     `written`) that no longer apply; never re-adds a tag the owner removed from the sidecar (those
     detections become how=out); never removes a tag it didn't write (the owner's, digiKam's). A sidecar that
     could not be read is never taken as the owner removing anything: one that is missing gets the names
-    again, one that is there but unreadable (exiftool failed) is left alone until a run can read it."""
+    again, one that is there but unreadable (empty, junk, cut off part-way, or exiftool failed: the reader
+    leaves it out, intake.sidecar_unreadable) is left alone until a run can read it."""
     import intake, label
     state = state or state_dir()
     reader = reader or intake.read_sidecar_tags
@@ -916,7 +927,7 @@ def write_tags(c, spec, dry=False, reader=None, writer=None, state=None, only=No
         known = p in existing  # its sidecar was read: a tag missing from it was taken off by the owner
         if not known and os.path.isfile(intake.sidecar(p)):
             cnt["left alone: sidecar unreadable"] += 1
-            continue  # there, but exiftool could not read it: nothing inferred, nothing written, rows kept
+            continue  # there, but not readable XMP: nothing inferred, nothing written, rows kept
         got = existing.get(p) or ([], "", set())
         old, oleaves = got[0], (got[2] if len(got) > 2 else set())
         oldset = set(old)

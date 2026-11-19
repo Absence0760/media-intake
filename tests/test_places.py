@@ -397,6 +397,34 @@ class CliTest(unittest.TestCase):
                 gps=north(P, 90), date="2026:11:08 20:00:00")
         sidecar(self.far, ["Project|Personal", "Place|Fernvale, Eastmarch, XA"], gps=north(P, 900))
 
+    def test_an_unreadable_sidecar_is_never_a_removal(self):
+        """The real exiftool on an empty, a junk and a cut-off sidecar: places tag reads none of them as you
+        taking the place tag off (never declined), and writes nothing into them."""
+        self.make()
+        self.run_cli("places", "add", NAME, "--from", self.a, "--radius", "150")
+        self.run_cli("places", "tag")
+        key = next(iter(self.stored()["libraries"]))
+        pid = next(iter(self.stored()["libraries"][key]["places"]))
+        with open(self.a + ".xmp", "rb") as f:
+            good = f.read()
+        for bad_a, bad_b in ((b"not xmp at all", b""), (good[:len(good) // 2], b"")):
+            with open(self.a + ".xmp", "wb") as f:
+                f.write(bad_a)
+            with open(self.b + ".xmp", "wb") as f:
+                f.write(bad_b)
+            self.run_cli("places", "tag")
+            rec = self.stored()["libraries"][key]
+            self.assertEqual(rec.get("declined", {}), {}, "nothing taken as removed by you")
+            self.assertEqual(sorted(rec["tagged"][pid]), sorted([self.a, self.b]))
+            for p, want in ((self.a, bad_a), (self.b, bad_b)):
+                with open(p + ".xmp", "rb") as f:
+                    self.assertEqual(f.read(), want, "nothing written into it")
+        with open(self.a + ".xmp", "wb") as f:  # readable again, with the tag: still yours, still tagged
+            f.write(good)
+        self.run_cli("places", "tag")
+        self.assertIn(f"Place|{NAME}", hier(self.a))
+        self.assertEqual(self.stored()["libraries"][key].get("declined", {}), {})
+
     def test_add_tag_rename_remove(self):
         self.make()
         out = self.run_cli("places", "add", NAME, "--from", self.a, "--radius", "150")

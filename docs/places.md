@@ -103,8 +103,9 @@ space) is refused.
 - **A tag you removed stays removed.** When a file the tool tagged no longer
   has the tag (you took it off in digiKam or by hand), the file is recorded as
   declined for that place and never tagged with it again, by any command. A
-  sidecar that can't be read (none yet, or exiftool failed) is never taken
-  as a removal.
+  sidecar that can't be read (none yet; empty, not XMP or cut off part-way;
+  or exiftool failed) is never taken as a removal, and nothing is written
+  into it.
 - **Inside** means the great-circle distance (haversine, mean Earth radius
   6371008.8 m) from the point is at most the radius. It holds across the
   180th meridian and at the poles.
