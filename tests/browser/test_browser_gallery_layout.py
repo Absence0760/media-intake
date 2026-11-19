@@ -12,7 +12,8 @@ the large view's close button pinned at the top right of a 390x844 phone however
 scrolled, and a downward swipe on the photo closing it (not a sideways or short one, nor one while scrolled down); and every
 label on an accent colour, the key hints and the placeholders at 4.5:1 or more in both colour schemes.
 The sidebar's width: its right edge (role=separator named "Sidebar width") dragged wider and narrower with the
-grid following, clamped to 240 px .. min(560 px, half the window) and again when the window shrinks, kept
+grid following, clamped to 240 px .. min(560 px, half the window, the window less 480 px) and again when the window shrinks
+(the header compacting and still fitting), kept
 across a reload, a double-click putting the default 300 px back, Left / Right / Shift / Home / End on it, a
 visible focus line in both schemes and in forced colours, no edge key with a modifier or while the shortcut
 list is open, a bad stored width falling back or clamped, an interrupted drag (pointercancel, lost capture)
@@ -358,6 +359,11 @@ class GalleryLayoutBrowserTest(LayoutCase):
         page.set_viewport_size({"width": 1000, "height": 900})
         B.expect(edge).to_have_attribute("aria-valuemax", "500")
         self.assert_width(page, 500, "a 1000 px window")
+        self.assert_header_fits(page, "a 1000 px window, the widest sidebar")  # the header compacts, the title stays
+        page.set_viewport_size({"width": 800, "height": 900})  # 800 - 480: the main column keeps 480 px
+        B.expect(edge).to_have_attribute("aria-valuemax", "320")
+        self.assert_width(page, 320, "an 800 px window")
+        self.assert_header_fits(page, "an 800 px window, the widest sidebar")
         page.set_viewport_size(DESKTOP["viewport"])
         self.assert_width(page, SBWMAX, "the window wide again")
         # a double-click puts the default back, remembered too
@@ -441,9 +447,11 @@ class GalleryLayoutBrowserTest(LayoutCase):
                     edge.evaluate("e => e.dispatchEvent(new PointerEvent('pointercancel', {pointerId: window.__pid, bubbles: true}))")
                 else:
                     edge.evaluate("e => e.releasePointerCapture(window.__pid)")
+                # the pointer goes on moving: the browser delivers a released capture's lostpointercapture before
+                # the pointer's next event (Pointer Events, "process pending pointer capture"), not at once
+                page.mouse.move(500, 300)
                 B.expect(page.locator("body")).not_to_have_class(drag)
                 self.assert_width(page, SBW0, f"{how}: put back")
-                page.mouse.move(500, 300)  # the pointer goes on moving: no drag any more
                 page.mouse.up()
                 self.assert_width(page, SBW0, f"{how}: after the button is let go")
         page.reload()  # the interrupted width was never kept

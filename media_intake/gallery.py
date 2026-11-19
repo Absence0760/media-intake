@@ -2082,7 +2082,8 @@ output{font-variant-numeric:tabular-nums;color:var(--fg);font-weight:600}
 .overlay #sidebar{box-shadow:var(--shadow)}
 
 /* ---------------------------------------------------------------- main */
-#app{margin-left:var(--ml);min-height:100vh;min-width:0;display:flex;flex-direction:column}
+/* a container: the header compacts by the main column's own width, which the sidebar's width changes, not only the window's */
+#app{margin-left:var(--ml);min-height:100vh;min-width:0;display:flex;flex-direction:column;container:app/inline-size}
 #top{position:sticky;top:0;z-index:10;height:var(--hh);display:flex;align-items:center;gap:12px;padding:0 24px;background:color-mix(in srgb,var(--bg) 88%,transparent);backdrop-filter:blur(8px);border-bottom:1px solid var(--line)}
 #vtitle{font-size:17px;font-weight:650;margin:0;white-space:nowrap;min-width:0;overflow:hidden;text-overflow:ellipsis}
 #count{color:var(--mut);font-size:14px;white-space:nowrap;font-variant-numeric:tabular-nums;flex:none}
@@ -2240,6 +2241,12 @@ dl.dt dd{margin:0;word-break:break-word}
  #close .lbl2{display:none}#close{padding:0 8px}
  #jobpill{padding:0 8px}#jobpill .pr{display:none}body.jobpill #tsizew{display:none}
  #etoast{flex-wrap:wrap}#etoast span{flex-basis:100%}
+}
+/* the same when a wide sidebar leaves the main column as narrow as a 900 px window used to (900 - 280) */
+@container app (max-width:620px){
+ #tsize{width:72px}
+ #close .lbl2{display:none}#close{padding:0 8px}
+ #jobpill{padding:0 8px}#jobpill .pr{display:none}body.jobpill #tsizew{display:none}
 }
 /* ---------------------------------------------------------------- phone */
 @media (max-width:760px){
@@ -2477,8 +2484,10 @@ mqPhone.addEventListener("change",()=>{drawer=false;layout()});
 $("#rsearch").onclick=()=>{expandSidebar();$("#q").focus()};
 // ---------------------------------------------------------------- sidebar: width (its right edge; desktop, expanded only)
 // drag the edge, or Left / Right arrows on it (Shift: bigger steps, Home / End: the ends); a double-click puts the default back.
-// Clamped to 240 px .. min(560 px, half the window), again when the window resizes; the chosen width is kept per browser.
-const SBW0=300,SBWMIN=240,sbMax=()=>Math.max(SBWMIN,Math.min(560,Math.floor(innerWidth/2)));
+// Clamped to 240 px .. min(560 px, half the window, the window less 480 px), again when the window resizes; the chosen
+// width is kept per browser. 480 px: the narrowest main column the smallest desktop window (761 px) had beside the old
+// fixed 280 px sidebar, where the compact header fits.
+const SBW0=300,SBWMIN=240,MAINMIN=480,sbMax=()=>Math.max(SBWMIN,Math.min(560,Math.floor(innerWidth/2),innerWidth-MAINMIN));
 let sbwPref=+LS.get("sbw",String(SBW0));if(!(sbwPref>=SBWMIN&&sbwPref<=2000))sbwPref=SBW0;
 function sbWidth(w,save){const h=$("#sbresize"),mx=sbMax(),v=Math.round(Math.min(mx,Math.max(SBWMIN,w))),r=document.documentElement.style;
  r.setProperty("--sbw",v+"px");r.setProperty("--ml",v+"px");

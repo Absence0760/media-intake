@@ -50,8 +50,11 @@ without one" (`/api/facets` gives `drive`, the mount or null).
   expanded, drag its right edge to make it wider or narrower (the grid
   follows), or Tab to the edge and use Left / Right (16 px; with Shift,
   64 px), Home (narrowest) and End (widest). A double-click on the edge puts
-  300 px back. It stays between 240 px and 560 px or half the window,
-  whichever is less, and narrows when the window does; the width you chose
+  300 px back. It stays between 240 px and the least of 560 px, half the
+  window and the window less 480 px (the main column's own minimum), and
+  narrows when the window does; the header compacts (a shorter size slider,
+  Stop server as an icon) once the main column is 620 px or less, as it does
+  in a window of 900 px or less. The width you chose
   comes back when the window widens again. The collapsed rail and the phone's
   rail and drawer keep their own widths and have no edge to drag. A drag
   the browser interrupts (a cancelled pointer, lost capture) puts back the
@@ -788,7 +791,8 @@ badge and X button inside their tile and clear of its checkbox (stack closed
 and open), Select all's long label wrapping inside the bar, and the last row
 of tiles above the selection bar at the end of the page. At 1440 px it drags
 the sidebar's edge (the grid following mid-drag), clamps it at 240 px and
-560 px and to half a 1000 px window, keeps it across a reload, resets it on a
+560 px, to half a 1000 px window and to 320 px in an 800 px one (the header
+still fitting in both), keeps it across a reload, resets it on a
 double-click, resizes it by Left / Right / Shift / Home / End with a visible
 focus line in light and dark and a Highlight one in forced colours, ignores
 the keys with Ctrl, Meta or Alt and while the shortcut list is open, falls
