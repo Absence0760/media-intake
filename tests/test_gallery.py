@@ -345,6 +345,42 @@ class GalleryTest(unittest.TestCase):
         f = s.get("/api/facets")["facets"]
         self.assertIn(["food", 1], f["label"])
 
+    def test_suggested_junk_why_and_score(self):
+        """Suggested junk lists the vision check's verdicts from 0.7 up by default and lower on request (?jmin=),
+        narrows by reason (?why=), and says in `junk` what each reason holds, how many more a lower score adds,
+        and how many it holds without the other filters. Kept, used and protected files never, at any score."""
+        s = self.start()
+        names, j = self.names(s, view="suggest")
+        self.assertEqual(names, ["a.jpg"])
+        self.assertEqual(next(i for i in j["items"] if i["n"] == "a.jpg")["r"], "blurry")  # the tile's reason
+        jk = j["junk"]
+        self.assertEqual((jk["all"], jk["unfiltered"], jk["lower"], jk["floor"], jk["line"]), (1, 1, 1, 0.7, 0.7))
+        self.assertEqual(dict(map(tuple, jk["why"])), {"blurry": 1, "label": 1})
+        # a lower score: lo.jpg (0.5, dark) after a.jpg, most confident first; k.jpg (kept), c.png (used) and
+        # clip.mp4 (a protected project) stay out even at any score
+        names, j = self.names(s, view="suggest", jmin="0")
+        self.assertEqual(names, ["a.jpg", "lo.jpg"])
+        self.assertEqual(j["junk"]["lower"], 0)
+        self.assertEqual(dict(map(tuple, j["junk"]["why"])), {"blurry": 1, "label": 1, "dark": 1})
+        # Why: a reason, the content label's tag, a reason below the score (and how many a lower one adds)
+        self.assertEqual(self.names(s, view="suggest", why="dark", jmin="0")[0], ["lo.jpg"])
+        self.assertEqual(self.names(s, view="suggest", why="label")[0], ["a.jpg"])
+        names, j = self.names(s, view="suggest", why="dark")
+        self.assertEqual((names, j["junk"]["lower"]), ([], 1))
+        for bad in ("x", "", "nan"):  # not a number: the usual line
+            self.assertEqual(self.names(s, view="suggest", jmin=bad)[0], ["a.jpg"], bad)
+        self.assertEqual(self.names(s, view="suggest", jmin="-3")[0], ["a.jpg", "lo.jpg"])  # clamped to 0
+        # other filters narrow it; `unfiltered` keeps the view's own count for "N suggested, M shown"
+        names, j = self.names(s, view="suggest", kind="video")
+        self.assertEqual((names, j["junk"]["unfiltered"]), ([], 1))
+        # the sidebar: the view's count, how many a lower score adds, and Judged junk by score for the slider
+        f = s.get("/api/facets")
+        self.assertEqual((f["counts"]["suggest"], f["counts"]["suggest:lower"]), (1, 1))
+        self.assertEqual(f["ai_scores"], [[0.5, 1], [0.9, 1]])
+        for lo in ("0.7", "0.4"):
+            self.assertEqual(sum(n for sc, n in f["ai_scores"] if sc >= float(lo)),
+                             len(self.names(s, ai="trash", aimin=lo)[0]), lo)
+
     # ------------------------------------------------------------ sidecar actions
     def test_keep_tag_rotate(self):
         s = self.start()

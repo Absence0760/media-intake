@@ -121,7 +121,7 @@ class GalleryMediaKindsBrowserTest(B.BrowserCase):
             B.expect(self.tile(page, n).locator(".flag")).to_have_text("Kept")  # the tile shows it at once
         for n in ("a.jpg", "v.mp4"):
             self.assertNotIn("Owner|keep", G.tags_of(self.path[n])[0], n)
-            B.expect(self.tile(page, n).locator(".flag")).to_have_text("Suggested junk")  # not kept yet
+            B.expect(self.tile(page, n).locator(".flag")).to_have_text("Tagged as junk")  # not kept yet
         B.expect(bar).to_contain_text("2 selected")  # the selection stays for the next action
         page.keyboard.press("Escape")
         B.expect(bar).to_be_hidden()

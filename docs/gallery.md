@@ -134,12 +134,14 @@ without one" (`/api/facets` gives `drive`, the mount or null).
 
   | Internal | Shown as |
   |---|---|
-  | `Review\|maybe-trash`, the old Trash suggestions view | Suggested junk (view, Flags filter, tile flag) |
+  | the old Trash suggestions view | Suggested junk (the view) |
+  | `Review\|maybe-trash` | Tagged as junk (Flags filter, tile flag, Suggested junk's Why, the large view): one of the reasons a file is in Suggested junk, so its count is not the view's |
   | `Review\|child-in-shot` | Possible child (quick view, Flags filter, tile flag) |
   | `Owner\|keep` (tile flag "kept") | Kept on the tile; "Marked Keep" in the large view's Details; the large view lists no `Owner\|` tag |
   | `Owner\|trash` on a copy (flag "trashed copy") | Copy of a trashed photo |
   | `Used\|*` (flag "used") | Used in a post |
-  | an AI trash verdict's confidence | Junk score (tile "Junk score 0.9", the filter's "Junk score at least", the chip "Junk score ≥ 0.70") |
+  | an AI trash verdict's confidence | Junk score, always to 2 decimals as the filters compare it (tile "Junk score 0.90 (blurry)", the filter's "Junk score at least", the chip "Junk score ≥ 0.70", Suggested junk's "Junk score: 0.7 or more (default)") |
+  | a vision-check verdict's reason (`.../trash/<reason>`) | Suggested junk's Why and the tile: Blurry, Accidental shot, Too dark, Packaging, Random object, Junk screenshot, Near-copy, Other; a reason another model wrote shows as written |
   | filters Review, AI, Label | Flags; Junk check (Judged junk / Judged fine / Not checked); Looks like |
   | a tool's tag in the large view | "Project: Personal", "Looks like: food", "Junk check: Judged junk (blurry)" under "Added by the tools", apart from "Your tags" |
   | a 409 (library or job lock) | "a Trash is still running; wait for it to finish, then try again" (or an Erase, a Share-safe copy, a run from the review page, the media-intake apply command, ...) |
@@ -184,14 +186,30 @@ page's own handlers and fails when the list leaves one out.
   by itself; HEIC/DNG get a 1600 px JPEG made in memory) with tags, date,
   place, event, project, source, folder, resolution and size. Arrow keys go to
   the previous/next item, Esc closes, `/` jumps to the search box.
-- **Suggested junk** (was "Trash suggestions"): `Review|maybe-trash`, an
-  `AI|vlm/<model>/trash/*` verdict with that model's `conf` >= 0.7 (or the
-  older `Review|vlm-trash/*`), or `Owner|trash` (a copy of content you trashed
+- **Suggested junk** (was "Trash suggestions"): the one place for what
+  `media-intake vlm-trash` judged junk, beside the other suggestions:
+  `Review|maybe-trash` (Tagged as junk), an `AI|vlm/<model>/trash/*` verdict
+  with that model's `conf` >= the view's Junk score (0.7, the same line as
+  `vlm_trash.TRASH_MIN`, unless you lower it; or the older
+  `Review|vlm-trash/*`), or `Owner|trash` (a copy of content you trashed
   elsewhere, flag "Copy of a trashed photo"); never a file with `Owner|not-trash` (or the legacy
   `Review|not-trash`), `Owner|keep`, digiKam Accepted,
-  `Used|*` or a protected project's `Project|<name>`. Most confident first,
-  big tiles, with a line under the title saying what the view is and that
-  nothing changes until Apply. Every tile has **Keep** and **Trash** buttons
+  `Used|*` or a protected project's `Project|<name>`, at any Junk score. Most confident first,
+  big tiles, each saying its junk score and reason ("Junk score 0.90
+  (blurry)"), with a line under the title saying what the view is and that
+  nothing changes until Apply. A bar above the grid narrows it: **Why** (All
+  reasons, each vision-check reason, Tagged as junk, Copy of a trashed photo,
+  each with its count at the current score and filters) and **Junk score**
+  (0.9 / 0.8 / 0.7 (default) / 0.5 / 0.3 or more, or Any score; it applies to
+  vision-check verdicts only). When a lower score would add files, the bar
+  says so: **Show N more with a lower junk score** sets Any score. The line
+  stays at 0.7 by default because a verdict below it is one the model itself
+  counts as "low-confidence trash" (`vlm-trash`'s summary); you reach those
+  here, not in a second view. Entering the view starts at the default line
+  and All reasons. Library filters you set stay applied; the header then
+  says "12 suggested, 5 shown with your filters" (the sidebar's count is the
+  view's at 0.7, without filters; its tooltip says how many more a lower
+  score holds). Every tile has **Keep** and **Trash** buttons
   (pressed when marked; a second tap unmarks), and a marked tile says
   "Keep" or "Trash" in its corner, not by its outline's colour alone. A tap
   or click on the photo opens it. There are no checkboxes or selection bar
@@ -271,16 +289,27 @@ with a **more** link ("Layout" above).
 ## Filters (all combinable)
 
 Project, Source, Event, Place, year or month, Looks like (any `Label|*`), my
-tags, Flags (Suggested junk = `Review|maybe-trash`, Possible child =
+tags, Flags (Tagged as junk = `Review|maybe-trash`, Possible child =
 `Review|child-in-shot`, Untagged = `Review|untagged-*` or no tags), Junk check
-(Judged junk with a junk score >= N, Judged fine, Not checked), Used (in a
+(Judged junk with a junk score >= N, its count following the slider, Judged fine, Not checked), Used (in a
 post; or not in the last N days, blank = never), photos / videos, and added
 in the last N days (`added=N` on `/api/list`, what Recently added sets).
+
+In Suggested junk (`view=suggest`), `/api/list` also takes `why` (a reason,
+`label` for Tagged as junk, `copy` for a copy of a trashed photo) and `jmin`
+(the Junk score floor, 0..1, default 0.7; not a number means the default),
+and answers `junk`: `all` (listed without Why), `unfiltered` (the view with
+no other filter or search), `why` (`[value, n]` each), `floor`, `line` and
+`lower` (how many more `jmin=0` would list). Each item carries `r`, its
+verdict's reason.
 
 `GET /api/facets` gives the sidebar its options and counts: `facets` (per
 project, source, event, place, label, month and year, my tag), `counts`
 (`kind:photo`, `kind:video`, `review:<flag>`, `ai:trash|keep|none`,
-`used:used|unused`, `suggest`, `recent`), `recent_days`, the search
+`used:used|unused`, `suggest` (Suggested junk at 0.7), `suggest:lower` (how
+many more a lower Junk score adds), `recent`), `ai_scores` (`[score, n]`
+for every Judged junk score, to 2 decimals: the page sums those at or above
+its slider), `recent_days`, the search
 status, `share_out` and `drive` (the backup drive Erase includes, or null). Like every route it needs the session cookie or token.
 
 The search box runs `semantic.py search` (local SigLIP text model, through the
@@ -670,6 +699,14 @@ cover, badge and X, `x` and `X` with focus back on the cover, a near-copy
 never stacked, a closed stack's range selection and Keep reaching only the
 cover, closing a stack unselecting its hidden shots, and the large view's
 arrows over a closed and an open stack.
+`test_suggested_junk_why_and_score` covers Suggested junk's Why and Junk
+score on `/api/list` (kept, used and protected files out at any score) and
+the facets' `suggest:lower` and `ai_scores`.
+`tests/browser/test_browser_gallery_junk.py`: Suggested junk's bar (Why
+with its counts, Junk score, Show N more with a lower junk score, back to
+the default line on re-entering), the tile's "Junk score 0.90 (blurry)", the
+header's "N suggested, M shown with your filters", the Judged junk count
+following its slider, and the bar at 390 px (44 px tall, no sideways scroll).
 `tests/browser/test_browser_gallery_grid.py`: Suggested junk by tap on a
 390 px touch phone (Keep and Trash pressed and unpressed, the mark in words,
 a tap on the photo opening it, no checkboxes or selection bar, the view's

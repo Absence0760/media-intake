@@ -76,9 +76,11 @@ TOOL_PREFIXES = ("project|", "source|", "event|", "place|", "label|", "review|",
 TAG_RE = re.compile(r"^[^\x00-\x1f\x7f]{1,64}$")
 DEG = {1: 0, 6: 90, 3: 180, 8: 270}
 ORIENT = {0: 1, 90: 6, 180: 3, 270: 8}
-AI_TRASH = re.compile(r"^AI\|vlm/([^/]+)/trash(?:/|$)")
+AI_TRASH = re.compile(r"^AI\|vlm/([^/]+)/trash(?:/([^|]*))?$")
 AI_CONF = re.compile(r"^AI\|vlm/([^/]+)/conf/([0-9.]+)$")
-SUGGEST_MIN = 0.7
+SUGGEST_MIN = 0.7  # Suggested junk's line for a vision-check verdict (vlm_trash.TRASH_MIN); the view can go lower
+# Suggested junk's Why (?why=): a vision-check reason (vlm_trash.REASONS, or any other a model wrote), or these two
+WHY_LABEL, WHY_COPY = "label", "copy"
 OPENER = "xdg-open"  # the desktop's default app, for media the browser can't decode (found on PATH)
 RECENT_DAYS = 30  # "Recently added": filed into the library in the last N days
 UNDO_KEEP = 50  # the last N undoable actions (Keep, my tags, Rotate, Set event) this server can still undo
@@ -181,7 +183,12 @@ def facts(it):
     it["labels"] = pre("Label|")
     it["mine"] = [t for t in tags if owner_tag(t)]
     it["used"] = sorted(t[5:] for t in tags if t.startswith("Used|"))
-    trash_models = {m.group(1) for t in tags if (m := AI_TRASH.match(t))}
+    trash_why = {}  # model -> the reason it gave ("blurry", ...; "" when none)
+    for t in tags:
+        m = AI_TRASH.match(t)
+        if m:
+            trash_why[m.group(1)] = m.group(2) or trash_why.get(m.group(1), "")
+    trash_models = set(trash_why)
     confs = {}
     for t in tags:
         m = AI_CONF.match(t)
@@ -191,9 +198,13 @@ def facts(it):
             except ValueError:
                 pass  # malformed confidence in a sidecar: ignore that one tag
     ai = max((confs.get(mo, 0.0) for mo in trash_models), default=None)
-    if any(t.startswith("Review|vlm-trash/") for t in tags):
+    why = trash_why[max(trash_models, key=lambda mo: (confs.get(mo, 0.0), mo))] if trash_models else None
+    old = [t[len("Review|vlm-trash/"):] for t in tags if t.startswith("Review|vlm-trash/")]
+    if old:  # the older verdict tag, written only at confidence >= 0.7
+        why = why or old[0].split("/")[0]
         ai = max(ai or 0.0, SUGGEST_MIN)
     it["ai_trash"] = ai
+    it["ai_why"] = why or None  # the reason of the most confident trash verdict, if it gave one
     it["ai_keep"] = any(t == "Review|vlm-keep" or (t.startswith("AI|vlm/") and "/keep" in t) for t in tags)
     it["kept"] = owner.kept(tags, it.get("pick", ""))
     it["trashed"] = owner.trashed(tags)  # a surviving copy of content you trashed
@@ -594,11 +605,16 @@ UNDO_SCOPE = {
 # PID or lock path reaches the page's text (tests/browser/test_browser_gallery_dialogs.py scans for them).
 WORDS = {
     # tile flags (summary()["f"]) and the Flags filter's values (?review=)
-    "flag": {"maybe-trash": "Suggested junk", "child-in-shot": "Possible child", "untagged": "Untagged",
+    "flag": {"maybe-trash": "Tagged as junk", "child-in-shot": "Possible child", "untagged": "Untagged",
              "kept": "Kept", "trashed copy": "Copy of a trashed photo", "used": "Used in a post"},
     # the Junk check filter's values (?ai=), and the AI| / Review|vlm-* verdict tags in the large view
     "ai": {"trash": "Judged junk", "keep": "Judged fine", "none": "Not checked"},
     "score": "Junk score",  # an AI trash verdict's confidence, 0-1
+    # Suggested junk's Why (?why=, summary()["r"]): the vision check's reasons (vlm_trash.REASONS), then the
+    # other two reasons a file is suggested; a reason not listed here shows as the model wrote it
+    "why": {"blurry": "Blurry", "accidental": "Accidental shot", "dark": "Too dark", "packaging": "Packaging",
+            "random-object": "Random object", "screenshot-junk": "Junk screenshot", "duplicate-ish": "Near-copy",
+            "other": "Other", WHY_LABEL: "Tagged as junk", WHY_COPY: "Copy of a trashed photo"},
     # filter sections and their chips
     "filter": {"kind": "Kind", "ym": "When", "project": "Project", "source": "Source", "place": "Place",
                "event": "Event", "label": "Looks like", "mine": "My tag", "review": "Flags", "ai": "Junk check",
@@ -608,7 +624,7 @@ WORDS = {
     "ns": {"Project": "Project", "Source": "Source", "Event": "Event", "Place": "Place", "Label": "Looks like",
            "Used": "Used in", "AI": "Junk check", "Review": "Flag"},
     # whole tags with their own words
-    "tag": {"Review|maybe-trash": "Suggested junk", "Review|child-in-shot": "Possible child",
+    "tag": {"Review|maybe-trash": "Tagged as junk", "Review|child-in-shot": "Possible child",
             "Review|vlm-keep": "Junk check: Judged fine"},
     # tool namespaces "my tag" refuses, as a user reads them (the refusal and the tag dialog)
     "tools": "Project, Source, Event, Place, Label, Review, AI, Used and Owner",
@@ -775,7 +791,7 @@ class App:
 
     def summary(self, i, it):
         return dict(id=i, m=it["media"], d=it["date"], mo=it["date"][:7], n=os.path.basename(it["path"]),
-                    c=it["ai_trash"], f=[t[7:] for t in it["tags"] if t in ("Review|maybe-trash", "Review|child-in-shot")]
+                    c=it["ai_trash"], r=it["ai_why"], f=[t[7:] for t in it["tags"] if t in ("Review|maybe-trash", "Review|child-in-shot")]
                     + (["kept"] if it["kept"] else []) + (["trashed copy"] if it["trashed"] else [])
                     + (["used"] if it["used"] else []))
 
@@ -799,6 +815,7 @@ class App:
     def facets(self):
         c = {k: collections.Counter() for k in ("project", "source", "event", "place", "label", "month", "mine")}
         counts = collections.Counter()  # the sidebar's view and option counts (whole library, not cross-filtered)
+        scores = collections.Counter()  # Judged junk by junk score: the page counts those at or above its slider
         recent = time.time() - RECENT_DAYS * 86400
         n = 0
         for it in self.items:
@@ -811,10 +828,13 @@ class App:
                 counts[f"review:{r}"] += f"Review|{r}" in t
             counts["review:untagged"] += not t or any(x.startswith("Review|untagged-") for x in t)
             counts["ai:trash"] += it["ai_trash"] is not None
+            if it["ai_trash"] is not None:
+                scores[round(it["ai_trash"], 2)] += 1
             counts["ai:keep"] += it["ai_keep"]
             counts["ai:none"] += not any(x.startswith("AI|") for x in t)
             counts["used:used" if it["used"] else "used:unused"] += 1
             counts["suggest"] += self.suggested(it)
+            counts["suggest:lower"] += self.suggested(it, 0.0) and not self.suggested(it)
             counts["recent"] += it.get("ctime", 0) >= recent
             for k in ("project", "source", "place"):
                 if it[k]:
@@ -836,20 +856,46 @@ class App:
             else self.share_out
         drive = None if not self.drive else "~/" + os.path.relpath(self.drive, HOME) \
             if self.drive.startswith(HOME + os.sep) else self.drive
-        return dict(total=n, facets=out, counts=dict(counts), recent_days=RECENT_DAYS, search=search, share_out=share,
-                    drive=drive)
+        return dict(total=n, facets=out, counts=dict(counts), ai_scores=sorted(scores.items()), recent_days=RECENT_DAYS,
+                    search=search, share_out=share, drive=drive)
 
-    def suggested(self, it):
+    def suggested(self, it, floor=SUGGEST_MIN):
+        """Suggested junk: a copy of something you trashed, a content label's junk flag, or a vision-check trash
+        verdict scoring at least `floor` (the view's Junk score; SUGGEST_MIN unless you lower it). Never a file you
+        kept, one used in a post or one in a protected project, whatever the floor."""
         if it["kept"] or it["used"] or f"Project|{it['project']}" in PROTECTED or PROTECTED.intersection(it["tags"]):
             return False
-        return it["trashed"] or "Review|maybe-trash" in it["tags"] or (it["ai_trash"] or 0) >= SUGGEST_MIN
+        return it["trashed"] or "Review|maybe-trash" in it["tags"] or \
+            (it["ai_trash"] is not None and it["ai_trash"] >= floor)
+
+    @staticmethod
+    def junk_floor(f):
+        """Suggested junk's Junk score floor (?jmin=, 0..1); SUGGEST_MIN when absent or not a number."""
+        try:
+            v = float(f.get("jmin"))
+        except (TypeError, ValueError):
+            return SUGGEST_MIN
+        return min(1.0, max(0.0, v)) if v == v else SUGGEST_MIN
+
+    def junk_why(self, it, floor):
+        """The Why values an item is suggested for at this floor (a reason, WHY_LABEL, WHY_COPY)."""
+        out = set()
+        if it["ai_trash"] is not None and it["ai_trash"] >= floor:
+            out.add(it["ai_why"] or "other")
+        if "Review|maybe-trash" in it["tags"]:
+            out.add(WHY_LABEL)
+        if it["trashed"]:
+            out.add(WHY_COPY)
+        return out
 
     def matches(self, it, f):
         if it["gone"]:
             return False
         t = it["tags"]
-        if f.get("view") == "suggest" and not self.suggested(it):
-            return False
+        if f.get("view") == "suggest":
+            floor = self.junk_floor(f)
+            if not self.suggested(it, floor) or (f.get("why") and f["why"] not in self.junk_why(it, floor)):
+                return False
         if f.get("kind") in ("photo", "video") and it["media"] != f["kind"]:
             return False
         for k in ("project", "source", "place"):
@@ -958,6 +1004,9 @@ class App:
             if ids is None:
                 words = q.casefold().split() if q else []
                 ids = [i for i, it in enumerate(self.items) if (not words or self.text_match(it, words))]
+            junk = None
+            if f.get("view") == "suggest":
+                junk = self.junk_summary([i for i in ids if self.live(i)], f)
             ids = [i for i in ids if self.live(i) and self.matches(self.items[i], f)]
             if f.get("view") == "suggest":
                 ids.sort(key=lambda i: -(self.items[i]["ai_trash"] if self.items[i]["ai_trash"] is not None else 0.5))
@@ -975,7 +1024,29 @@ class App:
                 row = self.summary(i, self.items[i])
                 row.update(info.get(i, {}))
                 page.append(row)
-        return dict(total=len(ids), items=page, note=note, ranked=ranked)
+        out = dict(total=len(ids), items=page, note=note, ranked=ranked)
+        if junk is not None:
+            out["junk"] = junk
+        return out
+
+    def junk_summary(self, ids, f):
+        """Suggested junk's header: how many each Why holds at this floor (the other filters and the search
+        applied, Why itself not), how many more a lower Junk score would add (Why applied), and how many the view
+        holds with no other filter or search (the header's "N suggested, M shown with your filters")."""
+        floor = self.junk_floor(f)
+        base, every = dict(f, why=""), dict(f, jmin="0")
+        bare = dict(view="suggest", jmin=str(floor), why=f.get("why") or "")
+        unfiltered = sum(1 for it in self.items if self.matches(it, bare))
+        counts = collections.Counter()
+        n = lower = 0
+        for i in ids:
+            it = self.items[i]
+            if self.matches(it, base):
+                n += 1
+                counts.update(self.junk_why(it, floor))
+            lower += floor > 0 and self.matches(it, every) and not self.matches(it, f)
+        return dict(all=n, unfiltered=unfiltered, why=sorted(counts.items(), key=lambda x: (-x[1], x[0])),
+                    floor=floor, lower=lower, line=SUGGEST_MIN)
 
     def stacked(self, ids):
         """The timeline with each burst as one run: when two or more of a burst's shots are listed (after the
@@ -1881,6 +1952,10 @@ kbd{font:600 11px/1 ui-monospace,monospace;border:1px solid currentColor;border-
 #evlist{display:flex;flex-direction:column;gap:2px}
 .evmore{align-self:flex-start;margin:2px 10px}
 #evbar{display:flex;flex-wrap:wrap;align-items:center;gap:8px;padding:12px 24px 0}
+#junkbar{display:flex;flex-wrap:wrap;align-items:center;gap:6px 8px;padding:12px 24px 0}
+#junkbar label{font-size:14px;color:var(--mut)}
+#junkbar select{height:34px;max-width:100%;min-width:0;border:1px solid var(--line);border-radius:8px;background:var(--panel);padding:0 8px}
+#junkbar .jf{display:inline-flex;align-items:center;gap:6px;min-width:0;max-width:100%}
 #evbar .evt{font-weight:600;margin-right:4px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;max-width:100%}
 #mfieldp label{display:block;font-size:13px;color:var(--mut);margin-bottom:4px}
 #mfield{width:100%}
@@ -2117,7 +2192,7 @@ dl.dt dd{margin:0;word-break:break-word}
  #vtitle{font-size:16px}
  #count,.size .ic{display:none}
  #ball{padding:0 9px}
- #chips,#evbar{padding:10px 12px 0}#note,#helpb{padding:0 12px}
+ #chips,#evbar,#junkbar{padding:10px 12px 0}#note,#helpb{padding:0 12px}
  /* the burst help: one line, "more" for the whole text */
  #helpb .hshort,#hmore{display:inline}#helpb .hfull{display:none}
  #helpb.more .hshort{display:none}#helpb.more .hfull{display:inline}
@@ -2140,6 +2215,7 @@ dl.dt dd{margin:0;word-break:break-word}
  .caret{width:44px}
  #tsize{height:44px}
  .chip{height:44px}.chip .x{width:44px;height:44px}
+ #junkbar select{height:44px}
  .tile .ckw{width:44px;height:44px}
  .tile .bx{top:8px;right:8px}
  .tile .bx::after{content:"";position:absolute;inset:-8px}
@@ -2216,6 +2292,11 @@ dl.dt dd{margin:0;word-break:break-word}
  </header>
  <div id="chips" aria-label="Active filters" hidden></div>
  <div id="evbar" role="toolbar" aria-label="Event" hidden><span class="evt" id="evname"></span><button type="button" class="btn" id="evren">Rename…</button><button type="button" class="btn" id="evmerge">Merge into…</button></div>
+ <div id="junkbar" role="group" aria-label="Narrow the suggestions" hidden>
+  <span class="jf"><label for="jwhy">Why</label><select id="jwhy"></select></span>
+  <span class="jf"><label for="jmin">Junk score</label><select id="jmin" title="The vision check's junk score (0 to 1). Files tagged as junk and copies of photos you trashed show at any score."></select></span>
+  <button type="button" class="btn" id="jlower" hidden></button>
+ </div>
  <p id="note" class="note" hidden></p>
  <p id="helpb" class="note" hidden><span class="hshort"><span class="kb">Bursts are stacked; X opens one.</span><span class="tch">Burst stacks: tap ×N to open one.</span></span><span class="hfull">A stack is a burst (shots from one camera a moment apart): its Show all button (×N on a small tile) or the X key opens or closes it; the shots of an open stack share a coloured ring. On a closed stack, selecting and every action (Keep, Trash, Erase, tags, Rotate, Set event, Share-safe copy) act on the cover shot only; open the stack to act on the others.</span><button type="button" class="link" id="hmore" aria-controls="helpb" aria-expanded="false">more</button></p>
  <main id="main" aria-busy="true"><div id="list"><div class="state" role="status"><p><span class="spin" aria-hidden="true"></span>Loading your library…</p></div></div><div id="sentinel"></div><div id="plugin" hidden></div></main>
@@ -2287,6 +2368,9 @@ const fmt=n=>(+n||0).toLocaleString();
 const LS={get(k,d){try{const v=localStorage.getItem("gallery."+k);return v===null?d:v}catch(e){return d}},set(k,v){try{localStorage.setItem("gallery."+k,v)}catch(e){}}};
 let view="lib",items=[],total=0,loading=false,done=false,sel=new Set(),last=null,cur=-1,ranked=false,simId=null,simName="",dec={},vi=-1,facets=null,gen=0,lastFocus=null,openB={},allSel=null;
 let F={aimin:"0.7"};
+// Suggested junk's own narrowing (the bar above its grid): Why (a reason) and the vision check's Junk score floor
+const JLINE="0.7",JMINS=[["0.9","0.9 or more"],["0.8","0.8 or more"],[JLINE,"0.7 or more (default)"],["0.5","0.5 or more"],["0.3","0.3 or more"],["0","Any score"]];
+let J={why:"",min:JLINE};
 const ACTIVE=["kind","ym","project","source","place","event","label","mine","review","ai","used","added"];
 // internal names -> the words shown: gallery.py WORDS, the one place (no Owner|, Review|, Label| in the page's text)
 const WORDS=__WORDS__;
@@ -2310,7 +2394,7 @@ async function api(path,body){const o={credentials:"same-origin"};if(body!==unde
  if(!r.ok){const er=new Error(j.error||("HTTP "+r.status));er.busy=!!j.busy;er.status=r.status;throw er}return j}
 function filt(){const f={};for(const k of ACTIVE.concat(["aimin","days"]))if(F[k])f[k]=F[k];
  if(f.ai!=="trash")delete f.aimin;if(f.used!=="unused")delete f.days;const q=$("#q").value.trim();if(q)f.q=q;if(simId!==null){f.similar=simId;delete f.q}
- if(view==="sug")f.view="suggest";return f}
+ if(view==="sug"){f.view="suggest";if(J.why)f.why=J.why;f.jmin=J.min}return f}
 function qs(o){return Object.entries(o).map(([k,v])=>encodeURIComponent(k)+"="+encodeURIComponent(v)).join("&")}
 function monthName(k){const [y,m]=k.split("-");return new Date(+y,+m-1,1).toLocaleString(undefined,{month:"long",year:"numeric"})}
 function monthOnly(k){const [y,m]=k.split("-");return new Date(+y,+m-1,1).toLocaleString(undefined,{month:"long"})}
@@ -2394,11 +2478,12 @@ function renderWhen(){const box=$("#when");box.replaceChildren();const ent=facet
 async function loadFacets(tries){facets=await api("/api/facets");const fc=facets.facets,c=facets.counts||{};
  ["project","source","place","event","label","mine"].forEach(k=>renderOpts(k,fc[k]||[]));
  renderOpts("review",Object.keys(REVIEW).map(v=>[v,c["review:"+v]||0]),v=>REVIEW[v]);
- renderOpts("ai",Object.keys(AIV).map(v=>[v,c["ai:"+v]||0]),v=>AIV[v]);
+ renderOpts("ai",Object.keys(AIV).map(v=>[v,v==="trash"?judgedAt(F.aimin):c["ai:"+v]||0]),v=>AIV[v]);
  renderOpts("used",[["used",c["used:used"]||0],["unused",c["used:unused"]||0]],v=>v==="used"?WORDS.flag.used:"Not used");
  renderWhen();renderEvents();renderMyTags();
  $("#ck-all").textContent=fmt(facets.total);$("#ck-photo").textContent=fmt(c["kind:photo"]);$("#ck-video").textContent=fmt(c["kind:video"]);
  $("#c-lib").textContent=fmt(facets.total);$("#c-sug").textContent=fmt(c.suggest);$("#c-recent").textContent=fmt(c.recent);
+ $('.nv[data-v=sug]').title=WORDS.view.sug+": the vision check's junk verdicts, files tagged as junk and copies of photos you trashed"+(c["suggest:lower"]?" ("+fmt(c["suggest:lower"])+" more with a lower junk score inside)":"");
  $("#c-child").textContent=fmt(c["review:child-in-shot"]);$("#c-untagged").textContent=fmt(c["review:untagged"]);
  $('.nv[data-v=recent]').title="Recently added (filed in the last "+facets.recent_days+" days)";
  const h=$("#qhint");h.replaceChildren();h.hidden=!facets.search;
@@ -2429,6 +2514,7 @@ function navActive(){if(view!=="lib")return view;const a=activeKeys();if(a.lengt
 function syncUI(){$$("button[data-k]").forEach(b=>b.setAttribute("aria-pressed",String((F[b.dataset.k]||"")===b.dataset.val)));
  $$(".fs").forEach(s=>{const k=SECKEY[s.dataset.s]||s.dataset.s;s.querySelector(".fs-v").textContent=F[k]?chipVal(k):""});
  const n=activeKeys().length;$("#clear").hidden=!n;$("#clear").textContent=`Clear filters (${n})`;$("#rbadge").hidden=!n;$("#rbadge").textContent=n;
+ const jt=$('.opts[data-k=ai] .opt[data-val=trash]');if(jt&&facets){jt.querySelector(".ct").textContent=fmt(judgedAt(F.aimin));jt.title=AIV.trash+", "+WORDS.score+" "+(+F.aimin||0).toFixed(2)+" or more"}
  $("#aiconf").hidden=F.ai!=="trash";$("#aimin").value=F.aimin;$("#aiv").textContent=(+F.aimin).toFixed(2);
  $("#usedays").hidden=F.used!=="unused";if(document.activeElement!==$("#days"))$("#days").value=F.days||"";
  const C=$("#chips");C.replaceChildren();
@@ -2440,12 +2526,24 @@ function syncUI(){$$("button[data-k]").forEach(b=>b.setAttribute("aria-pressed",
  C.hidden=!C.children.length||plugView();
  $$(".nv[data-v]").forEach(b=>{if(b.dataset.v===na)b.setAttribute("aria-current","page");else b.removeAttribute("aria-current")});
  $$(".nv[data-ev]").forEach(b=>{if(na==="ev"&&b.dataset.ev===F.event)b.setAttribute("aria-current","page");else b.removeAttribute("aria-current")});
- $("#evbar").hidden=na!=="ev";if(na==="ev")$("#evname").textContent="Event: "+F.event;
+ $("#evbar").hidden=na!=="ev";$("#junkbar").hidden=view!=="sug";if(na==="ev")$("#evname").textContent="Event: "+F.event;
  $("#vtitle").textContent=na==="ev"?F.event:TITLES[na]||""}
 $("#clear").onclick=clearAll;
 // ---------------------------------------------------------------- listing
 // the view's note above the grid; Suggested junk always says what the view is and that nothing changes until Apply
-const SUGNOTE="Photos the tools suggest as junk, most likely first. Mark each Keep or Trash, then Apply. Nothing changes until you Apply.";
+const SUGNOTE="Photos the tools suggest as junk (the vision check's verdicts, files tagged as junk, copies of photos you trashed), most likely first. Mark each Keep or Trash, then Apply. Nothing changes until you Apply.";
+const whyWord=v=>WORDS.why[v]||v;
+// Judged junk at or above a junk score (the Junk check slider): the count matches what the grid lists
+const judgedAt=lo=>((facets&&facets.ai_scores)||[]).reduce((a,[sc,n])=>a+(sc>=(+lo||0)-1e-9?n:0),0);
+// the bar above Suggested junk: Why with a count each, the Junk score floor, and how many more a lower score holds
+function renderJunk(jk){const w=$("#jwhy"),o=(v,l)=>{const x=el("option",null,l);x.value=v;return x};
+ const ws=jk.why.slice();if(J.why&&!ws.some(([v])=>v===J.why))ws.push([J.why,0]);
+ w.replaceChildren(o("","All reasons ("+fmt(jk.all)+")"),...ws.map(([v,n])=>o(v,whyWord(v)+" ("+fmt(n)+")")));w.value=J.why;
+ const m=$("#jmin");if(!m.options.length)m.replaceChildren(...JMINS.map(([v,l])=>o(v,l)));m.value=J.min;
+ const b=$("#jlower");b.hidden=!(jk.lower>0);if(jk.lower>0)b.textContent="Show "+fmt(jk.lower)+" more with a lower junk score"}
+$("#jwhy").onchange=()=>{J.why=$("#jwhy").value;reset()};
+$("#jmin").onchange=()=>{J.min=$("#jmin").value;reset()};
+$("#jlower").onclick=()=>{J.min="0";$("#jmin").value="0";reset()};
 function plainNote(n){n=n||"";return /^Semantic search unavailable/.test(n)?"Semantic search is off: showing tag and file-name matches.":n}
 function setNote(n){n=plainNote(n);$("#note").textContent=n;$("#note").hidden=!n}
 /* The grid's own states, in #list: loading, an empty library, no results, a load error. Each says what is going on
@@ -2477,8 +2575,9 @@ async function more(){if(loading||done||failed||plugView())return;loading=true;c
  try{const j=await api("/api/list?"+qs(Object.assign(filt(),{offset:items.length,limit:240})));
   if(g!==gen)stale=true;else{total=j.total;ranked=j.ranked;const start=items.length;items=items.concat(j.items);done=items.length>=total;
    if(!start)$("#list").replaceChildren();render(start);$("#main").removeAttribute("aria-busy");
-   const n=plainNote(j.note);setNote(view==="sug"?SUGNOTE+(n?" "+n:""):n);
-   $("#count").textContent=fmt(total)+(total===1?" item":" items")+(view==="sug"?" suggested":"");
+   const n=plainNote(j.note);setNote(view==="sug"?SUGNOTE+(n?" "+n:""):n);if(!start&&j.junk)renderJunk(j.junk);
+   $("#count").textContent=view==="sug"&&j.junk&&j.junk.unfiltered!==total?fmt(j.junk.unfiltered)+" suggested, "+fmt(total)+" shown with your filters"
+    :fmt(total)+(total===1?" item":" items")+(view==="sug"?" suggested":"");
    if(!items.length){if(simId!==null)setNote("");emptyState(n)}
    document.body.dataset.ready="1"}}
  catch(e){if(g===gen){failed=true;loadError(e)}}finally{loading=false}
@@ -2526,7 +2625,7 @@ function tile(it,n){const t=el("div","tile"),sug=view==="sug";t.id="t"+it.id;t.d
  t.onkeydown=ev=>{if(vi>=0||ev.target!==t)return;if(ev.key==="Enter"){ev.preventDefault();ev.stopPropagation();openViewer(n)}else if(ev.key===" "&&!sug){ev.preventDefault();ev.stopPropagation();pick(n,ev.shiftKey)}
   else if((ev.key==="x"||ev.key==="X")&&it.b!=null&&!ev.ctrlKey&&!ev.metaKey&&!ev.altKey){ev.preventDefault();ev.stopPropagation();toggleStack(n)}};return t}
 function mark(n,k){const id=items[n].id;if(dec[id]===k)delete dec[id];else dec[id]=k;cur=n;paintSel()}
-function flagsOf(it){const fl=[];if(it.c!=null)fl.push(WORDS.score+" "+it.c.toFixed(1));fl.push(...it.f.map(f=>WORDS.flag[f]||f));return fl.join(" · ")}
+function flagsOf(it){const fl=[];if(it.c!=null)fl.push(WORDS.score+" "+it.c.toFixed(2)+(it.r?" ("+whyWord(it.r).toLowerCase()+")":""));fl.push(...it.f.map(f=>WORDS.flag[f]||f));return fl.join(" · ")}
 // after an edit: the reply's summaries replace those items and their tiles' flags (kept, ...);
 // the tile, its focus and the selection stay
 function patchTiles(fresh){(fresh||[]).forEach(s=>{const n=items.findIndex(i=>i.id===s.id);if(n<0)return;const o=items[n];items[n]=o.b!=null?Object.assign(s,{b:o.b,bn:o.bn,bc:o.bc,mo:o.mo}):s;const t=$("#t"+s.id);if(!t)return;
@@ -2804,7 +2903,7 @@ function setView(v){view=v;simId=null;document.body.dataset.view=v;const plug=pl
  else{syncUI();reset()}}
 $$(".nv[data-v]").forEach(b=>b.onclick=()=>{const v=b.dataset.v;
  if(v==="lib"){if(["recent","child","untagged","ev"].includes(navActive()))F={aimin:F.aimin};setView("lib")}
- else if(v==="sug"||v.startsWith("p-"))setView(v);
+ else if(v==="sug"||v.startsWith("p-")){if(v==="sug"&&view!=="sug")J={why:"",min:JLINE};setView(v)}
  else{F={aimin:F.aimin};if(v==="recent")F.added=String((facets&&facets.recent_days)||30);if(v==="child")F.review="child-in-shot";if(v==="untagged")F.review="untagged";$("#q").value="";setView("lib")}
  if(mqPhone.matches&&drawer){drawer=false;layout()}});
 let qt=null;$("#q").oninput=()=>{clearTimeout(qt);qt=setTimeout(()=>{simId=null;syncUI();reset()},500)};
