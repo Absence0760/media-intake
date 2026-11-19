@@ -171,7 +171,11 @@ close the PR.
   and on a phone), Keyboard shortcuts at the sidebar's foot and the search
   placeholder fitting. `test_browser_gallery_proxy.py` plays an HEVC clip
   while its H.264 proxy is still being made (the transcode held on a FIFO),
-  with the "converting" note, then from the cache with Range. They skip with a reason
+  with the "converting" note, then from the cache with Range.
+  `test_browser_gallery_places.py` runs My places: the sidebar's Places
+  section, Add a place here… from the large view (name, radius, a refused
+  look-alike), the "probably here" Yes and No, a name put on the page as text,
+  no sideways scroll on a phone, and no coordinate in any reply. They skip with a reason
   when Playwright or its Chromium is missing, so the commands above are
   unaffected; the `browser` job in `ci.yml` runs them (and fails, not skips,
   through `MEDIA_INTAKE_BROWSER_REQUIRED=1`). Locally, once:

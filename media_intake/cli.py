@@ -42,6 +42,7 @@ Library
   search "TEXT"             find photos by a description (venv)
   similar FILE              find photos that look like this one (venv)
   tag-files FILE...         write tags again for library files
+  places list|add|tag|...   your own named places (Home, ...) as tags
   mark-used FILE --post P   record that files were used in a post
   share-copy FILE --out D   copy without GPS or metadata (or social-copy)
   calibrate                 test content labels on your marks; changes nothing
@@ -344,6 +345,11 @@ def _zip_check(rest):
     return zip_check.main(rest)
 
 
+def _places(rest):  # its own parser (list, add, rename, remove, suggest, tag) and the library lock
+    import places
+    return places.main(rest)
+
+
 def _gallery(rest):  # here, not in intake.py: gallery imports intake, so intake never imports gallery
     import gallery
     return gallery.main(rest)
@@ -361,7 +367,8 @@ def _prune_cache(rest):  # cli.py's too: it reads the library as the gallery doe
 
 # cli.py's own commands; VENV_SCRIPTS run in the venv; everything else goes to intake.py's parser.
 COMMANDS = {"doctor": lambda rest: doctor(), "queue": _queue, "review": _review, "backup": _backup,
-            "gallery": _gallery, "proxies": _proxies, "prune-cache": _prune_cache, "zip-check": _zip_check}
+            "gallery": _gallery, "proxies": _proxies, "prune-cache": _prune_cache, "zip-check": _zip_check,
+            "places": _places}
 HELP = ("-h", "--help", "help")
 
 

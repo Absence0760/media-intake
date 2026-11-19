@@ -21,7 +21,9 @@ job, then that folder opened in the file manager; also on each tile and in the l
 suggestions, any tab a plugin adds (plugins.py gallery_views(), docs/plugins.md),
 the quick views Favorites, Added in the last 30 days, Possible child, Untagged, and the Events (Event|
 tags; rename and merge rewrite only those, in the sidecars that have them; each shown by
-a display name kept in <state>/event-names.json, never two alike); then
+a display name kept in <state>/event-names.json, never two alike), and Places (your named places,
+places.py: Add a place here… in the large view, "probably here" for a file without GPS; the page
+never gets a coordinate, docs/places.md); then
 search, the filters and Keyboard shortcuts; its right edge drags (or arrow keys) to a
 width kept per browser. Bursts (bursts.py over the plan entries intake wrote) show in
 the timeline as one stack per burst: a cover with a count badge, X opens or closes it,
@@ -58,6 +60,7 @@ import jobs  # noqa: E402  (trash / erase run as a detached job: <state>/jobs/ga
 import library_lock  # noqa: E402  (Keep, my tags, Rotate write sidecars under the library lock)
 import label  # noqa: E402  (flagged / refused: stdlib only at import)
 import owner  # noqa: E402  (owner decisions: Owner|keep / not-trash / trash)
+import places  # noqa: E402  (My places: Place|<name>, <state>/places.json)
 import plugins  # noqa: E402  (extra tabs: gallery_views())
 import review_ui as R  # noqa: E402  (server guards, media with Range, sizes)
 
@@ -110,6 +113,8 @@ XMP_WANT = {
     ("http://ns.adobe.com/xap/1.0/", "Rating"): "rating",  # XMP-xmp:Rating, 0-5 stars: >= 5 a favorite (owner.py)
     ("http://www.digikam.org/ns/1.0/", "TagsList"): "tagslist",
     ("http://ns.google.com/photos/1.0/camera/", "BurstID"): "burst_id",  # XMP-GCamera:BurstID, if a tool wrote it
+    ("http://ns.adobe.com/exif/1.0/", "GPSLatitude"): "gpslat",  # tag wrote them: My places, never sent to the page
+    ("http://ns.adobe.com/exif/1.0/", "GPSLongitude"): "gpslon",
 }
 LISTS = {"tags", "tagslist", "subject"}
 DATE_RX = re.compile(r"(\d{4})[-:](\d\d)[-:](\d\d)(?:[T ](\d\d):(\d\d))?")
@@ -189,7 +194,9 @@ def facts(it):
     it["source"] = (pre("Source|") or [src or ""])[0]
     ev = pre("Event|") or ([it["xevent"]] if it.get("xevent") else [])
     it["event"] = ev[0] if ev else ""
-    it["place"] = (pre("Place|") or [", ".join(x for x in it.get("xplace", ()) if x)])[0]
+    # the city (a Place| tag with a comma, intake.py's); a place you named is in myplaces (places.py)
+    it["place"] = ([t for t in pre("Place|") if "," in t] or [", ".join(x for x in it.get("xplace", ()) if x)])[0]
+    it["myplaces"] = [t[len(places.PREFIX):] for t in tags if places.is_mine(t)]
     it["labels"] = pre("Label|")
     it["mine"] = [t for t in tags if owner_tag(t)]
     it["used"] = sorted(t[5:] for t in tags if t.startswith("Used|"))
@@ -363,12 +370,15 @@ def load_sidecar(it):
     it["xdate"] = x.get("date") or ""  # with its seconds, for burst grouping (it["date"] keeps minutes)
     it["xburst"] = x.get("burst_id") or ""
     it["xplace"] = (x.get("city"), x.get("state"), x.get("country"))
+    it["gps"] = places.gps_of(x.get("gpslat"), x.get("gpslon"))  # server side only: never in a reply
+    it["xmp_read"] = bool(x)  # False: no sidecar, or one that didn't parse (places.Store.plan infers nothing)
     try:
         it["orient"] = int(x["orient"]) if x.get("orient") else None
     except ValueError:
         it["orient"] = None
     it["date"] = norm_date(x.get("date")) or guess_date(it["path"], it["root"], it["mtime"])
     facts(it)
+    it["when"], it["src"] = App.when_of(it), App.source_of(it)  # "probably here" (App.probably)
 
 
 # ---------------------------------------------------------------- thumbnails / previews
@@ -832,7 +842,7 @@ WORDS = {
     # filter sections and their chips
     "filter": {"kind": "Kind", "ym": "When", "project": "Project", "source": "Source", "place": "Place",
                "event": "Event", "label": "Looks like", "mine": "My tag", "review": "Flags", "ai": "Junk check",
-               "used": "Used", "added": "Added"},
+               "used": "Used", "added": "Added", "myplace": "My place"},
     # a tool tag's namespace, shown as "<word>: <value>" in the large view (Owner| is not shown there:
     # the Details row says "Marked Keep")
     "ns": {"Project": "Project", "Source": "Source", "Event": "Event", "Place": "Place", "Label": "Looks like",
@@ -1209,7 +1219,8 @@ class App:
                     video=it["show"] == "video", date=it["date"], place=it["place"], event=it["event"],
                     project=it["project"], source=it["source"], folder=folder, res=it["res"],
                     size=R.human(it["size"]), tags=it["tags"], mine=it["mine"], rot=rot, ai=it["ai_trash"],
-                    used=it["used"], kept=it["kept"], fav=it["fav"], has_xmp=it["has_xmp"])
+                    used=it["used"], kept=it["kept"], fav=it["fav"], has_xmp=it["has_xmp"],
+                    gps=it["gps"] is not None, myplaces=it["myplaces"], probably=self.probably(i))
 
     def facets(self):
         c = {k: collections.Counter() for k in ("project", "source", "event", "place", "label", "month", "mine")}
@@ -1259,8 +1270,10 @@ class App:
         names = load_event_names()  # read each time: another gallery on this library may have set one
         shown = event_labels(c["event"], names)
         event_names = {e: dict(label=shown[e], name=names.get(e, "")) for e in c["event"]}
+        mine, mine_err = self.my_places()
         return dict(total=n, facets=out, counts=dict(counts), ai_scores=sorted(scores.items()), recent_days=RECENT_DAYS,
-                    search=search, share_out=share, drive=drive, event_names=event_names)
+                    search=search, share_out=share, drive=drive, event_names=event_names,
+                    places=mine, places_error=mine_err, radii=list(places.RADII), radius=places.RADIUS_DEFAULT)
 
     def suggested(self, it, floor=SUGGEST_MIN):
         """Suggested junk: a copy of something you trashed, a content label's junk flag, or a vision-check trash
@@ -1305,6 +1318,8 @@ class App:
             if f.get(k) and it[k] != f[k]:
                 return False
         if f.get("event") and f["event"] not in self.events_of(it):
+            return False
+        if f.get("myplace") and f.get("_myplace") not in it["myplaces"]:  # listing() resolved the id to its name
             return False
         if f.get("label") and f["label"] not in it["labels"]:
             return False
@@ -1365,6 +1380,11 @@ class App:
 
     def listing(self, f):
         note, ranked = None, False
+        f = {k: v for k, v in f.items() if not k.startswith("_")}
+        if f.get("myplace"):  # a place by its id (it survives a rename); an unknown id matches nothing
+            st = self.place_store(quiet=True)
+            p = st.places.get(f["myplace"]) if st else None
+            f["_myplace"] = p["name"] if p else None
         ids = None
         q = (f.get("q") or "").strip()[:200]
         sim = f.get("similar")
@@ -1627,6 +1647,122 @@ class App:
             self.run_exiftool(blocks)
             self.refresh(ids)
             return self.journal("tag", before, f"{'added' if op == 'add' else 'removed'} {tag!r} on {len(blocks)}")
+
+    # ---------------------------------------------- My places (places.py: Place|<name>, <state>/places.json)
+    @staticmethod
+    def place_store(quiet=False):
+        """This library's places (read each time: the CLI or another gallery may have changed them). quiet: None
+        when places.json is unreadable, else RuntimeError (a 409 on the page)."""
+        try:
+            return places.Store(STATE, ROOTS)
+        except places.Unreadable as e:
+            if quiet:
+                return None
+            raise RuntimeError(str(e)) from None
+
+    def my_places(self):
+        """([dict(id, name, n)] for the sidebar, most files first; "" or why they can't be read)."""
+        st = self.place_store(quiet=True)
+        if st is None:
+            return [], f"{places.FILE} in the state folder is unreadable"
+        n = collections.Counter(p for it in self.items if not it["gone"] for p in it["myplaces"])
+        rows = [dict(id=pid, name=p["name"], n=n[p["name"]]) for pid, p in st.places.items()]
+        return sorted(rows, key=lambda r: (-r["n"], places.look_key(r["name"]))), ""
+
+    @staticmethod
+    def when_of(it):
+        m = FULL_DATE.search(it.get("xdate") or "") or FULL_DATE.search(it.get("date") or "")
+        if not m:
+            return None
+        y, mo, d, h, mi, sec = m.groups()
+        try:
+            return datetime.datetime(int(y), int(mo), int(d), int(h), int(mi), int(sec or 0))
+        except ValueError:
+            return None
+
+    @staticmethod
+    def source_of(it):
+        return tuple(sorted(t for t in it["tags"] if t.startswith("Source|")))
+
+    def probably(self, i, st=None):
+        """"Probably here" for an item with no GPS and none of your places: [dict(id, name, minutes)] from
+        places.Store.probable over the library's GPS'd items. A suggestion only; nothing is written."""
+        it = self.items[i]
+        if it["gps"] is not None or it["myplaces"]:
+            return []
+        st = st or self.place_store(quiet=True)
+        if not st or not st.places:
+            return []
+        src, when = it["src"], it["when"]
+        if not src or when is None:
+            return []
+        span = datetime.timedelta(minutes=places.PROBABLY_MINUTES)
+        others = [(o["when"], o["src"], o["gps"]) for o in self.items  # cheap tests first: one pass, no parsing
+                  if o["src"] == src and o["gps"] is not None and not o["gone"] and o is not it
+                  and o["when"] is not None and abs(o["when"] - when) <= span]
+        got = st.probable(it["path"], when, src, others)
+        return [dict(id=pid, name=st.places[pid]["name"], minutes=m) for pid, m in got]
+
+    def place_add(self, item, name, radius):
+        """Add a place at a GPS'd item's point (the page never sees the coordinates), then tag every library
+        item inside it (places.Store.plan: never one you removed it from)."""
+        if not isinstance(item, int) or isinstance(item, bool):
+            raise ValueError("which item?")
+        try:
+            radius = places.check_radius(radius if radius is not None else places.RADIUS_DEFAULT)
+        except ValueError as e:
+            raise ValueError(str(e)) from None
+        with self.writing("add place"), self.lock:
+            i = self.targets([item])[0]
+            it = self.items[i]
+            if it["gps"] is None:
+                raise ValueError("this item has no location (GPS), so it can't mark a place")
+            st = self.place_store()
+            pid = st.add(name, it["gps"][0], it["gps"][1], radius)
+            ids, blocks = self.place_blocks(st, [pid])
+            self.run_exiftool(blocks)
+            self.refresh(ids)
+            st.save()  # after the sidecars: a record never says a tag is there before it is
+            p = st.places[pid]
+            return dict(result=f"Added the place {p['name']}: {len(blocks)} item{'' if len(blocks) == 1 else 's'} "
+                               f"within {p['radius']} m tagged.", place=pid, ids=ids)
+
+    def place_blocks(self, st, only):
+        """(item ids, exiftool blocks) bringing the live items in step with the places in only."""
+        ids, blocks = [], []
+        for i, it in enumerate(self.items):
+            if it["gone"] or not os.path.isfile(it["path"]):
+                continue
+            add, remove = st.plan(it["path"], it["gps"], it["tags"] if it["xmp_read"] else None, only=only)
+            if add or remove:
+                ids.append(i)
+                blocks.append(self.tag_block(it, add=add, remove=remove))
+        return ids, blocks
+
+    def place_probable(self, item, pid, yes):
+        """Your answer to "probably at <place>": yes tags the item with it (a tag of this tool's, like the ones
+        it adds by GPS); no records that it never asks about this item and place again."""
+        if not isinstance(item, int) or isinstance(item, bool) or not isinstance(pid, str):
+            raise ValueError("which item and place?")
+        if not isinstance(yes, bool):
+            raise ValueError("yes is true or false")
+        with self.writing("place"), self.lock:
+            i = self.targets([item])[0]
+            it = self.items[i]
+            st = self.place_store()
+            if pid not in st.places:
+                raise ValueError("no such place (it may have been removed)")
+            name = st.places[pid]["name"]
+            if not any(x["id"] == pid for x in self.probably(i, st)):
+                raise ValueError(f"{os.path.basename(it['path'])} is not suggested for {name} any more")
+            if yes:
+                self.run_exiftool([self.tag_block(it, add=[places.tag_of(name)])])
+                self.refresh([i])
+                st.tagged[pid].add(it["path"])
+            else:
+                st.declined[pid].add(it["path"])
+            st.save()
+            return dict(result=f"Tagged as {name}." if yes else f"Not {name}: it won't be suggested again.", ids=[i])
 
     # ---------------------------------------------- events (Event|<slug> tags; sidecars only)
     def events_of(self, it):
@@ -2394,6 +2530,8 @@ class Handler(R.Handler):
             "/api/event/rename": lambda: app.rename_event(body.get("from"), body.get("to")),
             "/api/event/merge": lambda: app.merge_events(body.get("from"), body.get("into")),
             "/api/event/name": lambda: app.name_event(body.get("event"), body.get("name")),
+            "/api/place/add": lambda: app.place_add(body.get("id"), body.get("name"), body.get("radius")),
+            "/api/place/probable": lambda: app.place_probable(body.get("id"), body.get("place"), body.get("yes")),
             "/api/decide": lambda: app.decide(body.get("keep") or [], body.get("trash") or [], body.get("confirm")),
             "/api/undo": lambda: app.undo(body.get("undo")),
         }
@@ -2438,7 +2576,7 @@ class Handler(R.Handler):
         out = msg if isinstance(msg, dict) else {"result": msg}
         if path in REDRAW and isinstance(body.get("ids"), list):
             out["items"] = app.summaries(body["ids"])  # the page redraws those tiles' flags (kept, ...) in place
-        elif path == "/api/undo":
+        elif path in ("/api/undo", "/api/place/add", "/api/place/probable"):
             out["items"] = app.summaries(out["ids"])
         self.json(200, out)
 
@@ -2582,7 +2720,12 @@ kbd{font:600 11px/1 ui-monospace,monospace;border:1px solid currentColor;border-
 .nv[aria-current=page] .ct{color:var(--acc)}
 .railonly{display:none}
 .rl{display:none}
-#evlist{display:flex;flex-direction:column;gap:2px}
+#evlist,#pllist{display:flex;flex-direction:column;gap:2px}
+#plsec .empty{padding:4px 10px}
+.probably{border:1px solid var(--line);border-radius:8px;padding:8px 10px;margin:10px 0}
+.probably p{margin:0 0 6px}
+.probably .btn{margin:0 6px 0 0}
+.plrad select{height:34px;max-width:100%;border:1px solid var(--line);border-radius:8px;background:var(--panel);padding:0 8px}
 .evmore{align-self:flex-start;margin:2px 10px}
 .yrmore{margin:4px 10px}
 #evbar{display:flex;flex-wrap:wrap;align-items:center;gap:8px;padding:12px 24px 0}
@@ -2917,6 +3060,7 @@ dl.dt dd{margin:0;word-break:break-word}
  <symbol id="i-chev" viewBox="0 0 24 24"><path d="M6 9l6 6 6-6"/></symbol>
  <symbol id="i-size" viewBox="0 0 24 24"><rect x="4" y="4" width="16" height="16" rx="2"/><path d="M4 14l4-4 5 5 2-2 5 5"/></symbol>
  <symbol id="i-power" viewBox="0 0 24 24"><path d="M12 3.5v8M7 6.5a7.5 7.5 0 1 0 10 0"/></symbol>
+ <symbol id="i-pin" viewBox="0 0 24 24"><path d="M12 21s-6.5-6.2-6.5-11a6.5 6.5 0 0 1 13 0c0 4.8-6.5 11-6.5 11z"/><circle cx="12" cy="10" r="2.3"/></symbol>
  <symbol id="i-cal" viewBox="0 0 24 24"><rect x="4" y="5.5" width="16" height="14.5" rx="2"/><path d="M4 10h16M8.5 3.5v4M15.5 3.5v4"/></symbol>
  <symbol id="i-x" viewBox="0 0 24 24"><path d="M6 6l12 12M18 6L6 18"/></symbol>
  <symbol id="i-share" viewBox="0 0 24 24"><path d="M12 15V4M8 8l4-4 4 4M5 12v7.5h14V12"/></symbol>
@@ -2937,6 +3081,7 @@ dl.dt dd{margin:0;word-break:break-word}
   <button type="button" class="nv" data-v="child" title="Possible child"><svg class="ic"><use href="#i-child"/></svg><span class="lbl">Possible child</span><span class="rl" aria-hidden="true">Child</span><span class="ct" id="c-child"></span></button>
   <button type="button" class="nv" data-v="untagged" title="Untagged"><svg class="ic"><use href="#i-tag"/></svg><span class="lbl">Untagged</span><span class="rl" aria-hidden="true">No tags</span><span class="ct" id="c-untagged"></span></button>
   <div id="evsec"><div class="nvhead">Events</div><div id="evlist"></div></div>
+  <div id="plsec"><div class="nvhead">Places</div><div id="pllist"></div></div>
   <button type="button" class="nv railonly" id="rsearch" title="Search (/)"><svg class="ic"><use href="#i-search"/></svg><span class="vh">Search</span><span class="rl" aria-hidden="true">Search</span></button>
   <button type="button" class="nv railonly icon" id="rfilter" title="Filters" style="width:100%"><svg class="ic"><use href="#i-filter"/></svg><span class="vh">Filters</span><span class="rl" aria-hidden="true">Filters</span><span class="badge-n" id="rbadge" hidden></span></button>
  </nav>
@@ -3050,7 +3195,7 @@ let F={aimin:"0.7"};
 // Suggested junk's own narrowing (the bar above its grid): Why (a reason) and the vision check's Junk score floor
 const JLINE="0.7",JMINS=[["0.9","0.9 or more"],["0.8","0.8 or more"],[JLINE,"0.7 or more (default)"],["0.5","0.5 or more"],["0.3","0.3 or more"],["0","Any score"]];
 let J={why:"",min:JLINE};
-const ACTIVE=["kind","ym","project","source","place","event","label","mine","review","ai","used","added"];
+const ACTIVE=["kind","ym","project","source","place","myplace","event","label","mine","review","ai","used","added"];
 // internal names -> the words shown: gallery.py WORDS, the one place (no Owner|, Review|, Label| in the page's text)
 const WORDS=__WORDS__;
 const NAMES=WORDS.filter;
@@ -3079,7 +3224,7 @@ function monthName(k){const [y,m]=k.split("-");return new Date(+y,+m-1,1).toLoca
 function monthOnly(k){const [y,m]=k.split("-");return new Date(+y,+m-1,1).toLocaleString(undefined,{month:"long"})}
 function chipVal(k){const v=F[k];if(k==="kind")return v==="photo"?"Photos":"Videos";if(k==="ym")return v.length===4?v:monthName(v);if(k==="review")return REVIEW[v]||v;
  if(k==="ai")return v==="trash"?WORDS.score+" ≥ "+(+F.aimin||0).toFixed(2):AIV[v]||v;if(k==="used")return v==="used"?"in a post":(F.days?"not in "+F.days+" days":"never");
- if(k==="added")return "last "+v+" days";return v}
+ if(k==="added")return "last "+v+" days";if(k==="myplace")return plName(v);return v}
 // ---------------------------------------------------------------- sidebar: layout
 const mqPhone=matchMedia("(max-width:760px)");let railPref=LS.get("rail","0")==="1",drawer=false;
 function layout(){const ph=mqPhone.matches,col=ph?!drawer:railPref;document.body.classList.toggle("collapsed",col);document.body.classList.toggle("overlay",ph&&drawer);
@@ -3167,7 +3312,7 @@ async function loadFacets(tries){facets=await api("/api/facets");const fc=facets
  renderOpts("review",Object.keys(REVIEW).map(v=>[v,c["review:"+v]||0]),v=>REVIEW[v]);
  renderOpts("ai",Object.keys(AIV).map(v=>[v,v==="trash"?judgedAt(F.aimin):c["ai:"+v]||0]),v=>AIV[v]);
  renderOpts("used",[["used",c["used:used"]||0],["unused",c["used:unused"]||0]],v=>v==="used"?WORDS.flag.used:"Not used");
- renderWhen();renderEvents();renderMyTags();
+ renderWhen();renderEvents();renderPlaces();renderMyTags();
  $("#ck-all").textContent=fmt(facets.total);$("#ck-photo").textContent=fmt(c["kind:photo"]);$("#ck-video").textContent=fmt(c["kind:video"]);
  $("#c-lib").textContent=fmt(facets.total);$("#c-sug").textContent=fmt(c.suggest);$("#c-recent").textContent=fmt(c.recent);$("#c-fav").textContent=fmt(c["review:favorite"]);
  $('.nv[data-v=sug]').title=WORDS.view.sug+": the vision check's junk verdicts, files tagged as junk and copies of photos you trashed"+(c["suggest:lower"]?" ("+fmt(c["suggest:lower"])+" more with a lower junk score inside)":"");
@@ -3190,6 +3335,20 @@ function renderEvents(){const L=$("#evlist");L.replaceChildren();const ev=(facet
  show.forEach(([n,c])=>{const b=el("button","nv");b.type="button";b.dataset.ev=n;b.title="Event: "+n;b.insertAdjacentHTML("beforeend",'<svg class="ic"><use href="#i-cal"/></svg>');b.append(el("span","lbl",evLabel(n)),el("span","ct",fmt(c)));
   b.onclick=()=>{F={aimin:F.aimin,event:n};$("#q").value="";setView("lib");if(mqPhone.matches&&drawer){drawer=false;layout()}};L.append(b)});
  if(ev.length>EVSHOW){const m=el("button","link evmore",evAll?"Fewer events":"All "+fmt(ev.length)+" events");m.type="button";m.onclick=()=>{evAll=!evAll;renderEvents();syncUI()};L.append(m)}}
+// ---------------------------------------------------------------- My places (Place|<name>, places.json on this computer)
+// a place by its id (/api/facets places: id, name, n); the page never gets a place's or an item's coordinates
+function plName(id){const p=((facets&&facets.places)||[]).find(x=>x.id===id);return p?p.name:"a removed place"}
+function renderPlaces(){const L=$("#pllist");L.replaceChildren();const ps=(facets&&facets.places)||[];
+ if(facets&&facets.places_error){L.append(el("div","empty",facets.places_error));return}
+ if(!ps.length){const e=el("div","empty","No places yet. Open a photo that has a location and choose Add a place here…");L.append(e);return}
+ ps.forEach(p=>{const b=el("button","nv");b.type="button";b.dataset.pl=p.id;b.title=WORDS.filter.myplace+": "+p.name;b.insertAdjacentHTML("beforeend",'<svg class="ic"><use href="#i-pin"/></svg>');b.append(el("span","lbl",p.name),el("span","ct",fmt(p.n)));
+  b.onclick=()=>{F={aimin:F.aimin,myplace:p.id};$("#q").value="";setView("lib");if(mqPhone.matches&&drawer){drawer=false;layout()}};L.append(b)})}
+function radiusText(r){return r>=1000?(r/1000)+" km":r+" m"}
+function askPlace(d,n){const sl=el("select");sl.id="plradius";((facets&&facets.radii)||[150]).forEach(r=>{const o=el("option",null,radiusText(r));o.value=String(r);sl.append(o)});sl.value=String((facets&&facets.radius)||150);
+ const lab=el("label",null,"Radius ");lab.htmlFor="plradius";const p=el("p","plrad");p.append(lab,sl);
+ askField("Add a place here?",["Every photo and video taken within the radius of where "+d.name+" was taken gets this place, beside its city. Ones you took the place off stay off.","The place's name and location stay on this computer only (the state folder), never inside the photos, and share-safe copies never carry them.",p],"Place name (like Home)","",
+  async()=>{const j=await api("/api/place/add",{id:d.id,name:$("#mfield").value,radius:+sl.value});closeModal();patchTiles(j.items);toast(j.result);await loadFacets();if(vi===n)openViewer(n,{keep:true})},null)}
+async function answerProbable(d,n,pl,yes){try{const j=await api("/api/place/probable",{id:d.id,place:pl.id,yes});patchTiles(j.items);toast(j.result);loadFacets();if(vi===n)openViewer(n,{keep:true})}catch(e){refused("",e)}}
 function askField(title,lines,label,value,go,list){confirmBox(title,lines,false,go);$("#mfieldp").hidden=false;$("#mflabel").textContent=label;const f=$("#mfield");if(list===null)f.removeAttribute("list");else f.setAttribute("list",list||"evnames");f.value=value||"";f.focus();f.select()}
 async function afterEvent(j,ev){closeModal();toast(j.result,j.undo);if(ev!==undefined){if(ev)F.event=ev;else delete F.event}await loadFacets();reset()}
 $("#evlabel").onclick=()=>{const ev=F.event,m=facets&&facets.event_names,x=m&&Object.hasOwn(m,ev)?m[ev]:null;askField("Display name for the event "+ev+"?",["The sidebar and the title show this name instead of "+ev+". The sidecars keep "+ev+": your files and tags don't change.","Leave it empty for the default. A name that looks like another event's (the same but for case or spacing) is refused."],"Display name",x?x.name:"",
@@ -3201,7 +3360,7 @@ $("#evmerge").onclick=()=>{const src=F.event;askField("Merge "+src+" into anothe
 // ---------------------------------------------------------------- filter state
 function setF(k,v){if(v)F[k]=v;else delete F[k];simId=null;if(plugView()){setView("lib");return}syncUI();reset()}
 function clearAll(){F={aimin:F.aimin||"0.7"};$("#q").value="";simId=null;syncUI();reset()}
-function navActive(){if(view!=="lib")return view;const a=activeKeys();if(a.length===1&&!$("#q").value.trim()&&simId===null){if(F.event)return "ev";if(F.added)return "recent";if(F.review==="favorite")return "fav";if(F.review==="child-in-shot")return "child";if(F.review==="untagged")return "untagged"}return "lib"}
+function navActive(){if(view!=="lib")return view;const a=activeKeys();if(a.length===1&&!$("#q").value.trim()&&simId===null){if(F.event)return "ev";if(F.myplace)return "pl";if(F.added)return "recent";if(F.review==="favorite")return "fav";if(F.review==="child-in-shot")return "child";if(F.review==="untagged")return "untagged"}return "lib"}
 function syncUI(){$$("button[data-k]").forEach(b=>b.setAttribute("aria-pressed",String((F[b.dataset.k]||"")===b.dataset.val)));
  $$(".fs").forEach(s=>{const k=SECKEY[s.dataset.s]||s.dataset.s;s.querySelector(".fs-v").textContent=F[k]?chipVal(k):""});
  const n=activeKeys().length;$("#clear").hidden=!n;$("#clear").textContent=`Clear filters (${n})`;$("#rbadge").hidden=!n;$("#rbadge").textContent=n;
@@ -3212,14 +3371,15 @@ function syncUI(){$$("button[data-k]").forEach(b=>b.setAttribute("aria-pressed",
  const chip=(text,fn)=>{const c=el("span","chip"),x=el("button","x","×");c.append(el("span",null,text));x.type="button";x.setAttribute("aria-label","Remove "+text);x.onclick=fn;c.append(x);C.append(c)};
  if(simId!==null)chip("Similar to "+simName,()=>{simId=null;syncUI();reset()});
  const q=$("#q").value.trim();if(q&&simId===null)chip("Search: "+q,()=>{$("#q").value="";syncUI();reset()});
- const na=navActive();activeKeys().forEach(k=>{if(k==="event"&&na==="ev")return;chip(NAMES[k]+": "+chipVal(k),()=>setF(k,""))});
+ const na=navActive();activeKeys().forEach(k=>{if((k==="event"&&na==="ev")||(k==="myplace"&&na==="pl"))return;chip(NAMES[k]+": "+chipVal(k),()=>setF(k,""))});
  if(C.children.length>1){const a=el("button","link","Clear all");a.type="button";a.onclick=clearAll;C.append(a)}
  C.hidden=!C.children.length||plugView();
  $$(".nv[data-v]").forEach(b=>{if(b.dataset.v===na)b.setAttribute("aria-current","page");else b.removeAttribute("aria-current")});
  $$(".nv[data-ev]").forEach(b=>{if(na==="ev"&&b.dataset.ev===F.event)b.setAttribute("aria-current","page");else b.removeAttribute("aria-current")});
+ $$(".nv[data-pl]").forEach(b=>{if(na==="pl"&&b.dataset.pl===F.myplace)b.setAttribute("aria-current","page");else b.removeAttribute("aria-current")});
  $("#evbar").hidden=na!=="ev";$("#junkbar").hidden=view!=="sug";const evl=na==="ev"?evLabel(F.event):"";
  if(na==="ev"){$("#evname").textContent="Event: "+evl;$("#evslug").textContent=F.event;$("#evslug").hidden=evl===F.event}
- $("#vtitle").textContent=na==="ev"?evl:TITLES[na]||"";$("#vtitle").title=na==="ev"&&evl!==F.event?"Event: "+F.event:""}
+ $("#vtitle").textContent=na==="ev"?evl:na==="pl"?plName(F.myplace):TITLES[na]||"";$("#vtitle").title=na==="ev"&&evl!==F.event?"Event: "+F.event:""}
 $("#clear").onclick=clearAll;
 // ---------------------------------------------------------------- listing
 // the view's note above the grid; Suggested junk always says what the view is and that nothing changes until Apply
@@ -3245,13 +3405,13 @@ function listState(kind,head,o){o=o||{};const d=el("div","state"+(kind==="error"
  if(o.act){const b=el("button","btn",o.act.label);b.type="button";b.onclick=o.act.fn;d.append(b)}$("#list").replaceChildren(d);return d}
 function loadingState(){const d=listState("loading"),p=el("p"),sp=el("span","spin");sp.setAttribute("aria-hidden","true");p.append(sp,"Loading your library…");d.append(p);
  $("#main").setAttribute("aria-busy","true")}
-const QUICK=["fav","recent","child","untagged","ev"];
+const QUICK=["fav","recent","child","untagged","ev","pl"];
 function emptyState(note){const q=$("#q").value.trim(),nf=activeKeys().length,na=navActive();
  if(simId!==null)return listState("none",note||"No photos look like this one.",{act:{label:"Back to the "+TITLES.lib.toLowerCase(),fn:()=>{simId=null;syncUI();reset()}}});
  if(facets&&facets.total===0)return listState("none","Your library is empty.",{lines:["To add photos and videos, run these in a terminal, with the folder they are in:"],
   cmd:"media-intake stage <folder> --kind folder --batch first\nmedia-intake plan first\nmedia-intake scan first\nmedia-intake apply first",
   after:["Then reload this page. Getting started (docs/getting-started.md) explains each step."]});
- if(view==="lib"&&QUICK.includes(na))return listState("none","Nothing in "+(na==="ev"?evLabel(F.event):TITLES[na])+" right now.",{act:{label:"Show the whole "+TITLES.lib.toLowerCase(),fn:clearAll}});
+ if(view==="lib"&&QUICK.includes(na))return listState("none","Nothing in "+(na==="ev"?evLabel(F.event):na==="pl"?plName(F.myplace):TITLES[na])+" right now.",{act:{label:"Show the whole "+TITLES.lib.toLowerCase(),fn:clearAll}});
  if(q||nf)return listState("none","Nothing matches "+(q&&nf?"this search and these filters":q?"this search":"these filters")+".",
   {act:{label:q&&nf?"Clear search and filters":q?"Clear search":"Clear filters",fn:clearAll}});
  if(view==="sug")return listState("none","No "+WORDS.view.sug.toLowerCase()+" right now.",{lines:["When the tools flag a photo as possible junk, it shows up here for you to mark Keep or Trash."]});
@@ -3648,11 +3808,16 @@ async function openViewer(n,opt){opt=opt||{};if(n<0||n>=items.length)return;if(v
  {const fb=mk(acts,"★ Favorite (F)",()=>doFav([d.id],!d.fav),"favb");fb.setAttribute("aria-pressed",String(!!d.fav));fb.setAttribute("aria-keyshortcuts","F");fb.title=d.fav?"A favorite: press to unstar":"Add to "+WORDS.view.fav}
  const tools=el("div","tools");mk(tools,"Rotate left (Shift+R)",()=>rot([d.id],"ccw")).setAttribute("aria-keyshortcuts","Shift+R");mk(tools,"Rotate right (R)",()=>rot([d.id],"cw")).setAttribute("aria-keyshortcuts","R");
  mk(tools,"Set event…",()=>askSetEvent([d.id]));
+ if(d.gps)mk(tools,"Add a place here…",()=>askPlace(d,n)).title="Name the spot where this was taken (Home, …)";
  mk(tools,"Find similar",()=>{simId=d.id;simName=d.name;closeViewer();$("#q").value="";syncUI();reset()}).title="Photos that look like this one";s.append(tools);
  const dl=el("dl","dt"),row=(k,v)=>{if(v){dl.append(el("dt",null,k),el("dd",null,v))}};
- row("Date",d.date);row("Place",d.place);row("Event",d.event);row("Project",d.project);row("Source",d.source);row("Folder",d.folder);row("Resolution",d.res);row("Size",d.size);
+ row("Date",d.date);row("Place",d.place);row(WORDS.filter.myplace,(d.myplaces||[]).join(", "));row("Event",d.event);row("Project",d.project);row("Source",d.source);row("Folder",d.folder);row("Resolution",d.res);row("Size",d.size);
  if(d.ai!=null)row(WORDS.score,d.ai.toFixed(2));if(d.used.length)row("Used in",d.used.join(", "));if(d.kept)row("Your decision","Marked Keep");
  const det=el("div");det.append(el("p","sh","Details"),dl);s.append(det);
+ // "probably here": this has no location, but a shot from the same camera close in time was in one of your places
+ (d.probably||[]).forEach(pl=>{const box=el("div","probably");box.setAttribute("role","group");box.setAttribute("aria-label","Probably at "+pl.name);
+  box.append(el("p",null,"Probably at "+pl.name+": a photo from the same camera "+(pl.minutes?pl.minutes+" min apart":"at the same time")+" was there. This one has no location of its own."));
+  const y=el("button","btn","Yes, "+pl.name),no=el("button","btn","No");y.type=no.type="button";y.onclick=()=>answerProbable(d,n,pl,true);no.onclick=()=>answerProbable(d,n,pl,false);box.append(y,no);s.append(box)});
  // your tags (removable) apart from the tools' (in plain words: plainTag; Owner| is the Details row's "Marked Keep")
  const tg=el("div"),tl=el("div","tags"),tt2=el("div","tags");tl.id="mytagl";tt2.id="tooltagl";
  d.mine.forEach(t=>{const c=el("span","tag");c.append(el("span",null,t));const b=el("button",null,"×");b.type="button";b.title="Remove my tag";b.setAttribute("aria-label","Remove my tag "+t);

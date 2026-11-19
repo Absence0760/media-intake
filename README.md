@@ -47,7 +47,9 @@ backup drive, quarantine, review folder, Keep, Trash, Erase, ...).
   the library lock, and `device-salt`) is `0700`. So are `backup/`, `jobs/`
   and `locks/`, whose files are `0600`; the lock's holder note names the
   command and its PID, never a file name. `device-salt` is `0600`, and so is
-  `event-names.json` (the gallery's event display names, never in a sidecar).
+  `event-names.json` (the gallery's event display names, never in a sidecar) and
+  `places.json` (your named places and their points: sensitive, never backed up
+  or printed; [docs/places.md](docs/places.md)).
 - **Raw camera serial numbers are never written anywhere** (folder names,
   tags, plans, logs). A device id is a salted HMAC pseudonym of make, model
   and serial, keyed by `device-salt`.
@@ -147,6 +149,7 @@ media-intake offload phone-1 --phone <phone folder>   # after a backup: free the
 | `erase`, `forget`, `verify-gone`, `sweep-erased`, `wipe-free` | Erase everywhere, check, catch copies on a backup drive that was unplugged at erase time, overwrite the backup drive's free space |
 | `trash`, `suggest-trash`, `not-trash`, `purge-review` | Trash junk, find Suggested junk, Keep a suggestion, empty a review folder (`trash` and `purge-review` delete only with `--yes`; without it, a dry run) |
 | `tag`, `tag-files`, `mark-used`, `find` | Sidecar tags and searching them |
+| `places list/add/rename/remove/suggest/tag` | My places: your own named places (Home, ...) as `Place\|<name>` tags beside the city; kept only in the state folder ([docs/places.md](docs/places.md)) |
 | `migrate-tags` | One-shot: rewrite the legacy `Review\|not-trash` tag as `Owner\|not-trash` |
 | `index`, `search`, `similar` | Local semantic search (SigLIP) |
 | `vlm-trash` | Local vision-model second opinion on Suggested junk |
@@ -164,7 +167,7 @@ whether it deletes, and its options; `media-intake` alone (or `--help`) lists
 the commands by task, and a mistyped command exits 2 with the nearest real
 one. Details:
 [getting started](docs/getting-started.md), [words used](docs/words.md), [intake](docs/intake.md), [review page](docs/review-ui.md),
-[gallery](docs/gallery.md), [search and VLM](docs/search.md),
+[gallery](docs/gallery.md), [my places](docs/places.md), [search and VLM](docs/search.md),
 [drive and folder queue](docs/queue.md), [backup](docs/backup.md), [configuration](docs/configuration.md),
 [plugins](docs/plugins.md), [releases](docs/release.md).
 
