@@ -63,10 +63,10 @@ jobs:
             /home/tester/.local/share/media-intake
             /home/tester/.cache/media-intake-build
 
-      - name: setup.sh (venv, SigLIP vision + text models, GeoNames)
+      - name: setup.sh (venv, SigLIP vision + text models, GeoNames, recognition models)
         run: |
           chown -R "$TESTER:" "$TESTER_HOME" "$GITHUB_WORKSPACE"
-          runuser -u "$TESTER" -- env HOME="$TESTER_HOME" bash setup.sh --build-labels --no-launcher
+          runuser -u "$TESTER" -- env HOME="$TESTER_HOME" bash setup.sh --build-labels --recognition --no-launcher
           # --build-labels also rebuilds labels.npz from labels.yaml; test the committed one.
           git -c safe.directory="$GITHUB_WORKSPACE" diff --quiet -- media_intake/labels.npz \
             || echo "::warning file=media_intake/labels.npz::rebuilt labels.npz differs from the committed file (labels.yaml changed without a rebuild?)"

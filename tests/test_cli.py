@@ -13,6 +13,7 @@ import support  # noqa: E402,F401  (hermetic config)
 
 import cli  # noqa: E402
 import label  # noqa: E402
+import people  # noqa: E402
 import semantic  # noqa: E402
 import vlm_trash  # noqa: E402
 
@@ -37,7 +38,8 @@ class FakeProbe:
                        "-decoders": " V....D h264                 H.264\n"}
         self.files = {VISION: FILES["onnx/vision_model_quantized.onnx"], TEXT: FILES["onnx/text_model.onnx"],
                       TOKENIZER: FILES["tokenizer.json"], cli.venv_python(): None, cli.MTP_BACKEND: None,
-                      os.path.join(os.environ["MEDIA_INTAKE_STATE"], "geo", "cities1000.zip"): None}
+                      os.path.join(os.environ["MEDIA_INTAKE_STATE"], "geo", "cities1000.zip"): None,
+                      **{path: sha for _, path, sha in people.model_files(os.environ["MEDIA_INTAKE_STATE"])}}
         self.tags = {"models": [{"name": PINS["ollama"]["model"], "model": PINS["ollama"]["model"],
                                  "digest": PINS["ollama"]["digest"]}]}
         self.hashed = []
@@ -105,7 +107,28 @@ class Doctor(unittest.TestCase):
         self.assertEqual(self.summary(lines), ["no problems, no optional items not available"])
         self.assertTrue(self.line(lines, "SigLIP vision model").startswith("ok "))
         self.assertTrue(self.line(lines, "digest").startswith("ok "))
-        self.assertEqual(sorted(self.p.hashed), sorted([VISION, TEXT, TOKENIZER]))
+        self.assertEqual(sorted(self.p.hashed), sorted([VISION, TEXT, TOKENIZER, *self.recognition()]))
+        self.assertTrue(self.line(lines, "YuNet face detector").startswith("ok "))
+
+    def recognition(self):
+        return [path for _, path, _ in people.model_files(os.environ["MEDIA_INTAKE_STATE"])]
+
+    def test_recognition_models_absent_is_optional_half_missing_or_wrong_fails(self):
+        yunet, sface = self.recognition()
+        del self.p.files[yunet], self.p.files[sface]
+        code, lines = self.run_doctor()
+        self.assertEqual(code, 0, lines)
+        self.assertTrue(self.line(lines, "people recognition off").startswith("optional "))
+        self.assertIn("bash setup.sh --recognition", self.line(lines, "people recognition off"))
+        self.p.files[sface] = people.model_files(os.environ["MEDIA_INTAKE_STATE"])[1][2]
+        code, lines = self.run_doctor()
+        self.assertEqual(code, 1)
+        self.assertTrue(self.line(lines, "YuNet face detector").startswith("MISSING "))
+        self.p.files[yunet] = OTHER
+        code, lines = self.run_doctor()
+        self.assertEqual(code, 1)
+        self.assertTrue(self.line(lines, "YuNet face detector").startswith("BAD "))
+        self.assertTrue(self.line(lines, "SFace face recogniser").startswith("ok "))
 
     def test_missing_required_prints_the_exact_dnf_line(self):
         self.p.tools -= {"exiftool", "ffmpeg", "ffprobe", "findmnt"}
@@ -579,7 +602,7 @@ class VenvCommands(unittest.TestCase):
         return code, out.getvalue(), err.getvalue()
 
     def test_help_without_the_venv(self):
-        for cmd in ("index", "search", "similar"):
+        for cmd in ("index", "search", "similar", "people"):
             for flag in ("--help", "-h"):
                 with self.subTest(cmd=cmd, flag=flag):
                     code, out, err = self.run_main([cmd, flag])
@@ -620,15 +643,19 @@ class Pins(unittest.TestCase):
         self.assertEqual(label.MODEL_SHA, FILES["onnx/vision_model_quantized.onnx"])
         self.assertEqual((semantic.TEXT_SHA, semantic.TOK_SHA), (FILES["onnx/text_model.onnx"], FILES["tokenizer.json"]))
         self.assertEqual((vlm_trash.MODEL, vlm_trash.DIGEST), (PINS["ollama"]["model"], PINS["ollama"]["digest"]))
+        self.assertEqual([sha for _, _, sha in people.model_files()],
+                         [v["sha256"] for v in PINS["opencv_zoo"]["files"].values()])
 
     PREFIX = 12  # `ollama list` and doctor show 12 characters; a copied prefix goes stale like a full pin
 
     def test_no_pin_copied_elsewhere(self):
-        pins = set(FILES.values()) | {PINS["siglip"]["revision"], PINS["ollama"]["digest"]}
+        pins = set(FILES.values()) | {PINS["siglip"]["revision"], PINS["ollama"]["digest"], PINS["opencv_zoo"]["commit"]}
+        pins |= {v["sha256"] for v in PINS["opencv_zoo"]["files"].values()}
         prefixes = {pin[:self.PREFIX] for pin in pins}
         root = support.ROOT
         paths = [os.path.join(root, "setup.sh"), *glob.glob(os.path.join(support.PKG, "*.py")),
-                 *glob.glob(os.path.join(root, "docs", "*.md")),
+                 *(p for p in glob.glob(os.path.join(root, "docs", "*.md"))  # a dated research record cites its
+                   if not os.path.basename(p).startswith("research-")),  # sources' pins as evidence
                  *(os.path.join(root, f) for f in ("README.md", "ROADMAP.md", "CONTRIBUTING.md")),
                  *glob.glob(os.path.join(root, ".github", "workflows", "*.yml"))]
         for p in paths:

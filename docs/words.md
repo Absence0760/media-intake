@@ -62,6 +62,20 @@ buttons are named in **bold**, as they appear on screen.
 | **Flags** | The gallery filter for Tagged as junk, Possible child and Untagged. |
 | **video proxy**, **converting** | The gallery's H.264 copy of a video this browser can't play (HEVC, most phones), made on this computer and kept in the cache. While one is made the large view says **Converting this video for the browser** and starts playing within seconds; `media-intake proxies` makes them ahead of time. |
 
+## People and pets
+
+Off until `bash setup.sh --recognition`; [recognition.md](recognition.md).
+
+| Word | Means | Not to be confused with |
+| --- | --- | --- |
+| **People** | Recognising faces (`media-intake people`): the tool finds faces, groups the ones that look alike and you name the groups. A name you gave or confirmed goes into the sidecar as `People\|<Name>`. | Content labels ("Looks like"). |
+| **Pets** | The same for your own animals (`media-intake pets`, planned; cats and dogs by default), tagged `Pets\|<Name>`. A cat is never in the same group as a dog. | Looks like: dog (a content label for any dog). |
+| **cluster** | A group of faces (or pets) that look alike, numbered by size (1 = largest); the numbers change every time `cluster` runs. You **name**, **merge**, **ignore** or **unname** a cluster. | An event. |
+| **suggestion** | A name the tool proposes for a face or pet that joined a cluster you named. Never a tag, and never counted by `find`, until you confirm it. | A name you gave. |
+| **confirm**, **reject** | Your answer to a suggestion: confirm makes it your name (written as a tag by `tag`); reject drops it, and that name is never suggested for that face or pet again. | Take out (a name you gave, undone for one face or pet). |
+| **take out** | "Not this one": one face or pet leaves its cluster's name for good (until **put back**). Removing a `People\|` or `Pets\|` tag the tool wrote from a sidecar does the same. | Reject. |
+| **ignore** | A cluster of strangers, posters or statues: never named, never tagged. | Trash. |
+
 ## Events
 
 | Word | Means | Not to be confused with |

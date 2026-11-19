@@ -6,6 +6,8 @@
 #   bash setup.sh --build-labels  also fetch the text model + tokenizer (semantic search, and
 #                                 regenerating media_intake/labels.npz when labels.yaml or the SigLIP pin changes)
 #   bash setup.sh --no-launcher   don't write ~/.local/bin/media-intake
+#   bash setup.sh --recognition   also fetch the people recognition models (YuNet, SFace; docs/recognition.md);
+#                                 off without it. Once fetched, every --recognition run re-verifies them.
 # System packages need sudo, so install them yourself first (README, Install). The first
 # step checks the few this script itself needs and prints the exact `sudo dnf install -y`
 # line; the last step runs `media-intake doctor`, which does the same for everything else.
@@ -16,12 +18,13 @@ set -Eeuo pipefail
 here=$(cd "$(dirname "$0")" && pwd)
 pkg=$here/media_intake
 
-refresh_geo=0 build_labels=0 launcher=1
+refresh_geo=0 build_labels=0 launcher=1 recognition=0
 for a in "$@"; do
   case $a in
     --refresh-geo) refresh_geo=1 ;;
     --build-labels) build_labels=1 ;;
     --no-launcher) launcher=0 ;;
+    --recognition) recognition=1 ;;
     *) echo "unknown option $a" >&2; exit 2 ;;
   esac
 done
@@ -37,6 +40,7 @@ if [ -t 2 ] && [ -z "${NO_COLOR:-}" ]; then e_err=$'\e[1;31m' e_off=$'\e[0m'; el
 step_no=0 step_total=5 step_name='start' step_hint='' fail_hint='' path_hint=''
 [ "$build_labels" = 1 ] && step_total=$((step_total + 1))
 [ "$launcher" = 1 ] && step_total=$((step_total + 1))
+[ "$recognition" = 1 ] && step_total=$((step_total + 1))
 summary=()
 
 # step NAME HINT: print the heading; HINT is what on_err suggests if this step fails.
@@ -226,6 +230,22 @@ if [ "$build_labels" = 1 ]; then
   fetch "$hf/tokenizer.json" "$build/tokenizer.json" "$sha_tokenizer"
   "$state/venv/bin/python" -I "$pkg/build_label_embeddings.py" "$build"
   note 'label embeddings' 'built' "$pkg/labels.npz"
+fi
+
+if [ "$recognition" = 1 ]; then
+  # Face detection + recognition (people.py), run by opencv-python-headless (requirements.txt). opencv/opencv_zoo
+  # at the commit in pins.json; both files are Git LFS objects, so the media URL serves the content and the LFS
+  # pointer's oid is the sha256 pinned. YuNet: MIT; SFace: Apache-2.0 (THIRD_PARTY_NOTICES.md).
+  step 'Recognition models (people)' "media_intake/pins.json is missing or broken: restore it from git."
+  zoo=$(pin opencv_zoo commit)
+  zoo_repo=$(pin opencv_zoo repo)
+  sha_yunet=$(pin opencv_zoo files models/face_detection_yunet/face_detection_yunet_2023mar.onnx sha256)
+  sha_sface=$(pin opencv_zoo files models/face_recognition_sface/face_recognition_sface_2021dec.onnx sha256)
+  zoo_url=https://media.githubusercontent.com/media/$zoo_repo/$zoo/models
+  fmodels=$state/models/opencv-zoo-${zoo:0:7}
+  fetch "$zoo_url/face_detection_yunet/face_detection_yunet_2023mar.onnx" "$fmodels/face_detection_yunet_2023mar.onnx" "$sha_yunet"
+  fetch "$zoo_url/face_recognition_sface/face_recognition_sface_2021dec.onnx" "$fmodels/face_recognition_sface_2021dec.onnx" "$sha_sface"
+  note 'recognition models' "$fetched" "$fmodels"
 fi
 
 if [ "$launcher" = 1 ]; then

@@ -155,7 +155,9 @@ The goal: someone else can install it on Fedora, import a phone, and trust it.
 - [ ] Vision LLM: support newer local models when Ollama allows (e.g. a 4B Qwen3-VL needs
       a newer Ollama than 0.21); licence check (commercial use) before adopting any model.
 - [ ] Optional local face grouping (off by default): face data counts as personal data,
-      so erase/verify-gone must cover it; never names faces automatically.
+      so erase/verify-gone must cover it; never names faces automatically. Core and CLI built
+      (`recog.py`, `media-intake people`; names propagate only as suggestions until confirmed;
+      docs/recognition.md); the gallery's naming view is still to come.
 - [ ] Pet recognition (`Pets|<Name>`) alongside face grouping, sharing one scan, naming page
       and erase path; suggestions only until the owner confirms: decisions, model pins and
       build plan in docs/research-pets.md.
@@ -230,6 +232,10 @@ The goal: someone else can install it on Fedora, import a phone, and trust it.
 ---
 
 ## Known limitations (documented, not bugs)
+
+- Face grouping (`media-intake people`) is a hint: its thresholds are uncalibrated starting points
+  (`people eval` measures them on your own `Calibrate|people|` tags), and videos are skipped until a
+  frame source exists (docs/recognition.md).
 
 - Motion photos: only JPEG and HEIC ones are read. A Samsung PNG or AVIF motion photo is
   scanned as a still, so its short video is not checked. HEIC stills need `pillow-heif`.

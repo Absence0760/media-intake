@@ -211,6 +211,23 @@ def gallery_thumb_forget(sha):
     return n
 
 
+# People and pets recognition (recog.py: detections, vectors, crops of a content, keyed by sha256, in
+# recognition.dir): erase, forget, trash and sweep-erased drop them (recog_forget), verify-gone reports any left.
+RECOG_PLACE = "people and pets recognition data (detections, vectors, crops; recognition.dir)"
+
+
+def recog_forget(shas):
+    """Drop recognition rows and crops of this content, both kinds. Returns a Counter; recog never creates its
+    store here, and {"store unreadable": 1} when it can't be read."""
+    import recog
+    return recog.forget(shas)
+
+
+def recog_count(cnt):
+    """What recog_forget or recog.leftovers counted, as one number (an unreadable store is reported apart)."""
+    return sum(v for k, v in cnt.items() if k != "store unreadable")
+
+
 def sidecar(path):
     """The XMP sidecar of a media file: <file>.<ext>.xmp (digiKam and darktable naming)."""
     return path + ".xmp"
@@ -1557,6 +1574,13 @@ def verify_gone(sig, drive=None, left=None, home=True, names=True):
     home=False checks only the drive. names=False prints a count of the copies inside git repos, not their paths."""
     found, _, orphans, in_git = sweep(sig, delete=False, drive=drive, label="verify-gone", home=home)
     cached = [p for s in sig for p in gallery_cache_paths(s) if os.path.lexists(p)] if home else []
+    if home:
+        import recog
+        rec = recog.leftovers(sig)
+        if recog_count(rec):
+            found[RECOG_PLACE] += recog_count(rec)
+        if rec["store unreadable"]:
+            found["recognition store that could not be read (check it, or delete recognition.dir)"] += 1
     gthumbs = sum(p.endswith(".jpg") for p in cached)
     if gthumbs:
         found["gallery thumbnails (~/.cache/media-intake/thumbs)"] += gthumbs
@@ -1640,9 +1664,11 @@ def cmd_sweep_erased(a):
     for p in paths:
         thumbs += thumb_forget(p)
         index.pop(p, None)
+    rec = collections.Counter()
     if home:
         for s in sig:
             gthumbs += gallery_thumb_forget(s)
+        rec = recog_forget(sig)
     save(os.path.join(STATE, "index.json"), index)
     uris = {u for p in paths for u in file_uris(p)}
     recent = prune_recent(uris, []) if home else 0
@@ -1655,6 +1681,7 @@ def cmd_sweep_erased(a):
           + (f"\n  Trash entries                {stats['trash entries'] + stats['drive trash entries']}"
              if stats["trash entries"] or stats["drive trash entries"] else "")
           + (f"\n  thumbnails                   {thumbs + gthumbs}" if thumbs + gthumbs else "")
+          + (f"\n  recognition rows and crops   {recog_count(rec)}" if recog_count(rec) else "")
           + (f"\n  recent files entries         {recent}" if recent else "")
           + (f"\n  app traces                   {sum(traces.values())}" if sum(traces.values()) else "")
           + (f"\n  backup record entries        {backups}" if backups else ""))
@@ -1875,6 +1902,7 @@ def cmd_erase(a):
         gone.add(p)
         index.pop(p, None)
     drive = drive_purge(a.drive, shas, stats) if a.drive else 0
+    rec = recog_forget(set(shas))
     # The originals this quarantine's entries are copies of stay: an xcheck `of`, a near chain's `root_of`.
     spare = [v[k] for v in q.values() for k in ("of", "root_of") if isinstance(v.get(k), str)]
     near, near_batch, near_left = near_dups(refs, kept, index, a.batch, spare, stats)
@@ -1941,7 +1969,8 @@ def cmd_erase(a):
                                 "gvfs-metadata entries gio could not clear": stats["gvfs-metadata not cleared"],
                                 "backup records that could not be rewritten (they keep the names)": backups_failed,
                                 "backup records that could not be read (they may keep names until the next backup "
-                                "to that drive)": backups_unread})
+                                "to that drive)": backups_unread,
+                                "recognition store that could not be read": rec["store unreadable"]})
     ok = verify_gone(sig, a.drive, left)
     # The coverage report: every place this erase reached (counts), what it left, what it could not check.
     reached = {"quarantined files (state folder, quarantine/)": len(q),
@@ -1951,6 +1980,7 @@ def cmd_erase(a):
                "Trash entries (~/.local/share/Trash/info)": stats["trash entries"],
                "freedesktop thumbnails (~/.cache/thumbnails)": thumbs,
                "gallery thumbnails and video proxies (~/.cache/media-intake)": gthumbs,
+               RECOG_PLACE: recog_count(rec),
                "recent files entries (~/.local/share/recently-used.xbel)": recent,
                "Showtime playback positions and log lines (~/.local/state/showtime)":
                    traces["showtime positions"] + traces["showtime log lines"],
@@ -2241,8 +2271,11 @@ def trash_files(files, batch=None, phone=None, dry=False):
                 phone_ok.discard(src)
                 ph += len(device_remove([src]))
     save(os.path.join(STATE, "index.json"), index)
+    rec = recog_forget(gone)
     marked, spared, err = mark_trashed_copies(gone, index)
     print(f"trashed {n} files; sidecars {sc}; thumbnails {th}; phone {ph}"
+          + (f"; recognition rows and crops {recog_count(rec)}" if recog_count(rec) else "")
+          + ("; the recognition store could not be read (check it)" if rec["store unreadable"] else "")
           + (f"; copies left on disk marked Owner|trash {marked}" if marked else "")
           + (f"; copies you kept left alone {spared}" if spared else "")
           + trash_refusals(refused, quarantined))
