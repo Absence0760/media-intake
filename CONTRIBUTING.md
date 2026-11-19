@@ -134,7 +134,12 @@ close the PR.
   runs Select all: the button, Ctrl+A and Cmd+A, a closed stack adding its
   cover only, a filter respected, Ctrl+A in a text field left alone, Esc
   clearing, Trash and Erase keeping their confirmations, and a paged grid
-  saying how many more match. `test_browser_gallery_dialogs.py` fails on any native `alert`, `confirm` or
+  saying how many more match. `test_browser_gallery_drag_select.py` runs drag to select
+  (a closed stack's cover only, Shift / Ctrl adding, Esc, a click not taken,
+  no drag by touch, the bottom edge loading the next page) and Suggested
+  junk's bulk marks (Shift-click and Shift+T / Shift+K ranges, a drag from a
+  mark, Mark all shown as Trash, Clear marks, Apply still asking, marks kept
+  across views, the unload question, K / T in the large view marking). `test_browser_gallery_dialogs.py` fails on any native `alert`, `confirm` or
   `prompt` and runs the in-page ones: the tag field's suggestions and its
   refusal of the tools' namespaces, focus kept in a dialog and given back on
   Esc, an error message staying until dismissed (Playwright's clock, no sleep),

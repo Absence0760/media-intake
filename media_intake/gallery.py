@@ -2002,6 +2002,12 @@ h2.month{position:sticky;top:var(--hh);z-index:2;margin:0;padding:16px 0 8px;fon
 [data-view=sug] .tile .flag{bottom:58px}
 .tile .mark{position:absolute;left:6px;top:6px;z-index:2;font-size:12px;font-weight:700;letter-spacing:.04em;border-radius:4px;padding:2px 8px;color:var(--on-acc)}
 .tile .mark.keep{background:var(--keep)}.tile .mark.trash{background:var(--trash)}
+/* drag to select (or, from a Keep / Trash mark in Suggested junk, to mark): the rectangle, in the mark's colour */
+#marq{position:fixed;z-index:11;pointer-events:none;border:2px solid var(--acc);background:var(--acc-soft);border-radius:2px;box-shadow:0 0 0 1px var(--panel)}
+#marq.keep{border-color:var(--keep);background:color-mix(in srgb,var(--keep) 14%,transparent)}
+#marq.trash{border-color:var(--trash);background:color-mix(in srgb,var(--trash) 14%,transparent)}
+body.marqing,body.marqing *{user-select:none;-webkit-user-select:none}
+@media (forced-colors:active){#marq,#marq.keep,#marq.trash{forced-color-adjust:none;border:2px dashed Highlight;background:transparent}}
 .play{position:absolute;right:6px;top:6px;width:24px;height:24px;border-radius:50%;background:rgba(0,0,0,.55);color:#fff;font-size:10px;display:flex;align-items:center;justify-content:center;padding-left:2px}
 /* Burst stacks: the review page's look (a stacked card, a count badge, an X button) on a tile */
 .tile.stack{box-shadow:4px 4px 0 -1px var(--bg),4px 4px 0 0 var(--mut),8px 8px 0 -1px var(--bg),8px 8px 0 0 var(--mut)}
@@ -2225,10 +2231,11 @@ dl.dt dd{margin:0;word-break:break-word}
    <span class="sep"></span>
    <button type="button" class="btn" id="btag">+ tag</button><button type="button" class="btn" id="buntag">− tag</button><button type="button" class="btn" id="bevent">Set event…</button><button type="button" class="btn" id="brot">Rotate ⟳</button><button type="button" class="btn" id="bshare">Share-safe copy</button><button type="button" class="btn" id="bnone">Clear selection <kbd>Esc</kbd></button>
   </div>
-  <div class="grp" id="suggrp" role="group" aria-label="Decisions" hidden><span id="sugn"></span><span class="note" style="margin:0">Mark Keep or Trash on each, then Apply<span class="kbonly"> (keys: K, T, arrows)</span></span><button type="button" class="btn primary" id="sugapply">Apply…</button></div>
+  <div class="grp" id="suggrp" role="group" aria-label="Decisions" hidden><span id="sugn"></span><span class="note" style="margin:0">Mark Keep or Trash on each, then Apply<span class="kbonly"> (keys: K, T, arrows)</span></span><button type="button" class="btn" id="bmarkall" title="Mark every tile shown Trash (a tile marked Keep keeps its mark); nothing changes until Apply">Mark all shown as Trash</button><button type="button" class="btn" id="bclearm" title="Take every Keep and Trash mark off (asks first)">Clear marks</button><button type="button" class="btn primary" id="sugapply">Apply…</button></div>
  </div>
 </div>
 <div id="toast" role="status" aria-live="polite"></div>
+<p id="selsay" class="vh" role="status" aria-live="polite"></p>
 <div id="etoast" role="alert" aria-atomic="true"></div>
 <div id="viewer" role="dialog" aria-modal="true" aria-label="Item" tabindex="-1">
  <div id="stage"><div id="media"></div>
@@ -2247,6 +2254,7 @@ dl.dt dd{margin:0;word-break:break-word}
   <dt><kbd>Space</kbd></dt><dd>Select or unselect the focused tile (<kbd>Shift</kbd>+<kbd>Space</kbd>: the range from the last one)</dd>
   <dt>Shift+click, Ctrl+click</dt><dd>Select a range; tick or untick one tile</dd>
   <dt><kbd>Ctrl</kbd>+<kbd>A</kbd> / <kbd>Cmd</kbd>+<kbd>A</kbd></dt><dd>Select every tile shown</dd>
+  <dt>Drag</dt><dd>With the mouse, from a gap or a photo: select every tile the rectangle touches (<kbd>Shift</kbd> or <kbd>Ctrl</kbd>: add to the selection); <kbd>Esc</kbd> while dragging puts the selection back</dd>
   <dt><kbd>K</kbd> <kbd>T</kbd> <kbd>E</kbd></dt><dd>Keep, Trash (asks first), Erase (asks, ERASE typed) the selection</dd>
   <dt><kbd>Esc</kbd></dt><dd>Clear the selection; close the sidebar drawer (phone); in the search box, clear the search</dd>
   <dt><kbd>/</kbd></dt><dd>Jump to the search box</dd>
@@ -2262,13 +2270,15 @@ dl.dt dd{margin:0;word-break:break-word}
  <h4>Large view</h4><dl>
   <dt><kbd>←</kbd> <kbd>→</kbd></dt><dd>Previous / next item (over a closed stack's hidden shots)</dd>
   <dt><kbd>Space</kbd></dt><dd>Play / pause a video</dd>
-  <dt><kbd>K</kbd> <kbd>T</kbd> <kbd>E</kbd></dt><dd>Keep, Trash, Erase the item shown</dd>
+  <dt><kbd>K</kbd> <kbd>T</kbd> <kbd>E</kbd></dt><dd>Keep, Trash, Erase the item shown (in Suggested junk, K and T mark it and go to the next)</dd>
   <dt><kbd>R</kbd> / <kbd>Shift</kbd>+<kbd>R</kbd></dt><dd>Rotate clockwise / anticlockwise (the sidecar only)</dd>
   <dt><kbd>Esc</kbd></dt><dd>Close the large view</dd>
  </dl>
  <h4>Suggested junk</h4><dl>
   <dt><kbd>←</kbd> <kbd>↑</kbd> / <kbd>→</kbd> <kbd>↓</kbd> <kbd>J</kbd></dt><dd>Move the outline</dd>
-  <dt><kbd>K</kbd> <kbd>T</kbd></dt><dd>Mark the outlined tile Keep / Trash, like its Keep and Trash buttons (nothing changes until Apply)</dd>
+  <dt><kbd>K</kbd> <kbd>T</kbd></dt><dd>Mark the outlined tile Keep / Trash, like its Keep and Trash buttons (nothing changes until Apply); with no outline yet, the tile under the pointer, or the first is outlined</dd>
+  <dt><kbd>Shift</kbd>+<kbd>K</kbd> / <kbd>Shift</kbd>+<kbd>T</kbd></dt><dd>Mark every tile from the last one given that mark to the outlined one (a Shift-click on Keep or Trash does too; a tile marked the other way keeps its mark)</dd>
+  <dt>Drag</dt><dd>From a tile's Keep or Trash: give that mark to every tile the rectangle touches</dd>
   <dt><kbd>Enter</kbd></dt><dd>Open the outlined tile (a click on the photo does too)</dd>
  </dl>
  <h4>Dialogs</h4><dl>
@@ -2472,7 +2482,7 @@ function loadError(e){$("#main").removeAttribute("aria-busy");const why=e.messag
  $("#count").textContent="";
  listState("error","Couldn't load the library",{lines:[why+".","Try again. If it keeps failing, restart media-intake gallery in the terminal and open the new link it prints."],act:{label:"Try again",fn:retryLoad}})}
 let failed=false;  // the last page failed to load: no retry by itself (scrolling would loop), Try again does
-function reset(){gen++;items=[];total=0;done=false;failed=false;cur=-1;last=null;openB={};loadingState();sel.clear();dec={};paintSel();more()}
+function reset(){gen++;items=[];total=0;done=false;failed=false;cur=-1;last=null;openB={};loadingState();sel.clear();paintSel();more()}
 async function more(){if(loading||done||failed||plugView())return;loading=true;const g=gen;let stale=false;
  try{const j=await api("/api/list?"+qs(Object.assign(filt(),{offset:items.length,limit:240})));
   if(g!==gen)stale=true;else{total=j.total;ranked=j.ranked;const start=items.length;items=items.concat(j.items);done=items.length>=total;
@@ -2480,6 +2490,7 @@ async function more(){if(loading||done||failed||plugView())return;loading=true;c
    const n=plainNote(j.note);setNote(view==="sug"?SUGNOTE+(n?" "+n:""):n);
    $("#count").textContent=fmt(total)+(total===1?" item":" items")+(view==="sug"?" suggested":"");
    if(!items.length){if(simId!==null)setNote("");emptyState(n)}
+   if(!start&&sugFocus&&view==="sug"&&items.length){sugFocus=false;const a=document.activeElement;if(!a||a===document.body||a.closest(".nv"))$("#t"+items[0].id).focus({preventScroll:true})}
    document.body.dataset.ready="1"}}
  catch(e){if(g===gen){failed=true;loadError(e)}}finally{loading=false}
  if(stale){more();return}
@@ -2488,7 +2499,7 @@ function groupKey(it){return ranked?(view==="sug"?"Most likely junk first":"Best
 function render(start){const L=$("#list");let sec=L.lastElementChild,g=sec&&sec.querySelector(".grid"),gk=sec?sec.dataset.k:null;
  for(let n=start;n<items.length;n++){const it=items[n],k=groupKey(it);
   if(k!==gk){sec=el("section");sec.dataset.k=k;sec.append(el("h2","month",ranked?k:monthName(k)));g=el("div","grid");sec.append(g);L.append(sec);gk=k}
-  g.append(tile(it,n))}$("#helpb").hidden=!items.some(i=>i.b!=null);allSel=null;paintSel()}
+  g.append(tile(it,n))}$("#helpb").hidden=!items.some(i=>i.b!=null);allSel=null;paintSel();if(mq)mqFrame()}
 /* Bursts (bursts.py, server side): the listed shots of one burst follow one another, the cover (it.bc) first.
    A closed stack shows only its cover; a shot of a closed stack is never selected, shown or stepped to. */
 function hiddenAt(n){const it=items[n];return !!it&&it.b!=null&&!it.bc&&!openB[it.b]}
@@ -2518,14 +2529,35 @@ function tile(it,n){const t=el("div","tile"),sug=view==="sug";t.id="t"+it.id;t.d
  // Suggested junk: Keep and Trash on the tile (a tap marks it, a second tap unmarks; nothing changes until Apply)
  if(sug){const d=el("div","dec");d.setAttribute("role","group");d.setAttribute("aria-label","Mark "+it.n);
   [["keep","Keep"],["trash","Trash"]].forEach(([k,l])=>{const b=el("button","btn "+k,l);b.type="button";b.dataset.dec=k;b.setAttribute("aria-pressed","false");
-   b.onclick=ev=>{ev.stopPropagation();mark(n,k)};d.append(b)});t.append(d)}
+   b.onclick=ev=>{ev.stopPropagation();ev.shiftKey?markRange(n,k):mark(n,k)};d.append(b)});t.append(d);
+  t.onpointerenter=()=>{hov=n};t.onpointerleave=()=>{if(hov===n)hov=-1}}
  // a click or tap opens the large view (Shift / Ctrl / Cmd+click selects, not in Suggested junk)
  t.onclick=ev=>{if(!sug&&(ev.shiftKey||ev.ctrlKey||ev.metaKey)){pick(n,ev.shiftKey);return}openViewer(n)};
  t.onfocus=()=>{if(view==="sug"&&cur!==n){cur=n;paintSel()}};
  // Enter opens, Space selects (on the focused tile, never while the large view is open: Space plays / pauses there)
  t.onkeydown=ev=>{if(vi>=0||ev.target!==t)return;if(ev.key==="Enter"){ev.preventDefault();ev.stopPropagation();openViewer(n)}else if(ev.key===" "&&!sug){ev.preventDefault();ev.stopPropagation();pick(n,ev.shiftKey)}
   else if((ev.key==="x"||ev.key==="X")&&it.b!=null&&!ev.ctrlKey&&!ev.metaKey&&!ev.altKey){ev.preventDefault();ev.stopPropagation();toggleStack(n)}};return t}
-function mark(n,k){const id=items[n].id;if(dec[id]===k)delete dec[id];else dec[id]=k;cur=n;paintSel()}
+function mark(n,k){const id=items[n].id;if(dec[id]===k)delete dec[id];else{dec[id]=k;lastBy[k]=id}cur=n;paintSel()}
+/* Marking many at once (Suggested junk; still nothing changes until Apply, which asks): a Shift-click on a tile's
+   Keep or Trash (or Shift+K / Shift+T) marks every tile from the last one given that mark; a drag from a mark marks
+   every tile its rectangle touches; Mark all shown as Trash every tile loaded. A tile marked the other way keeps its
+   mark (change it on the tile), except the one pressed. Marks are kept by item through a reload of the grid or a
+   trip to another view; only the tiles listed show them and only those reach Apply. */
+const MARKW={keep:"Keep",trash:"Trash"};let lastBy={},hov=-1,sugFocus=false;
+function bulkMark(ns,k,own){let did=0,kept=0;ns.forEach(i=>{const id=items[i].id;if(dec[id]&&dec[id]!==k&&i!==own){kept++;return}if(dec[id]!==k)did++;dec[id]=k});return {did,kept}}
+function markWords(k,r){return `Marked ${fmt(r.did)} more ${MARKW[k]}`+(r.kept?`; ${fmt(r.kept)} marked ${MARKW[k==="keep"?"trash":"keep"]} kept that mark`:"")+". Nothing changes until Apply."}
+function markRange(n,k){const a=items.findIndex(i=>i.id===lastBy[k]);const ns=[];
+ if(a<0)ns.push(n);else for(let i=Math.min(a,n);i<=Math.max(a,n);i++)if(!hiddenAt(i))ns.push(i);
+ const r=bulkMark(ns,k,n);lastBy[k]=items[n].id;cur=n;paintSel();say(markWords(k,r))}
+function markAll(){const ns=[];items.forEach((_,i)=>{if(!hiddenAt(i))ns.push(i)});const r=bulkMark(ns,"trash",-1),left=total-items.length;paintSel();
+ toast(`Marked ${fmt(r.did)} more Trash (all shown`+(left>0?`; ${fmt(left)} more match below: scroll to load them, then Mark all again`:"")+")"
+  +(r.kept?`; ${fmt(r.kept)} marked Keep kept that mark`:"")+". Nothing changes until Apply.")}
+function clearMarks(){const n=Object.keys(dec).length;if(!n)return;
+ confirmBox(`Clear ${plural(n,"mark")}?`,["Every Keep and Trash mark comes off. Nothing has been changed yet, so only the marks are lost."],false,
+  ()=>{dec={};lastBy={};closeModal();paintSel();toast("Marks cleared.")},"Clear marks")}
+function say(s){$("#selsay").textContent=s}
+// marks the page would lose on a reload or close: the browser asks first
+addEventListener("beforeunload",ev=>{if(Object.keys(dec).length){ev.preventDefault();ev.returnValue=""}});
 function flagsOf(it){const fl=[];if(it.c!=null)fl.push(WORDS.score+" "+it.c.toFixed(1));fl.push(...it.f.map(f=>WORDS.flag[f]||f));return fl.join(" · ")}
 // after an edit: the reply's summaries replace those items and their tiles' flags (kept, ...);
 // the tile, its focus and the selection stay
@@ -2533,16 +2565,19 @@ function patchTiles(fresh){(fresh||[]).forEach(s=>{const n=items.findIndex(i=>i.
   const old=t.querySelector(".flag"),fl=flagsOf(s);if(old)old.remove();if(fl)t.append(el("span","flag",fl))})}
 function pick(n,range){if(view==="sug")return;allSel=null;if(range&&last!==null){const [a,b]=[Math.min(last,n),Math.max(last,n)];for(let i=a;i<=b;i++)if(!hiddenAt(i))sel.add(items[i].id)}
  else{const id=items[n].id;sel.has(id)?sel.delete(id):sel.add(id)}last=n;paintSel()}
-function paintSel(){$$(".tile").forEach(t=>{const id=+t.id.slice(1),n=+t.dataset.n,d=dec[id];t.classList.toggle("sel",sel.has(id));const cb=t.querySelector("input.ck");if(cb)cb.checked=sel.has(id);
+function paintSel(){const sugOn=view==="sug";$$(".tile").forEach(t=>{const id=+t.id.slice(1),n=+t.dataset.n,d=sugOn?dec[id]:undefined;t.classList.toggle("sel",sel.has(id));const cb=t.querySelector("input.ck");if(cb)cb.checked=sel.has(id);
   t.classList.toggle("cur",n===cur);t.classList.toggle("dk",d==="keep");t.classList.toggle("dt",d==="trash");
   // a mark in words too (top left), not by the outline's colour alone
   t.querySelectorAll("[data-dec]").forEach(b=>b.setAttribute("aria-pressed",String(b.dataset.dec===d)));
   let m=t.querySelector(".mark");if(d){if(!m){m=el("span");t.append(m)}m.className="mark "+d;m.textContent=d==="keep"?"Keep":"Trash"}else if(m)m.remove()});
- const selOn=sel.size>0&&!plugView()&&view!=="sug",sugOn=view==="sug";$("#selgrp").hidden=!selOn;$("#suggrp").hidden=!sugOn;$("#actionbar").hidden=!(selOn||sugOn);
+ const selOn=sel.size>0&&!plugView()&&view!=="sug";$("#selgrp").hidden=!selOn;$("#suggrp").hidden=!sugOn;$("#actionbar").hidden=!(selOn||sugOn);
  document.body.classList.toggle("selecting",sel.size>0);
  $("#seln").textContent=allSel&&allSel.n===sel.size?allSel.text:fmt(sel.size)+" selected";$("#ball").hidden=!canSelectAll();
- const nk=Object.values(dec).filter(d=>d==="keep").length,nt=Object.values(dec).filter(d=>d==="trash").length;
- $("#sugn").textContent=`${nk} keep / ${nt} trash marked`;$("#sugapply").disabled=!(nk+nt)}
+ // the counts (and Apply) are the listed tiles' marks; marks on items not listed now wait, and the line says so
+ const mk=sugMarks(),nk=mk.keep.length,nt=mk.trash.length,away=Object.keys(dec).length-nk-nt;
+ $("#sugn").textContent=`${nk} keep / ${nt} trash marked`+(away>0?` (${fmt(away)} more not listed now)`:"");$("#sugapply").disabled=!(nk+nt);
+ $("#bmarkall").disabled=!items.length;$("#bclearm").disabled=!Object.keys(dec).length}
+function sugMarks(){const m={keep:[],trash:[]};items.forEach((it,i)=>{const d=dec[it.id];if(d&&!hiddenAt(i))m[d].push(it.id)});return m}
 function selIds(){return [...sel]}
 /* Select all: every tile the grid shows now (the active view, filters and search; the pages loaded so far, since
    the grid loads 240 at a time as you scroll), and on a closed burst stack its cover only (hidden shots are never
@@ -2552,6 +2587,58 @@ function selectAll(){if(!canSelectAll())return;let hid=0;items.forEach((it,i)=>{
  const left=total-items.length,n=sel.size;
  allSel={n,text:`Selected ${fmt(n)} (all shown`+(left>0?`; ${fmt(left)} more match below: scroll to load them, then Select all again`:"")
   +(hid?`; closed stacks: cover only`:"")+")"};paintSel()}
+/* Drag to select, with a mouse or a pen (a finger's drag scrolls the page, as ever): a press on the grid's empty
+   space or on a tile (not its checkbox or buttons) that moves MQ_MIN px draws a rectangle, and every tile shown that
+   it touches is selected (with Shift, Ctrl or Cmd, added to the selection); a closed stack's hidden shots are never
+   reached, so a stack gives its cover only. Less movement is a click, as before. In Suggested junk the press is on a
+   tile's Keep or Trash and the rectangle marks instead (bulkMark's rule). Near the top or bottom edge the page
+   scrolls; tiles a page load adds inside the rectangle join in. Esc, or the browser taking the gesture, puts the
+   selection (or the marks) back as they were. */
+const MQ_MIN=6,MQ_EDGE=48;let press=null,mq=null,mqSwallow=false;
+function mqStartAt(ev){if(ev.button!==0||(ev.pointerType!=="mouse"&&ev.pointerType!=="pen")||vi>=0||isOn("#modal")||isOn("#keys")||plugView()||!items.length)return null;
+ const tg=ev.target;if(!(tg instanceof Element))return null;
+ if(view==="sug"){const b=tg.closest(".dec [data-dec]"),t=b&&b.closest(".tile");return t?{k:b.dataset.dec,n:+t.dataset.n}:null}
+ if(tg.closest("button,input,label,a,select,textarea,video,.ckw"))return null;return {k:null,n:-1}}
+$("#main").addEventListener("pointerdown",ev=>{const s=mqStartAt(ev);if(!s)return;
+ press={id:ev.pointerId,x:ev.clientX,y:ev.clientY,k:s.k,n:s.n,add:ev.shiftKey||ev.ctrlKey||ev.metaKey}});
+document.addEventListener("pointerdown",()=>{mqSwallow=false},true);
+document.addEventListener("pointermove",ev=>{if(!press||ev.pointerId!==press.id)return;if(!(ev.buttons&1)){mqEnd(true);return}
+ if(!mq){if(Math.hypot(ev.clientX-press.x,ev.clientY-press.y)<MQ_MIN)return;mqStart()}
+ mq.cx=ev.clientX;mq.cy=ev.clientY;mqFrame()});
+document.addEventListener("pointerup",ev=>{if(press&&ev.pointerId===press.id)mqEnd(true)});
+document.addEventListener("pointercancel",ev=>{if(press&&ev.pointerId===press.id)mqEnd(false)});
+// the click that ends a drag is the drag's, not a click on the tile under it (a keyboard's click, detail 0, is never taken)
+document.addEventListener("click",ev=>{if(mqSwallow&&ev.detail>0){mqSwallow=false;ev.preventDefault();ev.stopPropagation()}},true);
+$("#list").addEventListener("dragstart",ev=>ev.preventDefault());  // no native image drag from a tile
+document.addEventListener("selectstart",ev=>{if(press)ev.preventDefault()});
+function mqStart(){const p=press;try{$("#main").setPointerCapture(p.id)}catch(e){}
+ const box=el("div",p.k||null);box.id="marq";box.setAttribute("aria-hidden","true");document.body.append(box);document.body.classList.add("marqing");
+ const s=getSelection();if(s)s.removeAllRanges();
+ mq={id:p.id,g:gen,k:p.k,n0:p.n,x0:p.x+scrollX,y0:p.y+scrollY,cx:p.x,cy:p.y,box,rects:null,len:-1,raf:0,hit:null,
+  selB:new Set(sel),lastB:last,base:p.k?null:new Set(p.add?sel:[]),decB:Object.assign({},dec),lastByB:Object.assign({},lastBy),r:{did:0,kept:0}}}
+function mqFrame(){if(mq&&!mq.raf)mq.raf=requestAnimationFrame(mqTick)}
+// the tiles' boxes in page coordinates; the layout holds still during a drag except when a page of tiles loads
+function mqRects(){if(mq.len!==items.length){mq.len=items.length;mq.rects=[];
+  $$("#list .tile").forEach(t=>{const n=+t.dataset.n;if(t.hidden||hiddenAt(n))return;const r=t.getBoundingClientRect();mq.rects.push([n,r.left+scrollX,r.top+scrollY,r.right+scrollX,r.bottom+scrollY])})}
+ return mq.rects}
+function mqTick(){if(!mq)return;mq.raf=0;if(mq.g!==gen){mqEnd(false);return}
+ // near the window's top (below the sticky header) or bottom edge: scroll, faster the further in
+ const top=$("#top").getBoundingClientRect().bottom,up=top+MQ_EDGE-mq.cy,down=mq.cy-(innerHeight-MQ_EDGE);
+ const edge=up>0?-Math.min(40,2+up/2):down>0?Math.min(40,2+down/2):0;if(edge)scrollBy(0,edge);
+ const px=mq.cx+scrollX,py=mq.cy+scrollY,x1=Math.min(mq.x0,px),x2=Math.max(mq.x0,px),y1=Math.min(mq.y0,py),y2=Math.max(mq.y0,py);
+ const b=mq.box.style,cl=(v,m)=>Math.max(0,Math.min(m,v));  // drawn inside the window only (no overflow)
+ b.left=cl(x1-scrollX,innerWidth)+"px";b.top=cl(y1-scrollY,innerHeight)+"px";b.width=(cl(x2-scrollX,innerWidth)-cl(x1-scrollX,innerWidth))+"px";b.height=(cl(y2-scrollY,innerHeight)-cl(y1-scrollY,innerHeight))+"px";
+ const hits=mqRects().filter(r=>r[1]<x2&&r[3]>x1&&r[2]<y2&&r[4]>y1).map(r=>r[0]),key=hits.join(",");
+ if(key!==mq.hit){mq.hit=key;mqApply(hits)}
+ if(edge)mq.raf=requestAnimationFrame(mqTick)}  // keep scrolling while the pointer stays at the edge
+function mqApply(hits){if(mq.k){dec=Object.assign({},mq.decB);if(!hits.includes(mq.n0))hits.push(mq.n0);mq.r=bulkMark(hits,mq.k,mq.n0);
+  const hi=Math.max(...hits);lastBy[mq.k]=items[hi].id;cur=hi}
+ else{allSel=null;sel.clear();mq.base.forEach(id=>sel.add(id));hits.forEach(n=>sel.add(items[n].id));last=hits.length?Math.max(...hits):mq.lastB}
+ paintSel()}
+function mqEnd(ok){const m=mq;press=null;mq=null;if(!m)return;if(m.raf)cancelAnimationFrame(m.raf);m.box.remove();document.body.classList.remove("marqing");
+ try{$("#main").releasePointerCapture(m.id)}catch(e){}mqSwallow=true;if(m.g!==gen)return;
+ if(!ok){if(m.k){dec=m.decB;lastBy=m.lastByB}else{allSel=null;sel.clear();m.selB.forEach(id=>sel.add(id));last=m.lastB}paintSel();say(m.k?"Marking cancelled.":"Selection put back.");return}
+ say(m.k?markWords(m.k,m.r):fmt(sel.size)+" selected")}
 function nameOf(id){const it=items.find(i=>i.id===id);return it?it.n:"#"+id}
 // ---------------------------------------------------------------- actions
 /* Messages: the toast (role=status) fades; one with Undo stays 10 s, longer while the pointer or focus is on it.
@@ -2693,10 +2780,11 @@ function refreshAfter(ids,thumbs,fresh){patchTiles(fresh);if(thumbs)ids.forEach(
 $("#bkeep").onclick=()=>doKeep(selIds());$("#btrash").onclick=()=>askTrash(selIds());$("#berase").onclick=()=>askErase(selIds());
 $("#btag").onclick=()=>tagAsk("add");$("#buntag").onclick=()=>tagAsk("remove");$("#brot").onclick=()=>rot(selIds(),"cw");
 $("#bshare").title=SHARE_TIP;$("#ball").onclick=selectAll;$("#bevent").onclick=()=>askSetEvent(selIds());$("#bshare").onclick=()=>askShare(selIds());$("#bnone").onclick=()=>{sel.clear();paintSel()};
-$("#sugapply").onclick=()=>{const keep=Object.keys(dec).filter(k=>dec[k]==="keep").map(Number),trash=Object.keys(dec).filter(k=>dec[k]==="trash").map(Number);
+$("#bmarkall").onclick=markAll;$("#bclearm").onclick=clearMarks;
+$("#sugapply").onclick=()=>{const {keep,trash}=sugMarks();
  const nk=keep.length,nt=trash.length;
  confirmBox(`Apply: ${nk} keep, ${nt} trash?`,[nk?`Keep ${plural(nk,"item")}: ${nk===1?"it":"they"} won't be suggested as junk again.`:"",...(nt?[thumbs(trash),names(trash),"Trash: "+trashText(nt)]:[])].filter(Boolean),false,
-  async()=>{const j=await api("/api/decide",{keep,trash,confirm:true});if(nt){jobDest="";startJob("trash",trash,j.result+"\n")}else{closeModal();toast(j.result);loadFacets();reset()}},nt?"Apply and trash "+plural(nt,"file"):"Apply")};
+  async()=>{const j=await api("/api/decide",{keep,trash,confirm:true});keep.concat(trash).forEach(id=>delete dec[id]);if(nt){jobDest="";startJob("trash",trash,j.result+"\n")}else{closeModal();toast(j.result);loadFacets();reset()}},nt?"Apply and trash "+plural(nt,"file"):"Apply")};
 // ---------------------------------------------------------------- large view
 function curVideo(){return $("#media video")}
 function stopVideo(){const v=curVideo();if(v){v.pause();v.removeAttribute("src");v.load()}}  // releases the file
@@ -2735,7 +2823,8 @@ async function openViewer(n,opt){opt=opt||{};if(n<0||n>=items.length)return;if(v
  const head=el("div","ihead"),x=el("button","icon");x.id="vclose";x.type="button";x.setAttribute("aria-label","Close (Esc)");x.title="Close (Esc)";x.insertAdjacentHTML("beforeend",'<svg class="ic"><use href="#i-x"/></svg>');x.onclick=closeViewer;
  head.append(el("h2",null,d.name),x);s.append(head);
  const acts=el("div","acts"),mk=(box,t,f,c)=>{const b=el("button","btn"+(c?" "+c:""),t);b.type="button";b.onclick=f;box.append(b);return b};
- mk(acts,"Keep (K)",()=>doKeep([d.id]),"keep");mk(acts,"Trash (T)",()=>askTrash([d.id]),"trash");mk(acts,"Erase (E)",()=>askErase([d.id]),"erase");s.append(acts);
+ if(view==="sug")[["keep","Mark Keep (K)"],["trash","Mark Trash (T)"]].forEach(([k,l])=>{const b=mk(acts,l,()=>viewMark(k),k);b.setAttribute("aria-pressed",String(dec[d.id]===k))});
+ else{mk(acts,"Keep (K)",()=>doKeep([d.id]),"keep");mk(acts,"Trash (T)",()=>askTrash([d.id]),"trash")}mk(acts,"Erase (E)",()=>askErase([d.id]),"erase");s.append(acts);
  const tools=el("div","tools");mk(tools,"Rotate left (Shift+R)",()=>rot([d.id],"ccw")).setAttribute("aria-keyshortcuts","Shift+R");mk(tools,"Rotate right (R)",()=>rot([d.id],"cw")).setAttribute("aria-keyshortcuts","R");
  mk(tools,"Set event…",()=>askSetEvent([d.id]));mk(tools,"Share-safe copy",()=>askShare([d.id])).title=SHARE_TIP;
  mk(tools,"Find similar",()=>{simId=d.id;simName=d.name;closeViewer();$("#q").value="";syncUI();reset()}).title="Photos that look like this one";s.append(tools);
@@ -2758,6 +2847,9 @@ async function openViewer(n,opt){opt=opt||{};if(n<0||n>=items.length)return;if(v
  if(!opt.keep)$("#viewer").focus({preventScroll:true});
  $("#viewer").dataset.current=d.name;  // last: the keys (Space, arrows) act on this item from here on
  if(n>=items.length-20)more()}
+// Suggested junk's large view marks (nothing changes until Apply), then steps to the next item
+function viewMark(k){if(vi<0)return;const id=items[vi].id;dec[id]=k;lastBy[k]=id;paintSel();toast(`Marked ${MARKW[k]}: ${items[vi].n}. Nothing changes until Apply.`);
+ const nx=stepVis(vi,1);if(nx<items.length)openViewer(nx);else openViewer(vi,{keep:true})}
 function closeViewer(){if(vi<0)return;const id=items[vi]&&items[vi].id;stopVideo();vi=-1;$("#viewer").scrollTop=0;$("#viewer").classList.remove("on");document.body.classList.remove("noscroll");$("#media").replaceChildren();
  delete $("#viewer").dataset.current;const u=$("#unmute");if(u)u.remove();paintSel();const t=$("#t"+id)||lastFocus;if(t&&t.focus)t.focus({preventScroll:true})}
 // swipe down on the photo or video closes the large view (phone); Esc and the close button still do
@@ -2768,6 +2860,7 @@ $("#vprev").onclick=()=>openViewer(stepVis(vi,-1));$("#vnext").onclick=()=>openV
 // ---------------------------------------------------------------- keys
 document.addEventListener("keydown",ev=>{const tg=ev.target,modal=isOn("#modal");
  if(ev.key==="Tab"){const d=topDialog();if(d)trapTab(ev,d);return}
+ if(mq&&ev.key==="Escape"){ev.preventDefault();mqEnd(false);return}
  // the shortcut list: Esc or ? closes it; no other page key acts while it is open
  if(isOn("#keys")){if(ev.key==="Escape"||ev.key==="?"){ev.preventDefault();closeKeys()}return}
  // a ticked checkbox (or a slider) keeps focus but takes no letters, so the keys still act on the selection
@@ -2786,19 +2879,23 @@ document.addEventListener("keydown",ev=>{const tg=ev.target,modal=isOn("#modal")
  if(vi>=0){const id=items[vi].id;
   if(k==="Escape")closeViewer();else if(k==="ArrowRight")openViewer(stepVis(vi,1));else if(k==="ArrowLeft")openViewer(stepVis(vi,-1));
   else if(k===" "){if(tg.tagName==="VIDEO"||tg.tagName==="BUTTON")return;const v=curVideo();if(!v)return;v.paused?v.play().catch(()=>{}):v.pause()}
+  else if((k==="k"||k==="K"||k==="t"||k==="T")&&view==="sug")viewMark(k.toLowerCase()==="k"?"keep":"trash");
   else if(k==="k"||k==="K")doKeep([id]);else if(k==="t"||k==="T")askTrash([id]);else if(k==="e"||k==="E")askErase([id]);
   else if(k==="r")rot([id],"cw");else if(k==="R")rot([id],"ccw");else return;ev.preventDefault();return}
  if(k==="/"){ev.preventDefault();expandSidebar();$("#q").focus();return}
  if(view==="sug"){if((k==="Enter"||k===" ")&&tg.tagName==="BUTTON")return;if(k==="ArrowRight"||k==="ArrowDown"||k==="j"){cur=Math.min(items.length-1,cur+1)}else if(k==="ArrowLeft"||k==="ArrowUp"){cur=Math.max(0,cur-1)}
-  else if((k==="k"||k==="K"||k==="t"||k==="T")&&cur>=0){dec[items[cur].id]=k.toLowerCase()==="k"?"keep":"trash";cur=Math.min(items.length-1,cur+1)}
+  else if(k==="k"||k==="K"||k==="t"||k==="T"){const m=k.toLowerCase()==="k"?"keep":"trash";
+   // no outline yet: the tile under the pointer, else outline the first and say how to go on
+   if(cur<0&&hov>=0)cur=hov;else if(cur<0){if(!items.length)return;cur=0;ev.preventDefault();paintSel();toast("The first tile is outlined: K or T marks it, the arrows move the outline.");$("#t"+items[0].id).scrollIntoView({block:"nearest"});return}
+   if(ev.shiftKey)markRange(cur,m);else{dec[items[cur].id]=m;lastBy[m]=items[cur].id}cur=Math.min(items.length-1,cur+1)}
   else if(k==="Enter"&&cur>=0){openViewer(cur)}else return;ev.preventDefault();paintSel();const t=$("#t"+(items[cur]||{}).id);if(t)t.scrollIntoView({block:"nearest"});if(cur>=items.length-10)more();return}
  if(k==="Escape"&&drawer){drawer=false;layout();return}
  if(!sel.size)return;if(k==="k"||k==="K")doKeep(selIds());else if(k==="t"||k==="T")askTrash(selIds());else if(k==="e"||k==="E")askErase(selIds());else if(k==="Escape"){sel.clear();paintSel()}else return;ev.preventDefault()});
 // ---------------------------------------------------------------- views (plugin tabs go in the sidebar, after the built-in ones)
 VIEWS.forEach(v=>{const b=el("button","nv");b.type="button";b.dataset.v="p-"+v.id;b.title=v.title;b.insertAdjacentHTML("beforeend",'<svg class="ic"><use href="#i-plug"/></svg>');const rl=el("span","rl",v.title);rl.setAttribute("aria-hidden","true");b.append(el("span","lbl",v.title),rl);$("#ptabs").append(b)});
-function setView(v){view=v;simId=null;document.body.dataset.view=v;const plug=plugView();
+function setView(v){view=v;simId=null;sugFocus=v==="sug";document.body.dataset.view=v;const plug=plugView();
  $("#list").hidden=plug;$("#sentinel").hidden=plug;$("#plugin").hidden=!plug;$("#filters").hidden=plug;$(".sb-search").hidden=plug;$("#tsizew").hidden=plug;
- if(plug){sel.clear();dec={};paintSel();$("#count").textContent="";setNote("");$("#helpb").hidden=true;syncUI();const id=v.slice(2),P=$("#plugin"),pv=window.mediaIntakeViews[id];P.replaceChildren();
+ if(plug){sel.clear();paintSel();$("#count").textContent="";setNote("");$("#helpb").hidden=true;syncUI();const id=v.slice(2),P=$("#plugin"),pv=window.mediaIntakeViews[id];P.replaceChildren();
   if(!pv||typeof pv.render!=="function"){P.append(el("p","warn","Plugin view "+id+" has no render()"));return}
   pv.render(P,{el,api:(p,b)=>api("/plugin/"+id+"/"+p,b),media:p=>"/plugin/"+id+"/media/"+p})}
  else{syncUI();reset()}}

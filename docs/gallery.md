@@ -150,18 +150,23 @@ opens the list of every key the page handles; Esc, `?` or a click outside
 closes it, and no other key acts while it is open.
 
 - **Grid**: Enter opens the focused tile; Space ticks it (Shift+Space the
-  range from the last one); Shift-click a range, Ctrl-click one tile; Ctrl+A /
-  Cmd+A selects every tile shown; K / T / E Keep, Trash, Erase the selection;
+  range from the last one); Shift-click a range, Ctrl-click one tile; a mouse
+  drag selects every tile its rectangle touches (Shift / Ctrl adds; Esc while
+  dragging puts the selection back); Ctrl+A / Cmd+A selects every tile shown; K / T / E Keep, Trash, Erase the selection;
   Esc clears it (or closes the drawer at phone width; in the search box it
   clears the search); `/` jumps to the search box; Ctrl+Z / Cmd+Z undoes the
   last Keep, tag, Rotate or Set event while its message shows.
 - **Sidebar**: on its right edge (Tab to it), ← / → narrower / wider
   (Shift: bigger steps), Home / End narrowest / widest.
 - **Bursts**: X opens or closes the focused tile's stack.
-- **Large view**: ← / → previous / next, Space plays / pauses, K / T / E,
-  R / Shift+R rotate, Esc closes.
+- **Large view**: ← / → previous / next, Space plays / pauses, K / T / E
+  (in Suggested junk K / T mark and go to the next), R / Shift+R rotate, Esc
+  closes.
 - **Suggested junk**: arrows (and J) move the outline, K / T mark it (as its
-  Keep and Trash buttons do), Enter opens it.
+  Keep and Trash buttons do; with no outline yet, the tile under the pointer,
+  or the first tile is outlined and the page says so), Shift+K / Shift+T mark
+  the range from the last tile given that mark, Enter opens it. Entering the
+  view puts focus on its first tile.
 - **Dialogs**: Esc cancels, Enter in the text field confirms, Tab stays inside.
 
 `tests/browser/test_browser_gallery_dialogs.py` reads the key names from the
@@ -194,7 +199,24 @@ page's own handlers and fails when the list leaves one out.
   here: the marks are the only choice. With a keyboard, K / T mark the
   outlined tile, arrows move, Enter opens it. Nothing changes until **Apply**, which shows the counts (and the thumbnails
   and names of what it trashes) and needs a confirm ("Apply", or "Apply and
-  trash N files").
+  trash N files"). Marking many at once, all still waiting for Apply:
+  - **Shift-click** a tile's Trash (or Keep), or Shift+T / Shift+K on the
+    outlined tile: every tile from the last one given that mark gets it.
+  - **Drag** from a tile's Trash or Keep (mouse or pen): every tile the
+    rectangle touches gets that mark; Esc while dragging puts the marks back.
+  - **Mark all shown as Trash** in the Decisions bar: every tile loaded so far
+    (the message says how many more match below, as Select all does).
+    **Clear marks** takes every mark off, after asking.
+
+  A bulk mark never overrides a tile marked the other way (the message says
+  how many kept theirs; change one on its tile), except the tile you pressed.
+  In the large view K / T and its **Mark Keep (K)** / **Mark Trash (T)**
+  buttons mark the item and go to the next; no Keep is written and Trash
+  doesn't ask, since nothing happens until Apply. Marks belong to the items:
+  they survive the grid reloading, a filter, and a trip to another view and
+  back; only the tiles listed show them and only those reach Apply (the bar
+  says how many more are marked but not listed now). Reloading or closing the
+  tab while marks wait makes the browser ask first.
 - **Events**: every event in the library, from the sidecars' `Event|<slug>`
   tags (or `XMP-iptcExt:Event` on a file with no `Event|` tag), with its count;
   an item in two events counts and shows in both. A click shows that event's
@@ -291,7 +313,7 @@ Tick the box on a tile (shift-click a second box selects the range between,
 in the grid as it is now: after the grid reloads, for another view or filter,
 a shift-click starts a new selection; Ctrl-click on a tile ticks or unticks
 it; Space on a focused tile ticks it; **Select all** in the header, or Ctrl+A /
-Cmd+A, ticks every tile shown), then the bottom bar's buttons or keys:
+Cmd+A, ticks every tile shown; or drag a rectangle, below), then the bottom bar's buttons or keys:
 **K** Keep, **T** Trash, **E** Erase, **+ tag** / **− tag** (a field that
 suggests your tags as you type, from `/api/facets`' My tags, and refuses the
 tools' namespaces before anything is sent, as the server does; it is also how
@@ -323,6 +345,20 @@ any other text field selects that field's text, as usual; Select all is not
 offered in Suggested junk (K / T and Apply there) or a plugin tab. Ticking
 or unticking a tile afterwards, opening or closing a stack, or a new page
 loading turns the line back into a plain count. Esc clears.
+
+**Drag to select** (mouse or pen): press on a gap in the grid or on a tile's
+photo (not its checkbox or buttons) and drag; every tile the rectangle touches
+is selected, replacing the selection (with Shift, Ctrl or Cmd held at the
+press, adding to it). A press that moves less than 6 px is a click as before
+(it opens the item, or ticks with Shift / Ctrl). Near the window's top or
+bottom edge the page scrolls by itself, and tiles a page load adds inside the
+rectangle are taken in too, so it still never reaches a tile the page hasn't
+shown. A closed stack gives its cover only. Esc while dragging, or the browser
+taking the gesture, puts the selection back; the count is read out
+(`#selsay`, a status region). On a touch screen a drag scrolls, as ever:
+selecting there stays the checkbox and Select all, since a long-press would
+fight the browser's own (image menu, text selection) and a drag can't be both
+a scroll and a selection.
 
 | Action | What it writes |
 |---|---|
@@ -661,6 +697,16 @@ Ctrl+A and Cmd+A, a closed stack adding its cover only (and an open one every
 shot), an event filter respected, Ctrl+A in the search box left to the field,
 Esc clearing, Trash and Erase asking as before (the count, ERASE typed), and a
 grid with only its first 240 loaded saying how many more match.
+`tests/browser/test_browser_gallery_drag_select.py`: drag to select (a closed
+stack's cover only, an open one's every shot, Shift and Ctrl adding, a plain
+drag replacing, Esc putting it back, a 3 px press still a click, the checkbox
+and a touch pointer never drawing, the bottom edge scrolling into the next page
+and taking in its tiles) and Suggested junk's bulk marks (Shift-click and
+Shift+T / Shift+K ranges keeping an opposite mark, a drag from Trash and Esc,
+Mark all shown as Trash, Clear marks asking, Apply still asking with thumbnails
+and names, marks surviving another view, the page asking before unload, focus
+on the first tile on entering, K / T with no outline, and the large view's K /
+T marking and stepping on).
 `tests/browser/test_browser_gallery_bursts.py` does it on the page: the
 cover, badge and X, `x` and `X` with focus back on the cover, a near-copy
 never stacked, a closed stack's range selection and Keep reaching only the
