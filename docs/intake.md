@@ -793,6 +793,12 @@ ERASE) before anything moves. A refusal or a "no" leaves every file, sidecar
 and `index.json` entry where it was; nothing is left half-forgotten in
 quarantine. A file named twice is forgotten once.
 
+A photo of a document (an ID, a passport, a payment card, a receipt) found in
+the library or in quarantine goes to your records tool instead:
+`to-records` copies it to the records inbox and holds the original, and
+`to-records --finish` later erases the original through forget's and erase's
+own path ([records.md](records.md)).
+
 ## Erasing, and what it can't reach
 
 - **The disk.** `erase` deletes and relies on TRIM plus full-disk encryption.
@@ -829,7 +835,8 @@ quarantine. A file named twice is forgotten once.
   near-duplicate search. A copy of an erased photo filed there stays, and the
   coverage report lists the folder under "not checked". The folder is
   resolved through symlinks and compared ignoring letter case (`walk_files`
-  in `intake.py`).
+  in `intake.py`). `records.inbox` must be inside it on purpose: a photo
+  `to-records` hands there is never swept with its original.
 - **The gallery's caches.** Its thumbnails
   (`~/.cache/media-intake/thumbs/<sha256>-r<turn>.jpg`, one per rotation, and
   `<sha256>.jpg` from older versions) and H.264 video proxies
@@ -1420,7 +1427,8 @@ dropping the rest (dry run, unreadable files, symlinked cache folders, the libra
 and git repos, content in the library index left alone, counts only); `test_records_skip`: a copy under the records
 folder (the default with no config, `$PRIVATE_RECORDS` through a symlink and in another letter case, one on the
 drive) survives `sweep-erased --yes`, `forget` and its erase, and `verify-gone`, and in-process neither `sweep` nor
-`drive_purge` hashes a file there, plus `records.root`'s config rules; `test_library_ops_media_kinds`: every
+`drive_purge` hashes a file there, plus `records.root`'s config rules; `test_to_records`: the records inbox
+handoff and `--finish` ([records.md](records.md), Tests); `test_library_ops_media_kinds`: every
 library-side command on a photo, an mp4 and a .mov, alone and mixed; `test_detectors_media_kinds`: scan,
 vlm_trash, semantic, label and the plugin hook on photos, videos and mixed batches, broken videos that
 must be flagged "not checked", never clean, and the GStreamer fallback with a hostile file name and its one-line skip note for an unsafe work folder (fake tools); `test_motion`: motion photos (Google,

@@ -56,7 +56,12 @@ backup drive, quarantine, review folder, Keep, Trash, Erase, ...).
   or printed; [docs/places.md](docs/places.md)), and `datecheck.json` and
   `date-fixes.json` (check-dates' last report and every fix-dates write, with
   paths and dates; erase, forget, trash and sweep-erased drop their files'
-  records; [docs/dates.md](docs/dates.md)).
+  records; [docs/dates.md](docs/dates.md)). `records-handoff.json` (`0600`)
+  lists photos of documents handed to your records inbox and held until
+  `to-records --finish`: names, checksums and times, never content; held
+  quarantined ones wait in `quarantine/records-held/`, and `--finish` erases
+  only with `--yes` and proof the records backup holds them, never the inbox
+  copy ([docs/records.md](docs/records.md)).
   Face and pet detections, vectors, names and crops (biometric) live in
   `recognition.dir` (default `<state>/recognition`, `0700`, files `0600`),
   are never backed up, and go with every `erase`, `forget`, `trash` and

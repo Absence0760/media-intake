@@ -38,8 +38,9 @@ passport (`passport-mrz`) or a payment card (`payment-card`).
 - **Never handed over**: a file flagged for nudity, a 2FA code (`2fa-qr`),
   secret words, or as not checked (`unscanned-*`). It stays in quarantine,
   for you to erase as before. A 2FA code or a secret belongs in your
-  password manager. One refused file refuses the whole run, and nothing is
-  copied.
+  password manager. A library file goes only if it is a photo or video and
+  not a copy of a file the scan flagged, quarantine holds or erase removed.
+  One refused file refuses the whole run, and nothing is copied.
 - **The copy**: the file's bytes, unchanged (no conversion), under its own
   name in the inbox, or `<name> (2).<ext>`, `(3)`, ... when that name is
   taken. A file in the inbox is never overwritten. The inbox is created
@@ -49,8 +50,11 @@ passport (`passport-mrz`) or a payment card (`payment-card`).
 - **The original is held, not erased.** A library file stays where it is,
   so your backups still hold it, and the gallery hides it. A quarantined one
   moves to `quarantine/records-held/`, so its batch's erase of the other
-  files no longer waits for it. `<state>/records-handoff.json` (`0600`)
-  lists what is held: names, checksums and times, never content.
+  files no longer waits for it. `erase records-held` and `release
+  records-held` are refused: held files leave only through `--finish`.
+  `<state>/records-handoff.json` (`0600`) lists what is held: names,
+  checksums and times, never content. Each step is recorded before a file
+  moves, so a run stopped midway never leaves a held file unlisted.
 
 ## Finish: erase the originals
 
@@ -73,6 +77,14 @@ media-intake to-records --finish --backup-verified --yes      # no archive check
   sidecars, thumbnails, gallery caches and recognition data, and with
   `--drive` the copies on the backup drive, with the usual coverage report
   and `verify-gone`. The inbox copy, inside the records folder, stays.
+- Run the records backup after the handoff, not during it: the archive's
+  date is when it finished, so a photo handed over while it was being
+  written would count as in it.
+- Only what was handed over is erased: a held file whose size or sha256
+  changed since is left where it is and no longer held (hand it over again).
+  One no longer where it was held, and not in the erase log, stays listed
+  and is named: a `--finish` stopped midway leaves it in
+  `quarantine/records-<date>/`, and erasing that batch finishes it.
 - A quarantined document's original on the phone is not deleted by
   `--finish` (the phone is long gone by then): `offload` handles the phone.
 
@@ -84,7 +96,10 @@ the inbox, its original held and hidden from the gallery, and a second
 handoff of it refused; a taken name gets ` (3)` and nothing is overwritten; a
 quarantined ID moves to `records-held` and out of its batch; nudity, 2FA,
 secret words, unscanned and reason-less files and files outside the library
-are refused, and one refusal copies nothing; `--finish` refuses without
+are refused, and one refusal copies nothing; a library copy of a flagged
+file and a non-photo are refused; `erase` and `release` of `records-held`
+are refused; `--finish` leaves a changed file and keeps a missing one
+listed; `--finish` refuses without
 proof, dry-runs, then erases the originals and their stray copies but never
 the inbox copies; with an archive on the drive only what it holds is erased;
 and the `records.inbox` / `records.archive` config rules.

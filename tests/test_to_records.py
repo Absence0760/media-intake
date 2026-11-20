@@ -171,6 +171,41 @@ class ToRecords(unittest.TestCase):
         self.assertEqual([r["name"] for r in self.handoffs()], ["IMG_0002.jpg"])
         self.assertTrue(os.path.isfile(arch))
 
+    def test_a_library_copy_of_a_flagged_file_or_a_non_photo_never_goes(self):
+        data = os.urandom(3000)
+        p = self.photo(data=data)
+        quar = os.path.join(self.state, "quarantine", "2026-11-19-x")
+        write(os.path.join(quar, "a.jpg"), data)
+        with open(os.path.join(quar, "quarantine.json"), "w") as f:
+            json.dump({"a.jpg": dict(reasons=["nudity"], sha=hashlib.sha256(data).hexdigest(), size=len(data),
+                                     dst=None)}, f)
+        self.assertIn("a copy of a file the scan flagged", self.run_cli(p, "--yes", code=1))
+        notes = write(os.path.join(self.lib, "2026/2026-11/notes.txt"), b"x")
+        self.assertIn("not a photo or video", self.run_cli(notes, "--yes", code=1))
+        self.assertFalse(os.path.exists(self.inbox))
+
+    def test_finish_leaves_a_changed_file_and_keeps_a_missing_one_listed(self):
+        changed, missing = self.photo("IMG_0001.jpg"), self.quarantined(["id-barcode"])
+        self.run_cli(changed, missing, "--yes")
+        write(changed, os.urandom(3000))  # replaced at the held place since the handoff
+        os.remove(os.path.join(self.state, "quarantine", "records-held", "IMG_0100.jpg"))  # neither erased nor there
+        out = self.run_cli("--finish", "--backup-verified", "--yes")
+        self.assertIn("changed since it was handed over", out)
+        self.assertIn("not where it was held and not erased", out)
+        self.assertTrue(os.path.isfile(changed), "only what was handed over is erased")
+        self.assertEqual([r["name"] for r in self.handoffs()], ["IMG_0100.jpg"], "the missing one stays listed")
+
+    def test_the_held_batch_leaves_only_through_finish(self):
+        p = self.quarantined(["passport-mrz"])
+        self.run_cli(p, "--yes")
+        held = os.path.join(self.state, "quarantine", "records-held", "IMG_0100.jpg")
+        for cmd in (["erase", "records-held", "--yes"], ["release", "records-held", "IMG_0100.jpg"]):
+            r = subprocess.run([PY, "-I", INTAKE, *cmd], env=self.env, capture_output=True, text=True,
+                               stdin=subprocess.DEVNULL)
+            self.assertNotEqual(r.returncode, 0, cmd)
+            self.assertIn("to-records --finish", r.stdout + r.stderr)
+            self.assertTrue(os.path.isfile(held), cmd)
+
     def test_no_inbox_configured_or_no_records_folder(self):
         cfg = self.env["MEDIA_INTAKE_CONFIG"]
         with open(cfg) as f:
