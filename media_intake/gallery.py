@@ -1945,6 +1945,9 @@ class App:
                     video=it["show"] == "video", date=it["date"], place=it["place"], event=it["event"],
                     project=it["project"], source=it["source"], folder=folder, res=it["res"],
                     size=R.human(it["size"]), tags=it["tags"], mine=it["mine"], rot=rot, ai=it["ai_trash"],
+                    # the large view's verdict line: the junk reason (a WORDS["why"] key, or the model's own word),
+                    # the vision check's "fine" verdict and best-shot's "not the best shot"
+                    why=it["ai_why"], ai_keep=bool(it["ai_keep"]), not_best=bool(it.get("not_best")),
                     used=it["used"], kept=it["kept"], fav=it["fav"], has_xmp=it["has_xmp"],
                     heic=it["ext"] in R.CONVERT_IMG and it["show"] == "none",  # no pillow-heif: a thumbnail only
                     gps=it["gps"] is not None, myplaces=it["myplaces"], probably=self.probably(i),
@@ -3914,6 +3917,12 @@ body.marqing,body.marqing *{user-select:none;-webkit-user-select:none}
 #info .btn.share{flex:none;gap:6px;background:#2456d3;border-color:#2456d3;color:#fff;font-weight:600}#info .btn.share:hover{background:#1d47b0}
 #modal .mopenp{display:flex;flex-wrap:wrap;gap:8px;align-items:center}
 #info .btn.keep{color:#5fd07c;border-color:#2f6b40}#info .btn.trash{color:#e8ad3c;border-color:#6e5420}#info .btn.erase{color:#ff7a6e;border-color:#7a2e29}
+/* Keep pressed: the item is kept (aria-pressed), shown by fill and an inset ring, never by colour alone */
+#info .btn.keep[aria-pressed=true]{background:#2f6b40;border-color:#5fd07c;color:#fff;font-weight:700;box-shadow:inset 0 0 0 2px #5fd07c}
+/* "N of M" over the photo, and the vision check's verdict under the name */
+#vpos{position:absolute;top:10px;left:50%;transform:translateX(-50%);z-index:3;margin:0;border-radius:999px;background:rgba(0,0,0,.6);color:#fff;padding:3px 12px;font-size:13px;font-variant-numeric:tabular-nums;pointer-events:none;white-space:nowrap}
+#vpos:empty{display:none}
+#info .verdict{margin:-10px 0 0;color:#d7d7dc;overflow-wrap:anywhere}
 .acts{display:grid;grid-template-columns:repeat(3,1fr);gap:6px}
 .acts .btn{justify-content:center;padding:0 6px}
 .tools{display:flex;flex-wrap:wrap;gap:6px}
@@ -4163,7 +4172,7 @@ dl.dt dd{margin:0;word-break:break-word}
 <p id="selsay" class="vh" role="status" aria-live="polite"></p>
 <div id="etoast" role="alert" aria-atomic="true"></div>
 <div id="viewer" role="dialog" aria-modal="true" aria-label="Item" tabindex="-1">
- <div id="stage"><div id="media"></div>
+ <div id="stage"><div id="media"></div><p id="vpos"></p>
   <button type="button" class="arrow" id="vprev" aria-label="Previous (Left arrow)">‹</button><button type="button" class="arrow" id="vnext" aria-label="Next (Right arrow)">›</button></div>
  <aside id="info" aria-label="Details"></aside>
 </div>
@@ -5034,7 +5043,7 @@ function dropItems(ids){const out=new Set(ids.map(String)),gone={has:id=>out.has
  $("#list").replaceChildren();render(0);paintCount();
  if(anchor){const t=$("#"+anchor[0]);if(t)scrollBy(0,t.getBoundingClientRect().top-anchor[1])}
  if(!items.length&&done)emptyState("");else if(!done)more();
- if(vid!==null){if(!gone.has(vid)){const k=items.findIndex(i=>i.id===vid);if(k!==vi)openViewer(k,{keep:true})}
+ if(vid!==null){if(!gone.has(vid)){const k=items.findIndex(i=>i.id===vid);if(k!==vi)openViewer(k,{keep:true});else paintPos()}
   else{let k=at;if(k<items.length&&hiddenAt(k))k=stepVis(k,1);if(k>=items.length)k=stepVis(Math.min(at,items.length),-1);
    if(k>=0&&k<items.length)openViewer(k);else closeViewer()}}
  else if(vi<0&&!isOn("#modal")){const it=items[Math.min(first,items.length-1)],t=it&&$("#t"+it.id);if(t&&!t.hidden)t.focus({preventScroll:true})}}
@@ -5091,7 +5100,7 @@ function startVideo(v){const ok=()=>{const u=$("#unmute");if(u)u.remove()};
  v.play().then(ok).catch(()=>{if(curVideo()!==v)return;v.muted=true;v.play().then(()=>{if(curVideo()!==v||$("#unmute"))return;const u=el("button",null,"Unmute");u.id="unmute";u.type="button";
   u.onclick=()=>{v.muted=false;u.remove()};$("#stage").append(u)}).catch(()=>{})})}
 async function openViewer(n,opt){opt=opt||{};if(n<0||n>=items.length)return;if(vi<0)lastFocus=document.activeElement;
- const v0=curVideo(),tKeep=opt.keep&&v0&&v0.dataset.id==items[n].id?v0.currentTime:null;stopVideo();vi=n;cur=n;
+ const v0=curVideo(),tKeep=opt.keep&&v0&&v0.dataset.id==items[n].id?v0.currentTime:null;stopVideo();vi=n;cur=n;paintPos();
  const pend=api("/api/item/"+items[n].id);$("#viewer").classList.add("on");document.body.classList.add("noscroll");
  const M=$("#media");const u0=$("#unmute");if(u0)u0.remove();dropConv();
  // a video is made and started inside the click's handler (the user gesture), before the details arrive
@@ -5114,10 +5123,13 @@ async function openViewer(n,opt){opt=opt||{};if(n<0||n>=items.length)return;if(v
  const s=$("#info");s.replaceChildren();
  const head=el("div","ihead"),x=el("button","icon");x.id="vclose";x.type="button";x.setAttribute("aria-label","Close (Esc)");x.title="Close (Esc)";x.insertAdjacentHTML("beforeend",'<svg class="ic"><use href="#i-x"/></svg>');x.onclick=closeViewer;
  head.append(el("h2",null,d.name),x);s.append(head);
+ {const w=verdictText(d);if(w){const p=el("p","verdict",w);p.id="vwhy";s.append(p)}}
  const vs=el("button","btn share");vs.id="vshare";vs.type="button";vs.title=SHARE_TIP;vs.insertAdjacentHTML("beforeend",'<svg class="ic"><use href="#i-share"/></svg>');vs.append("Share");vs.onclick=()=>askShare([d.id]);x.before(vs);
  const acts=el("div","acts"),mk=(box,t,f,c)=>{const b=el("button","btn"+(c?" "+c:""),t);b.type="button";b.onclick=f;box.append(b);return b};
  if(view==="sug")[["keep","Mark Keep (K)"],["trash","Mark Trash (T)"]].forEach(([k,l])=>{const b=mk(acts,l,()=>viewMark(k),k);b.setAttribute("aria-pressed",String(dec[d.id]===k))});
- else{mk(acts,"Keep (K)",()=>doKeep([d.id]),"keep");mk(acts,"Trash (T)",()=>askTrash([d.id]),"trash")}mk(acts,"Erase (E)",()=>askErase([d.id]),"erase");s.append(acts);
+ else{const kb=mk(acts,"Keep (K)",viewKeep,"keep");kb.setAttribute("aria-pressed",String(!!d.kept));kb.setAttribute("aria-keyshortcuts","K");
+  kb.title=d.kept?"Kept: it won't be suggested as junk again. Press to go on to the next":"Keep: never suggest it as junk again, and go on to the next";
+  mk(acts,"Trash (T)",()=>askTrash([d.id]),"trash")}mk(acts,"Erase (E)",()=>askErase([d.id]),"erase");s.append(acts);
  {const fb=mk(acts,"★ Favorite (F)",()=>doFav([d.id],!d.fav),"favb");fb.setAttribute("aria-pressed",String(!!d.fav));fb.setAttribute("aria-keyshortcuts","F");fb.title=d.fav?"A favorite: press to unstar":"Add to "+WORDS.view.fav}
  const tools=el("div","tools");mk(tools,"Rotate left (Shift+R)",()=>rot([d.id],"ccw")).setAttribute("aria-keyshortcuts","Shift+R");mk(tools,"Rotate right (R)",()=>rot([d.id],"cw")).setAttribute("aria-keyshortcuts","R");
  mk(tools,"Set event…",()=>askSetEvent([d.id]));
@@ -5125,7 +5137,7 @@ async function openViewer(n,opt){opt=opt||{};if(n<0||n>=items.length)return;if(v
  mk(tools,"Find similar",()=>{simId=d.id;simName=d.name;closeViewer();$("#q").value="";syncUI();reset()}).title="Photos that look like this one";s.append(tools);
  const dl=el("dl","dt"),row=(k,v)=>{if(v){dl.append(el("dt",null,k),el("dd",null,v))}};
  row("Date",d.date);row("Place",d.place);row(WORDS.filter.myplace,(d.myplaces||[]).join(", "));row("Event",d.event);row("Project",d.project);row("Source",d.source);row("Folder",d.folder);row("Resolution",d.res);row("Size",d.size);
- if(d.ai!=null)row(WORDS.score,d.ai.toFixed(2));if(d.used.length)row("Used in",d.used.join(", "));if(d.kept)row("Your decision","Marked Keep");
+ if(d.used.length)row("Used in",d.used.join(", "));if(d.kept)row("Your decision","Marked Keep");
  const det=el("div");det.append(el("p","sh","Details"),dl);s.append(det);
  // "probably here": this has no location, but a shot from the same camera close in time was in one of your places
  (d.probably||[]).forEach(pl=>{const box=el("div","probably");box.setAttribute("role","group");box.setAttribute("aria-label","Probably at "+pl.name);
@@ -5147,6 +5159,21 @@ async function openViewer(n,opt){opt=opt||{};if(n<0||n>=items.length)return;if(v
  if(!opt.keep)$("#viewer").focus({preventScroll:true});
  $("#viewer").dataset.current=d.name;  // last: the keys (Space, arrows) act on this item from here on
  if(n>=items.length-20)more()}
+// "N of M" over the photo: its place among the items the grid shows (a closed stack's hidden shots don't count), of
+// every match (the server's count, less the hidden shots loaded)
+function paintPos(){const p=$("#vpos");if(vi<0||!items[vi]){p.textContent="";return}let n=0,h=0;
+ items.forEach((it,k)=>{const hid=hiddenAt(k);if(k<=vi&&(!hid||k===vi))n++;if(hid&&k!==vi)h++});
+ p.textContent=fmt(n)+" of "+fmt(Math.max(n,total-h))}
+// the vision check's verdict under the name, in the grid's words: "Junk score 0.90 (blurry)", "Judged fine",
+// "Not the best shot" (best-shot)
+function verdictText(d){const w=[];if(d.ai!=null)w.push(WORDS.score+" "+d.ai.toFixed(2)+(d.why?" ("+whyWord(d.why).toLowerCase()+")":""));
+ else if(d.ai_keep)w.push(AIV.keep);if(d.not_best)w.push(WORDS.why["not-best"]);return w.join(" · ")}
+// the large view's Keep (K): keeps the item (never suggested as junk again), then steps to the next, as Trash does
+async function viewKeep(){if(vi<0)return;const n=vi,id=items[n].id;let j;
+ try{j=await api("/api/keep",{ids:[id]})}catch(e){refused("Keep",e);return}
+ toast(j.result,j.undo);patchTiles(j.items);loadFacets();
+ if(vi!==n||!items[n]||items[n].id!==id)return;  // moved on meanwhile: stay where the user went
+ const nx=stepVis(n,1);if(nx<items.length)openViewer(nx);else openViewer(n,{keep:true})}
 // Suggested junk's large view marks (nothing changes until Apply), then steps to the next item
 function viewMark(k){if(vi<0)return;const id=items[vi].id;dec[id]=k;lastBy[k]=id;paintSel();toast(`Marked ${MARKW[k]}: ${items[vi].n}. Nothing changes until Apply.`);
  const nx=stepVis(vi,1);if(nx<items.length)openViewer(nx);else openViewer(vi,{keep:true})}
@@ -5184,7 +5211,7 @@ document.addEventListener("keydown",ev=>{const tg=ev.target,modal=isOn("#modal")
   if(k==="Escape")closeViewer();else if(k==="ArrowRight")openViewer(stepVis(vi,1));else if(k==="ArrowLeft")openViewer(stepVis(vi,-1));
   else if(k===" "){if(tg.tagName==="VIDEO"||tg.tagName==="BUTTON")return;const v=curVideo();if(!v)return;v.paused?v.play().catch(()=>{}):v.pause()}
   else if((k==="k"||k==="K"||k==="t"||k==="T")&&view==="sug")viewMark(k.toLowerCase()==="k"?"keep":"trash");
-  else if(k==="k"||k==="K")doKeep([id]);else if(k==="t"||k==="T")askTrash([id]);else if(k==="e"||k==="E")askErase([id]);
+  else if(k==="k"||k==="K")viewKeep();else if(k==="t"||k==="T")askTrash([id]);else if(k==="e"||k==="E")askErase([id]);
   else if(k==="f"||k==="F")favToggle([id]);
   else if(k==="r")rot([id],"cw");else if(k==="R")rot([id],"ccw");else return;ev.preventDefault();return}
  if(k==="/"){ev.preventDefault();expandSidebar();$("#q").focus();return}

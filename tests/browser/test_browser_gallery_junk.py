@@ -10,7 +10,8 @@ the Junk check filter's .opt[data-val=trash] and #aimin. Synthetic images in a t
 as plain XMP; originals are compared by sha256 at the end. Marks with the view's filters: bulk marks then a
 narrower Why or a higher Junk score (what Apply sends, and "N more not listed now"), a mark taken off by a star
 and not back on unstar, and Suggested junk's tiles carrying no star or Share (a Share asked from Library
-leaving the marks as they were). Apply's /api/decide is answered by the test (page.route), so nothing is
+leaving the marks as they were), and Library's large view for one-by-one review ("N of M", the verdict line,
+Keep pressed, K moving on). Apply's /api/decide is answered by the test (page.route), so nothing is
 written or deleted by it; the server side of Apply is tests/test_gallery.py's. Every test fails on an uncaught
 page error.
 """
@@ -228,6 +229,53 @@ class GalleryJunkBrowserTest(B.BrowserCase):
         B.expect(page.locator('[data-item="hi.jpg"] .mark')).to_have_text("Trash")
         self.assertEqual(marks(), {"hi.jpg": "Trash", "lab.jpg": "Keep"})
         B.expect(page.locator("#sugn")).to_have_text("1 keep / 1 trash marked")
+
+    def test_large_view_one_by_one_review(self):
+        """Library's large view: "N of M" over the photo, the vision check's verdict under the name in the grid's
+        words, Keep pressed on a kept item, and K keeping the item and going on to the next."""
+        page = self.page(DESKTOP)
+        B.expect(self.shown(page)).to_have_count(5)
+        order = self.shown(page).evaluate_all("els => els.map(e => e.dataset.item)")
+        viewer = page.get_by_role("dialog", name="Item", exact=True)
+        keep = viewer.get_by_role("button", name="Keep (K)", exact=True)
+        page.locator(f'[data-item="{order[0]}"] img').click()
+        B.expect(viewer).to_have_attribute("data-current", order[0])
+        B.expect(viewer.locator("#vpos")).to_have_text("1 of 5")
+        page.keyboard.press("ArrowRight")
+        B.expect(viewer).to_have_attribute("data-current", order[1])
+        B.expect(viewer.locator("#vpos")).to_have_text("2 of 5")
+        page.keyboard.press("Escape")
+        page.locator('[data-item="kept.jpg"] img').click()
+        B.expect(viewer).to_have_attribute("data-current", "kept.jpg")
+        B.expect(keep).to_have_attribute("aria-pressed", "true")
+        B.expect(viewer.locator("#vwhy")).to_have_text("Junk score 0.95 (blurry)")
+        page.keyboard.press("Escape")
+        page.locator('[data-item="plain.jpg"] img').click()
+        B.expect(viewer).to_have_attribute("data-current", "plain.jpg")
+        B.expect(viewer.locator("#vwhy")).to_have_count(0)  # no verdict, no line
+        page.keyboard.press("Escape")
+        # K on a junk verdict that is not the last tile: kept, and the large view moves on
+        name = "hi.jpg" if order[-1] != "hi.jpg" else "lo.jpg"
+        n = order.index(name)
+        page.locator(f'[data-item="{name}"] img').click()
+        B.expect(viewer).to_have_attribute("data-current", name)
+        B.expect(viewer.locator("#vpos")).to_have_text(f"{n + 1} of 5")
+        B.expect(viewer.locator("#vwhy")).to_have_text(
+            "Junk score 0.90 (blurry)" if name == "hi.jpg" else "Junk score 0.40 (too dark)")
+        B.expect(keep).to_have_attribute("aria-pressed", "false")
+        with page.expect_response(lambda r: r.url.endswith("/api/keep")) as resp:
+            page.keyboard.press("k")
+        self.assertEqual(resp.value.status, 200)
+        B.expect(viewer).to_have_attribute("data-current", order[n + 1])
+        B.expect(viewer.locator("#vpos")).to_have_text(f"{n + 2} of 5")
+        B.expect(page.locator(f'[data-item="{name}"] .flag')).to_contain_text("Kept")
+        page.keyboard.press("ArrowLeft")  # back on it: Keep shows it is kept
+        B.expect(viewer).to_have_attribute("data-current", name)
+        B.expect(keep).to_have_attribute("aria-pressed", "true")
+        # the button does the same as K
+        with page.expect_response(lambda r: r.url.endswith("/api/keep")):
+            keep.click()
+        B.expect(viewer).to_have_attribute("data-current", order[n + 1])
 
     def test_phone_bar_fits(self):
         page = self.page(PHONE)
