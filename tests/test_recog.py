@@ -587,6 +587,104 @@ class NamesAndTags(Base):
         self.assertEqual(sorted(self.side.tags[self.p[1]]), ["People|Annie", "People|Someone"])
         self.assertEqual(self.tag()["sidecars changed"], 0, "idempotent")
 
+    def two_clusters_one_name(self):
+        """A second cluster (another individual's photos) the owner also named Ann: one name, two clusters."""
+        s_bo = self.world.scene(3, ("bo", None))
+        bo = [self.photo(f"2026/b{i}.png", s_bo) for i in range(2)]
+        self.scan(bo)
+        recog.recluster(self.c, self.spec)
+        (cl,) = {d["cluster"] for p in bo for d in self.det_of(p)}
+        recog.name_cluster(self.c, "face", cl, "ann")  # same_case: the existing spelling wins
+        self.assertEqual(self.det_of(bo[0])[0]["name"], "Ann")
+        return bo, cl
+
+    def test_rename_a_name_across_clusters(self):
+        bo, cl = self.two_clusters_one_name()
+        self.side.tags[self.p[1]] = ["People|Someone"]  # the owner's own People| tag: never touched
+        self.tag()
+        later = self.grow("later", self.s_ann)  # a suggestion of Ann, waiting
+        rejected = self.grow("rejected", self.s_ann)
+        recog.reject(self.c, "face", [self.det_of(rejected)[0]["id"]])
+        ids = recog.name_ids(self.c, "face", "Ann")
+        self.assertEqual(set(ids), {d["id"] for p in self.p + bo + [later, rejected] for d in self.det_of(p)})
+        for bad in ("", "  ", "a|b", "People|x", "x" * 65, "Ann", " Ann "):
+            with self.assertRaises(ValueError, msg=bad):
+                recog.rename_name(self.c, "face", "Ann", bad)
+        with self.assertRaises(ValueError):
+            recog.rename_name(self.c, "face", "Nobody", "X")
+        self.assertEqual(recog.rename_name(self.c, "face", "Ann", "  Anna  Lee "), ("Anna Lee", 4))
+        for p in self.p + bo:
+            self.assertEqual(self.det_of(p)[0]["name"], "Anna Lee")
+        self.assertEqual((self.det_of(later)[0]["name"], self.det_of(later)[0]["how"]), ("Anna Lee", "suggested"))
+        self.assertEqual([tuple(r) for r in self.c.execute("SELECT name FROM rejects")], [("Anna Lee",)],
+                         "a rejection follows the name")
+        self.tag()
+        self.assertEqual(self.side.tags[self.p[0]], ["People|Anna Lee"])
+        self.assertEqual(sorted(self.side.tags[self.p[1]]), ["People|Anna Lee", "People|Someone"])
+        self.assertEqual(self.side.tags[bo[1]], ["People|Anna Lee"])
+        self.assertNotIn(later, self.side.tags, "a suggestion is still never a tag")
+        # a change of case only is a rename; a look-alike of another name is refused
+        self.assertEqual(recog.rename_name(self.c, "face", "Anna Lee", "anna lee")[0], "anna lee")
+        p3 = self.photo("2026/c0.png", self.world.scene(4, ("cy", None)))
+        self.scan([p3])
+        recog.recluster(self.c, self.spec)
+        recog.name_cluster(self.c, "face", self.det_of(p3)[0]["cluster"], "Cy")
+        for alike in ("cy", "CY ", "Cy"):
+            with self.assertRaises(ValueError, msg=alike) as e:
+                recog.rename_name(self.c, "face", "anna lee", alike)
+            self.assertIn("Merge into Cy", str(e.exception))
+        recog.rename_name(self.c, "face", "anna lee", "Anna-Lee")  # a dash for a space: its own key, itself
+        # a name only a waiting suggestion carries is no name you gave: no look-alike of one
+        self.c.execute("UPDATE detections SET name='Zed', how='suggested' WHERE id=?", (self.det_of(later)[0]["id"],))
+        self.c.commit()
+        with self.assertRaises(ValueError):
+            recog.rename_name(self.c, "face", "Cy", "anna_lee")
+        self.assertEqual(recog.rename_name(self.c, "face", "Anna-Lee", "zed")[0], "zed")
+
+    def test_merge_and_remove_a_name(self):
+        bo, cl = self.two_clusters_one_name()
+        s_cy = self.world.scene(4, ("cy", None))
+        cy = [self.photo(f"2026/c{i}.png", s_cy) for i in range(2)]
+        self.scan(cy)
+        recog.recluster(self.c, self.spec)
+        (ccl,) = {d["cluster"] for p in cy for d in self.det_of(p)}
+        recog.name_cluster(self.c, "face", ccl, "Cy")
+        later = self.grow("later", self.s_ann)
+        # a suggestion of Ann the owner rejected Cy for: it goes, rather than become a Cy it was said not to be
+        self.c.execute("INSERT INTO rejects(det, name) VALUES (?, 'Cy')", (self.det_of(later)[0]["id"],))
+        self.c.commit()
+        self.tag()
+        for bad in ("Ann", "Nobody", ""):
+            with self.assertRaises(ValueError, msg=bad):
+                recog.merge_names(self.c, "face", "Ann", bad)
+        self.assertEqual(recog.merge_names(self.c, "face", "Ann", " cy"), ("Cy", 4), "a look-alike of one name: it")
+        self.assertEqual(recog.owner_names(self.c, "face"), {"Cy"})
+        self.assertEqual((self.det_of(later)[0]["name"], self.det_of(later)[0]["how"]), (None, None))
+        self.tag()
+        for p in self.p + bo + cy:
+            self.assertEqual(self.side.tags[p], ["People|Cy"])
+        self.assertEqual(recog.remove_name(self.c, "face", "Cy"), 6)
+        with self.assertRaises(ValueError):
+            recog.remove_name(self.c, "face", "Cy")
+        self.tag()
+        for p in self.p + bo + cy:
+            self.assertEqual(self.side.tags[p], [])
+        self.assertEqual(len(recog.clusters(self.c, "face", unnamed=True)), 3, "every cluster back to To name")
+
+    def test_merge_names_never_across_species(self):
+        spec = kind(self.world, "pet")
+        dog = [self.photo(f"2026/d{i}.png", self.world.scene(5, ("rex", "dog"))) for i in range(2)]
+        cat = [self.photo(f"2026/k{i}.png", self.world.scene(6, ("tom", "cat"))) for i in range(2)]
+        self.scan(dog + cat, spec=spec)
+        recog.recluster(self.c, spec)
+        recog.name_cluster(self.c, "pet", self.det_of(dog[0])[0]["cluster"], "Rex")
+        recog.name_cluster(self.c, "pet", self.det_of(cat[0])[0]["cluster"], "Tom")
+        with self.assertRaises(ValueError) as e:
+            recog.merge_names(self.c, "pet", "Tom", "Rex")
+        self.assertIn("different species", str(e.exception))
+        self.assertEqual(recog.owner_names(self.c, "pet"), {"Rex", "Tom"})
+        self.assertEqual(recog.owner_names(self.c, "face"), {"Ann"}, "a name of one kind is never the other's")
+
     def test_merge_take_out_put_back_ignore_and_hints(self):
         pair = self.grow("pair", self.s_pair)
         bo = next(d for d in self.det_of(pair) if d["x"] > 0.2)

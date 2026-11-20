@@ -188,7 +188,11 @@ close the PR.
   synthetic recognition store (mock detector and embedder, no model): no section without a store, naming
   with Undo, a "Looks like" merge, Not a person, a crop taken out and put back, suggestions confirmed and
   rejected, a stale page's 409, names with markup shown as text, a video's "appears at" seeking the player,
-  a confirmed name kept out of Suggested junk, and the naming view at 390 px in light and dark. They skip with a reason
+  a confirmed name kept out of Suggested junk, the naming view at 390 px in light and dark, and the name-level
+  actions: the bar over a name's grid (Rename… across two clusters with a look-alike refused, Merge into…, Review
+  suggestions, Remove name…, each with Undo), the sidebar's pencil and its menu (hover, keyboard, the first-time
+  hint, 44 px on a phone), Named grouped by name with Rename all…, the search box, the large view's ⋯ with Not
+  this one, and the bar and menu at 390 px. They skip with a reason
   when Playwright or its Chromium is missing, so the commands above are
   unaffected; the `browser` job in `ci.yml` runs them (and fails, not skips,
   through `MEDIA_INTAKE_BROWSER_REQUIRED=1`). Locally, once:

@@ -928,6 +928,100 @@ def reject(c, kind, ids):
     return n
 
 
+# ---------------------------------------------------------------- owner actions on a name (every cluster with it)
+# One name can span several clusters (named one by one, merged by name, a single photo named alike): these act on
+# the name, wherever it is. Owner decisions keep their how; suggestions of the name move with it; rejections too.
+def name_key(s):
+    """Two names with the same key would look the same, or too alike: case, width, spacing, and a dash or an
+    underscore read as a space (the gallery's look_key for event names)."""
+    import unicodedata
+    return " ".join(unicodedata.normalize("NFKC", s).casefold().replace("-", " ").replace("_", " ").split())
+
+
+def owner_names(c, kind):
+    """The names the owner gave or confirmed for kind (never IGNORED, never a suggestion only)."""
+    return {n for (n,) in c.execute(f"SELECT DISTINCT name FROM detections WHERE kind=? AND how IN "
+                                    f"({','.join('?' * len(OWNER_HOW))}) AND name IS NOT NULL AND name != ?",
+                                    (kind, *OWNER_HOW, IGNORED))}
+
+
+def _owner_name(c, kind, name):
+    if not isinstance(name, str) or name not in owner_names(c, kind):
+        raise ValueError(f"no one is named {' '.join(str(name).split())[:64]} (reload the list)")
+    return name
+
+
+def name_ids(c, kind, name):
+    """Every detection a name-level action on `name` may change: those carrying it (owner or suggested) and those
+    the owner rejected it for. Sorted."""
+    ids = {r[0] for r in c.execute("SELECT id FROM detections WHERE kind=? AND name=?", (kind, name))}
+    ids |= {r[0] for r in c.execute("SELECT r.det FROM rejects r JOIN detections d ON d.id=r.det "
+                                    "WHERE d.kind=? AND r.name=?", (kind, name))}
+    return sorted(ids)
+
+
+def _move_name(c, kind, old, new):
+    """Every detection named old is named new (its how kept); a suggestion of old the owner rejected new for goes
+    instead; old's rejections become new's. Commits. Returns how many owner-named detections now carry new."""
+    rej_new = {r[0] for r in c.execute("SELECT r.det FROM rejects r JOIN detections d ON d.id=r.det "
+                                       "WHERE d.kind=? AND r.name=?", (kind, new))}
+    for (i,) in c.execute("SELECT id FROM detections WHERE kind=? AND name=? AND how='suggested'", (kind, old)).fetchall():
+        if i in rej_new:
+            c.execute("UPDATE detections SET name=NULL, how=NULL WHERE id=?", (i,))
+    n = c.execute(f"UPDATE detections SET name=? WHERE kind=? AND name=? AND how IN ({','.join('?' * len(OWNER_HOW))})",
+                  (new, kind, old, *OWNER_HOW)).rowcount
+    c.execute("UPDATE detections SET name=? WHERE kind=? AND name=?", (new, kind, old))
+    for (d,) in c.execute("SELECT r.det FROM rejects r JOIN detections x ON x.id=r.det WHERE x.kind=? AND r.name=?",
+                          (kind, old)).fetchall():
+        c.execute("INSERT OR IGNORE INTO rejects(det, name) VALUES (?, ?)", (d, new))
+        c.execute("DELETE FROM rejects WHERE det=? AND name=?", (d, old))
+    c.commit()
+    return n
+
+
+def rename_name(c, kind, old, new):
+    """The owner renames a name everywhere it is (every cluster, confirmed suggestions, waiting suggestions).
+    Refused: an empty or bad name, the same name, or one that looks like another name of kind (that is a
+    merge_names). A change of case or spacing only is a rename. Returns (the new name, owner detections)."""
+    old = _owner_name(c, kind, old)
+    new = check_name(new)
+    if new == old:
+        raise ValueError(f"{new} is its name already")
+    for other in owner_names(c, kind) - {old}:
+        if name_key(other) == name_key(new):
+            raise ValueError(f"{new} looks like {other}, a name already given: to make them one, use Merge into "
+                             f"{other}")
+    return new, _move_name(c, kind, old, new)
+
+
+def merge_names(c, kind, old, into):
+    """The owner says old and into are one individual: every detection of old joins into (as rename_name). into is
+    a name the owner gave (or one that looks like it, when only one does). Refused across species. Returns
+    (into, owner detections now named into)."""
+    old = _owner_name(c, kind, old)
+    have = owner_names(c, kind) - {old}
+    if into not in have:
+        alike = [n for n in have if isinstance(into, str) and name_key(n) == name_key(into)]
+        if len(alike) != 1:
+            raise ValueError(f"no other name {' '.join(str(into).split())[:64]} to merge into")
+        into = alike[0]
+    sp = {r[0] or "" for r in c.execute(f"SELECT DISTINCT species FROM detections WHERE kind=? AND name IN (?, ?) "
+                                        f"AND how IN ({','.join('?' * len(OWNER_HOW))})", (kind, old, into, *OWNER_HOW))}
+    if len(sp) > 1:
+        raise ValueError(f"{old} and {into} are different species; they are never one individual")
+    return into, _move_name(c, kind, old, into)
+
+
+def remove_name(c, kind, name):
+    """The owner takes a name off everywhere: every cluster and confirmed detection with it goes back to no name, and
+    its suggestions go (taken-out ones are unchanged; rejections are kept). Returns how many lost it."""
+    name = _owner_name(c, kind, name)
+    n = c.execute("UPDATE detections SET name=NULL, how=NULL WHERE kind=? AND name=? AND "
+                  "how IN ('cluster', 'confirmed', 'suggested')", (kind, name)).rowcount
+    c.commit()
+    return n
+
+
 # ---------------------------------------------------------------- tags into sidecars
 def desired_tags(c, spec):
     """{path: {<prefix><Name>}} for every scanned file, from its owner-named detections of spec.kind. A video

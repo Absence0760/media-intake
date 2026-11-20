@@ -5,8 +5,8 @@
 
 The store is tests/test_gallery_people.py's RecLibrary: built through recog's own API with
 tests/test_recog.py's mock detector and embedder (no model), in a throwaway HOME; the gallery writes the tags
-with the real exiftool. Covered: no People & Pets section without a store; with one, the section's "Name new
-faces/pets" entry and its count, the naming view (To name, Suggestions, Named, Not a person; People / Pets):
+with the real exiftool. Covered: no People & Pets section without a store; with one, the section's "Name faces
+& pets" entry and its "N to do", the naming view (To name, Suggestions, Named, Not a person; People / Pets):
 naming a cluster by Enter (a junk-flagged photo in it leaving Suggested junk), its Undo (and back), merging through a "Looks like" hint, Not a person, a crop taken out by click
 and put back by Space (aria-pressed), the sidebar's name and its filtered grid, suggestions confirmed and
 rejected (a crop marked "Not <Name>", the confirm dialog saying it can't be undone) and the error after a
@@ -16,10 +16,16 @@ large view's People line filtering the grid and a video's "appears at" link seek
 160 px on a desktop and two a row on a phone, the Crop size slider remembered after a reload; the zoom (its corner
 button, Z on a crop) showing the crop and the box on the whole photo, the arrows, its toggle taking a face out and
 Space putting it back, Tab kept inside, Esc back on the crop, a click on a crop still taking it out, and no sideways
-scroll at 390 px; a pet seen once listed under "Single photos (1)" after the clusters and named by Enter.
+scroll at 390 px; a pet seen once listed under "Single photos (1)" after the clusters and named by Enter; the bar over
+a name's grid (Rename… on two clusters with a look-alike refused and Undo, Merge into…, Review suggestions (N), Remove
+name…), the sidebar's pencil (hover, Tab, Esc back to it, 44 px and always shown on a phone) and the first-time hint,
+Named grouped by name with Rename all…, the search box (focus kept, Esc, a cluster number), the large view's ⋯ with
+Not this one and Rename…, and the bar, merge dialog and Named at 390 px in light and dark.
 
 Hooks: #recsec / #reclist (the sidebar section, a .nv[data-who] per name), .nv[data-v=names] with #c-names,
-#plugin[data-ready] after each render of the naming view, a cluster as role=region named "cluster N" (or
+#plugin[data-ready] after each render of the naming view, #whobar (role=toolbar "Person or pet": #whoname, #whosub,
+#whoren, #whomerge, #whosugg, #whorm), .nvpen[data-whomenu] beside each name, #rechint, the name menu (the #modal
+dialog named after the name, its .wmenu buttons), .rgroup headings in Named, #rq the search box, #who .wmore, a cluster as role=region named "cluster N" (or
 "<Name>, cluster N"), a suggestion card as role=region "Looks like <Name>", crops as buttons (.rcrop) with
 aria-pressed, each in a .rcropw with its zoom button (.rzb), the zoom #rzoom (role=dialog named "<card>: face N
 of M"; #rzwhole, #rzbox, #rzout, #rzdone), #csize, #rsingle, #who in the large view. Every test also fails on an uncaught page error.
@@ -104,10 +110,10 @@ class PeopleBrowserTest(B.BrowserCase):
         B.expect(page.locator("#c-sug")).to_have_text("1")
         B.expect(page.locator("#recsec")).to_be_visible()
         B.expect(page.locator("#recsec .nvhead")).to_have_text("People & Pets")
-        B.expect(page.locator("#c-names")).to_have_text("6")  # 3 people clusters and 3 pets to name
+        B.expect(page.locator("#c-names")).to_have_text("6 to do")  # 3 people clusters and 3 pets to name
         B.expect(page.locator(".nv[data-who]")).to_have_count(0)
         self.names_view(page)
-        B.expect(page.locator("#names .rseg[aria-label=Kind] button")).to_have_text(["People", "Pets"])
+        B.expect(page.locator("#names .rseg[aria-label='People or pets'] button")).to_have_text(["People3 to do", "Pets3 to do"])
         ann, bo, like = w.cluster_of(w.ann[0]), w.cluster_of(w.bo[0]), w.cluster_of(w.like[0])
         card = self.card(page, ann)
         B.expect(card.locator(".rcrop")).to_have_count(4)
@@ -177,7 +183,7 @@ class PeopleBrowserTest(B.BrowserCase):
         self.api_name(s, w, w.cluster_of(w.ann[0]), "Ann")
         new = w.more_ann(3)
         page = self.page(s)
-        B.expect(page.locator("#c-names")).to_have_text("8")  # 2 + 3 to name, 3 suggestions
+        B.expect(page.locator("#c-names")).to_have_text("8 to do")  # 2 + 3 to name, 3 suggestions
         self.names_view(page, "Suggestions (3)")
         card = page.get_by_role("region", name="Looks like Ann")
         B.expect(card.locator("h3")).to_have_text("Looks like Ann: 3")
@@ -232,9 +238,265 @@ class PeopleBrowserTest(B.BrowserCase):
         self.assertEqual(page.locator("#tooltagl").count(), 0, "no tool tags shown either")
         self.assertEqual(page.evaluate("() => [document.querySelectorAll('img[src=x]').length, window.__pwned]"),
                          [0, None])
-        who.get_by_role("button", name=EVIL).click()
+        who.get_by_role("button", name=EVIL, exact=True).click()
         B.expect(page.locator("#viewer")).not_to_have_class(re.compile(r"\bon\b"))
         B.expect(page.locator("#vtitle")).to_have_text(EVIL)
+        # the filtered view's bar and the name menu: text too
+        B.expect(page.locator("#whoname")).to_have_text("Person: " + EVIL)
+        page.locator("#whoren").click()
+        dlg = page.get_by_role("dialog", name=f"Rename {EVIL}?")
+        B.expect(page.locator("#mfield")).to_have_value(EVIL)
+        dlg.get_by_role("button", name="Cancel").click()
+        page.locator(f".nvpen[data-whomenu='People|{EVIL}']").click()
+        B.expect(page.get_by_role("dialog", name=EVIL, exact=True)).to_be_visible()
+        B.expect(page.locator("#mh")).to_have_text(EVIL)
+        page.keyboard.press("Escape")
+        self.assertEqual(page.evaluate("() => [document.querySelectorAll('img[src=x]').length, window.__pwned]"),
+                         [0, None])
+
+    def two_names(self, s, w):
+        """Ann on two clusters (ann's and the look-alike's, named "ann": the existing spelling wins), Bo on one."""
+        for cl, name in ((w.cluster_of(w.ann[0]), "Ann"), (w.cluster_of(w.like[0]), "ann"), (w.cluster_of(w.bo[0]), "Bo")):
+            self.api_name(s, w, cl, name)
+
+    def test_the_names_bar_renames_merges_reviews_and_removes(self):
+        """A name's grid (the sidebar's name) has the bar: Person, its counts, Rename… (every cluster at once, a
+        look-alike refused in the dialog, Undo), Merge into…, Review suggestions (N) and Remove name…."""
+        w = self.world()
+        s = self.server(w)
+        self.two_names(s, w)
+        page = self.page(s)
+        page.locator(".nv[data-who='People|Ann']").click()
+        bar = page.get_by_role("toolbar", name="Person or pet")
+        B.expect(bar).to_be_visible()
+        B.expect(page.locator("#whoname")).to_have_text("Person: Ann")
+        B.expect(page.locator("#whosub")).to_have_text("6 files · 2 clusters")
+        B.expect(page.locator("#whosugg")).to_be_hidden()
+        B.expect(page.locator("[data-item]")).to_have_count(6)
+        # Rename…: a look-alike of Bo refused in the dialog, then a new name for both clusters
+        bar.get_by_role("button", name="Rename…").click()
+        dlg = page.get_by_role("dialog", name="Rename Ann?")
+        B.expect(dlg).to_contain_text("2 clusters in 6 files")
+        B.expect(page.locator("#mfield")).to_have_value("Ann")
+        page.locator("#mfield").fill(" BO ")
+        dlg.get_by_role("button", name="Rename").click()
+        B.expect(page.locator("#mout")).to_contain_text("looks like Bo")
+        page.locator("#mfield").fill("annie")  # as typed: never capitalised
+        page.locator("#mfield").press("Enter")
+        self.toast(page, "Ann is now annie")
+        B.expect(page.locator("#vtitle")).to_have_text("annie")
+        B.expect(page.locator("#whoname")).to_have_text("Person: annie")
+        B.expect(page.locator(".nv[data-who='People|annie'] .ct")).to_have_text("6")
+        B.expect(page.locator(".nv[data-who='People|Ann']")).to_have_count(0)
+        B.expect(page.locator("[data-item]")).to_have_count(6)
+        for p in w.ann + w.like:
+            self.assertIn("People|annie", GP.hier(p))
+            self.assertNotIn("People|Ann", GP.hier(p))
+        page.locator("#tundo").click()
+        self.toast(page, "undid renaming Ann")
+        B.expect(page.locator("#vtitle")).to_have_text("Ann")
+        B.expect(page.locator("[data-item]")).to_have_count(6)
+        self.assertIn("People|Ann", GP.hier(w.like[0]))
+        # Merge into…: the other names of the kind, in a list
+        bar.get_by_role("button", name="Merge into…").click()
+        dlg = page.get_by_role("dialog", name="Merge Ann into another name?")
+        B.expect(page.locator("#mergeto option")).to_have_text(["Bo"])
+        dlg.get_by_role("button", name="Merge").click()
+        self.toast(page, "Ann joined Bo")
+        B.expect(page.locator("#vtitle")).to_have_text("Bo")
+        B.expect(page.locator("[data-item]")).to_have_count(8)
+        self.assertIn("People|Bo", GP.hier(w.like[1]))
+        page.locator("#tundo").click()
+        self.toast(page, "undid merging Ann into Bo")
+        B.expect(page.locator("#vtitle")).to_have_text("Ann")
+        # suggestions waiting: Review suggestions (N) opens them in the naming view, found by the name
+        w.more_ann(2)
+        page.reload()
+        page.locator(".nv[data-who='People|Ann']").click()
+        B.expect(page.locator("#whosub")).to_have_text("6 files · 2 clusters · 2 suggestions waiting")
+        B.expect(page.locator("#whosugg")).to_have_text("Review suggestions (2)")
+        page.locator("#whosugg").click()
+        B.expect(page.locator("#plugin")).to_have_attribute("data-ready", "1")
+        B.expect(page.locator("#names .rseg[aria-label=Show] button[aria-pressed=true]")).to_have_text("Suggestions (2)")
+        B.expect(page.locator("#rq")).to_have_value("Ann")
+        B.expect(page.get_by_role("region", name="Looks like Ann")).to_be_visible()
+        # Remove name…: asks, the tags come off, the clusters go back to To name
+        page.locator(".nv[data-who='People|Ann']").click()
+        bar.get_by_role("button", name="Remove name…").click()
+        dlg = page.get_by_role("dialog", name="Remove the name Ann?")
+        B.expect(dlg).to_contain_text("Your own tags stay")
+        dlg.get_by_role("button", name="Remove name").click()
+        self.toast(page, "Ann removed")
+        B.expect(page.locator(".nv[data-who='People|Ann']")).to_have_count(0)
+        B.expect(page.locator("#vtitle")).to_have_text("Library")  # the name is gone: back to the whole library
+        B.expect(page.locator("#whobar")).to_be_hidden()
+        for p in w.ann + w.like:
+            self.assertFalse(any(t.startswith("People|Ann") for t in GP.hier(p)), p)
+        self.assertIn("People|Bo", GP.hier(w.bo[0]))
+
+    def test_sidebar_pencil_hint_and_menu(self):
+        w = self.world()
+        s = self.server(w)
+        page = self.page(s)
+        B.expect(page.locator("#rechint")).to_be_hidden()  # nothing named yet: no hint
+        self.api_name(s, w, w.cluster_of(w.ann[0]), "Ann")
+        page.reload()
+        B.expect(page.locator(".nv[data-v=names] .lbl")).to_have_text("Name faces & pets")
+        B.expect(page.locator("#rechint")).to_contain_text("Click a name to see its photos")
+        pen = page.locator(".nvpen[data-whomenu='People|Ann']")
+        B.expect(pen).to_have_attribute("aria-label", "Rename, merge or remove: Ann")
+        self.assertEqual(pen.evaluate("e => getComputedStyle(e).opacity"), "0")  # shown on hover or focus
+        page.locator(".nv[data-who='People|Ann']").hover()
+        page.wait_for_function("() => getComputedStyle(document.querySelector('.nvpen')).opacity === '1'")
+        # by keyboard: Tab from the name reaches its pencil, Enter opens the menu, Esc gives focus back
+        page.locator(".nv[data-who='People|Ann']").focus()
+        page.keyboard.press("Tab")
+        B.expect(pen).to_be_focused()
+        self.assertEqual(pen.evaluate("e => getComputedStyle(e).opacity"), "1")
+        page.keyboard.press("Enter")
+        menu = page.get_by_role("dialog", name="Ann", exact=True)
+        B.expect(menu).to_contain_text("Person · 4 files · 1 cluster")
+        B.expect(menu.locator(".wmenu button")).to_have_text(["Rename…", "Show its photos", "Remove name…"])  # no one to merge into
+        B.expect(menu.locator(".wmenu button").first).to_be_focused()
+        B.expect(page.locator("#rechint")).to_be_hidden()
+        page.keyboard.press("Escape")
+        B.expect(menu).to_be_hidden()
+        B.expect(pen).to_be_focused()
+        page.locator(".nv[data-who='People|Ann']").click()
+        B.expect(page.locator("#whomerge")).to_be_hidden()  # no other person named yet
+        pen.click()
+        menu.get_by_role("button", name="Rename…").click()
+        page.locator("#mfield").fill("Annie")
+        page.get_by_role("dialog", name="Rename Ann?").get_by_role("button", name="Rename").click()
+        self.toast(page, "Ann is now Annie")
+        B.expect(page.locator(".nv[data-who='People|Annie']")).to_be_visible()
+        B.expect(page.locator(".nvpen[data-whomenu='People|Annie']")).to_be_focused()  # the rebuilt pencil
+        self.assertIn("People|Annie", GP.hier(w.ann[0]))
+        page.reload()
+        B.expect(page.locator(".nv[data-who='People|Annie']")).to_be_visible()
+        B.expect(page.locator("#rechint")).to_be_hidden()  # seen once: not shown again
+        # on a touch phone: the pencil always shown, a 44 px target
+        phone = self.page(s, PHONE)
+        phone.locator("#rail").tap()  # the drawer
+        pen = phone.locator(".nvpen[data-whomenu='People|Annie']")
+        B.expect(pen).to_be_visible()
+        self.assertEqual(pen.evaluate("e => getComputedStyle(e).opacity"), "1")
+        bb = pen.bounding_box()
+        self.assertGreaterEqual(min(bb["width"], bb["height"]), 44)
+
+    def test_named_grouped_by_name_and_the_search_box(self):
+        w = self.world()
+        s = self.server(w)
+        self.two_names(s, w)
+        page = self.page(s)
+        self.names_view(page)
+        kinds = page.locator("#names .rseg[aria-label='People or pets'] button")
+        B.expect(kinds).to_have_text(["People", "Pets3 to do"])
+        B.expect(kinds.first).to_have_attribute("aria-pressed", "true")
+        self.tab(page, "Named (3)")
+        heads = page.locator("#rcards .rgroup")
+        B.expect(heads.locator("h2")).to_have_text(["Ann", "Bo"])
+        B.expect(heads.locator(".rsub")).to_have_text(["2 clusters", "1 cluster"])
+        order = page.evaluate("""() => [...document.querySelectorAll('#rcards > .rgroup, #rcards > .rcard')]
+            .map(e => e.classList.contains('rgroup') ? 'H:' + e.dataset.name : e.querySelector('.rname').textContent)""")
+        self.assertEqual(order, ["H:Ann", "Ann", "Ann", "H:Bo", "Bo"])
+        ann = self.card(page, w.cluster_of(w.ann[0]), "Ann")
+        B.expect(ann.get_by_role("button", name="Rename this cluster")).to_be_visible()
+        B.expect(self.card(page, w.cluster_of(w.bo[0]), "Bo").get_by_role("button", name="Rename", exact=True)).to_be_visible()
+        # Rename all…: the name on both clusters at once
+        page.get_by_role("group", name="Ann", exact=True).get_by_role("button", name="Rename all…").click()
+        page.locator("#mfield").fill("Annie")
+        page.locator("#mfield").press("Enter")
+        self.toast(page, "Ann is now Annie")
+        B.expect(page.locator("#plugin")).to_have_attribute("data-ready", "1")
+        B.expect(heads.locator("h2")).to_have_text(["Annie", "Bo"])
+        self.assertIn("People|Annie", GP.hier(w.like[0]))
+        # the search box: typing keeps the focus; a name (any case) or a cluster number; Esc clears it
+        q = page.get_by_role("searchbox", name="Find a name or a cluster number")
+        q.fill("bO")
+        B.expect(page.locator("#names .rfound")).to_have_text("1 cluster with “bo” in the name (or that number).")
+        B.expect(page.locator("#rcards .rcard")).to_have_count(1)
+        B.expect(q).to_be_focused()
+        B.expect(q).to_have_value("bO")
+        q.press("Escape")
+        B.expect(page.locator("#rcards .rcard")).to_have_count(3)
+        B.expect(page.locator("#names .rfound")).to_have_count(0)
+        kinds.nth(1).click()  # Pets: its clusters still to name; the search box is emptied for the other kind
+        B.expect(page.locator("#plugin")).to_have_attribute("data-ready", "1")
+        B.expect(page.locator("#rq")).to_have_value("")
+        self.tab(page, "To name")
+        cl = page.locator("#rcards .rcard").first.get_attribute("data-cluster")
+        page.locator("#rq").fill(cl)
+        B.expect(page.locator("#rcards .rcard")).to_have_count(1)
+        B.expect(page.locator("#rcards .rcard")).to_have_attribute("data-cluster", cl)
+
+    def test_large_view_name_menu(self):
+        w = self.world()
+        s = self.server(w)
+        self.api_name(s, w, w.cluster_of(w.ann[0]), "Ann")
+        page = self.page(s)
+        page.locator(".nv[data-who='People|Ann']").click()
+        page.locator("[data-item='ann1.png']").click()
+        who = page.locator("#who")
+        more = who.get_by_role("button", name="Rename, merge or remove: Ann")
+        more.click()
+        menu = page.get_by_role("dialog", name="Ann", exact=True)
+        B.expect(menu.locator(".wmenu button")).to_have_text(["Rename…", "Not this one", "Show its photos", "Remove name…"])
+        menu.get_by_role("button", name="Not this one").click()
+        dlg = page.get_by_role("dialog", name="Not Ann in ann1.png?")
+        B.expect(dlg).to_contain_text("Other files keep it")
+        dlg.get_by_role("button", name="Not Ann").click()
+        self.toast(page, "Ann taken out of this file")
+        B.expect(page.locator("#who")).to_have_count(0)
+        self.assertNotIn("People|Ann", GP.hier(w.ann[1]))
+        self.assertIn("People|Ann", GP.hier(w.ann[0]))
+        page.locator("#tundo").click()
+        self.toast(page, "undid taking out")
+        B.expect(page.locator("#who")).to_contain_text("People: Ann")
+        self.assertIn("People|Ann", GP.hier(w.ann[1]))
+        # Rename… from there: the line shows the new name
+        page.locator("#who").get_by_role("button", name="Rename, merge or remove: Ann").click()
+        menu.get_by_role("button", name="Rename…").click()
+        page.locator("#mfield").fill("Annie")
+        page.locator("#mfield").press("Enter")
+        self.toast(page, "Ann is now Annie")
+        B.expect(page.locator("#who")).to_contain_text("People: Annie")
+        B.expect(page.locator("#viewer")).to_have_class(re.compile(r"\bon\b"))
+
+    def test_names_bar_and_menu_on_a_phone(self):
+        w = self.world()
+        s = self.server(w)
+        self.api_name(s, w, w.cluster_of(w.ann[0]), "A" * 64)
+        self.api_name(s, w, w.cluster_of(w.bo[0]), "Bo")
+        for scheme in ("light", "dark"):
+            with self.subTest(scheme=scheme):
+                page = self.page(s, PHONE, scheme)
+                page.locator("#rail").tap()
+                page.locator(f".nv[data-who='People|{'A' * 64}']").tap()
+                B.expect(page.locator("#whobar")).to_be_visible()
+                for q in ("#whoren", "#whomerge", "#whorm"):
+                    bb = page.locator(q).bounding_box()
+                    self.assertLessEqual(bb["x"] + bb["width"], 390.5, q)
+                self.assertLessEqual(page.evaluate("document.documentElement.scrollWidth"),
+                                     page.evaluate("document.documentElement.clientWidth"), "bar")
+                self.assertGreaterEqual(page.locator("#whosub").evaluate(L.CONTRAST), 4.5)
+                page.locator("#whomerge").tap()
+                B.expect(page.locator("#mergeto")).to_be_visible()
+                self.assertLessEqual(page.evaluate("document.documentElement.scrollWidth"),
+                                     page.evaluate("document.documentElement.clientWidth"), "merge dialog")
+                page.keyboard.press("Escape")
+                entry = page.locator(".nv[data-v=names]")
+                page.locator("#rail").tap()
+                entry.tap()
+                B.expect(page.locator("#plugin")).to_have_attribute("data-ready", "1")
+                self.tab(page, "Named")
+                B.expect(page.locator("#rq")).to_be_visible()
+                for q in ("#rq", "#rcards .rgroup .btn >> nth=0"):
+                    bb = page.locator(q).bounding_box()
+                    self.assertLessEqual(bb["x"] + bb["width"], 390.5, q)
+                self.assertLessEqual(page.evaluate("document.documentElement.scrollWidth"),
+                                     page.evaluate("document.documentElement.clientWidth"), "named")
+                self.assertGreaterEqual(page.locator("#rcards .rgroup .rsub").first.evaluate(L.CONTRAST), 4.5)
 
     def test_crop_size_zoom_and_click_still_takes_out(self):
         w = self.world()
@@ -314,9 +576,9 @@ class PeopleBrowserTest(B.BrowserCase):
         GP.recog.recluster(w.c, w.pet)
         s = self.server(w)
         page = self.page(s)
-        B.expect(page.locator("#c-names")).to_have_text("7")  # 3 people, 3 pets of two, 1 pet seen once
+        B.expect(page.locator("#c-names")).to_have_text("7 to do")  # 3 people, 3 pets of two, 1 pet seen once
         self.names_view(page)
-        page.locator("#names .rseg[aria-label=Kind] button", has_text="Pets").click()
+        page.locator("#names .rseg[aria-label='People or pets'] button", has_text="Pets").click()
         B.expect(page.locator("#plugin")).to_have_attribute("data-ready", "1")
         B.expect(page.locator("#names .rseg[aria-label=Show] button[aria-pressed=true]")).to_have_text("To name (4)")
         head = page.locator("#rsingle")
