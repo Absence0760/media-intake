@@ -2419,7 +2419,8 @@ def cmd_to_records(a):
         print(f"handed to records: {row['name']}")
     print(f"{plural(len(items), 'file')} copied to the records inbox; the originals are held (hidden from the "
           "gallery) until your records backup holds them")
-    print("next: media-intake to-records --finish --drive DRIVE   (or --backup-verified), once that backup is done")
+    print("next: media-intake to-records --finish --backup-verified [--drive DRIVE]   once that backup is done and "
+          "verified")
 
 
 def records_list():
@@ -2435,13 +2436,19 @@ def records_list():
 
 def records_finish(a):
     """Erase the held originals of what was handed over, once the records backup holds the copies: those handed
-    before the newest records.archive match on --drive, or all with --backup-verified. Through forget's and erase's
+    before the newest records.archive match on --drive, or all without one. Always only with --backup-verified: an
+    archive's date proves it was written, not that its verify passed, so the owner's word is the trigger and the
+    archive narrows what is due. Through forget's and erase's
     own path (every copy, caches, recognition data, the backup drive with --drive); the inbox copy is inside the
     records folder, which no sweep enters, so it stays."""
     rows = load_handoffs()
     if not rows:
         print("nothing handed to records is waiting")
         return
+    if not a.backup_verified:
+        sys.exit("to-records --finish erases the originals for good, so only once your records backup holds the "
+                 "copies and its verify passed: pass --backup-verified once you have checked it (with records.archive "
+                 "and --drive, only what the newest archive's date covers is erased); nothing erased")
     arch = CFG["records_archive"]
     if arch and a.drive:
         found = [m for m in glob.glob(os.path.join(os.path.abspath(a.drive), arch))
@@ -2451,13 +2458,9 @@ def records_finish(a):
                      "records backup (and its verify) first; nothing erased")
         newest = max(os.path.getmtime(m) for m in found)
         due = [r for r in rows if r["at"] < newest]
-        why = "handed before the newest records archive on the drive"
-    elif a.backup_verified:
-        due, why = rows, "you said the records backup is verified"
+        why = "handed before the newest records archive on the drive, which you said is verified"
     else:
-        sys.exit("to-records --finish erases the originals for good, so only once your records backup holds the "
-                 "copies: pass --backup-verified once you have checked it, or set records.archive and pass --drive "
-                 "DRIVE so the archive's date is checked; nothing erased")
+        due, why = rows, "you said the records backup is verified"
     hdir = os.path.join(STATE, "quarantine", HELD)
 
     def source(r):
@@ -3570,8 +3573,9 @@ def build_parser(prog=None):
                    "quarantine/<batch>/")
     s.add_argument("--list", action="store_true", help="show what is handed over and still held")
     s.add_argument("--finish", action="store_true", help="erase the held originals your records backup holds")
-    s.add_argument("--backup-verified", action="store_true", help="with --finish: you checked the records backup "
-                   "holds every copy handed over so far")
+    s.add_argument("--backup-verified", action="store_true", help="with --finish, always needed: you checked the "
+                   "records backup holds the copies and its verify passed (with --drive and records.archive, only "
+                   "what the newest archive covers is erased)")
     s.add_argument("--drive", metavar="DRIVE", help="with --finish: " + h_drive + "; its newest records.archive "
                    "match decides what is due, and the originals' copies there are deleted too")
     s.add_argument("--yes", action="store_true", help="copy (or with --finish, erase) now; without it a dry run")
