@@ -177,8 +177,10 @@ The goal: someone else can install it on Fedora, import a phone, and trust it.
       erase path; suggestions only until the owner confirms: core and CLI (`pets.py`,
       `media-intake pets`, YOLOX + DINOv2, `pets eval` against your own names;
       docs/recognition.md, decisions in docs/research-pets.md) and the gallery's naming view.
-- [ ] Pets: date-aware propagation (prefer photos close in date when growing a name, so a
-      kitten and the grown cat need fewer merges; docs/research-pets.md).
+- [x] Pets: date-aware propagation (prefer photos close in date when growing a name, so a
+      kitten and the grown cat need fewer merges): an unnamed cluster is compared with a name
+      where the two meet in time and gets it as a suggestion; `recognition.pet_date_neighbours`,
+      `pets eval` reports the merges it saves (docs/recognition.md, docs/research-pets.md).
 - [x] Search the text in photos: keep the OCR text the sensitive-content scan already reads
       (screenshots, receipts, signs) in a private local index and let `search` find files by
       what they say (`search --text`, `index --text` for older photos); flagged and erased

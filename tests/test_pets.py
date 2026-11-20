@@ -9,7 +9,7 @@ and both embedders' preprocessing run on made-up arrays. The real-model case run
 onnxruntime on the pinned YOLOX + DINOv2 and skips with a reason without them; with a public sample photo
 (PETS_SAMPLE=<path to a photo of two cats>) it also checks both are found.
 """
-import os, shutil, subprocess, sys, tempfile, unittest
+import datetime, os, shutil, subprocess, sys, tempfile, unittest
 import unittest.mock as mock
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
@@ -46,20 +46,22 @@ class Config(unittest.TestCase):
 
     def test_defaults_and_choices(self):
         c = self.cfg("")
-        self.assertEqual((c["pet_classes"], c["pet_min_frames"]), (["cat", "dog"], 3))
-        c = self.cfg('[recognition]\npet_classes = ["dog", "horse", "dog"]\npet_min_frames = 5\n')
-        self.assertEqual((c["pet_classes"], c["pet_min_frames"]), (["dog", "horse"], 5))
+        self.assertEqual((c["pet_classes"], c["pet_min_frames"], c["pet_date_neighbours"]), (["cat", "dog"], 3, 5))
+        c = self.cfg('[recognition]\npet_classes = ["dog", "horse", "dog"]\npet_min_frames = 5\n'
+                     'pet_date_neighbours = 0\n')
+        self.assertEqual((c["pet_classes"], c["pet_min_frames"], c["pet_date_neighbours"]), (["dog", "horse"], 5, 0))
         self.assertEqual(pets.classes(c), ("dog", "horse"))
         self.assertEqual(pets.ANIMALS, config.PET_CLASSES, "the config's choices are YOLOX's COCO animals")
         for bad in ('pet_classes = ["person"]', "pet_classes = []", 'pet_classes = "cat"', "pet_min_frames = 0",
-                    "pet_min_frames = true", "pet_min_frames = 2.5"):
+                    "pet_min_frames = true", "pet_min_frames = 2.5", "pet_date_neighbours = -1",
+                    "pet_date_neighbours = 51", "pet_date_neighbours = true"):
             with self.subTest(bad=bad), self.assertRaises(config.ConfigError):
                 self.cfg(f"[recognition]\n{bad}\n")
 
     def test_spec_and_pins(self):
         s = pets.spec()
         self.assertEqual((s.kind, s.command, s.prefix, s.noun, s.model), ("pet", "pets", "Pets|", "pet", pets.MODEL))
-        self.assertEqual(s.min_frames, 3)
+        self.assertEqual((s.min_frames, s.date_k), (3, pets.DATE_K))
         self.assertEqual([w for w, _, _ in s.models], ["YOLOX animal detector", "DINOv2 pet recogniser"])
         zoo, dino = pets.models_dirs(config.get()["state"])
         self.assertEqual([os.path.dirname(p) for _, p, _ in s.models], [zoo, dino])
@@ -328,6 +330,134 @@ class Pets(PetsBase):
             self.assertLessEqual(len(line), 80, line)
         self.assertEqual(recog.build_parser(pets.spec()).parse_args(["pets"]).cmd, "pets",
                          "the names list is `pets pets`, as `people people`")
+
+
+class DateAware(PetsBase):
+    """Date-aware propagation (recog.date_suggest): synthetic vectors written straight into the store, each in its
+    own file whose path carries the capture day (IMG_YYYYMMDD_..., as phones name them)."""
+
+    def setUp(self):
+        super().setUp()
+        self.n = 0
+        self.rng = np.random.default_rng(4)
+        self.basis = np.linalg.qr(self.rng.normal(size=(DIM, 4)))[0].T  # orthonormal: a, b (the drift), c, d
+
+    def add(self, vec, month, day, species="cat", dated=True, noise=0.05):
+        self.n += 1
+        sha = f"{self.n:064x}"
+        name = f"IMG_2025{month:02d}{day:02d}_120000.jpg" if dated else f"pet-{self.n}.jpg"
+        path = os.path.join(self.lib, f"2025/2025-{month:02d}" if dated else "loose", name)
+        write(path, sha.encode())  # a stand-in file (tag writes only to files that exist); never decoded
+        self.c.execute("INSERT INTO files(path, sha, size, mtime) VALUES (?, ?, 1, 0)", (path, sha))
+        cur = self.c.execute("INSERT INTO detections(sha, kind, species, x, y, w, h, score) "
+                             "VALUES (?, 'pet', ?, 0, 0, 1, 1, 1)", (sha, species))
+        v = recog.unit(vec + self.rng.normal(scale=noise / np.sqrt(DIM), size=DIM))
+        self.c.execute("INSERT INTO embeddings(det, model, vec) VALUES (?, ?, ?)",
+                       (cur.lastrowid, pets.MODEL, v.tobytes()))
+        self.c.commit()
+        return cur.lastrowid
+
+    def kitten(self, groups=6, per=6, cos=0.75, **kw):
+        """A cat whose look drifts: month g's photos sit at angle g * acos(cos) from the first month's, so each
+        month looks like the next (cosine ~ cos) and the kitten nothing like the grown cat."""
+        a, b = self.basis[:2]
+        th = np.arccos(cos)
+        return [self.add(np.cos(g * th) * a + np.sin(g * th) * b, g + 1, j + 1, **kw)
+                for g in range(groups) for j in range(per)]
+
+    def others(self, vec, months=6, **kw):
+        return [self.add(vec, m + 1, 10, **kw) for m in range(months)]
+
+    def recluster(self, k):
+        self.spec.date_k = k
+        return recog.recluster(self.c, self.spec)
+
+    def named(self, ids):
+        q = f"SELECT id, name, how FROM detections WHERE id IN ({','.join('?' * len(ids))}) ORDER BY id"
+        return [tuple(r) for r in self.c.execute(q, ids)]
+
+    def name_first(self, ids, name):
+        cl = self.c.execute("SELECT cluster FROM detections WHERE id=?", (ids[0],)).fetchone()[0]
+        recog.name_cluster(self.c, "pet", cl, name)
+
+    def test_a_drifting_cat_keeps_its_name_along_the_timeline(self):
+        self.spec.link, self.spec.same = 0.9, 0.7
+        kit = self.kitten()
+        other = self.others(self.basis[2])  # another cat, the same months
+        self.recluster(0)
+        clusters = {r[0] for r in self.c.execute(f"SELECT cluster FROM detections WHERE id IN "
+                                                  f"({','.join('?' * len(kit))})", kit)}
+        self.assertGreater(len(clusters), 2, "plain clustering splits the kitten from the grown cat")
+        self.name_first(kit, "Kitty")
+        self.recluster(0)
+        plain = [n for _, n, _ in self.named(kit)]
+        self.assertLess(plain.count("Kitty"), len(kit), "without dates the later months stay unnamed")
+        cnt = self.recluster(5)
+        rows = self.named(kit)
+        self.assertEqual([n for _, n, _ in rows], ["Kitty"] * len(kit), "the name follows the cat month by month")
+        self.assertTrue({h for _, _, h in rows} <= {"cluster", "suggested"}, "the tool only suggests")
+        self.assertEqual(cnt["suggestions by date"], len(kit) - plain.count("Kitty"))
+        self.assertEqual([n for _, n, _ in self.named(other)], [None] * len(other), "another cat gets no name")
+        self.tag()
+        tagged = [p for p, t in self.side.tags.items() if "Pets|Kitty" in t]
+        self.assertEqual(len(tagged), len(kit) - cnt["suggestions"], "a suggestion by date is never a tag")
+
+    def test_no_change_for_a_stable_pet(self):
+        tom = [self.add(self.basis[0], m + 1, d + 1) for m in range(6) for d in range(2)]
+        other = self.others(self.basis[2])
+        self.recluster(0)
+        self.name_first(tom, "Tom")
+        self.recluster(0)
+        before = self.named(tom + other)
+        self.assertEqual([n for _, n, _ in before], ["Tom"] * len(tom) + [None] * len(other))
+        cnt = self.recluster(5)
+        self.assertEqual(self.named(tom + other), before)
+        self.assertEqual(cnt["suggestions by date"], 0)
+
+    def test_guards(self):
+        e = np.tile(recog.unit(np.ones(DIM)), (4, 1))  # four identical vectors: every score passes
+        same = dict(same=0.7, k=5)
+        # 0 named Rex, 1 named Max (two clusters), 2 and 3 one unnamed cluster: both names pass, so neither
+        self.assertEqual(recog.date_suggest(e, [1, 2, 3, 4], ["Rex", "Max", None, None], [0, 1, 2, 2],
+                                            ["p0", "p1", "p2", "p3"], **same), {})
+        args = ([1, 2, 3, 4], ["Rex", "Rex", None, None], [0, 0, 2, 2])
+        self.assertEqual(recog.date_suggest(e, *args, ["p0", "p1", "p2", "p3"], **same), {2: "Rex", 3: "Rex"})
+        self.assertEqual(recog.date_suggest(e, *args, ["p0", "p1", "p2", "p1"], **same), {},
+                         "a cluster with a pet in a photo where Rex is: never Rex")
+        self.assertEqual(recog.date_suggest(e, [1, 2, 3, 4], ["Rex", "Rex", None, None], [0, 0, 2, 3],
+                                            ["p0", "p1", "p2", "p2"], **same), {2: "Rex"},
+                         "two pets of one photo, each its own cluster: only one of them can be Rex")
+        self.assertEqual(recog.date_suggest(e, *args, ["p0", "p1", "p2", "p3"], rejected={3: {"Rex"}}, **same),
+                         {2: "Rex"}, "a rejected name is never suggested again")
+        self.assertEqual(recog.date_suggest(e, *args, ["p0", "p1", "p2", "p3"], taken_out=[2], **same), {3: "Rex"})
+        self.assertEqual(recog.date_suggest(e, [1, 2, None, None], *args[1:], ["p0", "p1", "p2", "p3"], **same), {},
+                         "no capture day: no date-aware suggestion")
+        self.assertEqual(recog.date_suggest(e, *args, ["p0", "p1", "p2", "p3"], same=0.7, k=0), {}, "k 0: off")
+        self.assertEqual(recog.date_suggest(e, [1, 2, 3, 4], ["Rex", recog.IGNORED, None, None], [0, 1, 2, 2],
+                                            ["p0", "p1", "p2", "p3"], **same), {2: "Rex", 3: "Rex"},
+                         "an ignored cluster is never a name to spread")
+
+    def test_path_days(self):
+        self.assertEqual(recog.path_day("/x/2025/2025-03/IMG_20250307_120000.jpg"),
+                         recog.path_day("/y/2025-03-07 trip/a.jpg"))
+        self.assertEqual(recog.path_day("/x/2025/2025-03/a.jpg"), datetime.date(2025, 3, 15).toordinal())
+        self.assertIsNone(recog.path_day("/x/loose/a.jpg"))
+        self.kitten(groups=1, per=1)
+        self.kitten(groups=1, per=1, dated=False)
+        self.assertEqual(list(recog.sha_days(self.c).values()), [datetime.date(2025, 1, 1).toordinal()])
+
+    def test_eval_reports_the_effect(self):
+        self.spec.link, self.spec.same = 0.9, 0.7
+        kit, other = self.kitten(), self.others(self.basis[2])
+        truth = {**{i: "Kitty" for i in kit}, **{i: "Other" for i in other}}
+        self.spec.date_k = 0
+        self.assertNotIn("date_aware", recog.evaluate(self.c, self.spec, truth, models=[pets.MODEL])[pets.MODEL])
+        self.spec.date_k = 5
+        res = recog.evaluate(self.c, self.spec, truth, models=[pets.MODEL])[pets.MODEL]
+        split = res["clusters_per_individual"]["Kitty"]
+        self.assertGreater(split, 2)
+        self.assertEqual(res["date_aware"], dict(k=5, dated=len(truth), merges_saved=split - 1, wrong_suggestions=0,
+                                                 merges_left=0))
 
 
 @unittest.skipUnless(os.path.exists(REAL_VENV_PY), "setup.sh not run (no venv)")

@@ -46,6 +46,7 @@
 # dir = "~/.local/share/media-intake/recognition"   # the default: <state>/recognition
 # pet_classes = ["cat", "dog"]   # the default; also bird, horse, sheep, cow, elephant, bear, zebra, giraffe
 # pet_min_frames = 3             # a video's Pets|<Name> needs that pet in this many sampled frames
+# pet_date_neighbours = 5        # names grow along the timeline (photos compared each side; 0: off)
 
 [records]
 # Your private records folder (documents, finances), kept by another tool. No sweep (erase, forget,
