@@ -497,11 +497,16 @@ class GalleryBrowserTest(B.BrowserCase):
         self.assertTrue(os.path.exists(self.c))
         B.open_gate(self.gate)
         for p, d in ((page, dlg), (other, odlg)):
+            # a Trash that went well closes its dialog: a message says so, its output behind Details
             B.expect(d).to_have_attribute("data-job", "done")
+            B.expect(d).to_be_hidden()
+            B.expect(p.locator("#toast > span")).to_have_text("Done: 1 file trashed.")
+            B.expect(p.locator('[data-item="c.png"]')).to_have_count(0)
+            p.locator("#toast").get_by_role("button", name="Details").click()
+            B.expect(d).to_be_visible()
             B.expect(d.get_by_role("heading")).to_have_text("Done")
             B.expect(d.get_by_role("button", name="Close", exact=True)).to_be_visible()
             B.expect(d.locator("pre")).to_contain_text("done: 1 of 1 gone from the library")
-            B.expect(p.locator('[data-item="c.png"]')).to_have_count(0)
         self.assertFalse(os.path.exists(self.c))
 
     def test_erase_status_before_any_output(self):
