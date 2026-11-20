@@ -27,6 +27,7 @@ Big folders and drives
 Erase and trash
   erase BATCH               DELETES quarantined files and all their copies
   forget FILE...            DELETES library files the same way (found later)
+  to-records FILE...        photos of documents to your records inbox; --finish
   verify-gone [BATCH]       check erased files left no copy; changes nothing
   sweep-erased [BATCH]      DELETES copies erase missed, with --yes
   trash FILE...             DELETES junk (not private files), with --yes

@@ -56,7 +56,12 @@ backup drive, quarantine, review folder, Keep, Trash, Erase, ...).
   or printed; [docs/places.md](docs/places.md)), and `datecheck.json` and
   `date-fixes.json` (check-dates' last report and every fix-dates write, with
   paths and dates; erase, forget, trash and sweep-erased drop their files'
-  records; [docs/dates.md](docs/dates.md)).
+  records; [docs/dates.md](docs/dates.md)). `records-handoff.json` (`0600`)
+  lists photos of documents handed to your records inbox and held until
+  `to-records --finish`: names, checksums and times, never content; held
+  quarantined ones wait in `quarantine/records-held/`, and `--finish` erases
+  only with `--yes` and proof the records backup holds them, never the inbox
+  copy ([docs/records.md](docs/records.md)).
   Face and pet detections, vectors, names and crops (biometric) live in
   `recognition.dir` (default `<state>/recognition`, `0700`, files `0600`),
   are never backed up, and go with every `erase`, `forget`, `trash` and
@@ -160,6 +165,7 @@ media-intake offload phone-1 --phone <phone folder>   # after a backup: free the
 | `stage`, `plan`, `scan`, `apply` | Copy in, plan (dates, dedupe, folders), detect, file |
 | `quarantine`, `release`, `review` | Decide on what the detectors flagged (quarantine) and the review folder |
 | `erase`, `forget`, `verify-gone`, `sweep-erased`, `wipe-free` | Erase everywhere, check, catch copies on a backup drive that was unplugged at erase time, overwrite the backup drive's free space |
+| `to-records` | Hand photos of documents (IDs, passports, payment cards, receipts) to your records tool's inbox, holding the originals until `--finish` erases them once your records backup holds the copies; never nudity, 2FA codes or secrets ([docs/records.md](docs/records.md)) |
 | `trash`, `suggest-trash`, `not-trash`, `purge-review` | Trash junk, find Suggested junk, Keep a suggestion, empty a review folder (`trash` and `purge-review` delete only with `--yes`; without it, a dry run) |
 | `tag`, `tag-files`, `mark-used`, `find` | Sidecar tags and searching them |
 | `places list/add/rename/remove/suggest/tag` | My places: your own named places (Home, ...) as `Place\|<name>` tags beside the city; kept only in the state folder ([docs/places.md](docs/places.md)) |
@@ -184,7 +190,7 @@ the commands by task, and a mistyped command exits 2 with the nearest real
 one. Details:
 [getting started](docs/getting-started.md), [words used](docs/words.md), [intake](docs/intake.md), [wrong dates](docs/dates.md), [review page](docs/review-ui.md),
 [gallery](docs/gallery.md), [my places](docs/places.md), [search and VLM](docs/search.md), [recognition](docs/recognition.md),
-[drive and folder queue](docs/queue.md), [backup](docs/backup.md), [configuration](docs/configuration.md),
+[drive and folder queue](docs/queue.md), [backup](docs/backup.md), [records inbox](docs/records.md), [configuration](docs/configuration.md),
 [plugins](docs/plugins.md), [releases](docs/release.md).
 
 ## Tested devices

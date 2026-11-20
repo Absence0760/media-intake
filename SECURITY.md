@@ -45,7 +45,12 @@ sweep-erased; docs/recognition.md); `places.json` (your named places and their
 points: sensitive, where you live; `0600`, never backed up, synced or printed;
 docs/places.md); and `datecheck.json` and `date-fixes.json` (paths and dates,
 `0600`, a file's records dropped by erase, forget, trash and sweep-erased;
-docs/dates.md);
+docs/dates.md); `records-handoff.json` (`0600`: names, checksums and times of
+photos of documents handed to the records inbox, never content) and
+`quarantine/records-held/` (held ID, passport and payment-card photos, until
+`to-records --finish`); the records inbox itself, which `to-records` only
+writes (`0600` copies, never over a file) and no sweep ever enters
+(docs/records.md);
 and file names from devices reaching an external tool's command line or a
 GStreamer pipeline description (video frames and HEVC proxies are read through
 a link in a private work folder, never by name).

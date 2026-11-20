@@ -27,12 +27,14 @@ Layout (docs/intake.md; every path comes from config.toml, docs/configuration.md
     batches/<batch>/raw/          the batch's staged copy, deleted once applied
     batches/<batch>/review/       the review folder: near-duplicates and junk, for a glance
     quarantine/<batch>/           quarantine: flagged files; no assistant or tool ever opens these
+    quarantine/records-held/      ID, passport and card photos handed to the records inbox, until --finish
+    records-handoff.json          what to-records handed over and still holds (names, sha256, times)
     index.json                    sha256 + dHash (videos: vhash) of everything in the library
 
 An AI assistant may run these commands for you, but must never read, view,
 montage or describe a file under quarantine/ or a file scan.json flags.
 """
-import argparse, collections, datetime, glob, hashlib, json, os, re, shlex, shutil, stat, subprocess, sys, time, urllib.parse
+import argparse, collections, contextlib, datetime, glob, hashlib, json, os, re, shlex, shutil, stat, subprocess, sys, time, urllib.parse
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import config  # noqa: E402
@@ -803,7 +805,15 @@ def cmd_quarantine(a):
              if "--drive" in erase else ""))
 
 
+def refuse_held(batch, verb):
+    """The held documents (to-records) leave only through to-records --finish, which checks the records backup."""
+    if batch == HELD:
+        sys.exit(f"{verb} {HELD}: refused. Those are photos of documents handed to the records inbox; they leave "
+                 "only through `media-intake to-records --finish`, which checks your records backup first")
+
+
 def cmd_release(a):
+    refuse_held(a.batch, "release")
     need_batch(a.batch, staged=False)
     quar = os.path.join(STATE, "quarantine", a.batch)
     if not os.path.isdir(quar):  # nothing went to quarantine, or erase has removed it
@@ -1856,6 +1866,7 @@ def erase_warning(first, a, lib=0, phone=0):
 
 
 def cmd_erase(a):
+    refuse_held(a.batch, "erase")
     need_batch(a.batch, staged=False)
     quar = os.path.join(STATE, "quarantine", a.batch)
     q = load(os.path.join(quar, "quarantine.json"), {})
@@ -2103,6 +2114,35 @@ def cmd_erase(a):
         sys.exit(1)
 
 
+def free_rel(q, quar, name):
+    """A file name not yet used in the quarantine folder quar (q its quarantine.json): name, else name_1, ..."""
+    stem, ext = os.path.splitext(name)
+    rel, i = stem + ext, 1
+    while rel in q or os.path.lexists(os.path.join(quar, rel)):  # same name from two library folders
+        rel, i = f"{stem}_{i}{ext}", i + 1
+    return rel
+
+
+def forget_into(files, quar, q, index, stats, qfile=None):
+    """Move library files into the quarantine folder quar (q: its quarantine.json, updated; index: index.json,
+    updated) with their sidecars, thumbnails and gallery caches dropped: forget's step before its erase, and
+    to-records --finish's. The caller saves q and index; with qfile, q is also saved there before each file
+    moves, so a run stopped midway leaves every moved file listed in quar."""
+    for f in files:
+        rel = free_rel(q, quar, os.path.basename(f))
+        s = sha256(f)
+        q[rel] = dict(reasons=["owner"], sha=s, size=os.path.getsize(f), dst=None)
+        if qfile:
+            save(qfile, q)
+        gvfs_meta_forget(f, stats)  # keyed by the library path, which the move leaves behind
+        shutil.move(f, os.path.join(quar, rel))
+        os.chmod(os.path.join(quar, rel), stat.S_IRUSR | stat.S_IWUSR)
+        stats["sidecars"] += drop_sidecar(f)  # its tags, place and labels go too
+        stats["thumbnails"] += thumb_forget(f)
+        stats["gallery"] += gallery_thumb_forget(s)
+        index.pop(f, None)
+
+
 def cmd_forget(a):
     """A sensitive file found later in the library: same erase path as intake.
 
@@ -2124,24 +2164,279 @@ def cmd_forget(a):
     index = load(os.path.join(STATE, "index.json"), {})
     q = load(os.path.join(quar, "quarantine.json"), {}) or {}  # a forget in the same second adds to it
     stats = collections.Counter()
-    for f in files:
-        stem, ext = os.path.splitext(os.path.basename(f))
-        rel, i = stem + ext, 1
-        while rel in q or os.path.lexists(os.path.join(quar, rel)):  # same name from two library folders
-            rel, i = f"{stem}_{i}{ext}", i + 1
-        s = sha256(f)
-        q[rel] = dict(reasons=["owner"], sha=s, size=os.path.getsize(f), dst=None)
-        gvfs_meta_forget(f, stats)  # keyed by the library path, which the move leaves behind
-        shutil.move(f, os.path.join(quar, rel))
-        os.chmod(os.path.join(quar, rel), stat.S_IRUSR | stat.S_IWUSR)
-        stats["sidecars"] += drop_sidecar(f)  # its tags, place and labels go too
-        stats["thumbnails"] += thumb_forget(f)
-        stats["gallery"] += gallery_thumb_forget(s)
-        index.pop(f, None)
+    forget_into(files, quar, q, index, stats)
     save(os.path.join(quar, "quarantine.json"), q)
     save(os.path.join(STATE, "index.json"), index)
     a.batch, a.phone, a.forget_stats = batch, None, stats  # erase's coverage report counts these too
     a.forget_paths = files
+    cmd_erase(a)
+
+
+# ---------------------------------------------------------------- to-records (docs/records.md)
+# A photo of a document (an ID, a passport, a payment card, a receipt) goes to the records tool's inbox, not the
+# library. The handoff copies it there and holds the original (a library file stays where it is, hidden from the
+# gallery; a quarantined one moves to quarantine/records-held) until --finish erases it, once the records backup
+# holds the copy. Nudity, 2FA codes and secret words never go: they stay in quarantine.
+DOC_REASONS = {"passport-mrz", "id-barcode", "payment-card"}
+HELD = "records-held"
+INBOX_NAMES = 10000  # "<name> (2).<ext>" ... before giving up on a free name
+
+
+def handoff_path():
+    return os.path.join(STATE, "records-handoff.json")
+
+
+def load_handoffs():
+    rows = load(handoff_path(), []) or []
+    return rows if isinstance(rows, list) else []
+
+
+def save_handoffs(rows):
+    save(handoff_path(), rows)
+    os.chmod(handoff_path(), stat.S_IRUSR | stat.S_IWUSR)
+
+
+def records_handed():
+    """Library paths handed to the records inbox and not yet finished: the gallery hides them."""
+    return {r["path"] for r in load_handoffs() if r.get("kind") == "library" and r.get("path")}
+
+
+def records_inbox(create):
+    """The inbox folder (records.inbox), or exit with one plain line. create: make it (0700) when missing."""
+    inbox = CFG["records_inbox"]
+    if not inbox:
+        sys.exit("to-records: set records.inbox in your config, the folder inside records.root that your records "
+                 "tool reads (docs/records.md)")
+    if not os.path.isdir(RECORDS):
+        sys.exit(f"to-records: the records folder is not there ({shown_path(RECORDS)}); nothing handed over")
+    if os.path.islink(inbox) or (os.path.lexists(inbox) and not os.path.isdir(inbox)):
+        sys.exit(f"to-records: the inbox is not a plain folder ({shown_path(inbox)}); nothing handed over")
+    if create and not os.path.isdir(inbox):
+        os.makedirs(inbox, mode=0o700)
+        os.chmod(inbox, 0o700)
+    return inbox
+
+
+def copy_to_inbox(src, inbox, sha):
+    """Copy src's bytes, unchanged, into inbox under its own name (else "<name> (2).<ext>", ...), never over a
+    file (O_EXCL, 0600), fsynced and checked by sha256 against sha; the inbox entry is fsynced too. Returns the
+    copy's path; on any failure nothing is left in the inbox and OSError is raised."""
+    stem, ext = os.path.splitext(os.path.basename(src))
+    for i in range(1, INBOX_NAMES + 1):
+        dst = os.path.join(inbox, stem + ext if i == 1 else f"{stem} ({i}){ext}")
+        try:
+            fd = os.open(dst, os.O_WRONLY | os.O_CREAT | os.O_EXCL | getattr(os, "O_NOFOLLOW", 0), 0o600)
+            break
+        except FileExistsError:
+            continue
+    else:
+        raise OSError(f"no free name for {stem}{ext} in the inbox")
+    try:
+        with os.fdopen(fd, "wb") as out, open(src, "rb") as inp:
+            shutil.copyfileobj(inp, out, 1 << 20)
+            out.flush()
+            os.fsync(out.fileno())
+        if sha256(dst) != sha:
+            raise OSError("the copy in the inbox does not match the original (sha256)")
+    except BaseException:
+        with contextlib.suppress(OSError):
+            os.remove(dst)
+        raise
+    dfd = os.open(inbox, os.O_RDONLY | os.O_DIRECTORY)
+    try:
+        os.fsync(dfd)
+    finally:
+        os.close(dfd)
+    return dst
+
+
+def handoff_item(path):
+    """What handing path over means, or exit with one plain line naming why not: a quarantined file
+    (quarantine/<batch>/<rel>, flagged only as an ID, passport or payment card) or a library file."""
+    p = os.path.abspath(path)
+    qroot = os.path.join(STATE, "quarantine")
+    if os.path.islink(p) or not os.path.isfile(p):
+        sys.exit(f"to-records: not a regular file: {path}; nothing handed over")
+    if p.startswith(qroot + os.sep):
+        batch, _, rel = os.path.relpath(p, qroot).partition(os.sep)
+        if batch == HELD:
+            sys.exit(f"to-records: already handed to records: {path}; nothing handed over")
+        q = load(os.path.join(qroot, batch, "quarantine.json"), {}) or {}
+        if rel not in q:
+            sys.exit(f"to-records: not in quarantine/{batch}'s list: {path}; nothing handed over")
+        reasons = list(q[rel].get("reasons") or [])
+        other = sorted({r for r in reasons if r not in DOC_REASONS})
+        if not reasons or other:
+            sys.exit(f"to-records: {path} is flagged {', '.join(other) or 'with no document reason'}: it stays in "
+                     "quarantine. Only ID, passport and payment-card photos go to the records inbox; a 2FA code or "
+                     "a secret belongs in your password manager. Nothing handed over")
+        return dict(kind="held", path=p, batch=batch, rel=rel, sha=q[rel]["sha"], size=q[rel]["size"])
+    if not any(p.startswith(os.path.abspath(r) + os.sep) for r in LIB_ROOTS) or p.startswith(STATE + os.sep):
+        sys.exit(f"to-records: not a library or quarantined file: {path}; nothing handed over")
+    if os.path.splitext(p)[1].lower() not in IMG | VID:
+        sys.exit(f"to-records: not a photo or video: {path}; nothing handed over")
+    import label  # stdlib-only at import time
+    s = sha256(p)
+    if label.flagged(STATE).get(s) == os.path.getsize(p):  # a copy of a flagged, quarantined or erased file
+        sys.exit(f"to-records: {path} is a copy of a file the scan flagged, quarantine holds or erase removed: it "
+                 "never goes to the records inbox. Nothing handed over")
+    return dict(kind="library", path=p, sha=s, size=os.path.getsize(p))
+
+
+def cmd_to_records(a):
+    if a.list:
+        return records_list()
+    if a.finish:
+        if a.files:
+            sys.exit("to-records --finish takes no files: it finishes what was handed over before")
+        return records_finish(a)
+    if not a.files:
+        sys.exit("to-records: name the files to hand over (or --list, --finish)")
+    items = [handoff_item(f) for f in dict.fromkeys(a.files)]  # every refusal before anything is copied
+    handed = records_handed()
+    again = [it["path"] for it in items if it["kind"] == "library" and it["path"] in handed]
+    if again:
+        sys.exit(f"to-records: {plural(len(again), 'file')} already handed to records (to-records --list); "
+                 "nothing handed over")
+    inbox = records_inbox(create=a.yes)
+    if not a.yes:
+        print(f"dry run: would copy {plural(len(items), 'file')} to the records inbox ({shown_path(inbox)}) and "
+              "hold the originals until `media-intake to-records --finish`:")
+        for it in items:
+            print(f"  {os.path.basename(it['path'])} ({'library' if it['kind'] == 'library' else 'quarantined'})")
+        print("nothing copied (--yes copies them)")
+        return
+    rows = load_handoffs()
+    qroot = private_dir(os.path.join(STATE, "quarantine"))
+    for it in items:
+        dst = copy_to_inbox(it["path"], inbox, it["sha"])
+        row = dict(kind=it["kind"], sha=it["sha"], size=it["size"], name=os.path.basename(dst), at=time.time())
+        if it["kind"] == "library":
+            row["path"] = it["path"]
+        else:  # out of its batch's quarantine, so that batch's erase goes on without waiting for the backup
+            # Recorded before it moves: a crash between the steps leaves a listed (held) file, never an unlisted
+            # one; a listed file that didn't move yet is still in its batch, and --finish says it is missing.
+            hdir = private_dir(os.path.join(qroot, HELD))
+            hq = load(os.path.join(hdir, "quarantine.json"), {}) or {}
+            sq_path = os.path.join(qroot, it["batch"], "quarantine.json")
+            sq = load(sq_path, {}) or {}
+            rel = free_rel(hq, hdir, os.path.basename(it["rel"]))
+            hq[rel] = dict(sq[it["rel"]], from_batch=it["batch"])
+            save(os.path.join(hdir, "quarantine.json"), hq)
+            row["rel"] = rel
+            rows.append(row)
+            save_handoffs(rows)
+            os.replace(it["path"], os.path.join(hdir, rel))
+            sq.pop(it["rel"], None)
+            save(sq_path, sq)
+        if it["kind"] == "library":
+            rows.append(row)
+            save_handoffs(rows)
+        print(f"handed to records: {row['name']}")
+    print(f"{plural(len(items), 'file')} copied to the records inbox; the originals are held (hidden from the "
+          "gallery) until your records backup holds them")
+    print("next: media-intake to-records --finish --drive DRIVE   (or --backup-verified), once that backup is done")
+
+
+def records_list():
+    rows = load_handoffs()
+    if not rows:
+        print("nothing handed to records is waiting")
+        return
+    print(f"{plural(len(rows), 'file')} handed to records, originals held until --finish:")
+    for r in rows:
+        when = datetime.datetime.fromtimestamp(r["at"]).strftime("%Y-%m-%d %H:%M")
+        print(f"  {when}  {r['name']} ({'library' if r['kind'] == 'library' else 'quarantined'})")
+
+
+def records_finish(a):
+    """Erase the held originals of what was handed over, once the records backup holds the copies: those handed
+    before the newest records.archive match on --drive, or all with --backup-verified. Through forget's and erase's
+    own path (every copy, caches, recognition data, the backup drive with --drive); the inbox copy is inside the
+    records folder, which no sweep enters, so it stays."""
+    rows = load_handoffs()
+    if not rows:
+        print("nothing handed to records is waiting")
+        return
+    arch = CFG["records_archive"]
+    if arch and a.drive:
+        found = [m for m in glob.glob(os.path.join(os.path.abspath(a.drive), arch))
+                 if os.path.isfile(m) and not os.path.islink(m)]
+        if not found:
+            sys.exit(f"to-records --finish: no records archive matching records.archive on {a.drive}: run your "
+                     "records backup (and its verify) first; nothing erased")
+        newest = max(os.path.getmtime(m) for m in found)
+        due = [r for r in rows if r["at"] < newest]
+        why = "handed before the newest records archive on the drive"
+    elif a.backup_verified:
+        due, why = rows, "you said the records backup is verified"
+    else:
+        sys.exit("to-records --finish erases the originals for good, so only once your records backup holds the "
+                 "copies: pass --backup-verified once you have checked it, or set records.archive and pass --drive "
+                 "DRIVE so the archive's date is checked; nothing erased")
+    hdir = os.path.join(STATE, "quarantine", HELD)
+
+    def source(r):
+        return r["path"] if r["kind"] == "library" else os.path.join(hdir, r["rel"])
+    waiting = len(rows) - len(due)
+    erased = erase_log_sigs()[0]
+    missing = [r for r in due if not os.path.isfile(source(r))]
+    gone = [r for r in missing if erased.get(r["sha"]) == r["size"]]  # erased some other way: nothing left to do
+    lost = [r for r in missing if r not in gone]  # neither erased nor where it was held: kept listed, said
+    # Only what was handed over is erased: a file changed (or replaced) at the held place since is left alone.
+    changed = [r for r in due if r not in missing
+               and (os.path.getsize(source(r)) != r["size"] or sha256(source(r)) != r["sha"])]
+    due = [r for r in due if r not in missing and r not in changed]
+    if lost:
+        print(f"{plural(len(lost), 'held original')} not where it was held and not erased: still listed "
+              "(to-records --list). A --finish stopped midway leaves them in the state folder's "
+              "quarantine/records-<date>/: erase that batch to finish them")
+    if changed:
+        print(f"{plural(len(changed), 'held original')} changed since it was handed over: left where it is and no "
+              "longer held (hand it over again to send the new one)")
+    drop = gone + changed
+    if not due:
+        print(f"nothing to erase yet: {plural(waiting, 'file')} handed after the newest records archive"
+              + (f"; {len(gone)} originals already erased" if gone else ""))
+        save_handoffs([r for r in rows if r not in drop])
+        return
+    a.phone = None
+    need_device(a)
+    if not a.yes:
+        print(f"dry run: would erase {plural(len(due), 'held original')} for good ({why}), as forget and erase do:")
+        for r in due:
+            print(f"  {r['name']} ({'library' if r['kind'] == 'library' else 'quarantined'})")
+        if waiting:
+            print(f"{plural(waiting, 'file')} handed later stay held")
+        print("nothing erased (--yes erases them)")
+        return
+    batch = datetime.datetime.now().strftime("records-%Y%m%d-%H%M%S")
+    quar = private_dir(os.path.join(private_dir(os.path.join(STATE, "quarantine")), batch))
+    q = load(os.path.join(quar, "quarantine.json"), {}) or {}
+    index = load(os.path.join(STATE, "index.json"), {})
+    stats = collections.Counter()
+    lib = [r["path"] for r in due if r["kind"] == "library"]
+    qfile = os.path.join(quar, "quarantine.json")
+    forget_into(lib, quar, q, index, stats, qfile=qfile)  # each entry saved before its file moves
+    hq = load(os.path.join(hdir, "quarantine.json"), {}) or {}
+    for r in due:
+        if r["kind"] != "library":
+            rel = free_rel(q, quar, r["rel"])
+            e = dict(hq.get(r["rel"]) or dict(reasons=["owner"], sha=r["sha"], size=r["size"], dst=None))
+            e.pop("from_batch", None)
+            q[rel] = e
+            save(qfile, q)
+            os.replace(os.path.join(hdir, r["rel"]), os.path.join(quar, rel))
+            hq.pop(r["rel"], None)
+    if os.path.isdir(hdir):
+        save(os.path.join(hdir, "quarantine.json"), hq)
+    save(qfile, q)
+    save(os.path.join(STATE, "index.json"), index)
+    # Their originals are listed in this batch now (a crash before here leaves them listed both ways: the next
+    # --finish says where they are, and erasing this batch finishes them).
+    save_handoffs([r for r in rows if r not in due and r not in drop])
+    a.batch, a.forget_stats, a.forget_paths = batch, stats, lib
+    print(f"erasing {plural(len(due), 'held original')} ({why}); the copies in the records inbox stay")
     cmd_erase(a)
 
 
@@ -3178,6 +3473,27 @@ def build_parser(prog=None):
     s.add_argument("--yes", action="store_true", help=h_yes.format(word="ERASE"))
     s.add_argument("--no-wipe-free", action="store_true", help="skip overwriting the backup drive's free space")
 
+    s = cmd("to-records", "hand photos of documents to your records tool's inbox; --finish erases the originals",
+            "Copy photos of documents (an ID, a passport, a payment card, a receipt: library files, or quarantined\n"
+            "files flagged only as one of the first three) into your records tool's inbox (records.inbox), bytes\n"
+            "unchanged, never over a file. The originals are held, hidden from the gallery, until --finish erases\n"
+            "them as forget does, once your records backup holds the copies. Nudity, 2FA codes and secret words\n"
+            "never go. A dry run unless --yes. docs/records.md.",
+            "the files you name, the inbox, the state folder; with --finish the library, your home folder and\n"
+            "the backup drive you name.",
+            "no; --finish --yes: YES, for good, the held originals and every copy (never the inbox copy).")
+    s.add_argument("files", nargs="*", metavar="FILE", help="library files, or files under the state folder's "
+                   "quarantine/<batch>/")
+    s.add_argument("--list", action="store_true", help="show what is handed over and still held")
+    s.add_argument("--finish", action="store_true", help="erase the held originals your records backup holds")
+    s.add_argument("--backup-verified", action="store_true", help="with --finish: you checked the records backup "
+                   "holds every copy handed over so far")
+    s.add_argument("--drive", metavar="DRIVE", help="with --finish: " + h_drive + "; its newest records.archive "
+                   "match decides what is due, and the originals' copies there are deleted too")
+    s.add_argument("--yes", action="store_true", help="copy (or with --finish, erase) now; without it a dry run")
+    s.add_argument("--no-wipe-free", action="store_true", help="with --finish --drive: skip overwriting the "
+                   "backup drive's free space")
+
     s = cmd("verify-gone", "check that erased files left no copy behind; changes nothing (exit 1 if one is left)",
             "Search your home folder (and the backup drive with --drive) for any copy of what was erased, and\n"
             "show the last erase's report. Exits 1 if a copy is still there.",
@@ -3360,7 +3676,8 @@ def build_parser(prog=None):
 
 # The library lock (library_lock.py; docs/intake.md, "One writer at a time"): every subcommand is in exactly one
 # of these (tests/test_library_lock.py checks), and main() is the only place that takes it for the CLI.
-LOCKED = {"stage", "plan", "scan", "apply", "release", "erase", "forget", "sweep-erased", "offload", "purge-review",
+LOCKED = {"stage", "plan", "scan", "apply", "release", "erase", "forget", "to-records", "sweep-erased", "offload",
+          "purge-review",
           "trash", "not-trash", "suggest-trash", "tag", "tag-files", "mark-used", "migrate-tags", "fix-dates"}
 # check-dates writes only its own report in the state folder, so a long run never blocks the gallery's edits.
 READ_ONLY = {"quarantine", "verify-gone", "wipe-free", "share-copy", "social-copy", "find", "check-dates"}

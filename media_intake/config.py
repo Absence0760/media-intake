@@ -15,7 +15,7 @@ SLUG = re.compile(r"^[a-z0-9][a-z0-9-]{0,63}$")
 NAME = re.compile(r"^[A-Za-z0-9][A-Za-z0-9 ._-]{0,63}$")
 TOP_KEYS = {"library", "videos", "state", "phone", "drive", "queue", "projects", "plugins", "recognition", "records"}
 RECOGNITION_KEYS = {"dir", "pet_classes", "pet_min_frames"}
-RECORDS_KEYS = {"root"}
+RECORDS_KEYS = {"root", "inbox", "archive"}
 # Where personal documents and finances are kept by a separate tool (docs/configuration.md, records.root). Every
 # sweep skips it: never hashed, never deleted. The default is protected with no config at all.
 RECORDS_DEFAULT = "~/Documents/Records"
@@ -128,6 +128,24 @@ def load(path=None):
                 or rr.casefold().startswith(rp.rstrip(os.sep) + os.sep):
             raise ConfigError(f"records.root (or $PRIVATE_RECORDS) and {name} overlap: no sweep enters the records "
                               "folder, so media-intake's folders must be apart from it")
+    # to-records (docs/records.md): the inbox the records tool reads, inside the records folder so no sweep ever
+    # reaches a copy handed there; and, optionally, where that tool's encrypted archive lands on a backup drive.
+    inbox = records.get("inbox", "")
+    if not isinstance(inbox, str):
+        raise ConfigError("records.inbox: a folder name inside records.root, or a path in it")
+    c["records_inbox"] = ""
+    if inbox.strip():
+        ib = _path(inbox if os.path.isabs(os.path.expanduser(inbox)) else os.path.join(c["records_root"], inbox),
+                   "records.inbox")
+        rib = os.path.realpath(ib).casefold()
+        if not rib.startswith(rr.casefold().rstrip(os.sep) + os.sep):
+            raise ConfigError("records.inbox: must be inside records.root (no sweep enters it there, so a file "
+                              "handed to it is never erased with its source)")
+        c["records_inbox"] = ib
+    arch = records.get("archive", "")
+    if not isinstance(arch, str) or os.path.isabs(arch) or ".." in arch.split("/") or arch.startswith("~"):
+        raise ConfigError("records.archive: a glob relative to a drive's mount, e.g. \"backups/records-*.tar.gpg\"")
+    c["records_archive"] = arch.strip()
 
     plugins = raw.get("plugins", {})
     c["plugin_paths"] = [_path(x, "plugins.paths") for x in _strs(plugins.get("paths", []), "plugins.paths")]

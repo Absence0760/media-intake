@@ -213,7 +213,9 @@ page's own handlers and fails when the list leaves one out.
   (`config.toml`, [configuration.md](configuration.md)). Never the
   media-intake state folder (quarantine, staging, review), never a symlink, a
   hidden folder, or a file whose sha256 `scan` flagged, quarantine holds or
-  the erase log lists (`label.flagged()`).
+  the erase log lists (`label.flagged()`), nor a photo of a document handed
+  to the records inbox and still held until `to-records --finish` erases it
+  ([records.md](records.md)).
 - **Library**: a timeline grid by month, newest first, 240 items per page with
   infinite scroll; thumbnails load lazily. Click (or Enter on a focused tile)
   opens the large view (the image, or `<video controls>`, which starts playing
