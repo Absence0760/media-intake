@@ -12,10 +12,12 @@ or videos folder change, the rest (a camera's device folder, the name) stays. Pr
 and event, not re-filed. A move is a rename on the same filesystem (a hard link then an unlink, so a file
 already at the destination is never replaced); a destination taken by another file gets the next free
 <stem>_<n> name, as `apply` does. Every record that names the old path is rekeyed (records(), below) and
-each run is logged in <state>/refiles.json (0600) for --undo. Runs under the library lock (intake.LOCKED).
-Output is paths and counts. docs/dates.md, "Re-filing a fixed file".
+each run is logged in <state>/refiles.json (0600) for --undo; erase, forget, trash and sweep-erased drop a
+file's moves from it (forget_paths). Runs under the library lock (intake.LOCKED), the dry run too: it reads
+date-fixes.json and the library, which another job may be changing. Output is paths and counts.
+docs/dates.md, "Re-filing a fixed file".
 """
-import datetime, errno, glob, os, re, secrets, sqlite3, sys
+import collections, datetime, errno, glob, os, re, secrets, sqlite3, sys
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 if HERE not in sys.path:
@@ -28,6 +30,7 @@ LOG = "refiles.json"
 VERSION = 1
 YEAR_RX = re.compile(r"^(19|20)\d\d$")
 MONTH_RX = re.compile(r"^((19|20)\d\d)-(0[1-9]|1[0-2])$")
+PROGRESS = ("vlm-progress.json", "captions-progress.json")  # vlm-trash's and captions' resume records, by path
 NO_LINK = {errno.EPERM, errno.EOPNOTSUPP, errno.ENOTSUP, errno.EMLINK, errno.ENOSYS}  # exFAT, some FUSE mounts
 
 
@@ -47,6 +50,85 @@ def load_log(state=None):
     if not isinstance(d, dict) or d.get("version") != VERSION or not isinstance(d.get("refiles"), list):
         return dict(version=VERSION, refiles=[])
     return d
+
+
+def _read_log(state):
+    """(log, "") for forget_paths and stale_count, which rewrite it: (None, why) when it can't be read, (None,
+    "") when there is none."""
+    p = log_path(state)
+    if not os.path.lexists(p):
+        return None, ""
+    try:
+        d = intake.load(p, None)
+    except (OSError, ValueError):
+        d = None
+    if not isinstance(d, dict) or d.get("version") != VERSION or not isinstance(d.get("refiles"), list):
+        return None, f"{LOG} is unreadable: its records were not checked"
+    return d, ""
+
+
+def _histories(log):
+    """{path: root}: one file's moves link up (a refile of a refiled file, an undo, a refile again), so every
+    path a file was known by shares one root."""
+    parent = {}
+
+    def find(p):
+        parent.setdefault(p, p)
+        while parent[p] != p:
+            parent[p] = parent[parent[p]]
+            p = parent[p]
+        return p
+    for rec in log["refiles"]:
+        for mv in rec.get("moves", []) if isinstance(rec, dict) else []:
+            if isinstance(mv, dict) and isinstance(mv.get("from"), str) and isinstance(mv.get("to"), str):
+                parent[find(mv["from"])] = find(mv["to"])
+    return {p: find(p) for p in list(parent)}
+
+
+def _dead(log, paths, gone):
+    """(roots of the histories to drop, {path: root}): those naming one of paths, and (gone: path -> bool)
+    those whose every path is gone."""
+    roots = _histories(log)
+    members = collections.defaultdict(set)
+    for p, r in roots.items():
+        members[r].add(p)
+    return {r for r, ps in members.items() if ps & paths or (gone and all(gone(p) for p in ps))}, roots
+
+
+def forget_paths(paths, state=None, gone=None):
+    """Erase / forget / trash / sweep-erased: drop every move of these files from refiles.json, with the rest of
+    each one's history (its earlier paths), and (gone: path -> bool) every history whose paths are all gone.
+    A refile left with no move goes. Rewritten atomically, 0600; the caller holds the library lock. Returns
+    (moves dropped, "" or why not). Never raises."""
+    state = state or intake.STATE
+    log, why = _read_log(state)
+    if log is None:
+        return 0, why
+    dead, roots = _dead(log, {p for p in paths if isinstance(p, str)}, gone)
+    if not dead:
+        return 0, ""
+    n, keep = 0, []
+    for rec in log["refiles"]:
+        old = rec.get("moves", []) if isinstance(rec, dict) else []
+        moves = [mv for mv in old if not (isinstance(mv, dict) and roots.get(mv.get("from")) in dead)]
+        n += len(old) - len(moves)
+        if moves:
+            keep.append(dict(rec, moves=moves))
+    try:
+        datecheck.save_private(log_path(state), dict(log, refiles=keep))
+    except OSError as e:
+        return 0, f"{LOG}: {e.strerror or e}"
+    return n, ""
+
+
+def stale_count(gone, state=None):
+    """verify-gone: moves in refiles.json of files whose every path is gone."""
+    log, _ = _read_log(state or intake.STATE)
+    if log is None:
+        return 0
+    dead, roots = _dead(log, set(), gone)
+    return sum(1 for rec in log["refiles"] if isinstance(rec, dict) for mv in rec.get("moves", [])
+               if isinstance(mv, dict) and roots.get(mv.get("from")) in dead)
 
 
 def fixed_dates(state=None):
@@ -265,6 +347,21 @@ def _rekey_maybe_trash(m):
     return n, ""
 
 
+def _rekey_progress(name):
+    """vlm-progress.json / captions-progress.json: {path: digest, size+mtime, verdict}. A rename keeps the size
+    and mtime, so the moved file is not judged or captioned again."""
+    def rekey(m):
+        p = os.path.join(intake.STATE, name)
+        d = intake.load(p, None)
+        if not isinstance(d, dict):
+            return 0, ""
+        n = sum(k in m for k in d)
+        if n:
+            datecheck.save_private(p, {m.get(k, k): v for k, v in d.items()})
+        return n, ""
+    return rekey
+
+
 def records(m):
     """[(what, rekeyed, problem)] for every record that names a library path. Not path-keyed, so nothing to do:
     event-names.json (by event), the gallery's thumbnails and proxies, trashed.json, ocr-text.db and the
@@ -275,6 +372,7 @@ def records(m):
              ("places.json", lambda m: myplaces.rekey_paths(intake.STATE, m)),
              ("backup records (entries dropped)", _rekey_backup), ("recognition store", _rekey_recognition),
              ("search index", _rekey_search), ("maybe-trash.json", _rekey_maybe_trash)]
+    steps += [(name, _rekey_progress(name)) for name in PROGRESS]
     out = []
     for what, f in steps:
         try:

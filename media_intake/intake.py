@@ -277,6 +277,56 @@ def date_stale_count():
     return len(datecheck.stale(LIB_ROOTS, STATE))
 
 
+def _gone_test():
+    import sources
+    live = sources.present_roots(LIB_ROOTS)
+    return lambda p: sources.file_gone(p, LIB_ROOTS, live)
+
+
+def path_forget(paths):
+    """refile's undo log (refiles.json, each file's whole move history) and vlm-trash's and captions' resume
+    records (vlm-progress.json, captions-progress.json): drop these paths, and any recorded file gone from a
+    library folder that is there. (records dropped, "" or why not). The caller holds the library lock."""
+    import datecheck, refile
+    paths, gone, err = {p for p in paths if isinstance(p, str)}, _gone_test(), []
+    n, why = refile.forget_paths(paths, STATE, gone)
+    if why:
+        err.append(why)
+    for name in refile.PROGRESS:
+        p = os.path.join(STATE, name)
+        try:
+            d = load(p, None)
+        except (OSError, ValueError):
+            err.append(f"{name} is unreadable: its records were not checked")
+            continue
+        if not isinstance(d, dict):
+            continue
+        keep = {k: v for k, v in d.items() if k not in paths and not gone(k)}
+        if len(keep) != len(d):
+            try:
+                datecheck.save_private(p, keep)
+                n += len(d) - len(keep)
+            except OSError as e:
+                err.append(f"{name}: {e.strerror or e}")
+    return n, "; ".join(err)
+
+
+def path_stale_count():
+    """verify-gone: records in refiles.json, vlm-progress.json or captions-progress.json of files gone from a
+    library folder that is there."""
+    import refile
+    gone = _gone_test()
+    n = refile.stale_count(gone, STATE)
+    for name in refile.PROGRESS:
+        try:
+            d = load(os.path.join(STATE, name), None)
+        except (OSError, ValueError):
+            continue
+        if isinstance(d, dict):
+            n += sum(1 for k in d if gone(k))
+    return n
+
+
 def sidecar(path):
     """The XMP sidecar of a media file: <file>.<ext>.xmp (digiKam and darktable naming)."""
     return path + ".xmp"
@@ -1675,12 +1725,17 @@ def verify_gone(sig, drive=None, left=None, home=True, names=True):
     if date_recs:
         print(f"DATE RECORDS: {date_recs} entries in datecheck.json or date-fixes.json name files no longer in "
               "the library (erase removes them)")
+    path_recs = path_stale_count() if home else 0
+    if path_recs:
+        print(f"REFILE AND RESUME RECORDS: {path_recs} entries in refiles.json, vlm-progress.json or "
+              "captions-progress.json name files no longer in the library (erase removes them)")
     if left is not None:
         left["copies still present at verify-gone"] += sum(found.values())
         left["orphan sidecars at verify-gone"] += sum(orphans.values())
         left["your places' records of files gone at verify-gone"] += place_recs
         left["date records of files gone at verify-gone"] += date_recs
-    return not found and not orphans and not place_recs and not date_recs
+        left["refile and resume records of files gone at verify-gone"] += path_recs
+    return not found and not orphans and not place_recs and not date_recs and not path_recs
 
 
 def cmd_verify_gone(a):
@@ -1755,7 +1810,7 @@ def cmd_sweep_erased(a):
     recent = prune_recent(uris, []) if home else 0
     traces = prune_app_traces(uris, []) if home else collections.Counter()
     backups, _, _ = prune_backup_records(paths, set(sig))
-    place_recs = date_recs = 0
+    place_recs = date_recs = path_recs = 0
     if home:  # the deleted copies' records in places.json and the date files, so verify-gone finds none
         try:
             pstale = myplaces.Store(STATE, LIB_ROOTS).stale(LIB_ROOTS)
@@ -1763,6 +1818,7 @@ def cmd_sweep_erased(a):
             pstale = set()
         place_recs, _ = myplaces.forget_paths(STATE, set(paths) | pstale)
         date_recs, _ = date_forget(set(paths))
+        path_recs, _ = path_forget(set(paths))
     on_drive = sum(v for k, v in found.items() if k.startswith("drive:"))
     print(f"sweep-erased: {sum(found.values())} copies deleted in {where_}" + counts
           + (f"\n  sidecars (.xmp)              {stats['sidecars'] + sum(orphans.values())}"
@@ -1777,7 +1833,8 @@ def cmd_sweep_erased(a):
           + (f"\n  app traces                   {sum(traces.values())}" if sum(traces.values()) else "")
           + (f"\n  backup record entries        {backups}" if backups else "")
           + (f"\n  your places' records         {place_recs}" if place_recs else "")
-          + (f"\n  date records                 {date_recs}" if date_recs else ""))
+          + (f"\n  date records                 {date_recs}" if date_recs else "")
+          + (f"\n  refile and resume records    {path_recs}" if path_recs else ""))
     if home:
         print("  (not swept: toolchains, package/build caches, container storage, .git, node_modules)")
     if in_git:
@@ -2017,6 +2074,7 @@ def cmd_erase(a):
         stale = set()
     place_recs, place_err = myplaces.forget_paths(STATE, gone | stale)
     date_recs, date_err = date_forget(gone)  # datecheck.json and date-fixes.json (docs/dates.md)
+    path_recs, path_err = path_forget(gone)  # refiles.json, vlm-progress.json, captions-progress.json
     with open(os.path.join(STATE, "erase-log.txt"), "a") as f:
         for s, (size, _) in shas.items():
             f.write(f"{datetime.datetime.now():%Y-%m-%d %H:%M} {a.batch} sha256:{s} size:{size}\n")
@@ -2078,7 +2136,9 @@ def cmd_erase(a):
                                 "your places' records that could not be rewritten (places.json keeps the names)":
                                     int(bool(place_err)),
                                 "date records that could not be rewritten (datecheck.json or date-fixes.json "
-                                "keeps the names)": int(bool(date_err))})
+                                "keeps the names)": int(bool(date_err)),
+                                "refile and resume records that could not be rewritten (refiles.json, "
+                                "vlm-progress.json or captions-progress.json keeps the names)": int(bool(path_err))})
     ok = verify_gone(sig, a.drive, left)
     # The coverage report: every place this erase reached (counts), what it left, what it could not check.
     reached = {"quarantined files (state folder, quarantine/)": len(q),
@@ -2097,7 +2157,9 @@ def cmd_erase(a):
                "near-duplicates moved to quarantine (not deleted)": near,
                "backup records: erased files dropped (state folder, backup/)": backups,
                "your places' records: erased files dropped (state folder, places.json)": place_recs,
-               "date records: erased files dropped (state folder, datecheck.json and date-fixes.json)": date_recs}
+               "date records: erased files dropped (state folder, datecheck.json and date-fixes.json)": date_recs,
+               "refile and resume records: erased files dropped (state folder, refiles.json, vlm-progress.json "
+               "and captions-progress.json)": path_recs}
     not_checked = []
     if gio_metadata_on():
         reached["gvfs-metadata entries cleared (~/.local/share/gvfs-metadata)"] = stats["gvfs-metadata cleared"]
@@ -2761,6 +2823,9 @@ def trash_files(files, batch=None, phone=None, dry=False):
     _, derr = date_forget(gone_paths)  # their findings and fixes in datecheck.json / date-fixes.json
     if derr:
         print(f"date records of the trashed files not dropped: {derr}")
+    _, rerr = path_forget(gone_paths)  # refiles.json, vlm-progress.json, captions-progress.json
+    if rerr:
+        print(f"refile and resume records of the trashed files not dropped: {rerr}")
     marked, spared, err = mark_trashed_copies(gone, index)
     print(f"trashed {n} files; sidecars {sc}; thumbnails {th}; phone {ph}"
           + (f"; recognition rows and crops {recog_count(rec)}" if recog_count(rec) else "")
