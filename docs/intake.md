@@ -194,6 +194,7 @@ media-intake find [--tag T] [--event E] [--place P] [--project P] [--unused-sinc
 media-intake check-dates [PATHS...] [--json] [--quick]   # wrong-looking dates; report only (dates.md)
 media-intake fix-dates FILE... --set W|--shift ±N|--suggested|--from-neighbours|--like GOOD [--reason T] [--yes]
 media-intake fix-dates --undo [ID] [--yes]    # sidecars only; a dry run without --yes (dates.md)
+media-intake refile [--undo [ID]] [--yes]     # fixed files to their date's folder, with sidecars; a dry run without --yes (dates.md)
 media-intake gallery [--drive DRIVE] [--share-out DIR]
 media-intake proxies [--dry-run] [--inhibit] [--retry-failed]  # the gallery's HEVC video proxies ahead of time (gallery.md)
 media-intake prune-cache [--dry-run]          # gallery thumbnails and proxies nothing shows any more
@@ -201,6 +202,8 @@ media-intake space [--top N] [--json]        # what takes room and what each cle
 media-intake calibrate [--precision P] [--json]   # label thresholds vs your marks, report only (configuration.md)
 media-intake backup DRIVE [--verify] [--dry-run] [--skip PART]   # library, videos, sidecars to the backup drive (backup.md)
 media-intake zip-check ROOT [--known DIR]... [--out JSON]   # what export zips hold that you lack; read-only
+media-intake vlm-trash [FILE... | --all] [--redo] [--dry-run] [--inhibit]   # the local VLM's junk opinion (search.md)
+media-intake captions FILE... | --all [--redo] [--dry-run] [--inhibit]   # local photo captions in sidecars; off by default (search.md)
 ```
 
 `media-intake <command> --help` says what the command does, what it touches
@@ -370,7 +373,7 @@ run and a CLI `apply` never interleave (`media_intake/library_lock.py`):
 - **CLI:** `intake.py main()` takes it for every subcommand in
   `intake.LOCKED` (stage, plan, scan, apply, release, erase, forget,
   sweep-erased, offload, purge-review, trash, not-trash, suggest-trash, tag, tag-files, mark-used,
-  migrate-tags, fix-dates).
+  migrate-tags, fix-dates, refile; `refile`'s dry runs too, for a steady view of what would move).
   The read-only ones in `intake.READ_ONLY` (quarantine, verify-gone, wipe-free,
   share-copy, social-copy, find, check-dates) never do (check-dates writes only its own report in the
   state folder, so a long run never blocks the gallery); a new subcommand counts as locked until
@@ -387,7 +390,9 @@ run and a CLI `apply` never interleave (`media_intake/library_lock.py`):
   that changes mid-copy is skipped for the next run ([backup.md](backup.md)).
   `media-intake zip-check` is cli.py's and read-only, so it takes no lock
   either (Cloud exports, below).
-  `vlm-trash` takes it around each batch of verdicts it writes.
+  `vlm-trash` takes it around each batch of verdicts it writes, and `captions`
+  around each batch of captions it writes to sidecars (asking the model
+  holds no lock).
 - **Jobs** (the review page's run, the gallery's Trash, Erase and Share) take it with
   their job lock at submit and hold it until their last step is over; each
   `intake.py` step inherits it from the worker (descriptor plus
@@ -1250,6 +1255,7 @@ own namespace; your tags win.
 | `Label\|*`, `Review\|maybe-trash`, `Review\|untagged-*` | SigLIP (`label.py` via `tag`/`tag-files`) | replaced as a set on every labelled run (`--no-labels` leaves them) |
 | `Review\|child-in-shot` | SigLIP | added, never removed by a tool; only you clear it |
 | `AI\|vlm/<model>/...` (and the older `Review\|vlm-trash/*`, `Review\|vlm-keep`) | the VLM (`vlm_trash.py`) | its own; tagging never touches them |
+| `XMP-mediaintake:Caption`, `XMP-mediaintake:CaptionModel` (not a tag: a one-sentence description and the model's tag) | `captions` (`captions.py`; [search.md](search.md), "Local captions") | its own fields; tagging never touches them; `captions --redo` replaces them |
 | `AI\|bestshot/cover`, `AI\|bestshot/not-best` | `best-shot` (`best_shot.py`; [gallery.md](gallery.md), "Best shot") | its own, replaced on every run; never written to a file you decided on, named, used or protected |
 | `Used\|<slug>` | `mark-used` | never removed |
 | `People\|<Name>`, `Pets\|<Name>` | `people tag` and `pets tag` ([recognition.md](recognition.md)), only for names you gave or confirmed | removes only tags it wrote that no longer apply; never re-adds one you removed from the sidecar; your own `People\|` and `Pets\|` tags are never touched |

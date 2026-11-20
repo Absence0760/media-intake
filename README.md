@@ -35,8 +35,10 @@ backup drive, quarantine, review folder, Keep, Trash, Erase, ...).
   prints image content, and the docs and `CLAUDE.md` forbid an assistant from
   opening quarantined or flagged files.
 - **Originals are never modified.** Tags live in XMP sidecars
-  (`<file>.<ext>.xmp`, digiKam's naming), so sha256 stays stable for dedupe
-  and erase.
+  (`<file>.<ext>.xmp`, digiKam's naming), and so do captions if you run
+  `captions`, so sha256 stays stable for dedupe and erase. `refile` renames a
+  file and its sidecar together into their fixed date's folder but never
+  writes either.
 - **Nothing is deleted from a device or drive without your explicit `--yes`**
   (a laptop folder source is never offloaded: you delete it yourself),
   and only files with a verified copy in the library. A device delete is
@@ -57,7 +59,14 @@ backup drive, quarantine, review folder, Keep, Trash, Erase, ...).
   `date-fixes.json` (check-dates' last report and every fix-dates write, with
   paths and dates; erase, forget, trash and sweep-erased drop their files'
   records; [docs/dates.md](docs/dates.md)), and `refiles.json` (each `refile`
-  run's old and new paths, for `refile --undo`). `ocr-text.db` (`0600`) holds the
+  run's old and new paths, for `refile --undo`), `vlm-progress.json` and
+  `captions-progress.json` (the resume records of `vlm-trash` and `captions`:
+  path, size, mtime and model digest, never a caption); erase, forget, trash
+  and sweep-erased drop their files' entries from all three, and
+  `verify-gone` counts any left. A caption, if you run `captions`, is a
+  one-sentence description of the photo from the local model on
+  `127.0.0.1`, kept only in the photo's sidecar (`XMP-mediaintake:Caption`)
+  and removed with it ([docs/search.md](docs/search.md)). `ocr-text.db` (`0600`) holds the
   text read from photos flagged for nothing, for `search --text`; erase, forget,
   trash and sweep-erased drop their rows, and `verify-gone` checks them
   ([docs/search.md](docs/search.md)). `records-handoff.json` (`0600`)

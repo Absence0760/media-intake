@@ -283,17 +283,28 @@ media-intake refile --undo --yes    # put the last refile back (or --undo ID)
   `maybe-trash.json`. The backup record (`<state>/backup/<drive>.json`) drops
   the old path's entries instead: the drive has no copy under the new path,
   so the next `backup` copies the file there, and the copy under the old path
-  stays on the drive (`backup` never deletes; [backup.md](backup.md)). Nothing
+  stays on the drive (`backup` never deletes; [backup.md](backup.md)).
+  `vlm-progress.json` and `captions-progress.json` (the resume records of
+  `vlm-trash --all` and `captions --all`) follow it too: a rename keeps the
+  size and time they check, so the moved photo is not judged or captioned
+  again. Nothing
   else names a library path: event display names are by event, and the
   thumbnails, proxies, `trashed.json` and the text index by sha256. GNOME's
   own thumbnail cache and recent files (by URI) are not touched.
 - **Recorded**: `<state>/refiles.json` (0600) keeps each run's moves (an id,
-  the time, each old and new path). `--undo [ID]` (the last by default; a dry
+  the time, each old and new path). erase, forget, trash and sweep-erased
+  drop a file's moves from it, its whole history (each earlier refile of the
+  same file too), and any history whose every path is gone; `verify-gone`
+  counts what is left (`REFILE AND RESUME RECORDS: N`, never a name).
+  `--undo [ID]` (the last by default; a dry
   run until `--yes`) moves them back and rekeys the records again; it refuses,
   moving nothing, when a moved file is gone or something now sits at its old
   place.
-- **Under the library lock** (`intake.LOCKED`); a second run with nothing to
-  move changes nothing. Output is paths and counts.
+- **Under the library lock** (`intake.LOCKED`), the dry run and `--undo`'s
+  dry run too: they read `date-fixes.json` and the library, which another
+  job may be changing, so what they print is one steady view (with a job
+  running, it waits, then refuses as any locked command does). A second run
+  with nothing to move changes nothing. Output is paths and counts.
 
 ## Limits
 

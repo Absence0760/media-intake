@@ -45,7 +45,16 @@ sweep-erased; docs/recognition.md); `places.json` (your named places and their
 points: sensitive, where you live; `0600`, never backed up, synced or printed;
 docs/places.md); and `datecheck.json` and `date-fixes.json` (paths and dates,
 `0600`, a file's records dropped by erase, forget, trash and sweep-erased;
-docs/dates.md); `ocr-text.db` (the text read from photos flagged for nothing,
+docs/dates.md); `refiles.json` (`0600`: each `refile` run's old and new paths,
+for `refile --undo`; erase, forget, trash and sweep-erased drop a file's whole
+move history, and `verify-gone` counts any left; docs/dates.md);
+`vlm-progress.json` and `captions-progress.json` (`0600`: path, size, mtime
+and model digest, and vlm-trash's verdict, never a caption; a file's entries
+dropped by erase, forget, trash and sweep-erased and counted by `verify-gone`;
+docs/search.md); captions in sidecars (`XMP-mediaintake:Caption` and
+`CaptionModel`: a one-sentence description of the photo, written only by
+`media-intake captions` from the Ollama model on `127.0.0.1`, and removed with
+the sidecar by erase, forget and trash; docs/search.md); `ocr-text.db` (the text read from photos flagged for nothing,
 `0600`, rows dropped by erase, forget, trash and sweep-erased and checked by
 `verify-gone`; docs/search.md); `records-handoff.json` (`0600`: names, checksums and times of
 photos of documents handed to the records inbox, never content) and

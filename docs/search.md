@@ -239,7 +239,10 @@ Other options: `--redo` (caption again), `--host http://127.0.0.1:PORT`,
   size+mtime and model digest (never a caption), saved with the sidecars every
   25 photos; a photo is skipped when its record matches and its sidecar holds
   this model's caption, so a killed run loses at most 25 captions. Paths whose
-  file is gone are dropped on each save. A sidecar that can't be written is
+  file is gone are dropped on each save; erase, forget, trash and
+  sweep-erased drop their files' entries at once (`verify-gone` counts any
+  left), and `refile` rekeys a moved photo's entry, so it isn't captioned
+  again. A sidecar that can't be written is
   skipped up front (`unwritable`).
 - Output, counts only, never a file name or a caption: progress lines on
   stderr (`captions: done/total files ...`, as `vlm-trash`), a summary line
@@ -326,7 +329,9 @@ AI|vlm/qwen3-vl-2b/conf/<0.0-1.0>     the model's confidence, one decimal
 - Incremental and resumable: `<state>/vlm-progress.json` (0600) records path,
   size, mtime, model digest and verdict, written with the sidecars every 25
   files; a file is skipped when that record matches and its sidecar has this
-  model's verdict tag. A kill loses at most 25 judgements.
+  model's verdict tag. A kill loses at most 25 judgements. erase, forget,
+  trash and sweep-erased drop their files' entries (`verify-gone` counts any
+  left), and `refile` rekeys a moved file's entry, so it isn't judged again.
 - `--inhibit` re-execs under `systemd-inhibit --what=sleep:idle`.
 - A file whose `.xmp` sidecar can't be written (a read-only folder or
   sidecar) is skipped before anything is sent and counted as `unwritable`,
