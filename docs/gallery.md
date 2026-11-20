@@ -1282,7 +1282,7 @@ player that hangs up lets the next video's open cancel that transcode
 by a gated `intake.py`) or trashed for real mid-transcode ends the reply,
 stops the transcode and leaves the cache empty; Trash from the gallery
 deleting the proxy; and `trash`, `forget` and `verify-gone` on planted
-proxies. `media-intake proxies` through the real `cli.py`: `--dry-run`
+proxies and failure records. `media-intake proxies` through the real `cli.py`: `--dry-run`
 counts (a duplicate is one proxy, an erased clip is left out and never named),
 a run makes the plain proxy once, a second run finds it made, the gallery then
 serves it at once with Range, a starred clip is proxied like any other, a
@@ -1293,8 +1293,9 @@ in-process with Python stand-ins for the commands: an attempt that hangs
 (after its first bytes, or before any) gives way to the next command within
 `PROXY_STALL`, one that keeps writing slowly is not stalled, one still writing
 at `PROXY_TIMEOUT` ends it without the next command, every command failing
-writes the 0600 record and a later success deletes it, a cancel records
-nothing, and the gallery serves the original of a recorded failure.
+writes the 0600 record and a later success deletes it, a record that can't
+be written is a plain failure (no error), a cancel records nothing, and the
+gallery serves the original of a recorded failure.
 `PlanTest`: `proxies.plan` counts a recorded failure and skips it, or plans it
 again with `retry_failed`. `ProxiesRunTest` runs it in-process with the plan
 and `make_proxy` stood in for: a video trashed, erased or flagged while its proxy is made

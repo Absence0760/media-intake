@@ -831,7 +831,7 @@ def make_proxy(src, dst, job=None):
                     os.remove(proxy_failed_path(dst))
                 return True
         if tried and not (job and job.stopped()):
-            with contextlib.suppress(FileExistsError):
+            with contextlib.suppress(OSError):  # there already; or unwritable: only next time's skip is lost
                 os.close(os.open(proxy_failed_path(dst), os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600))
         return False
     finally:

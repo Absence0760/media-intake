@@ -575,6 +575,12 @@ class ProxyTest(ProxyBase):
         r = subprocess.run([G.PY, "-I", G.INTAKE, "verify-gone"], env=self.env, capture_output=True, text=True)
         self.assertEqual(r.returncode, 1, r.stdout)
         self.assertIn("gallery video proxies", r.stdout)
+        os.remove(pk)  # and a failure record of erased content left behind, alone
+        open(fk, "wb").close()
+        os.chmod(fk, stat.S_IRUSR | stat.S_IWUSR)
+        r = subprocess.run([G.PY, "-I", G.INTAKE, "verify-gone"], env=self.env, capture_output=True, text=True)
+        self.assertEqual(r.returncode, 1, r.stdout)
+        self.assertIn("gallery video proxies", r.stdout)
 
 
 @unittest.skipUnless(shutil.which("ffmpeg") and shutil.which("ffprobe"), "ffmpeg/ffprobe missing")
@@ -1252,6 +1258,14 @@ class MakeProxyTest(unittest.TestCase):
         ok, _, _ = self.run_make("ok")  # --retry-failed, and it worked this time
         self.assertTrue(ok)
         self.assertFalse(os.path.exists(self.record))
+
+    def test_a_record_that_cannot_be_written_is_still_a_plain_failure(self):
+        nowhere = os.path.join(self.tmp, "no-such-folder", "x.failed")
+        with mock.patch.object(self.g, "proxy_failed_path", lambda dst: nowhere):
+            ok, ran, _ = self.run_make("fail")
+        self.assertFalse(ok)  # no OSError out of make_proxy: proxies goes on to the next video
+        self.assertEqual(ran, ["fail"])
+        self.assertEqual(os.listdir(self.cache), [])
 
     def test_still_writing_at_the_deadline_ends_it_without_the_next_command(self):
         with mock.patch.object(self.g, "PROXY_TIMEOUT", 1.0):
