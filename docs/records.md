@@ -109,21 +109,24 @@ passport (`passport-mrz`) or a payment card (`payment-card`).
 
 ## Finish: erase the originals
 
-Only once your records backup holds the copies, because until then the inbox
-copy is the only one outside this tool:
+Only once your records backup holds the copies and its verify passed,
+because until then the inbox copy is the only one outside this tool:
 
 ```
-media-intake to-records --finish --drive DRIVE                # dry run
-media-intake to-records --finish --drive DRIVE --yes --no-wipe-free
-media-intake to-records --finish --backup-verified --yes      # no archive check
+media-intake to-records --finish --backup-verified --drive DRIVE              # dry run
+media-intake to-records --finish --backup-verified --drive DRIVE --yes --no-wipe-free
+media-intake to-records --finish --backup-verified --yes                      # no archive check
 ```
 
+- `--backup-verified` is always needed: it is you saying the records backup
+  holds the copies and its own verify passed. Without it nothing is erased.
 - With `records.archive` set and `--drive`, the newest file on the drive
-  matching that glob decides what is due: only photos handed over before it
-  was written are erased, and later ones stay held. No match: nothing is
-  erased.
-- Without it, `--backup-verified` says you checked the records backup holds
-  every copy handed over so far.
+  matching that glob also narrows what is due: only photos handed over
+  before it was written are erased, and later ones stay held. No match:
+  nothing is erased. The archive's date proves it was written, not that it
+  verified, so it never stands in for `--backup-verified`.
+- Without an archive check, `--backup-verified` covers every copy handed
+  over so far.
 - The erase is forget's and erase's own: every copy in your home folder, the
   sidecars, thumbnails, gallery caches and recognition data, and with
   `--drive` the copies on the backup drive, with the usual coverage report
@@ -165,5 +168,6 @@ file and a non-photo are refused; `erase` and `release` of `records-held`
 are refused; `--finish` leaves a changed file and keeps a missing one
 listed; `--finish` refuses without
 proof, dry-runs, then erases the originals and their stray copies but never
-the inbox copies; with an archive on the drive only what it holds is erased;
+the inbox copies; with an archive on the drive nothing is erased without
+`--backup-verified`, and with it only what the archive holds;
 and the `records.inbox` / `records.archive` config rules.

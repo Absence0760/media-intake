@@ -175,7 +175,7 @@ media-intake quarantine BATCH           # counts + the folder to open, and the e
 media-intake release BATCH FILE...      # false positive -> library
 media-intake erase BATCH [--phone PHONE [--keep-phone-thumbnails]] [--drive DRIVE [--no-wipe-free]] [--yes]
 media-intake forget FILE... [--drive DRIVE] [--yes]   # asks (type ERASE) before anything moves
-media-intake to-records FILE... [--yes] | --list | --finish [--drive DRIVE | --backup-verified] [--yes]   # records.md
+media-intake to-records FILE... [--yes] | --list | --finish --backup-verified [--drive DRIVE] [--yes]   # records.md
 media-intake verify-gone [BATCH] [--drive DRIVE]   # with BATCH, also its last erase coverage report
 media-intake sweep-erased [BATCH] [--drive DRIVE [--drive-only] [--no-wipe-free]] [--yes]   # copies erase missed; dry run without --yes
 media-intake wipe-free DRIVE

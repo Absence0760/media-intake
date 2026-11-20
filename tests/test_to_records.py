@@ -154,7 +154,7 @@ class ToRecords(unittest.TestCase):
         self.run_cli(second, "--yes")
         rows = self.handoffs()
         os.makedirs(drive)
-        out = self.run_cli("--finish", "--drive", drive, "--yes", "--no-wipe-free", code=1)
+        out = self.run_cli("--finish", "--drive", drive, "--backup-verified", "--yes", "--no-wipe-free", code=1)
         self.assertIn("no records archive", out)
         self.assertTrue(os.path.isfile(first), "no archive: nothing erased")
         arch = write(os.path.join(drive, "backups/records-2026-11-20.tar.gpg"), b"encrypted")
@@ -165,7 +165,11 @@ class ToRecords(unittest.TestCase):
                 json.dump(rows, f)
             between = rows[0]["at"] + 5
         os.utime(arch, (between, between))
-        self.run_cli("--finish", "--drive", drive, "--yes", "--no-wipe-free")
+        # An archive's date proves it was written, not that its verify passed: the owner's word is still needed.
+        out = self.run_cli("--finish", "--drive", drive, "--yes", "--no-wipe-free", code=1)
+        self.assertIn("--backup-verified", out)
+        self.assertTrue(os.path.isfile(first), "an archive alone erases nothing")
+        self.run_cli("--finish", "--drive", drive, "--backup-verified", "--yes", "--no-wipe-free")
         self.assertFalse(os.path.exists(first))
         self.assertTrue(os.path.isfile(second), "handed after the newest archive: still held")
         self.assertEqual([r["name"] for r in self.handoffs()], ["IMG_0002.jpg"])
