@@ -133,11 +133,11 @@ class GallerySelectAllBrowserTest(B.BrowserCase):
         page.get_by_role("button", name="Select all").click()
         dlg = page.locator("[data-dialog=confirm]")
         page.keyboard.press("t")
-        B.expect(dlg.get_by_role("heading")).to_have_text("Trash 4 items?")
+        B.expect(dlg.get_by_role("heading")).to_have_text("Trash 4 files?")
         dlg.get_by_role("button", name="Cancel").click()
         B.expect(dlg).to_be_hidden()
         self.bar(page).get_by_role("button", name="Erase").click()
-        B.expect(dlg.get_by_role("heading")).to_have_text("Erase 4 items everywhere?")
+        B.expect(dlg.get_by_role("heading")).to_have_text("Erase 4 files everywhere?")
         B.expect(dlg.get_by_label("Type ERASE")).to_be_visible()  # still typed, whatever the selection
         dlg.get_by_role("button", name="Cancel").click()
         B.expect(dlg).to_be_hidden()

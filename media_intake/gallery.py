@@ -3628,6 +3628,9 @@ button:disabled{opacity:.45;cursor:not-allowed}
 .btn.trash{color:var(--trash);border-color:color-mix(in srgb,var(--trash) 45%,transparent);background:color-mix(in srgb,var(--trash) 10%,var(--panel))}
 .btn.erase{color:var(--erase);border-color:color-mix(in srgb,var(--erase) 45%,transparent);background:color-mix(in srgb,var(--erase) 9%,var(--panel))}
 .btn.primary{background:var(--acc);border-color:var(--acc);color:var(--on-acc)}
+/* the confirm button of a Trash or Erase dialog, in that action's colour (amber, red), never the accent blue */
+.btn.primary.gotrash{background:var(--trash);border-color:var(--trash);color:var(--on-acc)}
+.btn.primary.goerase{background:var(--erase);border-color:var(--erase);color:var(--on-acc)}
 ::placeholder{color:var(--mut);opacity:1}
 kbd{font:600 11px/1 ui-monospace,monospace;border:1px solid currentColor;border-radius:4px;padding:2px 4px}
 .icon{display:inline-flex;align-items:center;justify-content:center;width:36px;height:36px;border:0;border-radius:8px;background:none;color:var(--mut);position:relative}
@@ -3794,7 +3797,11 @@ output{font-variant-numeric:tabular-nums;color:var(--fg);font-weight:600}
 .chip .x{border:0;background:none;color:inherit;width:22px;height:22px;border-radius:50%;font-size:15px;line-height:1}
 .chip .x:hover{background:var(--acc-soft)}
 #note,#helpb{padding:0 24px}
-#helpb .hshort,#hmore{display:none}
+/* the burst help: one line, "more" for the whole text (open / closed remembered), × hides it for good in this browser */
+#helpb{display:flex;align-items:baseline;gap:2px 6px;flex-wrap:wrap}
+#helpb .hfull{display:none}#helpb.more .hshort{display:none}#helpb.more .hfull{display:inline}
+#hgone{border:0;background:none;color:var(--mut);font-size:15px;line-height:1;padding:2px 6px;border-radius:6px}
+#hgone:hover{background:var(--hover);color:var(--fg)}
 #note{margin:10px 0 0}
 main{padding:4px 24px 48px;flex:1 0 auto}
 h2.month{position:sticky;top:var(--hh);z-index:2;margin:0;padding:16px 0 8px;font-size:14px;font-weight:650;background:var(--bg)}
@@ -3875,6 +3882,10 @@ body.marqing,body.marqing *{user-select:none;-webkit-user-select:none}
 .fixopt{display:flex;flex-wrap:wrap;gap:6px 8px;align-items:center;margin:8px 0}.fixopt input:not([type=radio]){flex:1 1 12em;min-width:0;max-width:100%}.fixopt input[type=radio]{height:auto;padding:0;margin:0}
 .fixlist{margin:4px 0 8px;padding-left:1.2em;max-height:9em;overflow:auto;overflow-wrap:anywhere}
 #seln,#sugn{font-weight:650;font-size:14px;margin-right:4px;white-space:nowrap}
+/* the selection bar is one row: Keep, Trash, Erase, More… (the rest, in a popup above it) and Clear */
+#selgrp{flex-wrap:nowrap;position:relative}#selgrp #seln{min-width:0;flex:0 1 auto;white-space:normal}
+#selmore{position:absolute;bottom:calc(100% + 12px);right:0;z-index:13;display:flex;flex-direction:column;align-items:stretch;gap:4px;min-width:200px;padding:6px;background:var(--panel);border:1px solid var(--line);border-radius:10px;box-shadow:var(--shadow)}
+#selmore .btn{justify-content:flex-start;border-color:transparent}
 .sep{width:1px;height:22px;background:var(--line)}
 #toast{position:fixed;left:50%;bottom:24px;transform:translateX(-50%);z-index:40;background:var(--fg);color:var(--bg);padding:8px 14px;border-radius:8px;font-size:14px;max-width:min(560px,90vw);box-shadow:var(--shadow);opacity:0;pointer-events:none;transition:opacity .2s;display:flex;align-items:center;gap:12px}
 #toast.on{opacity:1;pointer-events:auto}
@@ -4008,10 +4019,11 @@ dl.dt dd{margin:0;word-break:break-word}
 #mstatus{margin:12px 0 0;padding:10px 12px;border-radius:8px;background:var(--acc-soft)}
 #mstatus[data-state=done]{background:color-mix(in srgb,var(--keep) 12%,var(--panel));font-weight:600}
 #mstatus[data-state=failed],#mstatus[data-state=crashed]{background:color-mix(in srgb,var(--erase) 12%,var(--panel));font-weight:600}
-.mthumbs{display:flex;flex-wrap:wrap;gap:4px;align-items:center;margin:4px 0 8px}
-.mthumbs img{width:56px;height:56px;object-fit:cover;border-radius:6px;background:var(--card)}
+.mthumbs{display:flex;flex-wrap:wrap;gap:6px;align-items:center;margin:4px 0 8px}
+.mthumbs img{width:104px;height:104px;object-fit:cover;border-radius:6px;background:var(--card)}
 .mthumbs span{color:var(--mut);font-size:13px;margin-left:4px}
 .mnames{color:var(--mut);font-size:13px;word-break:break-word}
+#mhint{margin:-4px 0 0;font-size:13px}
 #jobpill{flex:0 1 auto;min-width:0;overflow:hidden;border-color:var(--acc);color:var(--acc)}
 
 /* ---------------------------------------------------------------- narrow: the header's controls fit beside the title */
@@ -4034,16 +4046,13 @@ dl.dt dd{margin:0;word-break:break-word}
  #count,.size .ic{display:none}
  #ball{padding:0 9px}
  #chips,#evbar,#whobar,#junkbar{padding:10px 12px 0}#note,#helpb{padding:0 12px}
- /* the burst help: one line, "more" for the whole text */
- #helpb .hshort,#hmore{display:inline}#helpb .hfull{display:none}
- #helpb.more .hshort{display:none}#helpb.more .hfull{display:inline}
- #hmore{margin-left:6px}
  main{padding:4px 12px 40px}
  .grid{gap:4px}
  #actionbar{margin:0 8px;bottom:8px;padding:8px;gap:6px}
  #actionbar .btn{padding:0 9px}
  #actionbar kbd,#actionbar .sep{display:none}
- #seln{white-space:normal;min-width:0}
+ #seln{white-space:normal}
+ #selmore{right:-8px}
 }
 /* ---------------------------------------------------------------- touch targets: 44 px on a phone or a touch screen */
 @media (max-width:760px),(pointer:coarse){
@@ -4066,6 +4075,7 @@ dl.dt dd{margin:0;word-break:break-word}
  .link::after{content:"";position:absolute;inset:-11px -8px}
  .link{position:relative;z-index:3}  /* its hit area over the month heading below */
  #helpb{margin-top:12px}  /* room for "more"'s hit area under the header */
+ #hgone{width:44px;height:44px;padding:0}
  .tile .dec .btn{height:44px}
  .arrow{width:44px}
  /* Erase sits apart from Keep and Trash, so a slip of the thumb doesn't land on it */
@@ -4156,14 +4166,18 @@ dl.dt dd{margin:0;word-break:break-word}
   <button type="button" class="btn" id="jlower" hidden></button>
  </div>
  <p id="note" class="note" hidden></p>
- <p id="helpb" class="note" hidden><span class="hshort"><span class="kb">Bursts are stacked; X opens one.</span><span class="tch">Burst stacks: tap ×N to open one.</span></span><span class="hfull">A stack is a burst (shots from one camera a moment apart): its Show all button (×N on a small tile) or the X key opens or closes it; the shots of an open stack share a coloured ring. On a closed stack, selecting and every action (Keep, Trash, Erase, tags, Rotate, Set event, Share) act on the cover shot only; open the stack to act on the others.</span><button type="button" class="link" id="hmore" aria-controls="helpb" aria-expanded="false">more</button></p>
+ <p id="helpb" class="note" hidden><span class="hshort"><span class="kb">Bursts are stacked; X opens one.</span><span class="tch">Burst stacks: tap ×N to open one.</span></span><span class="hfull">A stack is a burst (shots from one camera a moment apart): its Show all button (×N on a small tile) or the X key opens or closes it; the shots of an open stack share a coloured ring. On a closed stack, selecting and every action (Keep, Trash, Erase, tags, Rotate, Set event, Share) act on the cover shot only; open the stack to act on the others.</span><button type="button" class="link" id="hmore" aria-controls="helpb" aria-expanded="false">more</button><button type="button" id="hgone" aria-label="Dismiss the burst help" title="Dismiss the burst help (this browser stops showing it)">×</button></p>
  <main id="main" aria-busy="true"><div id="list"><div class="state" role="status"><p><span class="spin" aria-hidden="true"></span>Loading your library…</p></div></div><div id="sentinel"></div><div id="plugin" hidden></div></main>
  <div id="actionbar" hidden>
   <div class="grp" id="selgrp" role="toolbar" aria-label="Selection actions" hidden><span id="seln"></span>
    <button type="button" class="btn keep" id="bkeep">Keep <kbd>K</kbd></button><button type="button" class="btn trash" id="btrash">Trash <kbd>T</kbd></button><button type="button" class="btn erase" id="berase">Erase <kbd>E</kbd></button>
    <span class="sep"></span>
-   <button type="button" class="btn" id="bfav" title="Star the selection as favorites (F toggles)">★ Favorite <kbd>F</kbd></button><button type="button" class="btn" id="bunfav" title="Take the selection out of Favorites">☆ Unfavorite</button>
-   <button type="button" class="btn" id="btag">+ tag</button><button type="button" class="btn" id="buntag">− tag</button><button type="button" class="btn" id="bevent">Set event…</button><button type="button" class="btn" id="bfixdate" hidden>Fix date…</button><button type="button" class="btn" id="brot">Rotate ⟳</button><button type="button" class="btn" id="bshare">Share</button><button type="button" class="btn" id="bnone">Clear selection <kbd>Esc</kbd></button>
+   <button type="button" class="btn" id="bmore" aria-expanded="false" aria-controls="selmore">More…</button>
+   <div id="selmore" role="group" aria-label="More actions" hidden>
+    <button type="button" class="btn" id="bfav" title="Star the selection as favorites (F toggles)">★ Favorite <kbd>F</kbd></button><button type="button" class="btn" id="bunfav" title="Take the selection out of Favorites">☆ Unfavorite</button>
+    <button type="button" class="btn" id="btag">+ tag</button><button type="button" class="btn" id="buntag">− tag</button><button type="button" class="btn" id="bevent">Set event…</button><button type="button" class="btn" id="bfixdate" hidden>Fix date…</button><button type="button" class="btn" id="brot">Rotate ⟳</button><button type="button" class="btn" id="bshare">Share</button>
+   </div>
+   <button type="button" class="btn" id="bnone" aria-label="Clear selection (Esc)">Clear <kbd>Esc</kbd></button>
   </div>
   <div class="grp" id="suggrp" role="group" aria-label="Decisions" hidden><span id="sugn"></span><span class="note" style="margin:0">Mark Keep or Trash on each, then Apply<span class="kbonly"> (keys: K, T, arrows)</span></span><button type="button" class="btn" id="bmarkall" title="Mark every tile shown Trash (a tile marked Keep keeps its mark); nothing changes until Apply">Mark all shown as Trash</button><button type="button" class="btn" id="bclearm" title="Take every Keep and Trash mark off (asks first)">Clear marks</button><button type="button" class="btn primary" id="sugapply">Apply…</button></div>
  </div>
@@ -4178,7 +4192,8 @@ dl.dt dd{margin:0;word-break:break-word}
 </div>
 <div class="modal" id="modal" role="dialog" aria-modal="true" aria-labelledby="mh" data-dialog="confirm"><div class="box"><h3 id="mh"></h3><div id="mb"></div>
  <p id="mfieldp" hidden><label for="mfield" id="mflabel"></label><input id="mfield" list="evnames" autocomplete="off" spellcheck="false"><datalist id="evnames"></datalist><datalist id="mytags"></datalist><datalist id="recnames"></datalist></p>
- <p id="mtype" hidden>Type <b>ERASE</b> to confirm: <input id="mtyped" autocomplete="off" spellcheck="false" aria-label="Type ERASE"></p>
+ <p id="mtype" hidden>Type <b>ERASE</b> in capital letters to confirm: <input id="mtyped" autocomplete="off" spellcheck="false" aria-label="Type ERASE" aria-describedby="mhint"></p>
+ <p id="mhint" class="warn" role="status" hidden></p>
  <p id="mstatus" role="status" hidden></p><pre id="mout" hidden></pre>
  <div class="mbtns"><button type="button" class="btn" id="mno">Cancel</button><button type="button" class="btn primary" id="mgo">Confirm</button></div></div></div>
 <div class="modal" id="rzoom" role="dialog" aria-modal="true" aria-labelledby="rzh"><div class="box">
@@ -4289,10 +4304,12 @@ function layout(){const ph=mqPhone.matches,col=ph?!drawer:railPref;document.body
 function expandSidebar(){if(mqPhone.matches)drawer=true;else{railPref=false;LS.set("rail","0")}layout()}
 $("#rail").onclick=()=>{if(mqPhone.matches)drawer=!drawer;else{railPref=!railPref;LS.set("rail",railPref?"1":"0")}layout()};
 $("#scrim").onclick=()=>{drawer=false;layout()};
-// the burst help at phone width: one line, "more" for the whole text (remembered per browser)
+// the burst help: one line, "more" for the whole text (remembered per browser); × hides it for good in this browser
+let helpGone=LS.get("helpgone","0")==="1";
 function helpMore(on){$("#helpb").classList.toggle("more",on);$("#hmore").textContent=on?"less":"more";$("#hmore").setAttribute("aria-expanded",String(on))}
 helpMore(LS.get("helpmore","0")==="1");
 $("#hmore").onclick=()=>{const on=!$("#helpb").classList.contains("more");helpMore(on);LS.set("helpmore",on?"1":"0")};
+$("#hgone").onclick=()=>{helpGone=true;LS.set("helpgone","1");$("#helpb").hidden=true;toast("Burst help hidden in this browser. The shortcut list (?) still says what X does.");const m=$("#main");m.setAttribute("tabindex","-1");m.focus({preventScroll:true})};
 mqPhone.addEventListener("change",()=>{drawer=false;layout()});
 $("#rsearch").onclick=()=>{expandSidebar();$("#q").focus()};
 // ---------------------------------------------------------------- sidebar: width (its right edge; desktop, expanded only)
@@ -4709,7 +4726,7 @@ function groupKey(it){if(F.dates&&it.dq&&view==="lib")return it.dq;return ranked
 function render(start){const L=$("#list");let sec=L.lastElementChild,g=sec&&sec.querySelector(".grid"),gk=sec?sec.dataset.k:null;
  for(let n=start;n<items.length;n++){const it=items[n],k=groupKey(it);
   if(k!==gk){sec=el("section");sec.dataset.k=k;sec.append(el("h2","month",ranked?k:monthName(k)));g=el("div","grid");sec.append(g);L.append(sec);gk=k}
-  g.append(tile(it,n))}$("#helpb").hidden=!items.some(i=>i.b!=null);allSel=null;paintSel();if(mq)mqFrame()}
+  g.append(tile(it,n))}$("#helpb").hidden=helpGone||!items.some(i=>i.b!=null);allSel=null;paintSel();if(mq)mqFrame()}
 /* Bursts (bursts.py, server side): the listed shots of one burst follow one another, the cover (it.bc) first.
    A closed stack shows only its cover; a shot of a closed stack is never selected, shown or stepped to. */
 function hiddenAt(n){const it=items[n];return !!it&&it.b!=null&&!it.bc&&!openB[it.b]}
@@ -4793,7 +4810,7 @@ function paintSel(){const sugOn=view==="sug";$$(".tile").forEach(t=>{const id=+t
   // a mark in words too (top left), not by the outline's colour alone
   t.querySelectorAll("[data-dec]").forEach(b=>b.setAttribute("aria-pressed",String(b.dataset.dec===d)));
   let m=t.querySelector(".mark");if(d){if(!m){m=el("span");t.append(m)}m.className="mark "+d;m.textContent=d==="keep"?"Keep":"Trash"}else if(m)m.remove()});
- const selOn=sel.size>0&&!plugView()&&view!=="sug";$("#selgrp").hidden=!selOn;$("#bfixdate").hidden=navActive()!=="dates";$("#suggrp").hidden=!sugOn;$("#actionbar").hidden=!(selOn||sugOn);
+ const selOn=sel.size>0&&!plugView()&&view!=="sug";$("#selgrp").hidden=!selOn;$("#bfixdate").hidden=navActive()!=="dates";$("#suggrp").hidden=!sugOn;$("#actionbar").hidden=!(selOn||sugOn);if(!selOn&&!$("#selmore").hidden)moreOpen(false);
  document.body.classList.toggle("selecting",sel.size>0);
  $("#seln").textContent=allSel&&allSel.n===sel.size?allSel.text:fmt(sel.size)+" selected";$("#ball").hidden=!canSelectAll();
  // the counts (and Apply) are the listed tiles' marks; marks on items not listed now wait, and the line says so
@@ -4890,7 +4907,10 @@ async function refused(what,e){let act=null;if(e.busy){try{const j=await api("/a
 async function doUndo(){const tok=undoTok;if(!tok)return;undoTok=null;const b=$("#tundo");if(b)b.remove();
  try{const j=await api("/api/undo",{undo:tok});toast(j.result);loadFacets();if((j.kind==="event"||j.kind==="date")&&vi<0){patchTiles(j.items);reset()}else if(j.kind==="rec"){patchTiles(j.items);if(j.who&&F.who===j.who.from)F.who=j.who.to;afterRec()}else refreshAfter(j.ids,j.thumbs,j.items)}
  catch(e){refused("Undo",e)}}
-async function doKeep(ids){try{const j=await api("/api/keep",{ids});toast(j.result,j.undo);refreshAfter(ids,false,j.items);loadFacets()}catch(e){refused("Keep",e)}}
+async function doKeep(ids){try{const j=await api("/api/keep",{ids});toast(j.result,j.undo);refreshAfter(ids,false,j.items);loadFacets();return true}catch(e){refused("Keep",e);return false}}
+// Keep on the selection (the bar or K): once it went well the selection is cleared, focus on the first kept tile
+async function keepSel(){const ids=selIds();if(!ids.length||!await doKeep(ids))return;const back=document.activeElement&&document.activeElement.closest&&document.activeElement.closest("#actionbar");
+ sel.clear();allSel=null;paintSel();if(back){const t=$("#t"+ids[0]);if(t&&!t.hidden)t.focus({preventScroll:true})}}
 /* In-page dialogs (the confirm / job dialog, the shortcut list): focus moves in, Tab stays in, Esc closes, and
    focus goes back to where it was. The large view is a dialog too (Tab stays in it, and its messages). */
 let modalReturn=null,keysReturn=null;
@@ -4911,8 +4931,10 @@ function trapTab(ev,d){const vis=e=>!e.disabled&&e.getClientRects().length>0;
 /* lines: text ("!..." a warning) or an element (the thumbnails); goLabel names the action ("Trash 2 files"), else Confirm */
 function confirmBox(title,lines,needType,go,goLabel){$("#mh").textContent=title;$("#mgo").textContent=goLabel||"Confirm";$("#mno").textContent="Cancel";const b=$("#mb");b.replaceChildren();
  lines.forEach(l=>b.append(typeof l==="string"?el("p",l.startsWith("!")?"warn":null,l.replace(/^!/,"")):l));
- $("#mtype").hidden=!needType;$("#mfieldp").hidden=true;$("#mtyped").value="";$("#mgo").disabled=!!needType;$("#mgo").hidden=false;$("#mout").hidden=true;$("#mout").textContent="";$("#mstatus").hidden=true;delete $("#mstatus").dataset.state;delete $("#modal").dataset.job;openModal();
- $("#mtyped").oninput=()=>{$("#mgo").disabled=$("#mtyped").value!=="ERASE"};if(needType)$("#mtyped").focus();else $("#mno").focus();
+ $("#mtype").hidden=!needType;$("#mhint").hidden=true;$("#mgo").classList.remove("gotrash","goerase");$("#mfieldp").hidden=true;$("#mtyped").value="";$("#mgo").disabled=!!needType;$("#mgo").hidden=false;$("#mout").hidden=true;$("#mout").textContent="";$("#mstatus").hidden=true;delete $("#mstatus").dataset.state;delete $("#modal").dataset.job;openModal();
+ $("#mtyped").oninput=()=>{const v=$("#mtyped").value,ok=v==="ERASE",low=!ok&&v.trim().toUpperCase()==="ERASE";$("#mgo").disabled=!ok;
+  // "erase" or "Erase" typed: say why the button stays off
+  $("#mhint").hidden=!low;$("#mhint").textContent=low?"Capital letters: type ERASE exactly.":""};if(needType)$("#mtyped").focus();else $("#mno").focus();
  $("#mgo").onclick=async()=>{$("#mgo").disabled=true;try{await go()}catch(e){$("#mout").hidden=false;$("#mout").textContent="Refused: "+e.message;$("#mgo").disabled=false}}}
 $("#mno").onclick=closeModal;
 $("#kclose").onclick=closeKeys;$("#bkeys").onclick=openKeys;
@@ -4929,14 +4951,14 @@ function warnings(ids){const its=ids.map(id=>items.find(i=>i.id===id)).filter(Bo
  const fv=its.filter(i=>i.fav).length;if(fv)w.push(one?"!This one is a favorite.":`!${fmt(fv)} of these ${fv===1?"is a favorite":"are favorites"}.`);return w}
 const these=n=>n===1?"this file":"these "+plural(n,"file");
 function trashText(n){return `Deletes ${these(n)} from this computer for good, with ${n===1?"its":"their"} tags and thumbnails. ${n===1?"It doesn't":"They don't"} go to the desktop Trash, and this can't be undone. If the same photo is imported again, it is skipped.`}
-function askTrash(ids){const n=ids.length;confirmBox(`Trash ${plural(n,"item")}?`,[thumbs(ids),names(ids),trashText(n)+" Use Erase for anything private.",...warnings(ids)],false,
- ()=>runJob("/api/trash",{ids,confirm:true},ids),"Trash "+plural(n,"file"))}
+function askTrash(ids){const n=ids.length;confirmBox(`Trash ${plural(n,"file")}?`,[thumbs(ids),names(ids),trashText(n)+" Use Erase for anything private.",...warnings(ids)],false,
+ ()=>runJob("/api/trash",{ids,confirm:true},ids),"Trash "+plural(n,"file"));$("#mgo").classList.add("gotrash")}
 // the backup drive is included only when the gallery was started with one (/api/facets "drive")
-function askErase(ids){const n=ids.length,dr=facets&&facets.drive;confirmBox(`Erase ${plural(n,"item")} everywhere?`,[thumbs(ids),names(ids),
+function askErase(ids){const n=ids.length,dr=facets&&facets.drive;confirmBox(`Erase ${plural(n,"file")} everywhere?`,[thumbs(ids),names(ids),
   `For private files. Erases every copy of ${these(n)}: in your library and the rest of your home folder, with ${n===1?"its":"their"} thumbnails and recent-file entries`
   +(dr?`, and on the backup drive (${dr}).`:". Not on a backup drive: the gallery was started without one.")+" This can't be undone.",...warnings(ids)],true,
- ()=>runJob("/api/erase",{ids,confirm:$("#mtyped").value},ids),"Erase "+plural(n,"file"))}
-function askSetEvent(ids){if(!ids.length)return;askField("Set the event on "+plural(ids.length,"item")+"?",[names(ids),"Each one goes into this event and out of any other. The photos and your other tags don't change. Leave it empty to take them out of every event."],"Event name (lowercase letters, digits and dashes, like summer-2026)",F.event||"",
+ ()=>runJob("/api/erase",{ids,confirm:$("#mtyped").value},ids),"Erase "+plural(n,"file"));$("#mgo").classList.add("goerase")}
+function askSetEvent(ids){if(!ids.length)return;askField("Set the event on "+plural(ids.length,"file")+"?",[names(ids),"Each one goes into this event and out of any other. The photos and your other tags don't change. Leave it empty to take them out of every event."],"Event name (lowercase letters, digits and dashes, like summer-2026)",F.event||"",
  async()=>{const ev=$("#mfield").value.trim(),j=await api("/api/event/set",{ids,event:ev});if(vi>=0){closeModal();toast(j.result,j.undo);loadFacets();openViewer(vi,{keep:true})}else afterEvent(j)})}
 /* Fix date (Dates to check): check-dates' suggested date, a date you type, or a shift, on the selection. The server runs
    fix-dates' own code (sidecars only; files stay in their folders) and answers with an Undo token. */
@@ -4946,7 +4968,7 @@ function askFixDate(ids){if(!ids.length)return;const its=ids.map(id=>items.find(
  const [ps,rs]=opt("suggested",ns===n?"Use the suggested date":`Use the suggested date (${fmt(ns)} of ${fmt(n)} have one; the others stay as they are)`);rs.disabled=!ns;
  const [pd,rd]=opt("set","Set the date to","YYYY-MM-DD or YYYY-MM-DD HH:MM"),[ph]=opt("shift","Shift by","+8y, -3h30m, +2d");(ns?rs:rd).checked=true;
  const list=el("ul","fixlist");its.slice(0,10).forEach(i=>list.append(el("li",null,i.n+": "+(i.dd||i.d)+" → "+(i.ds?i.ds+" suggested":"no suggestion"))));if(its.length>10)list.append(el("li",null,`and ${fmt(its.length-10)} more`));
- confirmBox("Fix the date of "+plural(n,"item")+"?",[list,"The new date goes to each file's sidecar only: the photo or video itself and its folder don't change. A date alone keeps each file's time of day; a shift uses y (years), d (days), h (hours) and m (minutes). Undo puts it back.",ps,pd,ph],false,
+ confirmBox("Fix the date of "+plural(n,"file")+"?",[list,"The new date goes to each file's sidecar only: the photo or video itself and its folder don't change. A date alone keeps each file's time of day; a shift uses y (years), d (days), h (hours) and m (minutes). Undo puts it back.",ps,pd,ph],false,
   async()=>{const mode=($('input[name=fixmode]:checked')||rs).value,value=mode==="suggested"?null:$("#fixv-"+mode).value.trim();
    const j=await api("/api/dates/fix",{ids,mode,value});closeModal();toast(j.result,j.undo);sel.clear();await loadFacets();reset()},"Fix dates");
  $("#mno").focus()}
@@ -4956,7 +4978,7 @@ $("#bfixdate").onclick=()=>askFixDate(selIds());
    When the job this click started ends cleanly, the server opens that folder in the file manager (POST
    /api/share/open names the job, never a path), so the copies can be dragged into a chat or an email; the dialog and
    the message offer Open folder again, also on a page that re-attached (no automatic open there: not its click). */
-function askShare(ids){if(!ids.length)return;confirmBox("Share "+plural(ids.length,"item")+"?",[thumbs(ids),names(ids),"Makes copies without location (GPS) or other hidden info, in a new folder under "+((facets&&facets.share_out)||"the share-safe folder")+", then opens that folder so you can drag them into a chat or an email. Your originals are not changed."],false,
+function askShare(ids){if(!ids.length)return;confirmBox("Share "+plural(ids.length,"file")+"?",[thumbs(ids),names(ids),"Makes copies without location (GPS) or other hidden info, in a new folder under "+((facets&&facets.share_out)||"the share-safe folder")+", then opens that folder so you can drag them into a chat or an email. Your originals are not changed."],false,
  ()=>runShare(ids))}
 async function runShare(ids){let j;try{j=await api("/api/share",{ids})}catch(e){if(e.busy&&await attachJob())return;throw e}
  jobDest=j.dest;startJob("share",ids);job.sid=j.job;job.auto=true}
@@ -4987,7 +5009,7 @@ function startJob(kind,ids,log){job={kind,ids:ids||[],log:log||"",state:"running
 const jobInDialog=()=>isOn("#modal")&&$("#modal").dataset.job!==undefined;
 // (re)open the dialog on the job: no confirm text, buttons or fields of the dialog that started it
 function showJob(){if(!job)return;const b=$("#mb");b.replaceChildren();if(job.kind==="share"&&jobDest){const p=el("p",null,"Destination: "+jobDest);p.id="mdest";b.append(p)}
- $("#mgo").hidden=true;$("#mtype").hidden=true;$("#mfieldp").hidden=true;$("#mout").hidden=false;$("#mout").textContent="";$("#modal").dataset.job=job.state;openModal();paintJob();shareBits();$("#mno").focus()}
+ $("#mgo").hidden=true;$("#mtype").hidden=true;$("#mhint").hidden=true;$("#mfieldp").hidden=true;$("#mout").hidden=false;$("#mout").textContent="";$("#modal").dataset.job=job.state;openModal();paintJob();shareBits();$("#mno").focus()}
 function paintJob(){paintPill();if(!job)return;const d=$("#modal");if(d.dataset.job!==undefined)d.dataset.job=job.state;  // also while hidden
  if(!jobInDialog())return;$("#mh").textContent=job.head;
  const o=$("#mout");if(o.textContent!==job.log){o.textContent=job.log;o.scrollTop=1e9}
@@ -5055,26 +5077,39 @@ async function attachJob(){if(job&&job.state==="running"){showJob();return true}
 const TOOL_NS=["project|","source|","event|","place|","label|","review|","ai|","used|","owner|","people|","pets|"];
 function tagProblem(t){if(!t||[...t].length>64||/[\x00-\x1f\x7f]/.test(t)||t.startsWith("-")||t.includes("@@sep@@"))return "a tag is 1-64 characters on one line";
  if(TOOL_NS.some(p=>t.toLowerCase().startsWith(p)))return WORDS.tools+" tags belong to the tools; pick another name";return ""}
-function tagAsk(op){const ids=vi>=0&&!sel.size?[items[vi].id]:selIds();if(!ids.length)return;const n=plural(ids.length,"item");
+function tagAsk(op){const ids=vi>=0&&!sel.size?[items[vi].id]:selIds();if(!ids.length)return;const n=plural(ids.length,"file");
  askField(op==="add"?"Add a tag of yours to "+n+"?":"Remove a tag of yours from "+n+"?",[names(ids),"Your own tags only (not "+WORDS.tools.replace(" and "," or ")+", which belong to the tools). Use | for a group, like Trips|Spain. The photos themselves don't change."],
   "Tag (yours: suggestions as you type)","",async()=>{const t=$("#mfield").value.trim(),why=tagProblem(t);if(why)throw new Error(why);
    const j=await api("/api/tag",{ids,tag:t,op});closeModal();toast(j.result,j.undo);loadFacets();refreshAfter(ids,false,j.items)},"mytags")}
 async function rot(ids,dir){try{const j=await api("/api/rotate",{ids,dir});toast(j.result,j.undo);refreshAfter(ids,true,j.items)}catch(e){refused("Rotate",e)}}
 function refreshAfter(ids,thumbs,fresh){patchTiles(fresh);if(thumbs)ids.forEach(id=>{const t=$("#t"+id);if(t){const im=t.querySelector("img");if(im)im.src="/t/"+id+"?r="+Date.now()}});
  if(vi>=0)openViewer(vi,{keep:true});else if(view==="sug")reset()}
-$("#bkeep").onclick=()=>doKeep(selIds());$("#btrash").onclick=()=>askTrash(selIds());$("#berase").onclick=()=>askErase(selIds());
+$("#bkeep").onclick=keepSel;$("#btrash").onclick=()=>askTrash(selIds());$("#berase").onclick=()=>askErase(selIds());
 $("#bfav").onclick=()=>doFav(selIds(),true);$("#bunfav").onclick=()=>doFav(selIds(),false);
 $("#btag").onclick=()=>tagAsk("add");$("#buntag").onclick=()=>tagAsk("remove");$("#brot").onclick=()=>rot(selIds(),"cw");
 $("#bshare").title=SHARE_TIP;$("#ball").onclick=selectAll;$("#bevent").onclick=()=>askSetEvent(selIds());$("#bshare").onclick=()=>askShare(selIds());$("#bnone").onclick=()=>{sel.clear();paintSel()};
+/* More…: the bar's other actions, in a popup above it (a disclosure: its buttons stay buttons). Up / Down move through
+   them, Esc or Tab out of it closes it, Esc gives focus back to More…; picking one closes it first. */
+function moreOpen(on,back){$("#selmore").hidden=!on;$("#bmore").setAttribute("aria-expanded",String(on));if(on){const b=moreBtns()[0];if(b)b.focus()}else if(back)$("#bmore").focus()}
+const moreBtns=()=>[...$$("#selmore button")].filter(b=>!b.hidden&&!b.disabled);
+$("#bmore").onclick=()=>moreOpen($("#selmore").hidden);
+$("#bmore").onkeydown=ev=>{if(ev.key==="ArrowDown"||ev.key==="ArrowUp"){ev.preventDefault();moreOpen(true);if(ev.key==="ArrowUp"){const b=moreBtns();if(b.length)b[b.length-1].focus()}}};
+$("#selmore").addEventListener("click",ev=>{if(ev.target.closest("button"))moreOpen(false,true)},true);  // before the item's own action: a dialog it opens gives focus back to More…
+$("#selmore").onkeydown=ev=>{const b=moreBtns(),i=b.indexOf(document.activeElement);
+ if(ev.key==="Escape"){ev.preventDefault();ev.stopPropagation();moreOpen(false,true)}
+ else if(ev.key==="ArrowDown"||ev.key==="ArrowUp"){ev.preventDefault();if(b.length)b[(i+(ev.key==="ArrowDown"?1:-1)+b.length)%b.length].focus()}
+ else if(ev.key==="Home"||ev.key==="End"){ev.preventDefault();if(b.length)(ev.key==="Home"?b[0]:b[b.length-1]).focus()}};
+$("#selmore").addEventListener("focusout",ev=>{const to=ev.relatedTarget;if(to&&!$("#selmore").contains(to)&&to!==$("#bmore"))moreOpen(false)});
+document.addEventListener("pointerdown",ev=>{if(!$("#selmore").hidden&&!ev.target.closest("#selmore,#bmore"))moreOpen(false)},true);
 $("#bmarkall").onclick=markAll;$("#bclearm").onclick=clearMarks;
 $("#sugapply").onclick=()=>{const {keep,trash}=sugMarks();
  const nk=keep.length,nt=trash.length;
- confirmBox(`Apply: ${nk} keep, ${nt} trash?`,[nk?`Keep ${plural(nk,"item")}: ${nk===1?"it":"they"} won't be suggested as junk again.`:"",...(nt?[thumbs(trash),names(trash),"Trash: "+trashText(nt)]:[])].filter(Boolean),false,
+ confirmBox(`Apply: ${nk} keep, ${nt} trash?`,[nk?`Keep ${plural(nk,"file")}: ${nk===1?"it":"they"} won't be suggested as junk again.`:"",...(nt?[thumbs(trash),names(trash),"Trash: "+trashText(nt)]:[])].filter(Boolean),false,
   async()=>{const j=await api("/api/decide",{keep,trash,confirm:true});keep.concat(trash).forEach(id=>delete dec[id]);
    // a file starred or kept since its mark is skipped by the server (j.trashed: what the job got)
    // once it went well, every file decided leaves Suggested junk where it is: kept, trashed, or skipped by the
    // server because it was starred or kept since its mark (never suggested again either way)
-   const sent=j.trashed||[];if(sent.length){jobDest="";startJob("trash",sent,j.result+"\n");job.gone=keep.concat(trash)}else{closeModal();toast(j.result);loadFacets();reset()}},nt?"Apply and trash "+plural(nt,"file"):"Apply")};
+   const sent=j.trashed||[];if(sent.length){jobDest="";startJob("trash",sent,j.result+"\n");job.gone=keep.concat(trash)}else{closeModal();toast(j.result);loadFacets();reset()}},nt?"Apply and trash "+plural(nt,"file"):"Apply");if(nt)$("#mgo").classList.add("gotrash")};
 // ---------------------------------------------------------------- large view
 function curVideo(){return $("#media video")}
 function stopVideo(){const v=curVideo();if(v){v.pause();v.removeAttribute("src");v.load()}}  // releases the file
@@ -5226,7 +5261,7 @@ document.addEventListener("keydown",ev=>{const tg=ev.target,modal=isOn("#modal")
  if(k==="Escape"&&drawer){drawer=false;layout();return}
  // F: the selection, or with none the focused tile
  if(k==="f"||k==="F"){const t=sel.size?null:tg.closest&&tg.closest(".tile");const ids=sel.size?selIds():t&&!t.hidden?[+t.id.slice(1)]:[];if(!ids.length)return;ev.preventDefault();favToggle(ids);return}
- if(!sel.size)return;if(k==="k"||k==="K")doKeep(selIds());else if(k==="t"||k==="T")askTrash(selIds());else if(k==="e"||k==="E")askErase(selIds());else if(k==="Escape"){sel.clear();paintSel()}else return;ev.preventDefault()});
+ if(!sel.size)return;if(k==="k"||k==="K")keepSel();else if(k==="t"||k==="T")askTrash(selIds());else if(k==="e"||k==="E")askErase(selIds());else if(k==="Escape"){sel.clear();paintSel()}else return;ev.preventDefault()});
 // ---------------------------------------------------------------- views (plugin tabs go in the sidebar, after the built-in ones)
 VIEWS.forEach(v=>{const b=el("button","nv");b.type="button";b.dataset.v="p-"+v.id;b.title=v.title;b.insertAdjacentHTML("beforeend",'<svg class="ic"><use href="#i-plug"/></svg>');const rl=el("span","rl",v.title);rl.setAttribute("aria-hidden","true");b.append(el("span","lbl",v.title),rl);$("#ptabs").append(b)});
 function setView(v){view=v;simId=null;sugFocus=v==="sug";document.body.dataset.view=v;const plug=plugView();

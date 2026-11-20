@@ -163,6 +163,14 @@ class GalleryBrowserTest(B.BrowserCase):
         self.assertEqual(resp.value.status, 200)
         self.assertIn("Owner|keep", G.tags_of(self.b)[0])
         self.assertEqual(G.tags_of(self.c), ([], [], None))  # untouched: no sidecar written
+        # a Keep that went through clears the selection (K here; the bar's Keep the same)
+        B.expect(box("b.jpg")).not_to_be_checked()
+        B.expect(page.get_by_role("toolbar", name="Selection actions")).to_be_hidden()
+        box("c.png").click()
+        with page.expect_response(lambda r: r.url.endswith("/api/keep")):
+            page.get_by_role("toolbar", name="Selection actions").get_by_role("button", name="Keep").click()
+        B.expect(box("c.png")).not_to_be_checked()
+        B.expect(page.get_by_role("toolbar", name="Selection actions")).to_be_hidden()
         # the lightbox: click opens it; arrows move in grid order; R rotates (sidecar only); Esc closes
         page.keyboard.press("Escape")
         viewer = page.get_by_role("dialog", name="Item")
@@ -195,7 +203,7 @@ class GalleryBrowserTest(B.BrowserCase):
         dlg = self.confirm(page)
         B.expect(dlg).to_be_visible()
         B.expect(dlg.get_by_role("heading")).to_have_text("Apply: 1 keep, 0 trash?")
-        B.expect(dlg).to_contain_text("Keep 1 item: it won't be suggested as junk again.")
+        B.expect(dlg).to_contain_text("Keep 1 file: it won't be suggested as junk again.")
         with page.expect_response(lambda r: r.url.endswith("/api/decide")) as resp:
             dlg.get_by_role("button", name="Apply", exact=True).click()
         self.assertEqual(resp.value.status, 200)
@@ -214,8 +222,28 @@ class GalleryBrowserTest(B.BrowserCase):
         box("b.jpg").click()
         B.expect(bar).to_be_visible()
         B.expect(bar).to_contain_text("1 selected")
-        for name in ("Keep", "Trash", "Erase", "+ tag", "Rotate", "Clear selection"):
+        for name in ("Keep", "Trash", "Erase", "More…", "Clear selection"):
             B.expect(bar.get_by_role("button", name=name)).to_be_visible()
+        # the rest sit behind More…: a popup above the bar, Esc closes it and gives focus back to More…
+        more, pop = bar.get_by_role("button", name="More…"), page.locator("#selmore")
+        B.expect(bar.get_by_role("button", name="+ tag")).to_be_hidden()
+        B.expect(more).to_have_attribute("aria-expanded", "false")
+        more.click()
+        B.expect(more).to_have_attribute("aria-expanded", "true")
+        for name in ("★ Favorite", "+ tag", "− tag", "Set event…", "Rotate ⟳", "Share"):
+            B.expect(pop.get_by_role("button", name=name)).to_be_visible()
+        B.expect(pop.get_by_role("button", name="★ Favorite")).to_be_focused()  # focus on its first button
+        page.keyboard.press("ArrowDown")
+        B.expect(pop.get_by_role("button", name="☆ Unfavorite")).to_be_focused()
+        page.keyboard.press("Escape")
+        B.expect(pop).to_be_hidden()
+        B.expect(more).to_be_focused()
+        B.expect(more).to_have_attribute("aria-expanded", "false")
+        B.expect(box("b.jpg")).to_be_checked()  # that Esc closed the popup only, the selection stays
+        more.press("ArrowDown")  # the keyboard opens it too
+        B.expect(pop).to_be_visible()
+        page.locator("#vtitle").click()  # a click elsewhere closes it
+        B.expect(pop).to_be_hidden()
         box("c.png").click()
         B.expect(bar).to_contain_text("2 selected")
         bar.get_by_role("button", name="Clear selection").click()  # the bar's own Clear
@@ -295,10 +323,10 @@ class GalleryBrowserTest(B.BrowserCase):
         # the bar's buttons
         bar = page.get_by_role("toolbar", name="Selection actions")
         with page.expect_response(lambda r: r.url.endswith("/api/favorite")):
-            bar.locator("#bfav").click()
+            B.more(page, "#bfav").click()
         B.expect(star("d.jpg")).to_have_attribute("aria-pressed", "true")
         with page.expect_response(lambda r: r.url.endswith("/api/favorite")):
-            bar.locator("#bunfav").click()
+            B.more(page, "#bunfav").click()
         B.expect(star("d.jpg")).to_have_attribute("aria-pressed", "false")
         self.assertIsNone(self.rating(self.d))
         page.keyboard.press("Escape")
@@ -374,7 +402,7 @@ class GalleryBrowserTest(B.BrowserCase):
         # T asks first; Cancel changes nothing
         page.keyboard.press("t")
         B.expect(dlg).to_be_visible()
-        B.expect(dlg.get_by_role("heading")).to_have_text("Trash 1 item?")
+        B.expect(dlg.get_by_role("heading")).to_have_text("Trash 1 file?")
         B.expect(dlg.get_by_text("b.jpg", exact=True)).to_be_visible()
         B.expect(dlg.locator(".mthumbs img")).to_have_count(1)  # the grid's own thumbnail of what it deletes
         B.expect(dlg).to_contain_text("Deletes this file from this computer for good")
@@ -386,7 +414,7 @@ class GalleryBrowserTest(B.BrowserCase):
         self.assertTrue(os.path.exists(self.b))
         # E needs ERASE typed exactly
         page.keyboard.press("e")
-        B.expect(dlg.get_by_role("heading")).to_have_text("Erase 1 item everywhere?")
+        B.expect(dlg.get_by_role("heading")).to_have_text("Erase 1 file everywhere?")
         typed, go = dlg.get_by_role("textbox", name="Type ERASE"), dlg.get_by_role("button", name="Erase 1 file")
         B.expect(typed).to_be_focused()
         # plain words: what, from where, and whether the backup drive is in (no --drive here); no command names
@@ -584,8 +612,8 @@ class GalleryBrowserTest(B.BrowserCase):
         page.get_by_role("checkbox", name="select a.jpg").click()
         page.get_by_role("checkbox", name="select d.jpg").click()
         bar = page.get_by_role("toolbar", name="Selection actions")
-        bar.get_by_role("button", name="Set event…").click()
-        B.expect(dlg.get_by_role("heading")).to_have_text("Set the event on 2 items?")
+        B.more(page, "Set event…").click()
+        B.expect(dlg.get_by_role("heading")).to_have_text("Set the event on 2 files?")
         dlg.get_by_label("Event name").fill("park-day")
         with page.expect_response(lambda r: r.url.endswith("/api/event/set")) as resp:
             dlg.get_by_role("button", name="Confirm").click()
@@ -597,8 +625,8 @@ class GalleryBrowserTest(B.BrowserCase):
         # Share: the dialog names the destination folder and shows share-copy's own lines; the folder opens
         before = G.sha(self.d)
         page.get_by_role("checkbox", name="select d.jpg").click()
-        bar.get_by_role("button", name="Share", exact=True).click()
-        B.expect(dlg.get_by_role("heading")).to_have_text("Share 1 item?")
+        B.more(page, "Share", exact=True).click()
+        B.expect(dlg.get_by_role("heading")).to_have_text("Share 1 file?")
         B.expect(dlg).to_contain_text("~/Pictures/share-safe")
         B.expect(dlg).to_contain_text("opens that folder")
         dlg.get_by_role("button", name="Confirm").click()
@@ -638,7 +666,7 @@ class GalleryBrowserTest(B.BrowserCase):
         B.expect(btn).to_have_attribute("title", re.compile(r"without location \(GPS\) or other hidden info.*"
                                                              r"originals don't change"))
         btn.click()
-        B.expect(dlg.get_by_role("heading")).to_have_text("Share 1 item?")
+        B.expect(dlg.get_by_role("heading")).to_have_text("Share 1 file?")
         B.expect(dlg.locator(".mnames")).to_have_text("d.jpg")
         B.expect(page.get_by_role("dialog", name="Item", exact=True)).to_be_hidden()
         self.assertEqual(self.tiles_selected(page), 0)
@@ -653,7 +681,7 @@ class GalleryBrowserTest(B.BrowserCase):
         B.expect(vs).to_be_visible()
         B.expect(viewer.locator(".tools").get_by_role("button", name=re.compile("Share"))).to_have_count(0)
         vs.click()
-        B.expect(dlg.get_by_role("heading")).to_have_text("Share 1 item?")
+        B.expect(dlg.get_by_role("heading")).to_have_text("Share 1 file?")
         B.expect(dlg.locator(".mnames")).to_have_text("b.jpg")
         dlg.get_by_role("button", name="Confirm").click()
         B.expect(dlg).to_have_attribute("data-job", "running")

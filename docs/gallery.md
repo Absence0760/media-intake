@@ -96,10 +96,11 @@ without one" (`/api/facets` gives `drive`, the mount or null).
   onto a second line, clear of the checkbox. The one exception is a phone,
   where a tile's flags sit above its star and Share in a tile too small for
   more than two lines: a longer one ends in "…" there so it stays inside the
-  tile, and keeps its whole text as its tooltip and in the large view's tags. At phone width the burst help above the grid is one
+  tile, and keeps its whole text as its tooltip and in the large view's tags. The burst help above the grid is one
   line ("Burst stacks: tap ×N to open one." on a touch screen, "Bursts are
   stacked; X opens one." with a keyboard) with a **more** link for the whole
-  text (open / closed remembered per browser).
+  text (open / closed remembered per browser) and a **×** that hides it for good
+  in this browser (the shortcut list still says what X does).
 - **The grid's own states** (in place of the tiles, `role=status`):
   "Loading your library…" (with `aria-busy` on the grid) until the first page
   arrives; an empty library: "Your library is empty." with the commands that
@@ -121,6 +122,12 @@ without one" (`/api/facets` gives `drive`, the mount or null).
   rows, the size slider, a chip's ×, the tile checkbox (a 22 px box in a 44 px
   hit area), the ×N button and text links (a larger hit area around them).
   The selection bar's **Erase** sits apart from Keep and Trash.
+- **Selection bar**: one row: the count, **Keep**, **Trash**, **Erase**,
+  **More…** and **Clear** (Esc). **More…** opens the other actions above the bar
+  (Favorite, Unfavorite, + tag, − tag, Set event…, Fix date… in Dates to check,
+  Rotate, Share): Up / Down move through them, Esc closes it and gives focus
+  back to More…, picking one or clicking elsewhere closes it. A Keep from the
+  bar or K clears the selection once it went through.
 - **Colours** follow the system's light or dark scheme. Every label meets
   WCAG 2's 4.5:1 contrast in both: text on the accent colour (burst badges,
   ×N, the rail's filter count, primary buttons) is white in light and near
@@ -832,7 +839,7 @@ the review page, "the media-intake apply command", ...), never a PID or the
 lock file's path, and while a gallery job runs the alert has **Show
 progress**.
 
-The dialog before Trash or Erase shows up to 12 of the grid's thumbnails ("and
+The dialog before Trash or Erase shows up to 12 of the grid's thumbnails (104 px; "and
 N more"), the names, and in plain words what happens: Trash "Deletes these 2
 files from this computer for good, with their tags and thumbnails. They don't
 go to the desktop Trash, and this can't be undone. If the same photo is
@@ -842,7 +849,9 @@ recent-file entries", and whether the backup drive is in, then "This can't be
 undone." It warns when any were used in a post, marked Keep earlier ("2 of
 these were marked Keep earlier.") or are favorites ("1 of these is a
 favorite."). The button names the action: **Trash 2
-files**, **Erase 2 files** (after ERASE is typed). Trash and Erase run one at
+files** (amber), **Erase 2 files** (red; after ERASE is typed in capital
+letters: "erase" typed says so under the field). Every confirm dialog counts
+in files ("Trash 2 files?", "Set the event on 3 files?"). Trash and Erase run one at
 a time with their output streamed into the dialog.
 
 Trash, Erase and Share run as a detached job (`media_intake/jobs.py`, the same module

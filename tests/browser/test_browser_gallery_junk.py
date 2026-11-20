@@ -223,7 +223,7 @@ class GalleryJunkBrowserTest(B.BrowserCase):
         t.hover()
         t.get_by_role("button", name="Share hi.jpg").click()  # asks; cancelled, nothing made
         dlg = page.locator("#modal")
-        B.expect(dlg.get_by_role("heading")).to_have_text("Share 1 item?")
+        B.expect(dlg.get_by_role("heading")).to_have_text("Share 1 file?")
         dlg.get_by_role("button", name="Cancel").click()
         self.junk_view(page)
         B.expect(page.locator('[data-item="hi.jpg"] .mark')).to_have_text("Trash")
