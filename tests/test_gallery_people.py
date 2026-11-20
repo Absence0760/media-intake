@@ -15,7 +15,7 @@ that re-cluster, 403 / 415 on a POST without CSRF or JSON, crops served by detec
 a Rotate, 404 when flagged, removed by forget with the crops), clusters of one listed after the others, paged,
 hinted and named, and the large view's names and a video's times.
 """
-import os, shutil, stat, sys, tempfile, unittest, urllib.parse
+import os, shutil, sqlite3, stat, sys, tempfile, types, unittest, urllib.parse
 import unittest.mock as mock
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
@@ -25,6 +25,7 @@ import test_recog as TR  # noqa: E402  (mock detector / embedder, synthetic scen
 
 support.check_hermetic()
 import config  # noqa: E402
+import gallery  # noqa: E402
 import people  # noqa: E402
 import pets  # noqa: E402
 import recog  # noqa: E402
@@ -527,6 +528,53 @@ class SpecFallbackTest(unittest.TestCase):
         self.assertEqual(err.getvalue().count("\n"), 1, err.getvalue())
         self.assertIn("pets.py failed to load (RuntimeError: broken model list)", err.getvalue())
         self.assertEqual((sp.model, sp.same, sp.prefix), (PET_MODEL, None, "Pets|"))
+
+
+
+class StoreRollback(unittest.TestCase):
+    """A naming action that fails part way never leaves the recognition store locked for a running scan."""
+
+    def setUp(self):
+        self.tmp = tempfile.mkdtemp(prefix="rec-rollback-")
+        self.addCleanup(shutil.rmtree, self.tmp, True)
+        self.db = os.path.join(self.tmp, "store.db")
+        self.c = sqlite3.connect(self.db, check_same_thread=False, timeout=0)
+        self.c.execute("CREATE TABLE t(v)")
+        self.c.commit()
+        self.addCleanup(self.c.close)
+        c = self.c
+
+        class FakeRec:
+            def rollback(self):
+                c.rollback()
+        self.app = types.SimpleNamespace(rec=FakeRec())
+
+    def scan_can_write(self):
+        s = sqlite3.connect(self.db, timeout=0)  # a scan's save, with no waiting
+        try:
+            s.execute("BEGIN IMMEDIATE")
+            s.rollback()
+            return True
+        except sqlite3.OperationalError:
+            return False
+        finally:
+            s.close()
+
+    def test_any_failure_part_way_rolls_back(self):
+        def half_done():
+            self.c.execute("INSERT INTO t VALUES (1)")  # a write opens the transaction and takes the lock
+            raise ValueError("refused after the first write")
+        with self.assertRaises(ValueError):
+            gallery.App.rec_store(self.app, half_done)
+        self.assertTrue(self.scan_can_write(), "the failed action still holds the store's lock")
+        self.assertEqual(self.c.execute("SELECT count(*) FROM t").fetchone()[0], 0)
+
+    def test_a_locked_store_is_a_plain_409(self):
+        def locked():
+            raise sqlite3.OperationalError("database is locked")
+        with self.assertRaises(gallery.LockBusy) as e:
+            gallery.App.rec_store(self.app, locked)
+        self.assertIn("scan is writing", str(e.exception))
 
 
 if __name__ == "__main__":

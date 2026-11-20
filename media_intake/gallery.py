@@ -2577,18 +2577,24 @@ class App:
             self.refresh(ids)
         return ids
 
+    def rec_store(self, fn):
+        """Run one naming action or its undo against the recognition store. Any failure part way rolls its
+        writes back at once: a write left open holds the store's lock, and a running scan then fails to save
+        ("database is locked") after its own wait. A store another writer holds is a 409 in plain words."""
+        try:
+            return fn()
+        except BaseException as e:
+            self.rec.rollback()
+            if isinstance(e, sqlite3.OperationalError) and ("locked" in str(e) or "busy" in str(e)):
+                raise LockBusy(WORDS["rec"]["store_busy"]) from None
+            raise
+
     def rec_act(self, what, body):
         """POST /api/rec/<what>: a naming action (Rec.act) under the library lock, as every sidecar write is; the
         reply carries an Undo token when the core can put it back (name or ignore a cluster that had no name,
         take out)."""
         with self.writing("people and pets"):
-            try:
-                msg, undo, changed = self.rec.act(self, what, body)
-            except sqlite3.OperationalError as e:
-                self.rec.rollback()
-                if "locked" in str(e) or "busy" in str(e):
-                    raise LockBusy(WORDS["rec"]["store_busy"]) from None
-                raise
+            msg, undo, changed = self.rec_store(lambda: self.rec.act(self, what, body))
             ids = self.reload_paths(changed)
             out = dict(result=msg, ids=ids)
             if undo:
@@ -2611,7 +2617,7 @@ class App:
                 with self.lock:
                     if self.undos.pop(token, None) is None:
                         raise ValueError("nothing to undo: it was undone already, or is too old")
-                ids = self.reload_paths(self.rec.undo(rec))
+                ids = self.reload_paths(self.rec_store(lambda: self.rec.undo(rec)))
             what = "naming the cluster" if rec["act"] == "unname" else "taking out"
             return dict(result=f"undid {what}", ids=ids, kind="rec", thumbs=False)
         with self.writing("undo"), self.lock:
