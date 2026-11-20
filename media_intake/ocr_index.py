@@ -9,11 +9,13 @@ photos"). `media-intake index --text` reads the text of library photos scanned b
   <state>/ocr-text.db   sqlite, 0600 in the 0700 state folder; one row per content: sha256, size, text.
 
 Never indexed: a file the scan flagged for any reason (an "unscanned-*" label included), anything
-quarantined, erased or trashed (label.flagged, trashed.json). prune() drops rows of content flagged since;
-erase, forget, trash and sweep-erased drop theirs (forget), verify-gone counts what is left (leftovers).
+quarantined, erased or trashed (label.flagged, trashed.json). search() is read-only: it opens the store
+read-only and leaves out refused content in memory. Rows of content flagged since are dropped by
+`index --text` (prune, before it reads anything new) and by erase, forget, trash and sweep-erased (forget);
+verify-gone counts what is left (leftovers).
 Deletes overwrite the freed pages (secure_delete). Stdlib only: the system Python and the venv both run it.
 """
-import contextlib, json, os, re, sqlite3, sys, urllib.parse
+import json, os, re, sqlite3, sys, urllib.parse
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 if HERE not in sys.path:
@@ -131,9 +133,13 @@ def leftovers(shas, state=None):
             n = 0
             for i in range(0, len(shas), 500):
                 part = shas[i:i + 500]
-                with contextlib.suppress(sqlite3.OperationalError):  # no table yet: nothing there
+                try:
                     n += c.execute(f"SELECT COUNT(*) FROM text WHERE sha IN ({','.join('?' * len(part))})",
                                    part).fetchone()[0]
+                except sqlite3.OperationalError as e:
+                    if "no such table" not in str(e):
+                        raise  # unreadable (locked, permissions): never "nothing left"
+                    return 0  # no table yet: nothing there
             return n
         finally:
             c.close()
@@ -152,19 +158,27 @@ def words(query):
 
 def search(query, state=None):
     """{sha: hits} of content whose text holds every word of query (case-insensitive, a word matching at the
-    start of a word: "rec" finds "Receipt"); hits counts how often the words appear. Flagged content is
-    pruned first, so it never comes back."""
+    start of a word: "rec" finds "Receipt"); hits counts how often the words appear. Read-only: the store is
+    opened read-only and never created, and content flagged, quarantined, erased or trashed since it was kept
+    is left out here, in memory (index --text, erase and trash drop its row)."""
     ws = words(query)
-    if not ws:
+    p = db_path(state)
+    if not ws or not os.path.isfile(p):
         return {}
-    prune(state)
-    c = connect(db_path(state), create=False)
-    if c is None:
-        return {}
+    refused = refused_shas(state)
     rxs = [re.compile(r"\b" + re.escape(w)) for w in ws]
     out = {}
+    c = sqlite3.connect("file:" + urllib.parse.quote(p) + "?mode=ro", uri=True, timeout=30)
     try:
-        for sha, body in c.execute("SELECT sha, body FROM text"):
+        try:
+            rows = c.execute("SELECT sha, body FROM text")
+        except sqlite3.OperationalError as e:
+            if "no such table" in str(e):
+                return {}  # an empty store: nothing kept yet
+            raise
+        for sha, body in rows:
+            if sha in refused:
+                continue
             low = body.casefold()
             counts = [len(rx.findall(low)) for rx in rxs]
             if all(counts):
@@ -192,6 +206,7 @@ def backfill(state=None, ocr=None):
             lib = json.load(f) or {}
     except (FileNotFoundError, ValueError):
         lib = {}
+    pruned = prune(state)  # rows of content flagged since: search leaves them out, this drops them
     have, refused = known(state), refused_shas(state)
     todo = {}
     for p, e in sorted(lib.items()):
@@ -200,7 +215,8 @@ def backfill(state=None, ocr=None):
                 and os.path.splitext(p)[1].lower() in scan_sensitive.IMG and os.path.isfile(p)
                 and os.path.getsize(p) == e.get("size")):
             todo[s] = p
-    out = {"read": 0, "kept": 0, "no text": 0, "sensitive, not kept": 0, "unreadable": 0, "refused": 0}
+    out = {"read": 0, "kept": 0, "no text": 0, "sensitive, not kept": 0, "unreadable": 0, "refused": 0,
+           "pruned": pruned}
     work = os.path.join(os.path.expanduser("~"), ".cache", "media-intake")
     os.makedirs(work, mode=0o700, exist_ok=True)
     tmp = tempfile.mkdtemp(dir=work)  # 0700: the grey copy tesseract reads

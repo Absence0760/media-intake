@@ -399,11 +399,16 @@ def show(out, a, file=None, unit="cosine, compare within one query"):
 
 def cmd_search_text(a):
     """search --text: files whose photo text (ocr_index, kept by the scan) holds every word of the query. Score:
-    how often the words appear. Paths come from the library index (index.json), flagged content never."""
+    how often the words appear. Paths come from the library index (index.json), flagged content never.
+    Read-only, like every search: nothing is pruned or written here (index --text does that)."""
     import ocr_index
     if not ocr_index.words(a.query):
         sys.exit("semantic: search --text needs a word to look for")
-    hits = ocr_index.search(a.query, STATE)
+    try:
+        hits = ocr_index.search(a.query, STATE)
+    except ocr_index.sqlite3.DatabaseError as e:
+        sys.exit(f"semantic: the text index can't be read ({e}): check ocr-text.db in the state folder, or "
+                 "delete it and run media-intake index --text")
     try:
         with open(os.path.join(STATE, "index.json")) as f:
             lib = json.load(f) or {}

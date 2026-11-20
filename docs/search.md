@@ -159,8 +159,10 @@ media-intake index --text      # read the words in library photos scanned before
   (`text_indexed`).
 - **Never kept:** a photo the scan flagged for any reason (`unscanned-*`
   included), and anything quarantined, erased or trashed (`label.flagged`,
-  `trashed.json`). Content flagged after its text was kept is dropped the next
-  time `search --text` or `index --text` runs, and never shown in between.
+  `trashed.json`). Content flagged after its text was kept is never shown by
+  `search --text` (left out as it reads), and its row is dropped by the next
+  `index --text` (counted as `pruned`), or at once by `erase`, `forget` and
+  `trash`.
   Videos have no text kept.
 - **Erase covers it.** `erase`, `forget`, `trash` and `sweep-erased --yes`
   delete the rows of what they remove (by sha256; sqlite's `secure_delete`
@@ -170,7 +172,9 @@ media-intake index --text      # read the words in library photos scanned before
 - **`search --text QUERY`** lists library files (`index.json`, on disk now)
   whose text holds every word of the query, matched without case from the
   start of a word (`rec` finds `Receipt`, `ceipt` does not). The score is how
-  often the words appear, best first. It needs no model and no search index;
+  often the words appear, best first. Read-only like every search: it opens
+  the text index read-only and changes nothing; an unreadable index stops it
+  with a message. It needs no model and no search index;
   the filters and `--format` are the same as `search`'s, and the machine form
   is the same `score  path` lines (score to 3 decimals) the gallery parses.
 - **`index --text`** reads library photos (`index.json`) the text index has no

@@ -66,13 +66,38 @@ class Store(unittest.TestCase):
         self.assertEqual(ocr_index.add([(self.a, 10, "erased"), (self.b, 20, "trashed"), (self.c, 30, "kept")],
                                        self.state), 1)
         self.assertEqual(ocr_index.known(self.state), {self.c})
-        # quarantined after it was kept: search drops it and never returns it
+        # quarantined after it was kept: search never returns it, and changes nothing (read-only); prune drops it
         qd = os.path.join(self.state, "quarantine", "forget-1")
         os.makedirs(qd)
         with open(os.path.join(qd, "quarantine.json"), "w") as f:
             json.dump({"x.png": {"sha": self.c, "size": 30, "reasons": ["owner"]}}, f)
+        db = ocr_index.db_path(self.state)
+        before = (self.digest(db), os.stat(db).st_mtime_ns, os.stat(db).st_mode)
         self.assertEqual(ocr_index.search("kept", self.state), {})
+        self.assertEqual((self.digest(db), os.stat(db).st_mtime_ns, os.stat(db).st_mode), before)
+        self.assertEqual(ocr_index.known(self.state), {self.c}, "search prunes nothing")
+        self.assertEqual(ocr_index.prune(self.state), 1)
         self.assertEqual(ocr_index.known(self.state), set())
+
+    @staticmethod
+    def digest(p):
+        with open(p, "rb") as f:
+            return hashlib.sha256(f.read()).hexdigest()
+
+    def test_search_is_read_only(self):
+        """No store: search finds nothing and creates none. An empty store (no table) or a corrupt one: nothing
+        written; a corrupt one is an error, never an empty result."""
+        self.assertEqual(ocr_index.search("receipt", self.state), {})
+        self.assertFalse(os.path.exists(ocr_index.db_path(self.state)), "search never creates the store")
+        db = ocr_index.db_path(self.state)
+        open(db, "wb").close()
+        self.assertEqual(ocr_index.search("receipt", self.state), {})
+        self.assertEqual(os.path.getsize(db), 0, "no table is created by a search")
+        with open(db, "wb") as f:
+            f.write(b"not a database" * 100)
+        with self.assertRaises(ocr_index.sqlite3.DatabaseError):
+            ocr_index.search("receipt", self.state)
+        self.assertEqual(self.digest(db), hashlib.sha256(b"not a database" * 100).hexdigest())
 
     def test_forget_and_leftovers(self):
         self.assertEqual(ocr_index.forget([self.a], self.state), 0)
@@ -163,11 +188,23 @@ class ScanAndSearch(unittest.TestCase):
         self.assertIn("1 results", err)
         self.assertEqual(self.search("receipt", "--videos")[0], [])
         self.assertEqual(self.search("bakery")[0], [])
-        # erased since: never found again, and its row is dropped
+        # erased since: never found again; search is read-only (the db is unchanged), index --text drops the row
         with open(os.path.join(self.state, "erase-log.txt"), "w") as f:
             f.write(f"2026-11-20 10:00 b1 sha256:{receipt} size:{size}\n")
+        db = ocr_index.db_path(self.state)
+        before = (os.stat(db).st_mtime_ns, ocr_index.known(self.state))
         self.assertEqual(self.search("receipt")[0], [])
+        self.assertEqual((os.stat(db).st_mtime_ns, ocr_index.known(self.state)), before)
+        self.assertEqual(before[1], {receipt})
+        r = subprocess.run([PY, "-I", SEMANTIC, "index", "--text"], env=self.env, capture_output=True, text=True)
+        self.assertEqual(r.returncode, 0, r.stderr)
+        self.assertEqual(json.loads(r.stdout)["pruned"], 1)
         self.assertEqual(ocr_index.known(self.state), set())
+        # an unreadable index: search --text says so and fails, never "no results"
+        with open(db, "wb") as f:
+            f.write(b"not a database" * 100)
+        _, err = self.search("receipt", code=1)
+        self.assertIn("the text index can't be read", err)
 
     def test_index_text_backfills_library_photos(self):
         lib = os.path.join(self.home, "Pictures/library/2026/2026-11")
@@ -250,6 +287,112 @@ class EraseTrashVerify(unittest.TestCase):
         self.assertIn("text index rows 1", out)
         self.assertEqual(ocr_index.leftovers([self.sha], self.state), 0)
         self.assertEqual(ocr_index.known(self.state), set())
+
+    def test_sweep_erased_drops_rows_and_counts_them(self):
+        """sweep-erased: a dry run leaves the row; --yes deletes the copy, drops the row and says how many."""
+        copy = self.write(os.path.join(self.home, "Downloads/again.png"))
+        with open(os.path.join(self.state, "erase-log.txt"), "w") as f:
+            f.write(f"2026-11-20 10:00 b1 sha256:{self.sha} size:{len(self.data)}\n")
+        self.row(self.sha)
+        self.intake("sweep-erased")
+        self.assertEqual(ocr_index.leftovers([self.sha], self.state), 1, "a dry run drops nothing")
+        out = self.intake("sweep-erased", "--yes")
+        self.assertRegex(out, r"\n  text index rows +1\n")
+        self.assertFalse(os.path.exists(copy))
+        self.assertEqual(ocr_index.leftovers([self.sha], self.state), 0)
+        self.assertNotIn("again.png", out, "counts only, never a file name")
+
+    def corrupt(self):
+        with open(ocr_index.db_path(self.state), "wb") as f:
+            f.write(b"not a database" * 100)
+
+    def test_unreadable_index_is_reported_never_nothing_left(self):
+        """A text index that can't be read: erase says so (and its verify fails), trash still trashes and says so,
+        sweep-erased says so, verify-gone exits non-zero. A read failure never reads as "nothing left"."""
+        batch = "2026-11-20-ocr-bad"
+        quar = os.path.join(self.state, "quarantine", batch)
+        self.write(os.path.join(quar, "DCIM/Camera/shot.png"))
+        with open(os.path.join(quar, "quarantine.json"), "w") as f:
+            json.dump({"DCIM/Camera/shot.png": {"reasons": ["secret-words:banking"], "sha": self.sha,
+                                                "size": len(self.data), "dst": None}}, f)
+        self.corrupt()
+        r = subprocess.run([PY, "-I", INTAKE, "erase", batch, "--yes"], env=self.env, capture_output=True, text=True,
+                           stdin=subprocess.DEVNULL)
+        self.assertNotEqual(r.returncode, 0, r.stdout)
+        self.assertIn("text index that could not be read", r.stdout)
+        self.assertFalse(os.path.exists(os.path.join(quar, "DCIM/Camera/shot.png")), "the erase itself went ahead")
+        out = self.intake("verify-gone", batch, code=1)
+        self.assertIn("text index that could not be read", out)
+        self.assertNotIn("verify-gone: no copy", out)
+        # sweep-erased: the same, in its own summary
+        self.write(os.path.join(self.home, "Downloads/again.png"))
+        out = self.intake("sweep-erased", "--yes", code=1)
+        self.assertIn("the text index could not be read (check it)", out)
+        # trash: the file goes; the index it could not read is named
+        other = os.urandom(2048)
+        lib = os.path.join(self.home, "Pictures/library/2026/2026-11/junk.png")
+        os.makedirs(os.path.dirname(lib), exist_ok=True)
+        with open(lib, "wb") as f:
+            f.write(other)
+        with open(os.path.join(self.state, "index.json"), "w") as f:
+            json.dump({lib: {"sha": hashlib.sha256(other).hexdigest(), "size": len(other)}}, f)
+        out = self.intake("trash", lib, "--yes")
+        self.assertIn("the text index could not be read (check it)", out)
+        self.assertFalse(os.path.exists(lib))
+
+    def test_unreadable_by_permissions_is_not_nothing_left(self):
+        """A store sqlite can't open (no read permission) counts as unreadable, not as zero rows."""
+        self.row(self.sha)
+        db = ocr_index.db_path(self.state)
+        os.chmod(db, 0)
+        try:
+            if os.access(db, os.R_OK):
+                self.skipTest("running as root: permissions don't stop a read")
+            self.assertEqual(ocr_index.leftovers([self.sha], self.state), -1)
+        finally:
+            os.chmod(db, 0o600)
+
+
+@unittest.skipUnless(has_pil(), "Pillow not installed")
+class ScanKeepsGoing(unittest.TestCase):
+    """A text index that can't be written never costs the scan: scan.json is written, flags are unchanged and
+    no file becomes unscanned-error."""
+
+    def test_index_write_error_does_not_abort_the_scan(self):
+        import io
+        from unittest import mock
+        from PIL import Image
+        import scan_sensitive
+        tmp = tempfile.mkdtemp(prefix="ocr-scan-err-")
+        self.addCleanup(shutil.rmtree, tmp, ignore_errors=True)
+        src, out = os.path.join(tmp, "raw"), os.path.join(tmp, "scan.json")
+        os.makedirs(src)
+        Image.new("L", (64, 48), 10).save(os.path.join(src, "receipt.png"))
+
+        class Det:
+            def detect(self, path):
+                return []
+
+        def ocr(im, tmpdir, keep=None):  # the real ocr_flags' signature: clean text, no flag
+            if keep is not None:
+                keep.append("Corner cafe receipt")
+            return []
+        stdout, stderr = io.StringIO(), io.StringIO()
+        with mock.patch.dict(sys.modules, {"nudenet": mock.MagicMock(NudeDetector=Det)}), \
+                mock.patch.dict(os.environ, {"HOME": tmp, "MEDIA_INTAKE_STATE": os.path.join(tmp, "state")}), \
+                mock.patch.object(sys, "argv", ["scan_sensitive.py", src, out]), \
+                mock.patch.object(scan_sensitive, "ocr_flags", ocr), \
+                mock.patch.object(scan_sensitive, "barcode_flags", lambda im: []), \
+                mock.patch.object(scan_sensitive.ocr_index, "add", side_effect=OSError("disk full")) as add, \
+                mock.patch("sys.stdout", stdout), mock.patch("sys.stderr", stderr):
+            scan_sensitive.main()
+        add.assert_called_once()
+        with open(out) as f:
+            self.assertEqual(json.load(f), {}, "the photo is clean, not unscanned-error")
+        summary = json.loads(stdout.getvalue().strip().splitlines()[-1])
+        self.assertEqual((summary["scanned"], summary["text_indexed"]), (1, 0))
+        self.assertIn("text index not updated", stderr.getvalue())
+        self.assertNotIn("cafe", stdout.getvalue() + stderr.getvalue(), "the text is never printed")
 
 
 @unittest.skipUnless(shutil.which("tesseract") and has_pil(), "tesseract or Pillow not installed")

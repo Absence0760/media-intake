@@ -760,6 +760,38 @@ class ProxiesRunTest(unittest.TestCase):
                 self.assertIn("done: 0 made, 0 failed, 1 gone meanwhile, 0 made already", out)
                 self.assertFalse(os.path.exists(dst), "a proxy of a video that went stays")
 
+    def test_signal_handlers_are_restored_after_a_run(self):
+        """main() sets SIGTERM and SIGINT to stop it as Ctrl-C does while it makes proxies, and puts back the
+        handlers it found afterwards: after a finished run, and after one a SIGTERM stopped (exit 130)."""
+        import signal
+        def mine(signum, frame):  # the caller's own handlers, as an embedding program might set
+            pass
+        def other(signum, frame):
+            pass
+        saved = {s: signal.getsignal(s) for s in (signal.SIGTERM, signal.SIGINT)}
+        self.addCleanup(lambda: [signal.signal(s, h) for s, h in saved.items()])
+        signal.signal(signal.SIGTERM, mine)
+        signal.signal(signal.SIGINT, other)
+        seen = []
+
+        def during(src):
+            seen.append((signal.getsignal(signal.SIGTERM), signal.getsignal(signal.SIGINT)))
+        code, out = self.run_main([(self.clip(os.path.join(self.lib, "a.MOV")), os.path.join(self.cache, "a.mp4"))],
+                                  during)
+        self.assertEqual(code, 0, out)
+        self.assertNotIn(mine, seen[0], "a run's own handler is set while it works")
+        self.assertIs(signal.getsignal(signal.SIGTERM), mine)
+        self.assertIs(signal.getsignal(signal.SIGINT), other)
+
+        def killed(src):  # a SIGTERM mid-run: the run's handler raises KeyboardInterrupt, main stops with 130
+            signal.getsignal(signal.SIGTERM)(signal.SIGTERM, None)
+        code, out = self.run_main([(self.clip(os.path.join(self.lib, "b.MOV")), os.path.join(self.cache, "b.mp4"))],
+                                  killed)
+        self.assertEqual(code, 130, out)
+        self.assertIn("stopped: 0 made", out)
+        self.assertIs(signal.getsignal(signal.SIGTERM), mine)
+        self.assertIs(signal.getsignal(signal.SIGINT), other)
+
     def test_still_shown_refusals_make_no_proxy(self):
         real = self.clip(os.path.join(self.tmp, "outside", "real.MOV"))
         link = os.path.join(self.lib, "link.MOV")
