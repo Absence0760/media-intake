@@ -49,8 +49,8 @@ without one" (`/api/facets` gives `drive`, the mount or null).
   Untagged, **Dates to check** (below); then **Events** with counts, the eight largest and "All N events";
   then **Places** (below); then, only once people and pets recognition has a store, **People & Pets**:
   each person and pet you named with the number of items tagged with the
-  name, and **Name new faces/pets** with the clusters still to name plus the
-  suggestions waiting, below),
+  name and a pencil for its name menu, and **Name faces & pets** with "N to
+  do", the clusters still to name plus the suggestions waiting, below),
   the search box (a one-line hint when semantic search is off, the
   full reason under "why"), then the filters as collapsible sections with
   counts (open / closed remembered per section) and "Clear filters (N)",
@@ -460,10 +460,54 @@ the gallery reads that store and never creates one. Words:
   with the number of library items whose sidecar has its tag
   (`People|<Name>` or `Pets|<Name>`). A click shows those items, by the tag
   (`who=People|<Name>` on `/api/list`), with the name as the title. A
-  suggestion never counts or shows there. Then **Name new faces/pets**, its
-  count the clusters with no name yet (a face or pet seen once included)
-  plus the suggestions waiting; collapsed to the rail it is the face icon with
-  "Names".
+  suggestion never counts or shows there. Beside each name a pencil (shown on
+  hover or focus, always on a touch screen or phone, 44 px there) opens the
+  **name menu** (below). Until a name or a pencil is first used (or **Got
+  it**), a one-line hint under the heading says "Click a name to see its
+  photos; its pencil button renames it" (remembered per browser). Then
+  **Name faces & pets**, with "N to do": the clusters with no name yet (a
+  face or pet seen once included) plus the suggestions waiting; collapsed to
+  the rail it is the face icon with "Names".
+- **The grid of a name** has a bar like an event's: "Person: Ann" or "Pet:
+  Rex", its files, clusters and suggestions waiting, then **Rename…**,
+  **Merge into…** (only when another name of the kind exists), **Review
+  suggestions (N)** (only with some waiting: opens Suggestions, the search
+  box set to the name) and **Remove name…**. A `People|` / `Pets|` tag the
+  store doesn't hold (another tool wrote it) shows the bar without them.
+- **The name menu** (the sidebar's pencil, the large view's ⋯ beside a name,
+  the ⋯ of a name's group in Named; an in-page dialog titled with the name,
+  focus on its first button, Esc closes it back to the button that opened
+  it): **Rename…**, **Merge into…**, **Not this one** (large view only),
+  **Review suggestions (N)**, **Show its photos** and **Remove name…**. Each
+  acts on the name in every cluster that has it, in one action, under the
+  library lock, with one dialog; the tags in the sidecars follow at once
+  (only the `People|` / `Pets|` tags the tool wrote; your own tags and an
+  owner's `People|` tag stay):
+  - **Rename…** (`POST /api/rec/rename-name`, `{"kind", "run", "name",
+    "to"}`): the new name, as typed (spaces trimmed, never capitalised), on
+    every cluster, confirmed face or pet and waiting suggestion with the old
+    one; rejections of the old name follow it. Refused in the dialog: an empty
+    or bad name, the name itself, and one that looks like another name of
+    the kind (the same but for case, width, spacing, or a dash or underscore
+    for a space; case or spacing of the name itself may change). The reply's
+    `who` is the new tag, so the grid of the name stays on it.
+  - **Merge into…** (`merge-name`, `{"into"}`: picked from a list of the
+    kind's other names): every face or pet of the name takes the other one;
+    a waiting suggestion you rejected that name for is dropped. Refused
+    across species.
+  - **Remove name…** (`remove-name`): every cluster and confirmed face or pet
+    with the name loses it (and its suggestions go); its clusters are back in
+    To name.
+  - **Not this one** (`not-here`, `{"item"}`: the large view's file): the
+    name's faces or pets in that one file are taken out (as a click on a crop
+    in the naming view), its tag comes off that sidecar.
+
+  The message after each has **Undo** (Ctrl+Z): every detection (and
+  rejection) the action changed is put back as it was, then the tags, and
+  refused once any of them changed again or after a re-cluster. Each POST
+  names the cluster run of its kind (`run` in `/api/facets`' `rec`); after
+  `people cluster` / `pets cluster` it is a 409 that says to reload, the
+  page reloads the names, and nothing changes.
 - **Name faces and pets** (that entry; in the main column, not a separate
   server): People or Pets (when the store has both), then **To name**,
   **Suggestions**, **Named** and **Not a person** / **Not a pet**, each with
@@ -506,18 +550,32 @@ the gallery reads that store and never creates one. Words:
     ("Not Ann"); **Confirm all 42** (or "Confirm 40, reject 2") and
     **Reject all** ask first. Confirmed ones are tagged; rejected ones are
     never suggested that name again.
-  - **Named**: Rename (asks), Merge into…, Unname… (asks; the tags it wrote
-    come off). **Not a person**: **Not ignored** puts a cluster back to name.
-  - Merge, rename, unname and confirm / reject say "This can't be undone
-    here" in their dialog: the store has no step back for them (you can
-    still unname, take out or name again).
+  - **People** / **Pets**: always shown above the tabs (one kind too), each
+    with its icon and "N to do".
+  - **Find a name or a cluster number** (a search box beside them, kept
+    across the tabs, emptied for the other kind): the clusters whose name
+    holds the text (case and spacing aside) or the cluster with that
+    number; in Suggestions, the names that hold it. "N clusters with "…" in
+    the name (or that number)." says what it found; Esc empties it.
+  - **Named**: grouped by name, alphabetically: one heading per name with its
+    number of clusters, **Rename all…** (the name everywhere, as the name
+    menu's Rename…) and ⋯ (the name menu), then its clusters. A card's own
+    Rename (**Rename this cluster** when the name spans several) renames that
+    cluster only; Merge into…, Unname… (asks; the tags it wrote come off).
+    **Not a person**: **Not ignored** puts a cluster back to name.
+  - A card's merge, rename and unname, and confirm / reject, say "This can't
+    be undone here" in their dialog: the store has no step back for them (you
+    can still unname, take out or name again). The name-level actions above
+    (Rename all…, the name menu) can be undone from their message.
   - Every POST names the cluster run the page listed; after `people cluster`
     (or `pets cluster`) ran, it gets 409 "The clusters changed since this
     page loaded…" with **Reload the list**, and nothing changes. An Undo
     from before a re-cluster is refused the same way.
 - **Large view**: "People: Ann, Bo" and "Pets: Rex" under Details, from the
   tags you confirmed (only there: not under "Your tags" or "Added by the
-  tools", and "+ tag" refuses `People|` / `Pets|`); each name shows the grid of that name. For a video,
+  tools", and "+ tag" refuses `People|` / `Pets|`); each name shows the grid
+  of that name, and the ⋯ beside it opens the name menu with **Not this
+  one**. For a video,
   "Ann appears at 0:12, 1:40" (the times the store saw Ann, one a second at
   most) seeks the player. Each time is the second of the frame
   `media_intake/frames.py` sampled the face or pet in
@@ -539,12 +597,17 @@ the gallery reads that store and never creates one. Words:
   trashed still is, since a name is no Keep.
 - API: `GET /api/rec?kind=face|pet&show=todo|sugg|named|ignored&after=<cluster>`
   (`&single=1` when that cluster was seen once; each cluster says `single`,
-  and `counts.single` how many of To name were seen once);
+  and `counts.single` how many of To name were seen once; Named is ordered by
+  name, `&aname=<name>` with the last card's name, and `spans` says how many
+  clusters each name has; `&q=` the search box, `found` how many matched);
+  `/api/facets`' `rec.kinds[]`: `names` as `[name, files tagged, clusters,
+  suggestions waiting]`, `unnamed`, `suggestions` and `run`;
   `GET /api/rec/det/<detection id>` (the zoom: its item, file name, video
   or not, second, and box on `/r/<id>/frame` as fractions);
-  `POST /api/rec/name|ignore|unname|merge|out|back|answer` with
+  `POST /api/rec/name|ignore|unname|merge|out|back|answer|rename-name|merge-name|remove-name|not-here` with
   `{"kind", "run", ...}` (`cluster`, `name`, `into` a cluster number or a
-  name, `ids` detection ids, `confirm` / `reject` id lists); the token, Host,
+  name, `ids` detection ids, `confirm` / `reject` id lists; by name: `name`
+  and `to`, `into` or `item`); the token, Host,
   Origin and CSRF checks of every POST (403), JSON only (415).
 
 ## Filters (all combinable)

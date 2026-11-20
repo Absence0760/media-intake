@@ -13,7 +13,9 @@ take out and put back, suggestions confirmed and rejected after a re-cluster, 40
 that re-cluster, 403 / 415 on a POST without CSRF or JSON, crops served by detection id only (0600 in a
 0700 folder, no-store) and never for a flagged file, the zoom's /api/rec/det and /r/<id>/frame (turned after
 a Rotate, 404 when flagged, removed by forget with the crops), clusters of one listed after the others, paged,
-hinted and named, and the large view's names and a video's times.
+hinted and named, and the large view's names and a video's times; one name on two clusters renamed, merged and
+removed by name (look-alikes refused, each undone, 409 while the library lock is held and after a re-cluster, a
+failure part way rolled back), not-here from the large view, the search box and Named grouped by name.
 """
 import os, shutil, sqlite3, stat, sys, tempfile, types, unittest, urllib.parse
 import unittest.mock as mock
@@ -195,7 +197,7 @@ class PeopleApiTest(unittest.TestCase):
             self.assertIn("People|Ann", hier(p))
         self.assertNotIn("People|Ann", hier(w.bo[0]) if os.path.exists(w.bo[0] + ".xmp") else [])
         fc = s.get("/api/facets")["rec"]["kinds"][0]
-        self.assertEqual(fc["names"], [["Ann", 4]])
+        self.assertEqual(fc["names"], [["Ann", 4, 1, 0]], "name, files tagged, clusters, suggestions waiting")
         self.assertEqual(self.ids_named(s, "People|Ann"), ["ann0.png", "ann1.png", "ann2.png", "both.png"])
         like = next(d for d in self.rec(s, kind="face")["clusters"] if d["id"] == w.cluster_of(w.like[0]))
         self.assertEqual([(x["cluster"], x["name"]) for x in like["like"]], [(ann, "Ann")])
@@ -313,6 +315,131 @@ class PeopleApiTest(unittest.TestCase):
         self.assertEqual(hier(w.ann[0]), ["Trips|Spain"])
         self.assertFalse(any(t.startswith("People|") for t in hier(w.both)))
         self.assertEqual({p: G.sha(p) for p in originals}, originals, "originals are never written")
+
+    def test_rename_merge_remove_a_name_across_clusters(self):
+        """One name on two clusters: rename-name, merge-name and remove-name act on every cluster with it, in one
+        action, under the library lock; each can be undone; look-alikes are refused; a re-cluster is a 409."""
+        w = self.world(video=False)
+        G.write_tags(w.ann[0], ["Trips|Spain"])  # the owner's own tag: never touched
+        originals = {p: G.sha(p) for p in w.ann + w.like + [w.both]}
+        s = self.start(w.env)
+        run, ann, like, bo = self.rec(s, kind="face")["run"], *(w.cluster_of(p) for p in (w.ann[0], w.like[0], w.bo[0]))
+        for cl, name in ((ann, "Ann"), (like, "ann"), (bo, "Bo")):  # "ann": the existing spelling wins
+            self.assertEqual(self.post(s, "name", dict(kind="face", run=run, cluster=cl, name=name))[0], 200)
+        fc = s.get("/api/facets")["rec"]["kinds"][0]
+        self.assertEqual(fc["run"], run)
+        self.assertEqual(fc["names"], [["Ann", 6, 2, 0], ["Bo", 3, 1, 0]])
+        named = self.rec(s, kind="face", show="named")
+        self.assertEqual([d["name"] for d in named["clusters"]], ["Ann", "Ann", "Bo"], "grouped by name")
+        self.assertEqual(named["spans"], {"Ann": 2, "Bo": 1})
+        ann_files = w.ann + w.like + [w.both]
+
+        def body(**kw):
+            return dict(kind="face", run=run, name="Ann", **kw)
+        # refused, nothing written: empty, bad, a look-alike of another name, its own name, an unknown name
+        for b, why in ((body(to=""), "a name"), (body(to="a|b"), "a name"), (body(to=" bo "), "looks like Bo"),
+                       (body(to="BO"), "looks like Bo"), (body(to="Ann"), "its name already"), (body(to=7), "a name"),
+                       (dict(body(to="X"), name="Nobody"), "no one is named"), (dict(body(to="X"), name=None), "which name")):
+            code, r = self.post(s, "rename-name", b)
+            self.assertEqual(code, 400, b)
+            self.assertIn(why, r["error"], b)
+        self.assertIn("People|Ann", hier(w.like[0]))
+
+        code, r = self.post(s, "rename-name", body(to="  Annie  "))
+        self.assertEqual(code, 200, r)
+        self.assertEqual(r["who"], "People|Annie")
+        self.assertIn("Ann is now Annie", r["result"])
+        for p in ann_files:
+            self.assertIn("People|Annie", hier(p), p)
+            self.assertNotIn("People|Ann", hier(p), p)
+        self.assertIn("Trips|Spain", hier(w.ann[0]))
+        self.assertNotIn("People|Annie", hier(w.bo[0]))
+        self.assertEqual(len(self.ids_named(s, "People|Annie")), 6)
+        self.assertEqual(self.ids_named(s, "People|Ann"), [])
+        # its Undo: every row and tag as it was
+        code, u = s.post("/api/undo", dict(undo=r["undo"]))
+        self.assertEqual(code, 200, u)
+        self.assertEqual((u["result"], u["who"]), ("undid renaming Ann", {"from": "People|Annie", "to": "People|Ann"}))
+        for p in ann_files:
+            self.assertIn("People|Ann", hier(p), p)
+            self.assertNotIn("People|Annie", hier(p), p)
+
+        # merge Ann into Bo: one name, every file tagged Bo; Undo splits them again
+        code, r = self.post(s, "merge-name", body(into="Nobody"))
+        self.assertEqual(code, 400, r)
+        code, r = self.post(s, "merge-name", body(into="bo"))
+        self.assertEqual(code, 200, r)
+        self.assertEqual(r["who"], "People|Bo")
+        self.assertEqual(s.get("/api/facets")["rec"]["kinds"][0]["names"], [["Bo", 8, 3, 0]])
+        for p in ann_files:
+            self.assertIn("People|Bo", hier(p), p)
+            self.assertNotIn("People|Ann", hier(p), p)
+        self.assertEqual(s.post("/api/undo", dict(undo=r["undo"]))[0], 200)
+        self.assertEqual(s.get("/api/facets")["rec"]["kinds"][0]["names"], [["Ann", 6, 2, 0], ["Bo", 3, 1, 0]])
+        self.assertIn("People|Bo", hier(w.both), "both.png has Bo of its own")
+        self.assertNotIn("People|Bo", hier(w.ann[1]))
+
+        # remove the name: every cluster back to To name, the tags off; Undo puts them back
+        code, r = self.post(s, "remove-name", body())
+        self.assertEqual(code, 200, r)
+        self.assertNotIn("who", r)
+        for p in ann_files:
+            self.assertNotIn("People|Ann", hier(p), p)
+        self.assertEqual(hier(w.ann[0]), ["Trips|Spain"])
+        self.assertEqual(self.rec(s, kind="face")["counts"]["todo"], 2)
+        self.assertEqual(s.post("/api/undo", dict(undo=r["undo"]))[0], 200)
+        self.assertIn("People|Ann", hier(w.like[1]))
+        self.assertEqual({p: G.sha(p) for p in originals}, originals, "originals are never written")
+
+        # the library lock held: 409 busy, nothing changes
+        import library_lock
+        fd = library_lock.acquire("test")
+        try:
+            code, r = self.post(s, "rename-name", body(to="Annie"))
+            self.assertEqual((code, r.get("busy")), (409, True), r)
+        finally:
+            os.close(fd)
+        self.assertIn("People|Ann", hier(w.ann[0]))
+        # after a re-cluster: 409, nothing changes; the new run works
+        w.more_ann(1)
+        code, r = self.post(s, "remove-name", body())
+        self.assertEqual(code, 409, r)
+        self.assertIn("reload", r["error"])
+        self.assertIn("People|Ann", hier(w.ann[0]))
+        nrun = s.get("/api/facets")["rec"]["kinds"][0]["run"]
+        self.assertEqual(nrun, run + 1)
+        code, r = self.post(s, "rename-name", dict(body(to="Annie"), run=nrun))
+        self.assertEqual(code, 200, r)
+        # a stale Undo is refused the same way
+        w.more_ann(1)
+        self.assertEqual(s.post("/api/undo", dict(undo=r["undo"]))[0], 409)
+        self.assertIn("People|Annie", hier(w.ann[0]))
+
+    def test_not_here_from_the_large_view_and_the_search_box(self):
+        w = self.world(video=False)
+        s = self.start(w.env)
+        run, ann = self.rec(s, kind="face")["run"], w.cluster_of(w.ann[0])
+        self.post(s, "name", dict(kind="face", run=run, cluster=ann, name="Ann"))
+        items = {i["n"]: i["id"] for i in s.get("/api/list?limit=500")["items"]}
+        body = dict(kind="face", run=run, name="Ann", item=items["ann1.png"])
+        code, r = self.post(s, "not-here", body)
+        self.assertEqual(code, 200, r)
+        self.assertNotIn("People|Ann", hier(w.ann[1]))
+        self.assertIn("People|Ann", hier(w.ann[0]))
+        self.assertEqual(self.post(s, "not-here", body)[0], 400, "not named there any more")
+        for b in (dict(body, item="1"), dict(body, item=10 ** 6), dict(body, name=None)):
+            self.assertEqual(self.post(s, "not-here", b)[0], 400, b)
+        self.assertEqual(s.post("/api/undo", dict(undo=r["undo"]))[0], 200)
+        self.assertIn("People|Ann", hier(w.ann[1]))
+        # the naming view's search box: by name (case and spacing aside) or a cluster's number
+        self.assertEqual([d["id"] for d in self.rec(s, kind="face", show="named", q=" aN ")["clusters"]], [ann])
+        self.assertEqual(self.rec(s, kind="face", show="named", q="zz")["clusters"], [])
+        bo = w.cluster_of(w.bo[0])
+        j = self.rec(s, kind="face", q=str(bo))
+        self.assertEqual(([d["id"] for d in j["clusters"]], j["found"]), ([bo], 1))
+        w.more_ann(2)
+        self.assertEqual([g["name"] for g in self.rec(s, kind="face", show="sugg", q="an")["suggestions"]], ["Ann"])
+        self.assertEqual(self.rec(s, kind="face", show="sugg", q="bo")["suggestions"], [])
 
     def test_suggestions_and_a_stale_run(self):
         w = self.world(video=False)
@@ -568,6 +695,34 @@ class StoreRollback(unittest.TestCase):
             gallery.App.rec_store(self.app, half_done)
         self.assertTrue(self.scan_can_write(), "the failed action still holds the store's lock")
         self.assertEqual(self.c.execute("SELECT count(*) FROM t").fetchone()[0], 0)
+
+    @unittest.skipUnless(TR.np, "numpy or Pillow missing (python3-numpy, python3-pillow)")
+    def test_a_name_action_failing_part_way_rolls_back(self):
+        """rename-name through Rec.act: a failure after its first write leaves the name as it was and the store
+        free for a scan."""
+        tmp = tempfile.mkdtemp(prefix="rec-rollback-name-")
+        self.addCleanup(shutil.rmtree, tmp, True)
+        w = RecLibrary(tmp, video=False)
+        self.addCleanup(w.close)
+        recog.name_cluster(w.c, "face", w.cluster_of(w.ann[0]), "Ann")
+        rec = gallery.Rec()
+        app = types.SimpleNamespace(rec=rec)
+        real = recog._move_name
+
+        def half(c, kind, old, new):
+            c.execute("UPDATE detections SET name=? WHERE kind=? AND name=?", (new, kind, old))
+            raise sqlite3.OperationalError("disk I/O error")
+        body = dict(kind="face", run=int(recog.meta(w.c, "run:face")), name="Ann", to="Annie")
+        with mock.patch.object(recog, "_move_name", half), self.assertRaises(sqlite3.OperationalError):
+            gallery.App.rec_store(app, lambda: rec.act(app, "rename-name", body))
+        s = sqlite3.connect(recog.db_path(), timeout=0)
+        try:
+            s.execute("BEGIN IMMEDIATE")  # a scan's save, with no waiting
+            s.rollback()
+        finally:
+            s.close()
+        self.assertEqual(recog.owner_names(w.c, "face"), {"Ann"})
+        self.assertIs(recog._move_name, real)
 
     def test_a_locked_store_is_a_plain_409(self):
         def locked():

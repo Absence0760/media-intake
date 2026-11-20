@@ -44,9 +44,11 @@ fields before and after and puts back exactly that change, refusing once a sidec
 again); Trash, Erase and Share can't. No native alert/confirm/prompt: in-page
 dialogs, an error message that stays until dismissed, and a "?" list of every key.
 People & Pets (recog.py's store, only once it exists; never created here): the sidebar lists the names you gave
-with their item counts (a filter by the People|<Name> / Pets|<Name> tag) and Name new faces/pets, a naming view in
-this page (name, merge, ignore, take out, confirm or reject suggestions; each POST names the cluster run it was made
-against, 409 after a re-cluster; tags written at once under the library lock). Crops by detection id only (/r/<id>,
+with their item counts (a filter by the People|<Name> / Pets|<Name> tag, with a bar to rename, merge or remove the
+name in every cluster at once; the same name menu from a pencil beside each name) and Name faces & pets, a naming
+view in this page (name, merge, ignore, take out, confirm or reject suggestions; Named grouped by name; a search
+box; each POST names the cluster run it was made against, 409 after a re-cluster; tags written at once under the
+library lock). Crops by detection id only (/r/<id>,
 recog.crop_bytes; the zoom's whole picture /r/<id>/frame, recog.frame_bytes: 0600 in the store's crops/, never for
 a file the gallery doesn't list). The large view names
 them, and for a video links the times they appear at.
@@ -878,9 +880,12 @@ WORDS = {
     "dates": {k: datecheck.TITLES[k] for k in datecheck.DATE_KINDS},
     # people and pets (docs/recognition.md, docs/words.md "People and pets"): per kind its sidebar heading (also
     # the tag's namespace), what one is called, and the naming view's words
-    "rec": {"face": {"title": "People", "noun": "face", "not": "Not a person"},
-            "pet": {"title": "Pets", "noun": "pet", "not": "Not a pet"},
-            "section": "People & Pets", "entry": "Name new faces/pets",
+    "rec": {"face": {"title": "People", "noun": "face", "not": "Not a person", "one": "Person"},
+            "pet": {"title": "Pets", "noun": "pet", "not": "Not a pet", "one": "Pet"},
+            "section": "People & Pets", "entry": "Name faces & pets",
+            # the pencil beside a name (sidebar), its ⋯ in the large view, and a People| / Pets| tag the store lacks
+            "menu": "Rename, merge or remove",
+            "notMine": "This name isn't one the naming view gave (another tool wrote the tag), so it can't be renamed here",
             "off": "people and pets recognition is off (no recognition store): docs/recognition.md",
             "store_busy": "A people or pets scan is writing right now; try again in a moment (nothing was changed)",
         "stale": "The clusters changed since this page loaded (media-intake {command} cluster ran): reload "
@@ -1003,8 +1008,9 @@ def check_display_name(name):
 
 def look_key(s):
     """Two labels with the same key would look the same, or too alike: case, width, spacing, and a dash or an
-    underscore read as a space (so some-trip, Some trip and some_trip are one key)."""
-    return " ".join(unicodedata.normalize("NFKC", s).casefold().replace("-", " ").replace("_", " ").split())
+    underscore read as a space (so some-trip, Some trip and some_trip are one key). recog.name_key, which refuses a
+    look-alike person's or pet's name the same way."""
+    return recog.name_key(s)
 
 
 def pretty_event(slug):
@@ -1161,16 +1167,24 @@ class Rec:
                 out = []
                 for k in self.kinds(c):
                     pre = WORDS["rec"][k]["title"] + "|"
-                    names = sorted(((n, tagged.get(pre + n, 0)) for (n,) in c.execute(
-                        f"SELECT DISTINCT name FROM detections WHERE kind=? AND how IN ({','.join('?' * len(recog.OWNER_HOW))}) "
-                        "AND name IS NOT NULL AND name != ?", (k, *recog.OWNER_HOW, recog.IGNORED))),
-                        key=lambda x: (-x[1], x[0].casefold()))
+                    # per name: library items tagged, clusters carrying it, suggestions of it waiting
+                    per = collections.defaultdict(lambda: [set(), 0])
+                    for r in c.execute("SELECT name, how, cluster FROM detections WHERE kind=? AND name IS NOT NULL "
+                                       "AND name != ? AND how IN ('cluster', 'confirmed', 'suggested')",
+                                       (k, recog.IGNORED)):
+                        if r["how"] == "suggested":
+                            per[r["name"]][1] += 1
+                        else:
+                            per[r["name"]][0].add(r["cluster"])
+                    names = sorted(((n, tagged.get(pre + n, 0), len(v[0]), v[1]) for n, v in per.items() if v[0]),
+                                   key=lambda x: (-x[1], x[0].casefold()))
                     todo = c.execute("SELECT COUNT(*) FROM (SELECT cluster FROM detections WHERE kind=? AND cluster IS "
                                      "NOT NULL GROUP BY cluster HAVING SUM(name IS NOT NULL) = 0)",
                                      (k,)).fetchone()[0]
                     sugg = c.execute("SELECT COUNT(*) FROM detections WHERE kind=? AND how='suggested' AND name != ?",
                                      (k, recog.IGNORED)).fetchone()[0]
-                    out.append(dict(kind=k, prefix=pre, names=[list(x) for x in names], unnamed=todo, suggestions=sugg))
+                    out.append(dict(kind=k, prefix=pre, names=[list(x) for x in names], unnamed=todo, suggestions=sugg,
+                                    run=self.run(c, k)))
             except sqlite3.Error:
                 return None
         return dict(kinds=out) if out else None
@@ -1199,6 +1213,11 @@ class Rec:
             lim = max(1, min(200, int(f.get("limit") or REC_PAGE)))
         except ValueError:
             after, lim, after_key = 0, REC_PAGE, (False, 0)
+        # the search box: a cluster whose name holds q (case and spacing aside), or the cluster with that number
+        q = recog.name_key(f.get("q") or "")[:64]
+        if show == "named":  # grouped by name: paged by (name, cluster), the page after names its last card's name
+            after_key = (recog.name_key(f.get("aname") or ""), after) if after else ("", 0)
+            aname = f.get("aname")
         with self.lock:
             c = self.conn()
             if c is None:
@@ -1213,22 +1232,36 @@ class Rec:
             cl = [dict(d, single=d["count"] < 2) for d in recog.clusters(c, kind, min_size=1, samples=0)]
             todo = sorted((d for d in cl if not d["name"] and not d["ignored"]), key=lambda d: (d["single"], d["id"]))
             groups = dict(todo=todo,
-                          named=[d for d in cl if d["how"] == "owner" and not d["ignored"]],
+                          named=sorted((d for d in cl if d["how"] == "owner" and not d["ignored"]),
+                                       key=lambda d: (recog.name_key(d["name"]), d["id"])),
                           ignored=[d for d in cl if d["ignored"]])
             sugg = recog.suggestions(c, kind)
             counts = {k: len(v) for k, v in groups.items()}
             counts["sugg"] = len(sugg)
             counts["single"] = sum(1 for d in todo if d["single"])
             out = dict(on=True, kind=kind, kinds=kinds, show=show, run=self.run(c, kind), counts=counts,
-                       names=[n for n, _, _ in recog.names(c, kind)], clusters=[], more=False, suggestions=[])
+                       names=[n for n, _, _ in recog.names(c, kind)], clusters=[], more=False, suggestions=[], q=q)
+            if show == "named":  # how many clusters each name spans: the group heading's count
+                out["spans"] = dict(collections.Counter(d["name"] for d in groups["named"]))
             if show == "sugg":
                 by = collections.defaultdict(list)
                 for s in sugg:
-                    by[s["name"]].append(s["det"])
+                    if not q or q in recog.name_key(s["name"]):
+                        by[s["name"]].append(s["det"])
                 out["suggestions"] = [dict(name=n, ids=ids) for n, ids in
                                       sorted(by.items(), key=lambda x: (-len(x[1]), x[0].casefold()))]
                 return out
-            rest = [d for d in groups[show] if (show == "todo" and d["single"], d["id"]) > after_key]
+            listed = groups[show]
+            if q:
+                listed = [d for d in listed if (d["name"] and q in recog.name_key(d["name"])) or q == str(d["id"])]
+                out["found"] = len(listed)
+            if show == "named":
+                if after and not aname:  # no name sent: the cursor cluster's own (if it is still named)
+                    at = next((d for d in groups["named"] if d["id"] == after), None)
+                    after_key = (recog.name_key(at["name"]), after) if at else after_key
+                rest = [d for d in listed if (recog.name_key(d["name"]), d["id"]) > after_key]
+            else:
+                rest = [d for d in listed if (show == "todo" and d["single"], d["id"]) > after_key]
             hints = {}
             if show == "todo" and spec.same is not None and spec.model:
                 try:
@@ -1369,14 +1402,15 @@ class Rec:
 
     def act(self, app, what, body):
         """One naming action from the page: {kind, run, ...}. Returns (message, undo record or None, changed
-        paths). The run must be the one the page listed (409 after a re-cluster)."""
+        paths, extra reply fields: a rename or merge by name says the tag it ends as, `who`). The run must be the one
+        the page listed (409 after a re-cluster)."""
         kind = body.get("kind")
         w = WORDS["rec"]
         with self.lock:
             c = self.need(kind)
             self.check_run(c, kind, body.get("run"))
             spec, noun = self.spec(c, kind), w[kind]["noun"]
-            undo = None
+            undo, extra = None, {}
             if what in ("name", "ignore"):
                 cl = self.cluster_no(body.get("cluster"))
                 paths = self.paths_of(c, "d.kind=? AND d.cluster=?", (kind, cl))
@@ -1433,6 +1467,50 @@ class Rec:
                 a = recog.confirm(c, kind, yes) if yes else 0
                 b = recog.reject(c, kind, no) if no else 0
                 msg = f"{a} confirmed, {b} rejected."
+            elif what in ("rename-name", "merge-name", "remove-name"):  # a name, in every cluster that has it
+                old = body.get("name")
+                if not isinstance(old, str):
+                    raise ValueError("which name?")
+                ids = recog.name_ids(c, kind, old)
+                before = self.rows_of(c, kind, ids)
+                paths = self.paths_of(c, f"d.kind=? AND d.id IN ({','.join('?' * len(ids))})", (kind, *ids)) \
+                    if ids else set()
+                if what == "rename-name":
+                    to = body.get("to")
+                    if not isinstance(to, str) or to == recog.IGNORED:
+                        raise ValueError("a name: 1-64 characters, no | / \\ , ; or control characters")
+                    new, n = recog.rename_name(c, kind, old, to)
+                    msg, done = f"{old} is now {new}: {n} {noun}{'' if n == 1 else 's'}.", f"renaming {old}"
+                    extra = dict(who=spec.prefix + new)
+                elif what == "merge-name":
+                    into = body.get("into")
+                    into, n = recog.merge_names(c, kind, old, into)
+                    msg, done = f"{old} joined {into}: {n} {noun}{'' if n == 1 else 's'} named {into}.", \
+                        f"merging {old} into {into}"
+                    extra = dict(who=spec.prefix + into)
+                else:
+                    n = recog.remove_name(c, kind, old)
+                    msg, done = f"{old} removed: {n} {noun}{'' if n == 1 else 's'} have no name now.", \
+                        f"removing {old}"
+                undo = dict(act="restore", ids=ids, before=before, what=done,
+                            who={"from": extra["who"], "to": spec.prefix + old} if extra else None)
+            elif what == "not-here":  # the large view: this name is not in this file (take its detections out)
+                name, item = body.get("name"), body.get("item")
+                if not isinstance(name, str) or type(item) is not int:
+                    raise ValueError("which name, in which file?")
+                with app.lock:
+                    path = app.items[item]["path"] if app.live(item) else None
+                if path is None:
+                    raise ValueError("that file is no longer in the library")
+                ids = [r[0] for r in c.execute(
+                    f"SELECT d.id FROM detections d JOIN files f ON f.sha=d.sha WHERE f.path=? AND d.kind=? AND "
+                    f"d.name=? AND d.how IN ({','.join('?' * len(recog.OWNER_HOW))})", (path, kind, name, *recog.OWNER_HOW))]
+                if not ids:
+                    raise ValueError(f"{name[:64]} isn't named in this file any more (reload it)")
+                paths = self.paths_of(c, f"d.kind=? AND d.id IN ({','.join('?' * len(ids))})", (kind, *ids))
+                n = recog.take_out(c, kind, ids)
+                undo = dict(act="back", ids=ids)
+                msg = f"{name} taken out of this file: {n} {noun}{'' if n == 1 else 's'}."
             else:
                 raise LookupError(what)
             if undo:
@@ -1440,12 +1518,26 @@ class Rec:
             changed, problem = self.tag(c, spec, paths)
         if problem:
             msg += f" The tags couldn't be written yet ({problem[:200]}); media-intake {REC_KINDS[kind]['command']} tag writes them."
-        return msg, undo, changed
+        return msg, undo, changed, extra
+
+    @staticmethod
+    def rows_of(c, kind, ids):
+        """(id, how, name) of these detections and the names rejected for each: what a name-level action may
+        change, so its undo can put exactly that back."""
+        if not ids:
+            return [[], []]
+        q = ",".join("?" * len(ids))
+        return [[tuple(r) for r in c.execute(f"SELECT id, how, name FROM detections WHERE kind=? AND id IN ({q}) "
+                                             "ORDER BY id", (kind, *ids))],
+                sorted(tuple(r) for r in c.execute(f"SELECT det, name FROM rejects WHERE det IN ({q})", ids))]
 
     @staticmethod
     def snapshot(c, kind, undo):
-        """What an undoable action left: (id, how, name) of the cluster's detections, or of the ids taken out. An
-        undo is refused once these differ (a rename, a merge, a confirm since): it never clobbers a later change."""
+        """What an undoable action left: (id, how, name) of the cluster's detections, or of the ids taken out (and,
+        for a name-level action, their rejections). An undo is refused once these differ (a rename, a merge, a
+        confirm since): it never clobbers a later change."""
+        if undo["act"] == "restore":
+            return Rec.rows_of(c, kind, undo["ids"])
         if undo["act"] == "unname":
             rows = c.execute("SELECT id, how, name FROM detections WHERE kind=? AND cluster=? ORDER BY id",
                              (kind, undo["cluster"]))
@@ -1468,6 +1560,17 @@ class Rec:
             if rec["act"] == "unname":
                 paths = self.paths_of(c, "d.kind=? AND d.cluster=?", (kind, rec["cluster"]))
                 recog.unname_cluster(c, kind, rec["cluster"])
+            elif rec["act"] == "restore":  # a name-level rename, merge or removal: each row as it was
+                ids = rec["ids"]
+                q = ",".join("?" * len(ids))
+                paths = self.paths_of(c, f"d.kind=? AND d.id IN ({q})", (kind, *ids)) if ids else set()
+                rows, rejects = rec["before"]
+                for i, how, name in rows:
+                    c.execute("UPDATE detections SET how=?, name=? WHERE id=?", (how, name, i))
+                if ids:
+                    c.execute(f"DELETE FROM rejects WHERE det IN ({q})", ids)
+                c.executemany("INSERT INTO rejects(det, name) VALUES (?, ?)", rejects)
+                c.commit()
             else:
                 q = ",".join("?" * len(rec["ids"]))
                 paths = self.paths_of(c, f"d.kind=? AND d.id IN ({q})", (kind, *rec["ids"]))
@@ -2591,12 +2694,12 @@ class App:
 
     def rec_act(self, what, body):
         """POST /api/rec/<what>: a naming action (Rec.act) under the library lock, as every sidecar write is; the
-        reply carries an Undo token when the core can put it back (name or ignore a cluster that had no name,
-        take out)."""
+        reply carries an Undo token when it can be put back (name or ignore a cluster that had no name, take out,
+        not here, and a name-level rename, merge or removal: each row it changed, as it was)."""
         with self.writing("people and pets"):
-            msg, undo, changed = self.rec_store(lambda: self.rec.act(self, what, body))
+            msg, undo, changed, extra = self.rec_store(lambda: self.rec.act(self, what, body))
             ids = self.reload_paths(changed)
-            out = dict(result=msg, ids=ids)
+            out = dict(result=msg, ids=ids, **extra)
             if undo:
                 with self.lock:
                     out["undo"] = self.remember(undo)
@@ -2618,8 +2721,8 @@ class App:
                     if self.undos.pop(token, None) is None:
                         raise ValueError("nothing to undo: it was undone already, or is too old")
                 ids = self.reload_paths(self.rec_store(lambda: self.rec.undo(rec)))
-            what = "naming the cluster" if rec["act"] == "unname" else "taking out"
-            return dict(result=f"undid {what}", ids=ids, kind="rec", thumbs=False)
+            what = rec.get("what") or ("naming the cluster" if rec["act"] == "unname" else "taking out")
+            return dict(result=f"undid {what}", ids=ids, kind="rec", thumbs=False, who=rec.get("who"))
         with self.writing("undo"), self.lock:
             rec = self.undos.get(token)
             if rec is None:
@@ -3170,7 +3273,8 @@ class Handler(R.Handler):
             "/api/undo": lambda: app.undo(body.get("undo")),
             "/api/dates/fix": lambda: app.fix_dates(body.get("ids"), body.get("mode"), body.get("value")),
         }
-        if m := re.fullmatch(r"/api/rec/(name|ignore|unname|merge|out|back|answer)", path):
+        if m := re.fullmatch(r"/api/rec/(name|ignore|unname|merge|out|back|answer|rename-name|merge-name|remove-name|"
+                             r"not-here)", path):
             try:
                 self.json(200, app.rec_act(m.group(1), body))
             except ValueError as e:
@@ -3375,13 +3479,34 @@ kbd{font:600 11px/1 ui-monospace,monospace;border:1px solid currentColor;border-
 .plrad select{height:34px;max-width:100%;border:1px solid var(--line);border-radius:8px;background:var(--panel);padding:0 8px}
 .evmore{align-self:flex-start;margin:2px 10px}
 .yrmore{margin:4px 10px}
-#evbar{display:flex;flex-wrap:wrap;align-items:center;gap:8px;padding:12px 24px 0}
+#evbar,#whobar{display:flex;flex-wrap:wrap;align-items:center;gap:8px;padding:12px 24px 0}
 #junkbar{display:flex;flex-wrap:wrap;align-items:center;gap:6px 8px;padding:12px 24px 0}
 #junkbar label{font-size:14px;color:var(--mut)}
 #junkbar select{height:34px;max-width:100%;min-width:0;border:1px solid var(--line);border-radius:8px;background:var(--panel);padding:0 8px}
 #junkbar .jf{display:inline-flex;align-items:center;gap:6px;min-width:0;max-width:100%}
-#evbar .evt{font-weight:600;margin-right:4px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;max-width:100%}
+#evbar .evt,#whobar .evt{font-weight:600;margin-right:4px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;max-width:100%}
 #evbar .evslug{color:var(--mut);font-family:ui-monospace,monospace;font-size:13px;margin-right:4px;min-width:0;overflow-wrap:anywhere}
+/* People & Pets: the filtered view's bar, the sidebar's pencil, the first-time hint, the name menu, Named's groups */
+#whobar .whosub{color:var(--mut);font-size:14px;margin-right:4px;min-width:0;overflow-wrap:anywhere}
+.nvrow{display:flex;align-items:center;gap:2px;min-width:0}
+.nvrow .nv{flex:1;min-width:0}
+.nvpen{flex:none;display:inline-flex;align-items:center;justify-content:center;width:32px;height:32px;border:0;border-radius:8px;background:none;color:var(--mut);opacity:0}
+.nvrow:hover .nvpen,.nvrow:focus-within .nvpen,.nvpen[aria-expanded=true]{opacity:1}
+.nvpen:hover{background:var(--hover);color:var(--fg)}
+@media (hover:none),(pointer:coarse),(max-width:760px){.nvpen{opacity:1;width:44px;height:44px}}
+.rechint{display:flex;flex-wrap:wrap;align-items:center;gap:2px 8px;margin:0 10px 6px;font-size:13px;color:var(--mut)}
+.rechint .ic{width:15px;height:15px;vertical-align:-3px}
+.wmenu{display:flex;flex-direction:column;align-items:stretch;gap:6px;margin-top:10px}
+.wmenu .btn{justify-content:flex-start;min-height:40px;white-space:normal;text-align:left}
+#who .wmore{border:0;background:none;color:#8ab0ff;padding:0 6px;margin-left:2px;font-size:15px;border-radius:6px;min-width:28px}
+.rgroup{display:flex;flex-wrap:wrap;align-items:center;gap:6px 10px;margin:10px 0 -4px;min-width:0}
+.rgroup h2{margin:0;font-size:16px;overflow-wrap:anywhere;min-width:0}
+.rgroup .rsub{color:var(--mut);font-size:14px}
+.rfind{display:flex;flex-wrap:wrap;align-items:center;gap:6px 8px;min-width:0;flex:1 1 220px}
+.rfind input{flex:1 1 160px;min-width:0;max-width:360px;height:34px;padding:0 10px;border:1px solid var(--line);border-radius:8px;background:var(--bg)}
+.rfind input::placeholder{color:var(--mut)}
+.rseg .rkct{margin-left:6px;font-weight:400;color:var(--mut)}
+.rseg .ic{width:16px;height:16px;vertical-align:-3px;margin-right:4px}
 #mfieldp label{display:block;font-size:13px;color:var(--mut);margin-bottom:4px}
 #mfield{width:100%}
 /* search and filters: apart from the views above by a heavier rule */
@@ -3669,7 +3794,7 @@ dl.dt dd{margin:0;word-break:break-word}
 .racts input::placeholder{color:var(--mut)}
 #rpage{align-self:flex-start}
 @media (max-width:760px){#names{padding:12px 12px 40px}}
-@media (max-width:760px),(pointer:coarse){.rseg button,.racts input{min-height:44px}#who .link{min-height:44px}.rzb{width:44px;height:44px}#rzoom .mbtns .btn{min-height:44px}}
+@media (max-width:760px),(pointer:coarse){.rseg button,.racts input,.rfind input{min-height:44px}#who .link{min-height:44px}#who .wmore{min-height:44px;min-width:44px}.wmenu .btn{min-height:44px}.rzb{width:44px;height:44px}#rzoom .mbtns .btn{min-height:44px}}
 
 /* ---------------------------------------------------------------- confirm / job dialog */
 .modal{position:fixed;inset:0;background:rgba(0,0,0,.55);z-index:30;display:none;align-items:center;justify-content:center;padding:16px}
@@ -3707,7 +3832,7 @@ dl.dt dd{margin:0;word-break:break-word}
  #vtitle{font-size:16px}
  #count,.size .ic{display:none}
  #ball{padding:0 9px}
- #chips,#evbar,#junkbar{padding:10px 12px 0}#note,#helpb{padding:0 12px}
+ #chips,#evbar,#whobar,#junkbar{padding:10px 12px 0}#note,#helpb{padding:0 12px}
  /* the burst help: one line, "more" for the whole text */
  #helpb .hshort,#hmore{display:inline}#helpb .hfull{display:none}
  #helpb.more .hshort{display:none}#helpb.more .hfull{display:inline}
@@ -3764,6 +3889,7 @@ dl.dt dd{margin:0;word-break:break-word}
  <symbol id="i-paw" viewBox="0 0 24 24"><circle cx="7" cy="9" r="1.8"/><circle cx="11" cy="5.8" r="1.8"/><circle cx="15.5" cy="6.5" r="1.8"/><circle cx="18" cy="10.5" r="1.8"/><path d="M8.5 17.5c0-3 2-5.5 4-5.5s4 2.5 4 5c0 1.8-1.5 2.5-4 2.5s-4-.4-4-2z"/></symbol>
  <symbol id="i-tag" viewBox="0 0 24 24"><path d="M3.5 12.5V4h8.5l8.5 8.5-8.5 8.5z"/><circle cx="8" cy="8.5" r="1.4"/></symbol>
  <symbol id="i-search" viewBox="0 0 24 24"><circle cx="11" cy="11" r="6.5"/><path d="M20 20l-4.3-4.3"/></symbol>
+ <symbol id="i-pen" viewBox="0 0 24 24"><path d="M4 20l1-4L16 5l3 3L8 19zM14 7l3 3"/></symbol>
  <symbol id="i-zoom" viewBox="0 0 24 24"><circle cx="11" cy="11" r="6.5"/><path d="M20 20l-4.3-4.3M11 8.3v5.4M8.3 11h5.4"/></symbol>
  <symbol id="i-filter" viewBox="0 0 24 24"><path d="M4 5h16l-6 7.5V19l-4 1.5v-8z"/></symbol>
  <symbol id="i-chev" viewBox="0 0 24 24"><path d="M6 9l6 6 6-6"/></symbol>
@@ -3792,8 +3918,8 @@ dl.dt dd{margin:0;word-break:break-word}
   <button type="button" class="nv" data-v="dates" title="Dates to check"><svg class="ic"><use href="#i-cal"/></svg><span class="lbl">Dates to check</span><span class="rl" aria-hidden="true">Dates</span><span class="ct" id="c-dates"></span></button>
   <div id="evsec"><div class="nvhead">Events</div><div id="evlist"></div></div>
   <div id="plsec"><div class="nvhead">Places</div><div id="pllist"></div></div>
-  <div id="recsec" hidden><div class="nvhead">People &amp; Pets</div><div id="reclist"></div>
-   <button type="button" class="nv" data-v="names" title="Name new faces/pets"><svg class="ic"><use href="#i-face"/></svg><span class="lbl">Name new faces/pets</span><span class="rl" aria-hidden="true">Names</span><span class="ct" id="c-names"></span></button></div>
+  <div id="recsec" hidden><div class="nvhead">People &amp; Pets</div><p id="rechint" class="rechint" hidden><span>Click a name to see its photos; its <svg class="ic" aria-hidden="true"><use href="#i-pen"/></svg><span class="vh">pencil</span> button renames it.</span><button type="button" class="link" id="rechintx">Got it</button></p><div id="reclist"></div>
+   <button type="button" class="nv" data-v="names" title="Name faces &amp; pets"><svg class="ic"><use href="#i-face"/></svg><span class="lbl">Name faces &amp; pets</span><span class="rl" aria-hidden="true">Names</span><span class="ct" id="c-names"></span></button></div>
   <button type="button" class="nv railonly" id="rsearch" title="Search (/)"><svg class="ic"><use href="#i-search"/></svg><span class="vh">Search</span><span class="rl" aria-hidden="true">Search</span></button>
   <button type="button" class="nv railonly icon" id="rfilter" title="Filters" style="width:100%"><svg class="ic"><use href="#i-filter"/></svg><span class="vh">Filters</span><span class="rl" aria-hidden="true">Filters</span><span class="badge-n" id="rbadge" hidden></span></button>
  </nav>
@@ -3822,6 +3948,7 @@ dl.dt dd{margin:0;word-break:break-word}
  </header>
  <div id="chips" aria-label="Active filters" hidden></div>
  <div id="evbar" role="toolbar" aria-label="Event" hidden><span class="evt" id="evname"></span><span class="evslug" id="evslug" title="The event's name in the sidecars" hidden></span><button type="button" class="btn" id="evlabel">Display name…</button><button type="button" class="btn" id="evren">Rename…</button><button type="button" class="btn" id="evmerge">Merge into…</button></div>
+ <div id="whobar" role="toolbar" aria-label="Person or pet" hidden><span class="evt" id="whoname"></span><span class="whosub" id="whosub"></span><button type="button" class="btn" id="whoren">Rename…</button><button type="button" class="btn" id="whomerge">Merge into…</button><button type="button" class="btn" id="whosugg">Review suggestions</button><button type="button" class="btn" id="whorm">Remove name…</button></div>
  <div id="junkbar" role="group" aria-label="Narrow the suggestions" hidden>
   <span class="jf"><label for="jwhy">Why</label><select id="jwhy"></select></span>
   <span class="jf"><label for="jmin">Junk score</label><select id="jmin" title="The vision check's junk score (0 to 1). Files tagged as junk and copies of photos you trashed show at any score."></select></span>
@@ -4092,15 +4219,71 @@ $("#evmerge").onclick=()=>{const src=F.event;askField("Merge "+src+" into anothe
 const RW=WORDS.rec,REC_SHOW=48;let RV={kind:"face",show:"todo"},rdata=null,rmarks={},rgen=0;
 function whoName(t){t=t||"";return t.slice(t.indexOf("|")+1)}
 function showWho(t){F={aimin:F.aimin,who:t};$("#q").value="";if(vi>=0)closeViewer();setView("lib");if(mqPhone.matches&&drawer){drawer=false;layout()}}
+// each name: its button (the grid of that name) and a pencil beside it (the name menu: Rename…, Merge into…, Remove name…)
 function renderRec(){const R=facets&&facets.rec,L=$("#reclist");L.replaceChildren();$("#recsec").hidden=!R;if(!R)return;let un=0,sg=0;
- R.kinds.forEach(k=>{un+=k.unnamed;sg+=k.suggestions;k.names.forEach(([n,c])=>{const t=k.prefix+n,b=el("button","nv");b.type="button";b.dataset.who=t;b.title=RW[k.kind].title+": "+n;
-  b.insertAdjacentHTML("beforeend",k.kind==="pet"?'<svg class="ic"><use href="#i-paw"/></svg>':'<svg class="ic"><use href="#i-face"/></svg>');b.append(el("span","lbl",n),el("span","ct",fmt(c)));b.onclick=()=>showWho(t);L.append(b)})});
- $("#c-names").textContent=fmt(un+sg);$('.nv[data-v=names]').title=RW.entry+": "+plural(un,"cluster")+" to name, "+plural(sg,"suggestion")+" waiting"}
+ R.kinds.forEach(k=>{un+=k.unnamed;sg+=k.suggestions;k.names.forEach(([n,c])=>{const t=k.prefix+n,row=el("div","nvrow"),b=el("button","nv");b.type="button";b.dataset.who=t;b.title=RW[k.kind].title+": "+n;
+  b.insertAdjacentHTML("beforeend",k.kind==="pet"?'<svg class="ic"><use href="#i-paw"/></svg>':'<svg class="ic"><use href="#i-face"/></svg>');b.append(el("span","lbl",n),el("span","ct",fmt(c)));b.onclick=()=>{hintSeen();showWho(t)};
+  const p=el("button","nvpen");p.type="button";p.dataset.whomenu=t;p.setAttribute("aria-label",RW.menu+": "+n);p.title=RW.menu;p.setAttribute("aria-haspopup","dialog");
+  p.insertAdjacentHTML("beforeend",'<svg class="ic"><use href="#i-pen"/></svg>');p.onclick=()=>{hintSeen();nameMenu(recEntry(k.kind,n))};row.append(b,p);L.append(row)})});
+ const todo=un+sg;$("#c-names").textContent=todo?fmt(todo)+" to do":"";$('.nv[data-v=names]').title=RW.entry+": "+plural(un,"cluster")+" to name, "+plural(sg,"suggestion")+" waiting";
+ $("#rechint").hidden=LS.get("rechint","0")==="1"||!R.kinds.some(k=>k.names.length)}
+function hintSeen(){LS.set("rechint","1");$("#rechint").hidden=true}
+$("#rechintx").onclick=hintSeen;
+// a name as /api/facets lists it: {kind, name, tag, items (files tagged), clusters, sugg (waiting), run}, or null
+function recEntry(kind,name){const R=facets&&facets.rec,k=R&&R.kinds.find(x=>x.kind===kind),x=k&&k.names.find(v=>v[0]===name);
+ return x?{kind,name,tag:k.prefix+name,items:x[1],clusters:x[2],sugg:x[3],run:k.run}:null}
+function whoEntry(t){const R=facets&&facets.rec,k=R&&t&&R.kinds.find(x=>t.startsWith(x.prefix));return k?recEntry(k.kind,t.slice(k.prefix.length)):null}
+function nameSummary(e){return [RW[e.kind].one,plural(e.items,"file"),plural(e.clusters,"cluster")].concat(e.sugg?[plural(e.sugg,"suggestion")+" waiting"]:[]).join(" · ")}
+// the name-level actions (every cluster with the name; POST /api/rec/rename-name, merge-name, remove-name, not-here)
+async function namePost(act,e,body){try{return await api("/api/rec/"+act,Object.assign({kind:e.kind,run:e.run,name:e.name},body))}
+ catch(x){if(x.status===409&&!x.busy)loadFacets().catch(()=>{});throw x}}  // after a re-cluster: the next try uses the new run
+async function afterRec(){if(view==="names")await renderNames(true);else if(vi>=0)await openViewer(vi,{keep:true});else if(view==="lib"){syncUI();reset()}}
+// after a name action the button that opened its dialog may be rebuilt: focus its new self, or the place's stable control
+function focusAfter(tag){if(document.activeElement&&document.activeElement!==document.body)return;
+ const q=[tag?'.nvpen[data-whomenu="'+CSS.escape(tag)+'"]':null,view==="lib"&&vi<0&&!$("#whobar").hidden?"#whoren":null,vi>=0?"#who .wmore":null,view==="names"?"#rq":null];
+ for(const s of q){const x=s&&document.querySelector(s);if(x&&x.getClientRects().length){x.focus();return}}}
+async function afterName(j,e,removed){closeModal();toast(j.result,j.undo);if(F.who===e.tag){if(j.who)F.who=j.who;else if(removed&&view==="lib"&&vi<0)delete F.who}
+ await loadFacets().catch(()=>{});await afterRec();focusAfter(j.who||null)}
+function nameMenu(e,item){if(!e){errorToast(RW.notMine);return}const m=el("div","wmenu"),mk=(t,f)=>{const b=el("button","btn",t);b.type="button";b.onclick=f;m.append(b);return b};
+ mk("Rename…",()=>askRenameName(e));if(otherNames(e).length)mk("Merge into…",()=>askMergeName(e));
+ if(item)mk("Not this one",()=>askNotHere(e,item));
+ if(e.sugg)mk("Review suggestions ("+fmt(e.sugg)+")",()=>reviewSugg(e));
+ if(!(view==="lib"&&F.who===e.tag&&vi<0))mk("Show its photos",()=>{closeModal();showWho(e.tag)});
+ mk("Remove name…",()=>askRemoveName(e));
+ confirmBox(e.name,[nameSummary(e),m],false,null);$("#mgo").hidden=true;$("#mno").textContent="Close";m.querySelector("button").focus()}
+function askRenameName(e){const w=RW[e.kind];
+ askField("Rename "+e.name+"?",["Every "+w.noun+" named "+e.name+" gets the new name: "+plural(e.clusters,"cluster")+" in "+plural(e.items,"file")+(e.sugg?", and the "+plural(e.sugg,"suggestion")+" waiting":"")+". The tags in their sidecars change with it; your own tags stay.",
+  "A name that looks like another one you gave (the same but for case or spacing) is refused: Merge into… makes two names one. Undo is in the message afterwards."],"New name",e.name,
+  async()=>{const v=$("#mfield").value,why=recProblem(v);if(why)throw new Error(why);await afterName(await namePost("rename-name",e,{to:v.trim()}),e)},null);$("#mgo").textContent="Rename"}
+function otherNames(e){const R=facets&&facets.rec,k=R&&R.kinds.find(x=>x.kind===e.kind);return k?k.names.map(x=>x[0]).filter(n=>n!==e.name):[]}
+function askMergeName(e){const w=RW[e.kind],others=otherNames(e);
+ if(!others.length){closeModal();errorToast("There is no other "+w.one.toLowerCase()+" named yet to merge "+e.name+" into.");return}
+ const sl=el("select");sl.id="mergeto";others.forEach(n=>{const o=el("option",null,n);o.value=n;sl.append(o)});const lab=el("label",null,"Merge into ");lab.htmlFor="mergeto";const p=el("p","plrad");p.append(lab,sl);
+ confirmBox("Merge "+e.name+" into another name?",["Every "+w.noun+" named "+e.name+" is named the one you pick, and "+e.name+" is gone afterwards: one "+w.one.toLowerCase()+", one tag. Your own tags stay.",p,"Undo is in the message afterwards."],false,
+  async()=>{await afterName(await namePost("merge-name",e,{into:sl.value}),e)},"Merge");sl.focus()}
+function askRemoveName(e){const w=RW[e.kind];
+ confirmBox("Remove the name "+e.name+"?",["Every "+w.noun+" named "+e.name+" loses the name ("+plural(e.clusters,"cluster")+"), and the tags written for it come out of the sidecars of "+plural(e.items,"file")+". Your own tags stay.","Its clusters go back to To name. Undo is in the message afterwards."],false,
+  async()=>{await afterName(await namePost("remove-name",e,{}),e,true)},"Remove name")}
+function askNotHere(e,item){const w=RW[e.kind];
+ confirmBox("Not "+e.name+" in "+item.name+"?",["The "+w.noun+" named "+e.name+" in this file is taken out of the name, and the tag comes off this file's sidecar. Other files keep it.","Undo is in the message afterwards."],false,
+  async()=>{const j=await namePost("not-here",e,{item:item.id});closeModal();toast(j.result,j.undo);await loadFacets().catch(()=>{});await afterRec();focusAfter(null)},"Not "+e.name)}
+function reviewSugg(e){closeModal();if(vi>=0)closeViewer();RV={kind:e.kind,show:"sugg",q:e.name};rmarks={};setView("names")}
+// the filtered view's bar (a name's grid, ?who=): the name, Person / Pet, its counts and the name's actions
+function paintWhoBar(){const t=F.who||"",e=whoEntry(t),pet=t.startsWith("Pets|");
+ $("#whoname").textContent=(pet?RW.pet.one:RW.face.one)+": "+whoName(t);
+ $("#whosub").textContent=e?[plural(e.items,"file"),plural(e.clusters,"cluster")].concat(e.sugg?[plural(e.sugg,"suggestion")+" waiting"]:[]).join(" · "):RW.notMine;
+ ["#whoren","#whorm"].forEach(q=>{$(q).hidden=!e});$("#whomerge").hidden=!e||!otherNames(e).length;$("#whosugg").hidden=!e||!e.sugg;if(e&&e.sugg)$("#whosugg").textContent="Review suggestions ("+fmt(e.sugg)+")"}
+$("#whoren").onclick=()=>{const e=whoEntry(F.who);if(e)askRenameName(e)};
+$("#whomerge").onclick=()=>{const e=whoEntry(F.who);if(e)askMergeName(e)};
+$("#whorm").onclick=()=>{const e=whoEntry(F.who);if(e)askRemoveName(e)};
+$("#whosugg").onclick=()=>{const e=whoEntry(F.who);if(e)reviewSugg(e)};
 // the large view: "People: Ann, Bo" (each a link to the grid of that name), and a video's "Ann appears at 0:12, 1:40" (seeks)
 function clock(t){t=Math.floor(+t||0);const h=Math.floor(t/3600),m=Math.floor(t/60)%60,s=String(t%60).padStart(2,"0");return h?h+":"+String(m).padStart(2,"0")+":"+s:m+":"+s}
 function whoLine(s,d){if(!d.who||!d.who.length)return;const wb=el("div");wb.id="who";
  ["face","pet"].forEach(k=>{const ws=d.who.filter(x=>x.kind===k);if(!ws.length)return;const p=el("p");p.append(el("span","wk",RW[k].title+": "));
-  ws.forEach((x,i)=>{if(i)p.append(", ");const b=el("button","link",x.name);b.type="button";b.title="Show every item with "+x.name;b.onclick=()=>showWho(x.tag);p.append(b)});wb.append(p);
+  ws.forEach((x,i)=>{if(i)p.append(", ");const b=el("button","link",x.name);b.type="button";b.title="Show every item with "+x.name;b.onclick=()=>showWho(x.tag);
+   const mb=el("button","wmore","⋯");mb.type="button";mb.setAttribute("aria-label",RW.menu+": "+x.name);mb.title=RW.menu;mb.setAttribute("aria-haspopup","dialog");
+   mb.onclick=()=>nameMenu(recEntry(x.kind,x.name),{id:d.id,name:d.name});p.append(b,mb)});wb.append(p);
   ws.filter(x=>x.times&&x.times.length).forEach(x=>{const q=el("p","appear");q.append(x.name+" appears at ");
    x.times.forEach((t,i)=>{if(i)q.append(", ");const b=el("button","link",clock(t));b.type="button";b.dataset.t=t;b.setAttribute("aria-label",x.name+" at "+clock(t)+": play from there");
     b.onclick=()=>{const v=curVideo();if(v){v.currentTime=t;v.play().catch(()=>{})}};q.append(b)});wb.append(q)})});s.append(wb)}
@@ -4109,6 +4292,16 @@ const RNOTE={todo:(w)=>`Clusters of ${w.noun}s that look alike, largest first, t
  sugg:(w)=>`${w.noun[0].toUpperCase()+w.noun.slice(1)}s that joined a cluster you named. Nothing is tagged until you confirm. Click any that isn't them to leave it out: Confirm rejects those, and that name is never suggested for them again.`,
  named:(w)=>`Clusters you named. Rename, merge or unname one; click a ${w.noun} that isn't them to take it out.`,
  ignored:(w)=>`Clusters you marked ${w.not}: never tagged. Not ignored puts one back among the clusters to name.`};
+// People / Pets: always shown (one kind too), each with its icon and how many are left to do there
+function kindSeg(j){const g=el("div","rseg rkind");g.setAttribute("role","group");g.setAttribute("aria-label","People or pets");const R=(facets&&facets.rec&&facets.rec.kinds)||[];
+ j.kinds.forEach(k=>{const b=el("button");b.type="button";b.dataset.rv=k;b.setAttribute("aria-pressed",String(k===j.kind));const f=R.find(x=>x.kind===k),n=f?f.unnamed+f.suggestions:0;
+  b.insertAdjacentHTML("beforeend",k==="pet"?'<svg class="ic" aria-hidden="true"><use href="#i-paw"/></svg>':'<svg class="ic" aria-hidden="true"><use href="#i-face"/></svg>');b.append(RW[k].title);if(n)b.append(el("span","rkct",fmt(n)+" to do"));
+  b.onclick=()=>{RV.kind=k;RV.q="";rmarks={};renderNames()};g.append(b)});return g}
+// the search box: clusters (or suggestions) by name, or a cluster by its number; kept across the tabs
+let rqT=null;
+function findBox(j){const d=el("div","rfind"),q=el("input");q.type="search";q.id="rq";q.autocomplete="off";q.spellcheck=false;q.maxLength=64;q.placeholder="Find a name or a cluster number";
+ q.setAttribute("aria-label","Find a name or a cluster number");q.value=RV.q||"";q.oninput=()=>{clearTimeout(rqT);rqT=setTimeout(()=>{RV.q=q.value.trim();renderNames()},250)};
+ q.onkeydown=ev=>{if(ev.key==="Enter"){ev.preventDefault();clearTimeout(rqT);RV.q=q.value.trim();renderNames()}else if(ev.key==="Escape"&&q.value){ev.preventDefault();ev.stopPropagation();q.value="";clearTimeout(rqT);RV.q="";renderNames()}};d.append(q);return d}
 function rseg(label,opts,cur,go){const g=el("div","rseg");g.setAttribute("role","group");g.setAttribute("aria-label",label);
  opts.forEach(([v,l])=>{const b=el("button",null,l);b.type="button";b.dataset.rv=v;b.setAttribute("aria-pressed",String(v===cur));b.onclick=()=>go(v);g.append(b)});return g}
 function cropLabel(w,out,name){return out?"Put this "+w.noun+" back"+(name?" into "+name:""):"Take this "+w.noun+" out"+(name?" of "+name:"")}
@@ -4169,7 +4362,8 @@ function clusterCard(d){const w=RW[rdata.kind],s=el("section","rcard");s.dataset
  const a=el("div","racts"),mk=(t,f,c)=>{const b=el("button","btn"+(c?" "+c:""),t);b.type="button";b.onclick=f;a.append(b);return b};
  if(!d.ignored){const inp=el("input");inp.setAttribute("list","recnames");inp.autocomplete="off";inp.spellcheck=false;inp.maxLength=64;inp.placeholder=d.name?"New name":"Name";
   inp.setAttribute("aria-label",(d.name?"Rename ":"Name ")+"cluster "+d.id);if(d.name)inp.value=d.name;
-  inp.onkeydown=ev=>{if(ev.key==="Enter"){ev.preventDefault();nameCluster(d,inp.value)}};a.append(inp);mk(d.name?"Rename":"Name",()=>nameCluster(d,inp.value),"primary")}
+  inp.onkeydown=ev=>{if(ev.key==="Enter"){ev.preventDefault();nameCluster(d,inp.value)}};a.append(inp);
+  mk(!d.name?"Name":rdata.spans&&rdata.spans[d.name]>1?"Rename this cluster":"Rename",()=>nameCluster(d,inp.value),"primary")}
  if(!d.ignored)mk("Merge into…",()=>askMerge(d));
  if(!d.name&&!d.ignored)mk(w.not,()=>recDo("ignore",{cluster:d.id}));
  if(d.name)mk("Unname…",()=>askUnname(d));
@@ -4191,28 +4385,40 @@ function askAnswer(sg,yes,no){const w=RW[rdata.kind],ls=[];
  confirmBox(yes.length?"Confirm "+plural(yes.length,w.noun)+" as "+sg.name+"?":"Reject "+plural(no.length,"suggestion")+" of "+sg.name+"?",ls,false,
   async()=>{await recPost("answer",{confirm:yes,reject:no});delete rmarks[sg.name];renderNames(true)},yes.length?"Confirm":"Reject")}
 // To name: the clusters of two or more, then "Single photos (N)" (one face or pet: one photo, or one frame of a video)
-function addCards(box,list){const w=RW[rdata.kind];list.forEach(d=>{if(d.single&&rdata.show==="todo"&&!$("#rsingle")){const h=el("h2","rsingle","Single photos ("+fmt(rdata.counts.single)+")");h.id="rsingle";
+// Named: one heading per name (a name can span several clusters), with Rename all… and the name menu
+let rlast=null;
+function nameOfCard(name){return Object.assign({kind:rdata.kind,name,tag:RW[rdata.kind].title+"|"+name,items:0,clusters:(rdata.spans||{})[name]||1,sugg:0},recEntry(rdata.kind,name)||{},{run:rdata.run})}
+function groupHead(name){const h=el("div","rgroup"),n=(rdata.spans||{})[name]||1;h.dataset.name=name;h.setAttribute("role","group");h.setAttribute("aria-label",name);
+ h.append(el("h2",null,name),el("span","rsub",plural(n,"cluster")));
+ const r=el("button","btn","Rename all…");r.type="button";r.onclick=()=>askRenameName(nameOfCard(name));
+ const m=el("button","btn","⋯");m.type="button";m.setAttribute("aria-label",RW.menu+": "+name);m.title=RW.menu;m.setAttribute("aria-haspopup","dialog");m.onclick=()=>nameMenu(nameOfCard(name));
+ h.append(r,m);return h}
+function addCards(box,list){const w=RW[rdata.kind];list.forEach(d=>{if(rdata.show==="named"&&d.name!==rlast){rlast=d.name;box.append(groupHead(d.name))}
+  if(d.single&&rdata.show==="todo"&&!$("#rsingle")){const h=el("h2","rsingle","Single photos ("+fmt(rdata.counts.single)+")");h.id="rsingle";
   box.append(h,el("p","note",`Each ${w.noun} here was seen once: in one photo, or one frame of a video. Name it, merge it into a name you gave, or mark it ${w.not}.`))}box.append(clusterCard(d))})}
-async function renderNames(keep,after,single){const P=$("#plugin"),g=++rgen;delete P.dataset.ready;closeZoom();
+async function renderNames(keep,after,single,aname){const P=$("#plugin"),g=++rgen;delete P.dataset.ready;closeZoom();
  const lim=keep&&rdata&&rdata.clusters&&rdata.kind===RV.kind&&rdata.show===RV.show?Math.min(200,Math.max(30,rdata.clusters.length)):30;let j;
- try{j=await api("/api/rec?"+qs(Object.assign({kind:RV.kind,show:RV.show,limit:lim},after?{after}:{},single?{single:"1"}:{})))}
+ const typing=document.activeElement&&document.activeElement.id==="rq";
+ try{j=await api("/api/rec?"+qs(Object.assign({kind:RV.kind,show:RV.show,limit:lim},after?{after}:{},single?{single:"1"}:{},aname?{aname}:{},RV.q?{q:RV.q}:{})))}
  catch(e){if(g!==rgen||view!=="names")return;const d=el("div","state err");d.setAttribute("role","alert");d.append(el("h2",null,"Couldn't load the clusters"),el("p",null,(e.message||"no answer")+"."));
   const b=el("button","btn","Try again");b.type="button";b.onclick=()=>renderNames();d.append(b);P.replaceChildren(d);return}
  if(g!==rgen||view!=="names")return;
- if(after&&rdata){rdata.clusters=rdata.clusters.concat(j.clusters);rdata.more=j.more;rdata.counts=j.counts;addCards($("#rcards"),j.clusters);$("#rpage").hidden=!j.more;P.dataset.ready="1";return}
- rdata=j;P.replaceChildren();const box=el("div");box.id="names";P.append(box);
+ if(after&&rdata){rdata.clusters=rdata.clusters.concat(j.clusters);rdata.more=j.more;rdata.counts=j.counts;rdata.spans=j.spans;addCards($("#rcards"),j.clusters);$("#rpage").hidden=!j.more;P.dataset.ready="1";return}
+ rdata=j;rlast=null;P.replaceChildren();const box=el("div");box.id="names";P.append(box);
  if(!j.on){box.append(el("p","note",RW.off));$("#count").textContent="";P.dataset.ready="1";return}
  RV.kind=j.kind;RV.show=j.show;const w=RW[j.kind],c=j.counts,bar=el("div","rbar");
- if(j.kinds.length>1)bar.append(rseg("Kind",j.kinds.map(k=>[k,RW[k].title]),j.kind,v=>{RV.kind=v;rmarks={};renderNames()}));
+ bar.append(kindSeg(j),findBox(j));
  bar.append(rseg("Show",[["todo","To name ("+fmt(c.todo)+")"],["sugg","Suggestions ("+fmt(c.sugg)+")"],["named","Named ("+fmt(c.named)+")"],["ignored",(j.kind==="pet"?"Not a pet":"Not a person")+" ("+fmt(c.ignored)+")"]],j.show,v=>{RV.show=v;rmarks={};renderNames()}));
  box.append(bar,el("p","note",RNOTE[j.show](w)));
+ if(j.q)box.append(el("p","note rfound",j.show==="sugg"?"Suggestions of names with “"+j.q+"” in them.":plural(j.found||0,"cluster")+" with “"+j.q+"” in the name (or that number)."));
+ if(typing){const q=$("#rq");q.focus();q.setSelectionRange(q.value.length,q.value.length)}
  $("#recnames").replaceChildren(...j.names.map(n=>{const o=el("option");o.value=n;return o}));
  const cards=el("div");cards.id="rcards";cards.style.cssText="display:flex;flex-direction:column;gap:14px;min-width:0";box.append(cards);
  if(j.show==="sugg"){j.suggestions.forEach(sg=>cards.append(suggCard(sg)));$("#count").textContent=plural(c.sugg,"suggestion");
   if(!j.suggestions.length)cards.append(el("p","empty","No suggestions waiting. They appear after media-intake "+(j.kind==="pet"?"pets":"people")+" cluster, when new "+w.noun+"s join a cluster you named."))}
  else{addCards(cards,j.clusters);$("#count").textContent=plural(c[j.show],"cluster");
   if(!j.clusters.length)cards.append(el("p","empty",j.show==="todo"?"Nothing to name right now.":"None yet."));
-  const m=el("button","btn","More clusters");m.type="button";m.id="rpage";m.hidden=!j.more;m.onclick=()=>{const l=rdata.clusters[rdata.clusters.length-1];renderNames(false,l?l.id:0,!!(l&&l.single&&rdata.show==="todo"))};box.append(m)}
+  const m=el("button","btn","More clusters");m.type="button";m.id="rpage";m.hidden=!j.more;m.onclick=()=>{const l=rdata.clusters[rdata.clusters.length-1];renderNames(false,l?l.id:0,!!(l&&l.single&&rdata.show==="todo"),rdata.show==="named"&&l?l.name:"")};box.append(m)}
  P.dataset.ready="1"}
 // ---------------------------------------------------------------- filter state
 function setF(k,v){if(v)F[k]=v;else delete F[k];simId=null;if(plugView()){setView("lib");return}syncUI();reset()}
@@ -4235,7 +4441,7 @@ function syncUI(){$$("button[data-k]").forEach(b=>b.setAttribute("aria-pressed",
  $$(".nv[data-ev]").forEach(b=>{if(na==="ev"&&b.dataset.ev===F.event)b.setAttribute("aria-current","page");else b.removeAttribute("aria-current")});
  $$(".nv[data-who]").forEach(b=>{if(na==="who"&&b.dataset.who===F.who)b.setAttribute("aria-current","page");else b.removeAttribute("aria-current")});
  $$(".nv[data-pl]").forEach(b=>{if(na==="pl"&&b.dataset.pl===F.myplace)b.setAttribute("aria-current","page");else b.removeAttribute("aria-current")});
- $("#evbar").hidden=na!=="ev";$("#junkbar").hidden=view!=="sug";const evl=na==="ev"?evLabel(F.event):"";
+ $("#evbar").hidden=na!=="ev";$("#whobar").hidden=na!=="who";if(na==="who")paintWhoBar();$("#junkbar").hidden=view!=="sug";const evl=na==="ev"?evLabel(F.event):"";
  if(na==="ev"){$("#evname").textContent="Event: "+evl;$("#evslug").textContent=F.event;$("#evslug").hidden=evl===F.event}
  $("#vtitle").textContent=na==="ev"?evl:na==="pl"?plName(F.myplace):na==="who"?whoName(F.who):TITLES[na]||"";$("#vtitle").title=na==="ev"&&evl!==F.event?"Event: "+F.event:""}
 $("#clear").onclick=clearAll;
@@ -4478,7 +4684,7 @@ async function refused(what,e){let act=null;if(e.busy){try{const j=await api("/a
    exactly that back, under the library lock, and refuses (nothing written) when those items changed again since.
    Trash, Erase and Share never offer it. */
 async function doUndo(){const tok=undoTok;if(!tok)return;undoTok=null;const b=$("#tundo");if(b)b.remove();
- try{const j=await api("/api/undo",{undo:tok});toast(j.result);loadFacets();if((j.kind==="event"||j.kind==="date")&&vi<0){patchTiles(j.items);reset()}else if(j.kind==="rec"){patchTiles(j.items);if(view==="names")renderNames(true)}else refreshAfter(j.ids,j.thumbs,j.items)}
+ try{const j=await api("/api/undo",{undo:tok});toast(j.result);loadFacets();if((j.kind==="event"||j.kind==="date")&&vi<0){patchTiles(j.items);reset()}else if(j.kind==="rec"){patchTiles(j.items);if(j.who&&F.who===j.who.from)F.who=j.who.to;afterRec()}else refreshAfter(j.ids,j.thumbs,j.items)}
  catch(e){refused("Undo",e)}}
 async function doKeep(ids){try{const j=await api("/api/keep",{ids});toast(j.result,j.undo);refreshAfter(ids,false,j.items);loadFacets()}catch(e){refused("Keep",e)}}
 /* In-page dialogs (the confirm / job dialog, the shortcut list): focus moves in, Tab stays in, Esc closes, and

@@ -142,10 +142,19 @@ never suggested as junk and never judged by the vision check
 
 `media-intake gallery` shows **People & Pets** in its sidebar once the store
 exists: the names you gave with their item counts (a click shows their
-items), and **Name new faces/pets**, a naming view in the gallery page that
+items; the pencil beside a name renames, merges or removes it everywhere it
+is), and **Name faces & pets**, a naming view in the gallery page that
 does what the commands above do (name, merge, ignore, unname, take out,
 confirm and reject suggestions) and writes the tags at once, so `tag` is not
-needed after it. The large view lists the names in a photo and, for a video,
+needed after it. A name-level action (`recog.rename_name`, `merge_names`,
+`remove_name`) changes the name on every cluster and confirmed detection
+that has it, keeping who decided each one; its waiting suggestions and the
+rejections for it move with it (a suggestion the owner rejected the other
+name for is dropped on a merge), and a rename to a name that looks like
+another one of the names you gave is refused (`recog.name_key`). As with
+`tag`, a file whose `People|<Name>` / `Pets|<Name>` tag you removed from its
+sidecar earlier never gets that tag back, even when a rename or merge leads
+to that name again. The large view lists the names in a photo and, for a video,
 when each appears. Details: [gallery.md](gallery.md), "People and pets".
 
 ## Checking how well it works
