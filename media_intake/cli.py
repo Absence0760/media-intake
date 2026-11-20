@@ -40,7 +40,7 @@ Library
   gallery                   browse the library: Keep, Trash, Erase, tags
   find                      search the tags (event, place, project, tag)
   index                     build or update the search index (venv)
-  search "TEXT"             find photos by a description (venv)
+  search "TEXT"             find photos by a description, --text by words (venv)
   similar FILE              find photos that look like this one (venv)
   tag-files FILE...         write tags again for library files
   places list|add|tag|...   your own named places (Home, ...) as tags

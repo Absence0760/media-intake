@@ -852,6 +852,9 @@ own path ([records.md](records.md)).
   file rows and crops in `recognition.dir`, [recognition.md](recognition.md)):
   `erase`, `forget`, `trash` and `sweep-erased --yes` delete them by sha256,
   the coverage report counts them, and `verify-gone` fails while any is left.
+  The text index of photos (`<state>/ocr-text.db`, [search.md](search.md),
+  "Text in photos") is dropped the same way, by sha256, and `verify-gone`
+  fails while a row of erased content is left.
 - **verify-gone.** The erase log keeps checksum and size, no names, so
   `verify-gone [BATCH]` repeats the sweep read-only and exits 1 if anything is
   left (including orphaned sidecars, gallery thumbnails and gallery video
