@@ -386,6 +386,31 @@ with a **more** link ("Layout" above).
   since their order is not time. A burst's shots sit together at the place
   of the newest one, in time order.
 
+### Best shot
+
+`media-intake best-shot` (`media_intake/best_shot.py`; `--dry-run` counts
+only) picks the best shot of every burst stack and every near-duplicate set
+in the library (photos whose dHashes in `index.json` are at most 4 bits
+apart; a shot in both joins them into one set). Best is the sharpest frame
+(the variance of the Laplacian of a downscaled grey copy) among those not
+badly exposed (more than a quarter of the pixels crushed to black or blown
+to white loses to any frame under that); a tie goes to the earlier shot. The
+photo is read in memory only; RAW and other files Pillow can't decode are
+not scored and get no tag.
+
+It writes one tag per shot, in its own namespace in the sidecar:
+`AI|bestshot/cover` on the best, `AI|bestshot/not-best` on the others. A
+re-run replaces only those tags (a shot no longer in a set loses its tag).
+Nothing is trashed, moved or deleted: the not-best shots are only offered to
+Suggested junk with the reason **Not the best shot**, for you to Keep or
+Trash. Your decisions win: a shot you kept, trashed, starred or gave a pick
+label, one with a person or pet you named, one used in a post or in a
+protected project gets no tag (it still counts when choosing the best).
+Eyes open is not measured yet (a later step, with the face detector).
+
+Not yet in the gallery: Suggested junk and the stack's cover don't read the
+tags yet (the next step on ROADMAP 0.2).
+
 ## Favorites
 
 A star marks a photo or video you love. On a tile it sits at the bottom

@@ -178,6 +178,7 @@ media-intake offload phone-1 --phone <phone folder>   # after a backup: free the
 | `calibrate` | Report precision and recall of each label's threshold against your own marks; changes nothing |
 | `gallery` | Local web gallery: browse, Keep, Favorite, Trash, Erase, tag, rotate, events, bulk edits, share-safe copies, naming people and pets (once recognition is on) |
 | `proxies` | Make the gallery's H.264 copies of HEVC videos now, so they play at once (`--dry-run`, `--inhibit`, `--retry-failed`) |
+| `best-shot` | Pick the best shot of each burst and near-duplicate set; offer the rest to Suggested junk as "Not the best shot" (tags only; `--dry-run` counts) |
 | `prune-cache` | Delete gallery thumbnails and video proxies nothing in the library shows any more (`--dry-run` first) |
 | `space` | What takes room (largest videos, exact copies, near-copies, review folders, Suggested junk, the gallery cache) and what each clean-up would free; changes nothing (`--top N`, `--json`) |
 | `backup` | Copy the library (photos, videos, sidecars) to the backup drive: incremental, never deletes there |
