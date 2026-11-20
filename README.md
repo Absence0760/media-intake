@@ -176,6 +176,7 @@ media-intake offload phone-1 --phone <phone folder>   # after a backup: free the
 | `migrate-tags` | One-shot: rewrite the legacy `Review\|not-trash` tag as `Owner\|not-trash` |
 | `index`, `search`, `similar` | Local semantic search (SigLIP); `search --text` and `index --text` find the words written in photos (Tesseract, no model) |
 | `vlm-trash` | Local vision-model second opinion on Suggested junk |
+| `captions` | Off by default: a short description of each photo from the same local vision model, kept in its sidecar (this tool's own XMP field) and found by `search --text` (`--all` overnight, resumable; [docs/search.md](docs/search.md)) |
 | `people` | Recognise people in photos, offline: you name them, it suggests and tags `People\|<Name>` once you confirm (off until `setup.sh --recognition`; [docs/recognition.md](docs/recognition.md)) |
 | `pets` | The same for your own pets (cats and dogs by default), tagged `Pets\|<Name>` (off until `setup.sh --recognition`) |
 | `calibrate` | Report precision and recall of each label's threshold against your own marks; changes nothing |

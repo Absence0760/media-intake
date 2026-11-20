@@ -622,7 +622,7 @@ class VenvCommands(unittest.TestCase):
         return code, out.getvalue(), err.getvalue()
 
     def test_help_without_the_venv(self):
-        for cmd in ("index", "search", "similar", "people", "pets"):
+        for cmd in ("index", "search", "similar", "people", "pets", "captions"):
             for flag in ("--help", "-h"):
                 with self.subTest(cmd=cmd, flag=flag):
                     code, out, err = self.run_main([cmd, flag])

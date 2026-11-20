@@ -365,6 +365,27 @@ class LibraryLockTest(unittest.TestCase):
         self.assertIn("AI|vlm/", read(a + ".xmp"))
         self.assertFalse(os.path.exists(gone + ".xmp"))
 
+    def test_captions_write_under_the_lock(self):
+        """captions.py (sidecar writes, a CLI command run in the venv) waits for the lock, then refuses; a file
+        that went away meanwhile gets no sidecar."""
+        import captions
+        a, gone = os.path.join(self.lib, "a.jpg"), os.path.join(self.lib, "gone.jpg")
+        with open(a, "wb") as f:
+            f.write(b"x")
+        os.environ[library_lock.WAIT_ENV] = "0"
+        p = self.hold_in_child("intake.py apply")
+        with self.assertRaises(SystemExit) as cm:
+            captions.write([(a, "A red square")], self.state)
+        self.assertIn("refused: the library is busy: intake.py apply", str(cm.exception))
+        self.assertFalse(os.path.exists(a + ".xmp"))
+        p.stdin.close()
+        p.wait()
+        if not shutil.which("exiftool"):
+            return
+        captions.write([(a, "A red square"), (gone, "A dark square")], self.state)
+        self.assertEqual(captions.read(a)["caption"], "A red square")
+        self.assertFalse(os.path.exists(gone + ".xmp"))
+
     def test_best_shot_reads_and_writes_under_the_lock(self):
         """best-shot (sidecar writes) refuses while another writer holds the lock, before it reads the library,
         and writes nothing; once the lock is free it plans and writes under it. --dry-run takes no lock."""

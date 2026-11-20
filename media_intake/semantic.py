@@ -26,7 +26,8 @@ the path carries, path); piped or captured, `score  path` lines (3 decimals) and
 "N results" on stderr, the form gallery.py parses. index prints counts-only progress
 and a summary on stderr (meter.py) and its counts as one JSON line on stdout.
 No index or no model: one line naming the fix (media-intake index, bash setup.sh).
-search --text / index --text: the words in photos instead (ocr_index.py, stdlib only, no model).
+search --text / index --text: the words in photos instead (ocr_index.py, stdlib only, no model), and the
+local captions in their sidecars (captions.py, opt-in).
 Filters read the XMP sidecars: --project P (Project|P), --unused-since Nd (no
 Used|<YYYY-MM-DD-slug> in the last N days, like intake.py find), --clean (no
 Review|child-in-shot, no Owner|trash, and no Review|maybe-trash or AI|vlm/*/trash/*
@@ -398,10 +399,11 @@ def show(out, a, file=None, unit="cosine, compare within one query"):
 
 
 def cmd_search_text(a):
-    """search --text: files whose photo text (ocr_index, kept by the scan) holds every word of the query. Score:
-    how often the words appear. Paths come from the library index (index.json), flagged content never.
+    """search --text: files whose photo text (ocr_index, kept by the scan) or local caption (captions.py, in the
+    sidecar) holds every word of the query. Score: how often the words appear in both. Paths come from the
+    library index (index.json), flagged content never.
     Read-only, like every search: nothing is pruned or written here (index --text does that)."""
-    import ocr_index
+    import captions, ocr_index
     if not ocr_index.words(a.query):
         sys.exit("semantic: search --text needs a word to look for")
     try:
@@ -415,17 +417,18 @@ def cmd_search_text(a):
     except (FileNotFoundError, ValueError):
         lib = {}
     flagged = label.flagged(STATE)
+    cap = captions.search(a.query, list(lib))  # read-only: sidecars of library files
     cands = []
     for p, e in lib.items():
         s = e.get("sha") if isinstance(e, dict) else None
-        if s not in hits or flagged.get(s) == e.get("size") or not os.path.isfile(p):
+        if (s not in hits and p not in cap) or flagged.get(s) == e.get("size") or not os.path.isfile(p):
             continue
         ext = os.path.splitext(p)[1].lower()
         if (a.videos and ext not in VID) or (a.photos and ext not in IMG):
             continue
-        cands.append((float(hits[s]), p))
+        cands.append((float(hits.get(s, 0) + cap.get(p, 0)), p))
     cands.sort(key=lambda x: (-x[0], x[1]))
-    emit(cands, a, unused_cutoff(a), unit="how often the words appear in the photo's text")
+    emit(cands, a, unused_cutoff(a), unit="how often the words appear in the photo's text and caption")
 
 
 def cmd_index_text(a):
