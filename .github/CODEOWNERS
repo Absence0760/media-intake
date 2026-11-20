@@ -2,15 +2,15 @@
 # PR touches a matching path. Last matching line wins.
 
 # Catch-all
-*                           @Absence0760
+*                           @jaredhowardza
 
 # CI, supply chain and security policy
-/.github/                   @Absence0760
-/.gitleaks.toml             @Absence0760
-/.pre-commit-config.yaml    @Absence0760
-/SECURITY.md                @Absence0760
-/setup.sh                   @Absence0760
+/.github/                   @jaredhowardza
+/.gitleaks.toml             @jaredhowardza
+/.pre-commit-config.yaml    @jaredhowardza
+/SECURITY.md                @jaredhowardza
+/setup.sh                   @jaredhowardza
 
 # Assistant tooling and its guard hooks
-/.claude/                   @Absence0760
-/CLAUDE.md                  @Absence0760
+/.claude/                   @jaredhowardza
+/CLAUDE.md                  @jaredhowardza
