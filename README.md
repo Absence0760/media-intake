@@ -56,7 +56,10 @@ backup drive, quarantine, review folder, Keep, Trash, Erase, ...).
   or printed; [docs/places.md](docs/places.md)), and `datecheck.json` and
   `date-fixes.json` (check-dates' last report and every fix-dates write, with
   paths and dates; erase, forget, trash and sweep-erased drop their files'
-  records; [docs/dates.md](docs/dates.md)). `records-handoff.json` (`0600`)
+  records; [docs/dates.md](docs/dates.md)). `ocr-text.db` (`0600`) holds the
+  text read from photos flagged for nothing, for `search --text`; erase, forget,
+  trash and sweep-erased drop their rows, and `verify-gone` checks them
+  ([docs/search.md](docs/search.md)). `records-handoff.json` (`0600`)
   lists photos of documents handed to your records inbox and held until
   `to-records --finish`: names, checksums and times, never content; held
   quarantined ones wait in `quarantine/records-held/`, and `--finish` erases
@@ -171,7 +174,7 @@ media-intake offload phone-1 --phone <phone folder>   # after a backup: free the
 | `places list/add/rename/remove/suggest/tag` | My places: your own named places (Home, ...) as `Place\|<name>` tags beside the city; kept only in the state folder ([docs/places.md](docs/places.md)) |
 | `check-dates`, `fix-dates` | Find library files whose date looks wrong (clock-reset defaults, a camera newer than its date, numbering out of order, disagreeing dates; changes nothing), and correct them in their sidecars (a dry run until `--yes`; `--undo`) ([docs/dates.md](docs/dates.md)) |
 | `migrate-tags` | One-shot: rewrite the legacy `Review\|not-trash` tag as `Owner\|not-trash` |
-| `index`, `search`, `similar` | Local semantic search (SigLIP) |
+| `index`, `search`, `similar` | Local semantic search (SigLIP); `search --text` and `index --text` find the words written in photos (Tesseract, no model) |
 | `vlm-trash` | Local vision-model second opinion on Suggested junk |
 | `people` | Recognise people in photos, offline: you name them, it suggests and tags `People\|<Name>` once you confirm (off until `setup.sh --recognition`; [docs/recognition.md](docs/recognition.md)) |
 | `pets` | The same for your own pets (cats and dogs by default), tagged `Pets\|<Name>` (off until `setup.sh --recognition`) |

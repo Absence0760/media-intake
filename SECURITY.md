@@ -45,7 +45,9 @@ sweep-erased; docs/recognition.md); `places.json` (your named places and their
 points: sensitive, where you live; `0600`, never backed up, synced or printed;
 docs/places.md); and `datecheck.json` and `date-fixes.json` (paths and dates,
 `0600`, a file's records dropped by erase, forget, trash and sweep-erased;
-docs/dates.md); `records-handoff.json` (`0600`: names, checksums and times of
+docs/dates.md); `ocr-text.db` (the text read from photos flagged for nothing,
+`0600`, rows dropped by erase, forget, trash and sweep-erased and checked by
+`verify-gone`; docs/search.md); `records-handoff.json` (`0600`: names, checksums and times of
 photos of documents handed to the records inbox, never content) and
 `quarantine/records-held/` (held ID, passport and payment-card photos, until
 `to-records --finish`); the records inbox itself, which `to-records` only
