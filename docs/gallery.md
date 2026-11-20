@@ -959,6 +959,36 @@ time"); `--dry-run` writes nothing and doesn't. With the gallery open, a
 thumbnail deleted mid-request shows again on a reload. The gallery doesn't
 prune on its own: run the command now and then, or after a big reorganisation.
 
+### Free up space
+
+`media-intake space` reports what takes room and how much each clean-up would
+free. It is read-only: it deletes, moves and writes nothing and takes no lock.
+
+- **Largest videos**, by size.
+- **Exact copies**: library files with the same content (sha256 from
+  `index.json` when the size matches, else hashed, and only for sizes two
+  files share). Keeping one of each frees the rest.
+- **Near-copies kept in the library**: files `plan` set aside as a
+  near-duplicate that were kept into the library since (from each batch's
+  `plan.json`). Nothing is compared anew.
+- **Review folders**: per batch, how many near-duplicates and junk `apply`
+  set aside and their size (counts only, no file names);
+  `media-intake purge-review BATCH --yes` frees one.
+- **Suggested junk**, exactly as the gallery's view shows it at its default
+  Junk score (0.70), with each file's Why. Never a file you kept or starred,
+  used in a post or in a protected project.
+- **Gallery cache**: thumbnails and video proxies, and what `prune-cache`
+  would free now (its dry run).
+
+It lists what the gallery lists: never a flagged, quarantined or erased file,
+nor a photo held for the records inbox (a trashed file is gone). Sections can
+overlap (a Suggested junk file may also be a copy), so their sizes are not
+added up. Each list shows the 10 largest; `--top N` changes that (`--top 0`
+lists every one) and `--json` prints one object for scripts. Paths under your
+home folder show as `~/...`. Acting on it is up to you: the gallery's
+Suggested junk view, `trash FILE... --yes`, `purge-review`, `prune-cache`.
+Links from the report into the gallery are not done yet (ROADMAP).
+
 ## Video proxies (HEVC in the browser)
 
 Chromium on Linux, and often Firefox, can't play HEVC (H.265), which most

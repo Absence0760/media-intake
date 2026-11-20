@@ -197,6 +197,7 @@ media-intake fix-dates --undo [ID] [--yes]    # sidecars only; a dry run without
 media-intake gallery [--drive DRIVE] [--share-out DIR]
 media-intake proxies [--dry-run] [--inhibit] [--retry-failed]  # the gallery's HEVC video proxies ahead of time (gallery.md)
 media-intake prune-cache [--dry-run]          # gallery thumbnails and proxies nothing shows any more
+media-intake space [--top N] [--json]        # what takes room and what each clean-up frees; read-only (gallery.md)
 media-intake calibrate [--precision P] [--json]   # label thresholds vs your marks, report only (configuration.md)
 media-intake backup DRIVE [--verify] [--dry-run] [--skip PART]   # library, videos, sidecars to the backup drive (backup.md)
 media-intake zip-check ROOT [--known DIR]... [--out JSON]   # what export zips hold that you lack; read-only
@@ -379,6 +380,8 @@ run and a CLI `apply` never interleave (`media_intake/library_lock.py`):
   `media-intake prune-cache` is cli.py's too (it reads the library as the
   gallery does) and holds the lock while it deletes, for a steady view of the
   library; with `--dry-run` it writes nothing and doesn't take it.
+  `media-intake space` is cli.py's too (it reads the library as the gallery
+  does) and takes no lock: it writes nothing.
   `media-intake backup` is cli.py's too and takes no library lock: it only
   reads the library, and checks each file before and after copying it, so one
   that changes mid-copy is skipped for the next run ([backup.md](backup.md)).
@@ -1428,7 +1431,10 @@ plan and apply run twice storing the same hashes once; `test_backup`: `backup` a
 drive folder (media and sidecars only, reruns, a corrupted, missing, changed or vanished copy, the
 laptop's own disk, the library or state folder, a symlink or a marker refused, originals unchanged, a
 private record); `test_cache_prune`: `prune-cache` keeping the library's thumbnails and proxies and
-dropping the rest (dry run, unreadable files, symlinked cache folders, the library lock);
+dropping the rest (dry run, unreadable files, symlinked cache folders, the library lock); `test_space`:
+`space`'s sections on a synthetic library (largest videos, an exact copy pair, a near-copy kept after
+review, a review folder, Suggested junk at the default Junk score but never a kept or favorite file, the
+cache and prune-cache's dry run), `--top`, `--json`, a flagged file never listed, and every file unchanged;
 `test_erase_coverage`: erase's coverage report, gvfs-metadata and localsearch against fake `gio` and
 `localsearch` (failed, hung, vanished and symlinked cases), and the backup records after `backup`, `erase --drive`,
 `forget` and `verify-gone` (an erase outside the backed-up folders, a shared sha256, a record it can't rewrite or read); `test_sweep_erased`:
