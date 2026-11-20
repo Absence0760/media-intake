@@ -214,6 +214,36 @@ class RecordsConfig(unittest.TestCase):
         self.assertEqual(self.load('[records]\nroot = "/srv/paper"\n', PHOTO_LIBRARY="/srv/paperwork")["records_root"],
                          "/srv/paper")  # a name prefix is not an overlap
 
+    def test_a_protect_folder_is_held_to_the_same_rules(self):
+        """records.protect folders are skipped like records.root, so they may not be home, overlap media-intake's
+        folders, or be relative."""
+        self.assertEqual(self.load('[records]\nprotect = ["/srv/consume", "~/doc-tool"]\n')["records_protect"],
+                         ["/srv/consume", os.path.join(config.HOME, "doc-tool")])
+        for prot, env in (("/srv/lib", {"PHOTO_LIBRARY": "/srv/lib/photos"}), (config.HOME, {}), ("/", {}),
+                          ("rel/x", {}), ("/srv/vids/docs", {"PERSONAL_FOOTAGE": "/srv/vids"}),
+                          ("/srv/st", {"MEDIA_INTAKE_STATE": "/srv/st/state"})):
+            with self.subTest(protect=prot), self.assertRaises(config.ConfigError):
+                self.load(f'[records]\nprotect = ["{prot}"]\n', **env)
+
+    def test_walk_files_skips_a_protect_folder(self):
+        d = tempfile.mkdtemp(prefix="intake-records-prot-")
+        self.addCleanup(shutil.rmtree, d, True)
+        prot = os.path.join(d, "home", "doc-tool")
+        for p in (os.path.join(prot, "originals", "a.jpg"), os.path.join(d, "home", "Downloads", "b.jpg")):
+            os.makedirs(os.path.dirname(p), exist_ok=True)
+            open(p, "wb").close()
+        cfg = os.path.join(d, "config.toml")
+        with open(cfg, "w") as f:
+            f.write(f'[records]\nroot = "{os.path.join(d, "rec")}"\nprotect = ["{prot}"]\n')
+        env = dict(os.environ, HOME=os.path.join(d, "home"), MEDIA_INTAKE_CONFIG=cfg,
+                   MEDIA_INTAKE_STATE=os.path.join(d, "home", ".state"), PHOTO_LIBRARY=os.path.join(d, "home", "lib"))
+        env.pop("PRIVATE_RECORDS", None)
+        r = subprocess.run([sys.executable, "-I", "-c", "import sys; sys.path.insert(0, sys.argv[1]); import intake; "
+                            "print('\\n'.join(sorted(intake.walk_files(sys.argv[2]))))", support.PKG,
+                            os.path.join(d, "home")], env=env, capture_output=True, text=True)
+        self.assertEqual(r.returncode, 0, r.stderr)
+        self.assertEqual(r.stdout.split(), [os.path.join(d, "home", "Downloads", "b.jpg")])
+
 
 if __name__ == "__main__":
     unittest.main()

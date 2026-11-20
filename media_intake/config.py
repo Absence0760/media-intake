@@ -15,7 +15,7 @@ SLUG = re.compile(r"^[a-z0-9][a-z0-9-]{0,63}$")
 NAME = re.compile(r"^[A-Za-z0-9][A-Za-z0-9 ._-]{0,63}$")
 TOP_KEYS = {"library", "videos", "state", "phone", "drive", "queue", "projects", "plugins", "recognition", "records"}
 RECOGNITION_KEYS = {"dir", "pet_classes", "pet_min_frames"}
-RECORDS_KEYS = {"root", "inbox", "archive"}
+RECORDS_KEYS = {"root", "inbox", "archive", "protect"}
 # Where personal documents and finances are kept by a separate tool (docs/configuration.md, records.root). Every
 # sweep skips it: never hashed, never deleted. The default is protected with no config at all.
 RECORDS_DEFAULT = "~/Documents/Records"
@@ -33,6 +33,12 @@ def config_path():
         return os.path.expanduser(p)
     base = os.environ.get("XDG_CONFIG_HOME") or os.path.join(HOME, ".config")
     return os.path.join(base, "media-intake", "config.toml")
+
+
+def records_staging(inbox):
+    """The to-records staging folder for inbox: <parent>/.<inbox name>.staging (docs/records.md)."""
+    ib = os.path.abspath(inbox)
+    return os.path.join(os.path.dirname(ib), f".{os.path.basename(ib)}.staging")
 
 
 def _path(v, what):
@@ -117,31 +123,48 @@ def load(path=None):
     c["records_root"] = _path(os.environ.get("PRIVATE_RECORDS") or records.get("root", RECORDS_DEFAULT),
                               "records.root")
     home = os.path.realpath(HOME)
-    rr = os.path.realpath(c["records_root"])
-    if home.casefold() == rr.casefold() or home.casefold().startswith(rr.casefold().rstrip(os.sep) + os.sep):
-        raise ConfigError("records.root (or $PRIVATE_RECORDS): a folder for your records, not your whole home "
-                          "folder or one above it")
-    for name, p in [("state", c["state"]), ("library", c["library"]), ("videos", c["videos"])] + \
-            [(f"projects.{k}.folder", v["folder"]) for k, v in c["projects"].items()]:
-        rp = os.path.realpath(p).casefold()
-        if rp == rr.casefold() or rp.startswith(rr.casefold().rstrip(os.sep) + os.sep) \
-                or rr.casefold().startswith(rp.rstrip(os.sep) + os.sep):
-            raise ConfigError(f"records.root (or $PRIVATE_RECORDS) and {name} overlap: no sweep enters the records "
-                              "folder, so media-intake's folders must be apart from it")
-    # to-records (docs/records.md): the inbox the records tool reads, inside the records folder so no sweep ever
-    # reaches a copy handed there; and, optionally, where that tool's encrypted archive lands on a backup drive.
+    # records.protect: other folders no sweep enters, held to records.root's rules: a document tool's consume
+    # folder and its own storage, so a to-records inbox can be there (docs/records.md).
+    prot = records.get("protect", [])
+    if not isinstance(prot, list) or not all(isinstance(x, str) and x.strip() for x in prot):
+        raise ConfigError("records.protect: a list of folders (absolute, or ~/...) that no sweep enters")
+    c["records_protect"] = []
+    for x in prot:
+        if not os.path.isabs(os.path.expanduser(x.strip())):
+            raise ConfigError(f"records.protect: {x!r} must be an absolute path or start with ~/")
+        c["records_protect"].append(_path(x.strip(), "records.protect"))
+    for label, top in [("records.root (or $PRIVATE_RECORDS)", c["records_root"])] + \
+            [(f"records.protect ({x})", x) for x in c["records_protect"]]:
+        rt = os.path.realpath(top).casefold()
+        if home.casefold() == rt or home.casefold().startswith(rt.rstrip(os.sep) + os.sep):
+            raise ConfigError(f"{label}: a folder for your records, not your whole home folder or one above it")
+        for name, p in [("state", c["state"]), ("library", c["library"]), ("videos", c["videos"])] + \
+                [(f"projects.{k}.folder", v["folder"]) for k, v in c["projects"].items()]:
+            rp = os.path.realpath(p).casefold()
+            if rp == rt or rp.startswith(rt.rstrip(os.sep) + os.sep) or rt.startswith(rp.rstrip(os.sep) + os.sep):
+                raise ConfigError(f"{label} and {name} overlap: no sweep enters the records folders, so "
+                                  "media-intake's folders must be apart from them")
+    # to-records (docs/records.md): the inbox a document tool reads, inside records.root or a records.protect
+    # folder so no sweep ever reaches a copy handed there; and, optionally, where the records' encrypted backup
+    # lands on a backup drive.
     inbox = records.get("inbox", "")
     if not isinstance(inbox, str):
-        raise ConfigError("records.inbox: a folder name inside records.root, or a path in it")
+        raise ConfigError("records.inbox: a folder name inside records.root, or a path in it or in records.protect")
     c["records_inbox"] = ""
     if inbox.strip():
         ib = _path(inbox if os.path.isabs(os.path.expanduser(inbox)) else os.path.join(c["records_root"], inbox),
                    "records.inbox")
         rib = os.path.realpath(ib).casefold()
-        if not rib.startswith(rr.casefold().rstrip(os.sep) + os.sep):
-            raise ConfigError("records.inbox: must be inside records.root (no sweep enters it there, so a file "
-                              "handed to it is never erased with its source)")
+        rr = os.path.realpath(c["records_root"]).casefold().rstrip(os.sep)
+        prots = [os.path.realpath(x).casefold().rstrip(os.sep) for x in c["records_protect"]]
+        if not (rib.startswith(rr + os.sep) or any(rib == t or rib.startswith(t + os.sep) for t in prots)):
+            raise ConfigError("records.inbox: must be inside records.root, or be (or be inside) a records.protect "
+                              "folder: no sweep enters those, so a file handed to it is never erased with its "
+                              "source")
         c["records_inbox"] = ib
+    # to-records writes each copy here first, beside the inbox (so a watcher never sees it), then renames it in. A
+    # stopped run can leave a whole copy here, so it is skipped by every sweep like the records folders.
+    c["records_staging"] = records_staging(c["records_inbox"]) if c["records_inbox"] else ""
     arch = records.get("archive", "")
     if not isinstance(arch, str) or os.path.isabs(arch) or ".." in arch.split("/") or arch.startswith("~"):
         raise ConfigError("records.archive: a glob relative to a drive's mount, e.g. \"backups/records-*.tar.gpg\"")

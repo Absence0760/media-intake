@@ -68,7 +68,11 @@ def records_skip(root, bases):
     return {p.casefold() for p in out}
 
 
-RECORDS_SKIP = records_skip(RECORDS, (HOME,))
+RECORDS_DIRS = [RECORDS] + list(CFG.get("records_protect", []))  # records.root and every records.protect folder
+# to-records' staging folder beside the inbox: a stopped run can leave a whole copy there, never swept either
+RECORDS_STAGING = CFG.get("records_staging", "")
+RECORDS_SKIP_DIRS = RECORDS_DIRS + ([RECORDS_STAGING] if RECORDS_STAGING else [])
+RECORDS_SKIP = set().union(*(records_skip(d, (HOME,)) for d in RECORDS_SKIP_DIRS))
 VENV_PY = f"{STATE}/venv/bin/python"
 SETUP = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "setup.sh")
 DEPS = ("sudo dnf install perl-Image-ExifTool tesseract tesseract-langpack-eng python3-zxing-cpp "
@@ -932,13 +936,14 @@ def gvfs_meta_forget(path, stats=None):
 
 def walk_files(root, skip_rel=(), git=False):
     """Regular files under root, no symlinks followed, skip lists applied. The private records folder
-    (RECORDS, records.root) is never entered, from any root: every sweep, the drive purge and the near-duplicate
+    (RECORDS, records.root, every records.protect folder and to-records' staging folder: RECORDS_SKIP_DIRS)
+    is never entered, from any root: every sweep, the drive purge and the near-duplicate
     search go through here, so none hashes, moves or deletes a file there. A root inside it yields nothing.
 
     With git, yields (path, in_git): in_git when a folder at or above it (under root) holds .git.
     """
     skip = {os.path.join(root, s) for s in skip_rel}
-    rskip = RECORDS_SKIP | records_skip(RECORDS, (root,))
+    rskip = RECORDS_SKIP.union(*(records_skip(d, (root,)) for d in RECORDS_SKIP_DIRS))
     for spelled in {os.path.abspath(root).casefold(), os.path.realpath(root).casefold()}:  # a link into it too
         if any(spelled == s or spelled.startswith(s.rstrip(os.sep) + os.sep) for s in rskip):
             return
@@ -2106,6 +2111,10 @@ def cmd_erase(a):
     if os.path.isdir(RECORDS):
         not_checked.append(f"your private records folder ({shown_path(RECORDS)}, records.root): never searched, "
                            "so a copy filed there stays; it is kept by your records tool, not media-intake")
+    for d in RECORDS_DIRS[1:]:
+        if os.path.isdir(d):
+            not_checked.append(f"a protected records folder ({shown_path(d)}, records.protect): never searched, "
+                               "so a copy filed there stays")
     cov = erase_coverage(reached, left, not_checked)
     write_coverage(a.batch, cov)
     print(f"coverage report saved (the full report: media-intake verify-gone {a.batch}):")
@@ -2205,10 +2214,14 @@ def records_inbox(create):
     """The inbox folder (records.inbox), or exit with one plain line. create: make it (0700) when missing."""
     inbox = CFG["records_inbox"]
     if not inbox:
-        sys.exit("to-records: set records.inbox in your config, the folder inside records.root that your records "
-                 "tool reads (docs/records.md)")
-    if not os.path.isdir(RECORDS):
-        sys.exit(f"to-records: the records folder is not there ({shown_path(RECORDS)}); nothing handed over")
+        sys.exit("to-records: set records.inbox in your config, the folder inside records.root (or a "
+                 "records.protect folder) that your document tool reads (docs/records.md)")
+    ri = os.path.realpath(inbox).casefold()
+    top = next((d for d in RECORDS_DIRS
+                if ri == os.path.realpath(d).casefold() or ri.startswith(os.path.realpath(d).casefold() + os.sep)),
+               RECORDS)
+    if not os.path.isdir(top):
+        sys.exit(f"to-records: the records folder is not there ({shown_path(top)}); nothing handed over")
     if os.path.islink(inbox) or (os.path.lexists(inbox) and not os.path.isdir(inbox)):
         sys.exit(f"to-records: the inbox is not a plain folder ({shown_path(inbox)}); nothing handed over")
     if create and not os.path.isdir(inbox):
@@ -2217,36 +2230,107 @@ def records_inbox(create):
     return inbox
 
 
+def inbox_staging(inbox):
+    """The staging folder beside the inbox (<parent>/.<inbox name>.staging, 0700): a copy is written and checked
+    there, then renamed into the inbox, so a tool watching the inbox never sees a part-written file. Beside it,
+    not in it, so the watcher never sees the staging folder either; on the inbox's filesystem, so the rename is
+    atomic; no sweep enters it (RECORDS_SKIP_DIRS), since a stopped run can leave a whole copy there. Left-over
+    files in it are such copies, never anything else (to-records runs under the library lock, so never another
+    run's), and are removed."""
+    st = config.records_staging(inbox)
+    if os.path.islink(st) or (os.path.lexists(st) and not os.path.isdir(st)):
+        raise OSError(f"the staging folder beside the inbox is not a plain folder ({shown_path(st)})")
+    os.makedirs(st, mode=0o700, exist_ok=True)
+    os.chmod(st, 0o700)
+    if os.stat(st).st_dev != os.stat(inbox).st_dev:
+        raise OSError("the inbox is a mount point of its own: its staging folder beside it is on another "
+                      "filesystem, so the copy could not arrive in one step")
+    for f in os.listdir(st):  # a stopped run's part-written copies
+        with contextlib.suppress(OSError):
+            os.remove(os.path.join(st, f))
+    return st
+
+
+RENAME_NOREPLACE = 1  # linux/fs.h
+
+
+def _renameat2():
+    """libc's renameat2, or None (an older libc or not Linux)."""
+    import ctypes
+    import ctypes.util
+    try:
+        libc = ctypes.CDLL(ctypes.util.find_library("c") or None, use_errno=True)
+        f = libc.renameat2
+    except (OSError, AttributeError):
+        return None
+    f.argtypes = [ctypes.c_int, ctypes.c_char_p, ctypes.c_int, ctypes.c_char_p, ctypes.c_uint]
+    f.restype = ctypes.c_int
+    return f
+
+
+def publish_noreplace(src, dst):
+    """Move src to dst in one step, never over a file: FileExistsError when dst is taken. A rename
+    (renameat2 RENAME_NOREPLACE), so a watcher sees one arrival of the whole file (inotify's IN_MOVED_TO); where
+    the filesystem or libc lacks it, a hard link then removing src, which is just as atomic and no-clobber."""
+    import ctypes
+    import errno
+    f = _renameat2()
+    if f is not None:
+        at = -100  # AT_FDCWD
+        if f(at, os.fsencode(src), at, os.fsencode(dst), RENAME_NOREPLACE) == 0:
+            return
+        e = ctypes.get_errno()
+        if e == errno.EEXIST:
+            raise FileExistsError(errno.EEXIST, os.strerror(e), dst)
+        if e not in (errno.EINVAL, errno.ENOSYS, errno.ENOTSUP, errno.EOPNOTSUPP):
+            raise OSError(e, os.strerror(e), dst)
+    os.link(src, dst)  # FileExistsError when taken
+    # dst has arrived: a failure to drop the staging name must not report the handoff as failed (the original
+    # would go unheld and a retry would add a second copy); the next run's inbox_staging removes it.
+    with contextlib.suppress(OSError):
+        os.remove(src)
+
+
+def _fsync_dir(d):
+    dfd = os.open(d, os.O_RDONLY | os.O_DIRECTORY)
+    try:
+        os.fsync(dfd)
+    finally:
+        os.close(dfd)
+
+
 def copy_to_inbox(src, inbox, sha):
     """Copy src's bytes, unchanged, into inbox under its own name (else "<name> (2).<ext>", ...), never over a
-    file (O_EXCL, 0600), fsynced and checked by sha256 against sha; the inbox entry is fsynced too. Returns the
-    copy's path; on any failure nothing is left in the inbox and OSError is raised."""
+    file. The copy is written in the staging folder (inbox_staging, 0600), fsynced and checked by sha256 against
+    sha, then renamed into the inbox in one step (publish_noreplace), so the inbox only ever holds whole, checked
+    files; both folders are fsynced. Returns the copy's path; on any failure nothing is left in the inbox or the
+    staging folder and OSError is raised."""
     stem, ext = os.path.splitext(os.path.basename(src))
-    for i in range(1, INBOX_NAMES + 1):
-        dst = os.path.join(inbox, stem + ext if i == 1 else f"{stem} ({i}){ext}")
-        try:
-            fd = os.open(dst, os.O_WRONLY | os.O_CREAT | os.O_EXCL | getattr(os, "O_NOFOLLOW", 0), 0o600)
-            break
-        except FileExistsError:
-            continue
-    else:
-        raise OSError(f"no free name for {stem}{ext} in the inbox")
+    st = inbox_staging(inbox)
+    tmp = os.path.join(st, f"{os.urandom(8).hex()}{ext}")
+    fd = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_EXCL | getattr(os, "O_NOFOLLOW", 0), 0o600)
     try:
         with os.fdopen(fd, "wb") as out, open(src, "rb") as inp:
             shutil.copyfileobj(inp, out, 1 << 20)
             out.flush()
             os.fsync(out.fileno())
-        if sha256(dst) != sha:
-            raise OSError("the copy in the inbox does not match the original (sha256)")
+        if sha256(tmp) != sha:
+            raise OSError("the copy does not match the original (sha256)")
+        for i in range(1, INBOX_NAMES + 1):
+            dst = os.path.join(inbox, stem + ext if i == 1 else f"{stem} ({i}){ext}")
+            try:
+                publish_noreplace(tmp, dst)
+                break
+            except FileExistsError:
+                continue
+        else:
+            raise OSError(f"no free name for {stem}{ext} in the inbox")
     except BaseException:
         with contextlib.suppress(OSError):
-            os.remove(dst)
+            os.remove(tmp)
         raise
-    dfd = os.open(inbox, os.O_RDONLY | os.O_DIRECTORY)
-    try:
-        os.fsync(dfd)
-    finally:
-        os.close(dfd)
+    _fsync_dir(inbox)
+    _fsync_dir(st)
     return dst
 
 

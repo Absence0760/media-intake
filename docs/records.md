@@ -19,9 +19,48 @@ inbox = "00 Inbox"                    # the folder inside root that your records
 ```
 
 `inbox` has no default, so `to-records` is off until you set it. It must be
-inside `root`: no sweep ever enters the records folder (erase, forget,
-sweep-erased and verify-gone skip it), so the copy handed over is never
-erased with its original.
+inside `root`, or be (or be inside) a `protect` folder: no sweep ever enters
+those (erase, forget, sweep-erased, verify-gone and the backup-drive sweep
+skip them), so the copy handed over is never erased with its original.
+
+### An inbox outside the records folder
+
+A document tool that keeps its own storage, such as a document management
+server with a consume folder, can take the handoff directly. List its consume
+folder **and every folder where it stores what it took in** under
+`protect`; then point `inbox` at the consume folder:
+
+```toml
+[records]
+inbox = "~/doc-tool/consume"
+protect = ["~/doc-tool/consume", "~/doc-tool/media"]
+```
+
+The storage folder matters as much as the consume folder. The tool keeps the
+document's bytes unchanged, and `to-records --finish` erases every copy of an
+original it finds, so a stored copy outside `protect` would be erased with
+it. Each `protect` folder is held to `root`'s rules: an absolute path (or
+`~/...`), never your home folder or one above it, and apart from `state`,
+`library`, `videos` and the project folders. `media-intake stage` refuses it
+as a source, and the erase coverage report lists it as not searched.
+
+### Recipes
+
+- **A plain folder** you sort by hand: `inbox = "00 Inbox"` inside `root`
+  (the default layout above). Nothing watches it, so nothing else is needed.
+- **A document tool that watches a folder** (any tool that picks up new
+  files from a folder): the folder you give it as `inbox`, inside `root` or
+  in `protect`, with the tool's own storage in `protect` too when it is
+  outside `root`. A copy appears in one rename, so a watcher sees one whole
+  file arriving and never a part-written one.
+- **Paperless-ngx's consume folder**: `inbox` is the host folder bound to its
+  consume folder (`PAPERLESS_CONSUMPTION_DIR` inside the container), and
+  `protect` lists that folder and the host folder bound to its media folder,
+  where it keeps originals. It deletes a file from the consume folder once it
+  has taken it in, and from then on the copy is its to keep. The copy is
+  `0600`, so the container's user (`USERMAP_UID`) must be you. Paperless-ngx
+  watches with inotify; a rename into the folder is one arrival it sees. On a
+  network share, where inotify sees nothing, set its polling option instead.
 
 ## Hand photos over
 
@@ -44,9 +83,21 @@ passport (`passport-mrz`) or a payment card (`payment-card`).
 - **The copy**: the file's bytes, unchanged (no conversion), under its own
   name in the inbox, or `<name> (2).<ext>`, `(3)`, ... when that name is
   taken. A file in the inbox is never overwritten. The inbox is created
-  `0700` when missing, each copy `0600`. The copy is fsynced and checked
-  against the original's sha256, and nothing else (no sidecar, tags or
-  manifest) goes in: the records tool computes its own checksum.
+  `0700` when missing, each copy `0600`. The copy is written in a staging
+  folder beside the inbox (`.<inbox name>.staging`, `0700`, on the same
+  filesystem), fsynced and checked against the original's sha256, and only
+  then renamed into the inbox in one step that never replaces a file
+  (`renameat2` with `RENAME_NOREPLACE`; a hard link where the filesystem
+  lacks it). The inbox only ever holds whole, checked files. A copy that
+  fails its check never reaches the inbox, and a stopped run's leftover in
+  the staging folder is removed by the next run; until then no sweep enters
+  the staging folder, as for `protect`, so such a leftover is never erased
+  with the original. The staging folder needs you to be able to write to the
+  inbox's parent folder. An inbox that is a mount point of its own is
+  refused, since its staging folder would be on another filesystem. Nothing
+  else (no sidecar, tags or manifest) goes in: the
+  records tool computes its own checksum. Once a copy is in the inbox, it
+  belongs to the tool that reads it.
 - **The original is held, not erased.** A library file stays where it is,
   so your backups still hold it, and the gallery hides it. A quarantined one
   moves to `quarantine/records-held/`, so its batch's erase of the other
@@ -91,7 +142,20 @@ media-intake to-records --finish --backup-verified --yes      # no archive check
 ## Tests
 
 `tests/test_to_records.py`, in a throwaway HOME with its own records folder:
-a dry run creates nothing; a copy is byte-identical, `0700`/`0600`, alone in
+a dry run creates nothing; while a copy is written the inbox stays empty
+(it arrives whole, in one rename) and the staging folder is `0700` and left
+empty; a copy that fails its sha256 check never reaches the inbox, and a
+stopped run's leftover is removed; without `renameat2` (or when it answers
+"not supported") the hard-link fallback still never overwrites, any other
+error leaves nothing behind, and a link that arrived counts even if its
+staging name can't be dropped; no free name leaves the inbox as it was; a
+staging path that is a symlink, a file or on another filesystem is refused;
+an inbox in a `protect` folder outside `root` is handed to, and `--finish`
+erases the original but not the handed copy, the tool's stored copy in
+another `protect` folder or a leftover in the staging folder, and its
+coverage lists the `protect` folder as not searched; an inbox in a missing
+`protect` folder hands nothing over; a copy
+is byte-identical, `0700`/`0600`, alone in
 the inbox, its original held and hidden from the gallery, and a second
 handoff of it refused; a taken name gets ` (3)` and nothing is overwritten; a
 quarantined ID moves to `records-held` and out of its batch; nudity, 2FA,

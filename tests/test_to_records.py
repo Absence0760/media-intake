@@ -206,6 +206,185 @@ class ToRecords(unittest.TestCase):
             self.assertIn("to-records --finish", r.stdout + r.stderr)
             self.assertTrue(os.path.isfile(held), cmd)
 
+    def in_intake(self, code, *args):
+        """Run code with intake imported under this test's config; returns its stdout parsed as JSON."""
+        r = subprocess.run([PY, "-I", "-c", "import json, os, sys; sys.path.insert(0, sys.argv[1]); import intake\n"
+                            + code, support.PKG, *args], env=self.env, capture_output=True, text=True)
+        self.assertEqual(r.returncode, 0, r.stderr)
+        return json.loads(r.stdout)
+
+    def test_a_copy_arrives_whole_in_one_step_and_the_staging_folder_is_left_empty(self):
+        p = self.photo(data=os.urandom(3 << 20))  # several copy chunks
+        os.makedirs(self.inbox, mode=0o700)
+        # While the copy is being written, the inbox must still be empty: only a whole, checked file arrives.
+        seen = self.in_intake(
+            "seen = []\n"
+            "orig = intake.shutil.copyfileobj\n"
+            "def spy(i, o, n):\n"
+            "    o.write(i.read(1 << 20)); o.flush(); seen.append(os.listdir(sys.argv[3])); orig(i, o, n)\n"
+            "intake.shutil.copyfileobj = spy\n"
+            "sha = intake.sha256(sys.argv[2])\n"
+            "dst = intake.copy_to_inbox(sys.argv[2], sys.argv[3], sha)\n"
+            "print(json.dumps(dict(seen=seen, dst=os.path.basename(dst))))", p, self.inbox)
+        self.assertEqual(seen["seen"], [[]], "no part-written file is ever visible in the inbox")
+        self.assertEqual(seen["dst"], "IMG_0001.jpg")
+        staging = os.path.join(self.records, ".00 Inbox.staging")
+        self.assertEqual((mode(staging), os.listdir(staging)), ("0o700", []))
+        self.assertEqual(mode(os.path.join(self.inbox, "IMG_0001.jpg")), "0o600")
+
+    def test_a_bad_copy_never_reaches_the_inbox_and_a_stopped_runs_leftover_is_removed(self):
+        p = self.photo()
+        staging = os.path.join(self.records, ".00 Inbox.staging")
+        left = write(os.path.join(staging, "0123abcd.jpg"), b"a stopped run's part copy")
+        os.makedirs(self.inbox, mode=0o700)
+        out = self.in_intake(
+            "try:\n"
+            "    intake.copy_to_inbox(sys.argv[2], sys.argv[3], '0' * 64)\n"
+            "    print(json.dumps('copied'))\n"
+            "except OSError as e:\n"
+            "    print(json.dumps(str(e)))", p, self.inbox)
+        self.assertIn("does not match the original", out)
+        self.assertEqual((os.listdir(self.inbox), os.listdir(staging)), ([], []))
+        self.assertFalse(os.path.exists(left))
+
+    def test_without_renameat2_a_hard_link_still_never_overwrites(self):
+        os.makedirs(self.inbox, mode=0o700)
+        theirs = write(os.path.join(self.inbox, "IMG_0001.jpg"), b"theirs")
+        p = self.photo()
+        out = self.in_intake(
+            "intake._renameat2 = lambda: None\n"
+            "dst = intake.copy_to_inbox(sys.argv[2], sys.argv[3], intake.sha256(sys.argv[2]))\n"
+            "print(json.dumps(os.path.basename(dst)))", p, self.inbox)
+        self.assertEqual(out, "IMG_0001 (2).jpg")
+        with open(theirs, "rb") as f:
+            self.assertEqual(f.read(), b"theirs")
+        self.assertEqual(os.listdir(os.path.join(self.records, ".00 Inbox.staging")), [])
+
+    # renameat2 stand-ins: set errno, return -1, as libc does
+    FAKE_RENAME = ("import ctypes, errno\n"
+                   "def fake(e):\n"
+                   "    def f(*a):\n"
+                   "        ctypes.set_errno(e); return -1\n"
+                   "    return lambda: f\n")
+
+    def test_renameat2_unsupported_falls_back_and_any_other_error_leaves_nothing(self):
+        os.makedirs(self.inbox, mode=0o700)
+        p = self.photo()
+        staging = os.path.join(self.records, ".00 Inbox.staging")
+        for name, ok in (("EINVAL", True), ("ENOSYS", True), ("EOPNOTSUPP", True), ("EACCES", False)):
+            with self.subTest(errno=name):
+                out = self.in_intake(
+                    self.FAKE_RENAME + f"intake._renameat2 = fake(errno.{name})\n"
+                    "try:\n"
+                    "    d = intake.copy_to_inbox(sys.argv[2], sys.argv[3], intake.sha256(sys.argv[2]))\n"
+                    "    print(json.dumps(os.path.basename(d)))\n"
+                    "except OSError as e:\n"
+                    "    print(json.dumps('refused: ' + type(e).__name__))", p, self.inbox)
+                if ok:
+                    self.assertTrue(out.startswith("IMG_0001"), out)
+                else:
+                    self.assertEqual(out, "refused: PermissionError")
+                self.assertEqual(os.listdir(staging), [])
+        self.assertEqual(sorted(os.listdir(self.inbox)), ["IMG_0001 (2).jpg", "IMG_0001 (3).jpg", "IMG_0001.jpg"])
+
+    def test_no_free_name_leaves_the_inbox_and_staging_as_they_were(self):
+        os.makedirs(self.inbox, mode=0o700)
+        for n in ("IMG_0001.jpg", "IMG_0001 (2).jpg"):
+            write(os.path.join(self.inbox, n), b"theirs")
+        p = self.photo()
+        out = self.in_intake(
+            "intake.INBOX_NAMES = 2\n"
+            "try:\n"
+            "    intake.copy_to_inbox(sys.argv[2], sys.argv[3], intake.sha256(sys.argv[2]))\n"
+            "    print(json.dumps('copied'))\n"
+            "except OSError as e:\n"
+            "    print(json.dumps(str(e)))", p, self.inbox)
+        self.assertIn("no free name", out)
+        self.assertEqual(sorted(os.listdir(self.inbox)), ["IMG_0001 (2).jpg", "IMG_0001.jpg"])
+        self.assertEqual(os.listdir(os.path.join(self.records, ".00 Inbox.staging")), [])
+
+    def test_a_link_that_arrived_counts_even_if_the_staging_name_cannot_be_dropped(self):
+        os.makedirs(self.inbox, mode=0o700)
+        p = self.photo()
+        out = self.in_intake(
+            "intake._renameat2 = lambda: None\n"
+            "real = intake.os.remove\n"
+            "def remove(x):\n"
+            "    if '.staging' in x: raise PermissionError(13, 'denied', x)\n"
+            "    real(x)\n"
+            "intake.os.remove = remove\n"
+            "d = intake.copy_to_inbox(sys.argv[2], sys.argv[3], intake.sha256(sys.argv[2]))\n"
+            "print(json.dumps(os.path.basename(d)))", p, self.inbox)
+        self.assertEqual(out, "IMG_0001.jpg", "the copy arrived, so the handoff is not reported as failed")
+        self.assertEqual(os.listdir(self.inbox), ["IMG_0001.jpg"])
+        self.run_cli(self.photo("IMG_0002.jpg"), "--yes")  # the next run clears the staging name left behind
+        self.assertEqual(os.listdir(os.path.join(self.records, ".00 Inbox.staging")), [])
+
+    def test_a_staging_path_that_is_not_a_plain_folder_or_on_another_filesystem_is_refused(self):
+        os.makedirs(self.inbox, mode=0o700)
+        p = self.photo()
+        staging = os.path.join(self.records, ".00 Inbox.staging")
+        elsewhere = os.path.join(self.tmp, "elsewhere")
+        os.makedirs(elsewhere)
+        try_copy = ("try:\n"
+                    "    intake.copy_to_inbox(sys.argv[2], sys.argv[3], intake.sha256(sys.argv[2]))\n"
+                    "    print(json.dumps('copied'))\n"
+                    "except OSError as e:\n"
+                    "    print(json.dumps(str(e)))")
+        for make in (lambda: os.symlink(elsewhere, staging), lambda: write(staging, b"a file")):
+            make()
+            self.assertIn("not a plain folder", self.in_intake(try_copy, p, self.inbox))
+            self.assertEqual((os.listdir(self.inbox), os.listdir(elsewhere)), ([], []))
+            os.remove(staging)
+        other_dev = ("real = intake.os.stat\n"
+                     "class S:\n"
+                     "    def __init__(s, r): s.r = r\n"
+                     "    def __getattr__(s, k): return getattr(s.r, k)\n"
+                     "    st_dev = -1\n"
+                     "intake.os.stat = lambda x, *a, **k: S(real(x, *a, **k)) if x.endswith('.staging') "
+                     "else real(x, *a, **k)\n")
+        self.assertIn("another filesystem", self.in_intake(other_dev + try_copy, p, self.inbox))
+        self.assertEqual(os.listdir(self.inbox), [])
+
+    def test_an_inbox_in_a_protected_folder_outside_records_is_never_swept(self):
+        consume = os.path.join(self.home, "doc-tool/consume")
+        storage = os.path.join(self.home, "doc-tool/media")
+        os.makedirs(consume)
+        cfg = self.env["MEDIA_INTAKE_CONFIG"]
+        with open(cfg) as f:
+            text = f.read()
+        with open(cfg, "w") as f:
+            f.write(text.replace('inbox = "00 Inbox"\n', f'inbox = "{consume}"\n'
+                                 f'protect = ["{consume}", "{storage}"]\n'))
+        data = os.urandom(3000)
+        p = self.photo(data=data)
+        kept = write(os.path.join(storage, "originals/0001.jpg"), data)  # the document tool's own stored copy
+        self.run_cli(p, "--yes")
+        self.assertEqual(os.listdir(consume), ["IMG_0001.jpg"])
+        staging = os.path.join(self.home, "doc-tool/.consume.staging")
+        self.assertEqual(os.listdir(staging), [])
+        left = write(os.path.join(staging, "0123abcd.jpg"), data)  # a stopped run's whole copy, outside protect
+        self.run_cli("--finish", "--backup-verified", "--yes")
+        self.assertFalse(os.path.exists(p))
+        self.assertTrue(os.path.isfile(os.path.join(consume, "IMG_0001.jpg")), "the handed copy stays")
+        self.assertTrue(os.path.isfile(kept), "no sweep enters a records.protect folder")
+        self.assertTrue(os.path.isfile(left), "nor the staging folder beside the inbox")
+        with open(os.path.join(self.state, "erase-log.txt")) as f:
+            cov = [json.loads(line.split(" coverage ", 1)[1]) for line in f if " coverage " in line][-1]
+        self.assertTrue(any("records.protect" in x and "never searched" in x for x in cov["not_checked"]), cov)
+
+    def test_an_inbox_in_a_missing_protect_folder_hands_nothing_over(self):
+        consume = os.path.join(self.home, "doc-tool/consume")
+        cfg = self.env["MEDIA_INTAKE_CONFIG"]
+        with open(cfg) as f:
+            text = f.read()
+        with open(cfg, "w") as f:
+            f.write(text.replace('inbox = "00 Inbox"\n', f'inbox = "{consume}"\nprotect = ["{consume}"]\n'))
+        p = self.photo()
+        self.assertIn("records folder is not there", self.run_cli(p, "--yes", code=1))
+        self.assertFalse(os.path.exists(os.path.join(self.home, "doc-tool")), "nothing created")
+        self.assertFalse(os.path.exists(os.path.join(self.state, "records-handoff.json")))
+
     def test_no_inbox_configured_or_no_records_folder(self):
         cfg = self.env["MEDIA_INTAKE_CONFIG"]
         with open(cfg) as f:
@@ -234,6 +413,19 @@ class InboxConfig(unittest.TestCase):
             with self.subTest(inbox=inbox):
                 if ok:
                     self.assertTrue(config.load(p)["records_inbox"].startswith("/srv/paper/"))
+                else:
+                    with self.assertRaises(config.ConfigError):
+                        config.load(p)
+        for extra, ok in (('inbox = "/srv/consume"\nprotect = ["/srv/consume"]', True),
+                          ('inbox = "/srv/consume/in"\nprotect = ["/srv/consume"]', True),
+                          ('inbox = "/srv/other"\nprotect = ["/srv/consume"]', False),
+                          ('protect = ["relative/x"]', False), ('protect = "/srv/x"', False),
+                          ('protect = ["/"]', False)):
+            with open(p, "w") as f:
+                f.write(f'[records]\nroot = "/srv/paper"\n{extra}\n')
+            with self.subTest(extra=extra):
+                if ok:
+                    self.assertTrue(config.load(p)["records_inbox"].startswith("/srv/consume"))
                 else:
                     with self.assertRaises(config.ConfigError):
                         config.load(p)
