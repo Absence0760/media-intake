@@ -15,6 +15,7 @@ media-intake check-dates --json               # the report as JSON
 media-intake fix-dates --suggested FILE...    # a dry run: each old and new date
 media-intake fix-dates --suggested FILE... --yes
 media-intake fix-dates --undo --yes           # put the last fix back
+media-intake refile --yes                     # move fixed files to their date's folder
 ```
 
 `media_intake/datecheck.py`; tests: `tests/test_datecheck.py`,
@@ -241,16 +242,64 @@ date; select and **Fix date…** offers the suggestion, a date or a shift, runs
 the same code, and its message has **Undo** (the same record: `fix-dates
 --undo` can undo a gallery fix too).
 
+## Re-filing a fixed file: refile
+
+```sh
+media-intake refile                 # a dry run: each file's old and new place
+media-intake refile --yes           # move them, each with its .xmp sidecar
+media-intake refile --undo --yes    # put the last refile back (or --undo ID)
+```
+
+`media_intake/refile.py`; tests: `tests/test_refile.py`.
+
+- **What moves**: each library file a fix-dates write covers (the latest fix
+  per file that no undo took back, in `date-fixes.json`) whose folder
+  disagrees with its fixed date. Only the dated folders of its path change:
+  the first `YYYY` folder under the library or videos folder, and the
+  `YYYY-MM` folder right under it; a camera's device folder and the name stay
+  (`2016/2016-01/gopro-hero12-black/GOPR0104.JPG` to
+  `2024/2024-05/gopro-hero12-black/GOPR0104.JPG`; `Screenshots/2016/` to
+  `Screenshots/2024/`). A file in no dated folder (a project folder, which is
+  named by day and event, or a folder of your own), one scan flagged,
+  quarantined or erased, and one no longer in the library are refused and
+  listed. It reads no file: the date is the one the fix wrote.
+- **A dry run until `--yes`**: it prints each old and new path, the files
+  already in place (a count) and every refusal.
+- **A move is a rename**, the file and its `.xmp` together (if the sidecar
+  can't follow, the file goes back), on the same filesystem only: a
+  destination on another drive is refused, never copied and deleted. Nothing
+  at the destination is ever replaced: a name already taken (by a file or its
+  sidecar) gets the next free `<stem>_<n>`, as `apply` does, and the move
+  itself is a hard link then an unlink, which fails rather than overwrite
+  (where the filesystem has no hard links, a check then a rename, under the
+  lock). A folder the move leaves empty is removed, up to the library folder.
+  The photo or video is never written.
+- **Every record of the path follows it**: `index.json`, the batches'
+  `plan.json` (`dst`, `lib_dst`), `datecheck.json` and `date-fixes.json` (so
+  `fix-dates --undo` and `tag BATCH` find the file), `places.json`, the
+  recognition store's `files` and `written` rows, the search index's file list
+  (`embeddings.npz`, when the system Python has numpy; otherwise the next
+  `media-intake index` finds the file again and says so) and
+  `maybe-trash.json`. The backup record (`<state>/backup/<drive>.json`) drops
+  the old path's entries instead: the drive has no copy under the new path,
+  so the next `backup` copies the file there, and the copy under the old path
+  stays on the drive (`backup` never deletes; [backup.md](backup.md)). Nothing
+  else names a library path: event display names are by event, and the
+  thumbnails, proxies, `trashed.json` and the text index by sha256. GNOME's
+  own thumbnail cache and recent files (by URI) are not touched.
+- **Recorded**: `<state>/refiles.json` (0600) keeps each run's moves (an id,
+  the time, each old and new path). `--undo [ID]` (the last by default; a dry
+  run until `--yes`) moves them back and rekeys the records again; it refuses,
+  moving nothing, when a moved file is gone or something now sits at its old
+  place.
+- **Under the library lock** (`intake.LOCKED`); a second run with nothing to
+  move changes nothing. Output is paths and counts.
+
 ## Limits
 
-- **Files are not moved.** A fixed file stays in its old `YYYY/YYYY-MM`
-  folder: nothing in media-intake moves a filed file when its date changes
-  (`plan` picks the folder once, `apply` files it), so fix-dates doesn't
-  either. The gallery, `find` and digiKam go by the sidecar date, so it shows
-  in the right month there. Moving would also leave the backup drive's copy
-  under the old path (`backup` never deletes) and needs `index.json`, the
-  batches' plans and the backup record rekeyed; if it is wanted, it belongs
-  in an explicit step of its own with a dry run, not in fix-dates.
+- **Files move only when you ask.** fix-dates leaves a fixed file in its old
+  `YYYY/YYYY-MM` folder (the gallery, `find` and digiKam go by the sidecar
+  date, so it shows in the right month there); `refile`, below, moves it.
 - **The report is a snapshot**: the gallery shows the last run's findings; a
   file changed since (by another tool) is shown as it was found. Run
   `check-dates` again after a batch of fixes.

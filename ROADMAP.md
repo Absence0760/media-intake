@@ -75,8 +75,8 @@ The goal: someone else can install it on Fedora, import a phone, and trust it.
 - [x] Wrong dates already in the library: `check-dates` (clock-reset defaults, device era, video
       format, numbering order, disagreeing sources, copies, GPS 0,0, place), `fix-dates` and the
       gallery's Dates to check / Fix date, sidecars only, undoable (`docs/dates.md`).
-- [ ] Re-file a fixed file into its right YYYY/YYYY-MM folder: an explicit step with its own dry run
-      (index, plans and backup record rekeyed); today a fix leaves the file where it is.
+- [x] Re-file a fixed file into its right YYYY/YYYY-MM folder: `refile`, a dry run until `--yes`, file and
+      sidecar renamed together, every path record rekeyed, undoable (`docs/dates.md`).
 - [x] Device era for more makers: Sony α7 III/IV/V and α7R V, Canon EOS R bodies, DJI Osmo
       Action 4 / 5 Pro and Pocket 3, Insta360 ONE X2 / X3 / X4 (docs/dates.md, "Device era").
 - [ ] HEVC 10-bit / HDR vs the model: read bit depth and colour transfer in `check-dates` first,

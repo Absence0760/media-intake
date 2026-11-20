@@ -1075,6 +1075,44 @@ def forget_paths(paths, state=None):
     return n, "; ".join(err)
 
 
+def rekey_paths(moves, state=None):
+    """refile: {old path: new path}. Every record of an old path in datecheck.json (findings) and
+    date-fixes.json (fixed files, set-aside findings) names the new one instead, so --undo and `tag BATCH`
+    follow the file. Both files are rewritten atomically, 0600. The caller holds the library lock. Returns
+    (records rekeyed, "" or why a file could not be rewritten). Never raises."""
+    state = state or state_dir()
+    n, err = 0, []
+
+    def swap(f):
+        nonlocal n
+        if isinstance(f, dict) and f.get("path") in moves:
+            n += 1
+            return dict(f, path=moves[f["path"]])
+        return f
+
+    rep = load_report(state)
+    if rep:
+        before = n
+        rep["findings"] = [swap(f) for f in rep["findings"]]
+        if n != before:
+            try:
+                save_private(report_path(state), rep)
+            except OSError as e:
+                err.append(f"{REPORT}: {e.strerror or e}")
+    elif os.path.exists(report_path(state)):
+        err.append(f"{REPORT} is unreadable: its records were not rekeyed")
+    log, before = load_fixes(state), n
+    for fx in log["fixes"]:
+        fx["files"] = [swap(f) for f in fx.get("files", [])]
+        fx["dropped"] = [swap(f) for f in fx.get("dropped", [])]
+    if n != before:
+        try:
+            save_private(fixes_path(state), log)
+        except OSError as e:
+            err.append(f"{FIXES}: {e.strerror or e}")
+    return n, "; ".join(err)
+
+
 def recorded_paths(state=None):
     """Every library path datecheck.json or date-fixes.json names (findings, fixes, set-aside findings)."""
     out = {f["path"] for f in (load_report(state) or {}).get("findings", [])
