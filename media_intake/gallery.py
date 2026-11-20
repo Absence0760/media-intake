@@ -90,6 +90,9 @@ THUMB_PX, PREVIEW_PX = 320, 1600
 PROXY_CODECS = {"hevc"}
 PROXY_PX = 1920  # the proxy's longer side at most (never scaled up)
 PROXY_TIMEOUT = 3600  # one transcode, in seconds; past it the original is served as before
+PROXY_STALL = 120  # seconds an attempt may go without its output growing; then it counts as stalled (a hung
+#   encoder) and the next command (in the end the CPU encoder) is tried, instead of waiting out PROXY_TIMEOUT
+STALLED, TIMED_OUT = "stalled", "timed out"  # what _run_watched returns for an attempt it stopped itself
 PROXY_REMUX_TIMEOUT = 600  # rewriting a finished proxy as a plain MP4 (a copy, nothing re-encoded), in seconds
 PROXY_KBPS = 8000  # the proxy's video bitrate (H.264, longer side at most PROXY_PX)
 PROXY_FRAG_MS = 1000  # the proxy is written as fragments this long, so the player can start before it is done
@@ -734,10 +737,13 @@ class ProxyJob:
 
 
 def _run_watched(argv, out, job):
-    """Run one proxy command; while it runs, tell job how far out has grown. Its exit code, or None when it was
-    stopped: job cancelled, or past PROXY_TIMEOUT. The process never outlives this call."""
+    """Run one proxy command; while it runs, tell job how far out has grown. Its exit code; STALLED when out
+    hasn't grown for PROXY_STALL seconds (the encoder hung: the next command may still work); TIMED_OUT past
+    PROXY_TIMEOUT while it was still writing (the next command would take as long); None when job was cancelled.
+    The process never outlives this call."""
     proc = subprocess.Popen(argv, stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
-    deadline = time.monotonic() + PROXY_TIMEOUT
+    start = grew_at = time.monotonic()
+    size = 0
     try:
         while True:
             try:
@@ -745,11 +751,22 @@ def _run_watched(argv, out, job):
                 break
             except subprocess.TimeoutExpired:
                 pass
-            if job:
-                with contextlib.suppress(OSError):
-                    job.grew(os.path.getsize(out))
-            if (job and job.stopped()) or time.monotonic() > deadline:
+            now = time.monotonic()
+            try:
+                now_size = os.path.getsize(out)
+            except OSError:
+                now_size = None
+            if now_size is not None:
+                if job:
+                    job.grew(now_size)
+                if now_size > size:
+                    size, grew_at = now_size, now
+            if job and job.stopped():
                 return None
+            if now - grew_at > PROXY_STALL:
+                return STALLED
+            if now - start > PROXY_TIMEOUT:
+                return TIMED_OUT
         if job:
             with contextlib.suppress(OSError):
                 job.grew(os.path.getsize(out))
@@ -760,15 +777,29 @@ def _run_watched(argv, out, job):
             proc.wait()
 
 
+def proxy_failed_path(dst):
+    """The failure record beside the proxy path dst (<sha256>.mp4): <sha256>.failed, an empty 0600 file that
+    make_proxy writes when every command failed. The gallery and media-intake proxies skip that content then
+    (proxies --retry-failed tries it again); trash, forget, erase and prune-cache delete it with the proxy."""
+    return dst[:-len(".mp4")] + ".failed"
+
+
+def proxy_failed(dst):
+    return os.path.isfile(proxy_failed_path(dst))
+
+
 def make_proxy(src, dst, job=None):
     """Write an H.264 MP4 of src to dst (0600, in the 0700 cache), trying each of proxy_commands in turn, in a
     private work folder beside dst (the output, and the link GStreamer reads src through). The command writes a
     fragmented MP4 that job (a ProxyJob, when /m/ streams it) follows as it grows; the finished file is rewritten
     as a plain MP4 (remux_proxy; the fragmented one is kept when that fails) and kept only when ffprobe reads it
-    as H.264. True once one did; False, with nothing left behind, when none did or job was cancelled. The
-    original is only read."""
+    as H.264. An attempt that stalls (STALLED) gives way to the next command; one past PROXY_TIMEOUT ends it.
+    True once one did; False, with nothing left behind, when none did or job was cancelled. When commands ran
+    and none made a proxy (not cancelled), the failure is recorded (proxy_failed_path) so it isn't tried on
+    every run; a proxy made later clears it. The original is only read."""
     work = tempfile.mkdtemp(prefix=".work-", dir=os.path.dirname(dst))  # 0700
     out, plain = os.path.join(work, "out.mp4"), os.path.join(work, "plain.mp4")
+    tried = False
     try:
         os.symlink(os.path.abspath(src), os.path.join(work, "in"))
         info = video_info(src) or {}
@@ -785,15 +816,23 @@ def make_proxy(src, dst, job=None):
                 rc = _run_watched(argv, out, job)
             except (OSError, subprocess.SubprocessError):
                 continue
+            tried = True
             if rc is None:
-                return False  # cancelled or timed out: the next command would take as long
+                return False  # cancelled: not a failure of the clip
+            if rc == TIMED_OUT:
+                break  # still writing after an hour: the next command would take as long
             if rc == 0 and os.path.getsize(out) and video_codec(out) == "h264":
                 if job:
                     job.wrote()
                 keep = plain if remux_proxy(out, plain) and video_codec(plain) == "h264" else out
                 os.chmod(keep, 0o600)
                 os.replace(keep, dst)
+                with contextlib.suppress(FileNotFoundError):
+                    os.remove(proxy_failed_path(dst))
                 return True
+        if tried and not (job and job.stopped()):
+            with contextlib.suppress(OSError):  # there already; or unwritable: only next time's skip is lost
+                os.close(os.open(proxy_failed_path(dst), os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600))
         return False
     finally:
         shutil.rmtree(work, ignore_errors=True)
@@ -1667,9 +1706,10 @@ class App:
             write_private_bytes(dst, data)
         return dst
 
-    def proxy_needed(self, it):
+    def proxy_needed(self, it, failed=False):
         """The cache path of the H.264 proxy /m/ serves for this item (a video whose codec browsers can't play:
-        HEVC), or None when the original is served as it is (not such a video, or no proxy could be made)."""
+        HEVC), or None when the original is served as it is (not such a video, or no proxy could be made: this
+        run, or recorded by make_proxy, proxy_failed; failed=True still names the path of a recorded one)."""
         if it["media"] != "video" or it.get("noproxy"):
             return None
         if "vcodec" not in it:
@@ -1677,7 +1717,10 @@ class App:
         if it["vcodec"] not in PROXY_CODECS:
             return None
         sha = self.sha_of(it)
-        return os.path.join(PROXIES, sha + ".mp4") if re.fullmatch(r"[0-9a-f]{64}", sha) else None
+        if not re.fullmatch(r"[0-9a-f]{64}", sha):
+            return None
+        dst = os.path.join(PROXIES, sha + ".mp4")
+        return dst if failed or os.path.isfile(dst) or not proxy_failed(dst) else None
 
     def proxy_state(self, it):
         """What the large view says while it waits: "converting" when this video's proxy is still to be made or
@@ -1740,7 +1783,7 @@ class App:
                 intake.gallery_thumb_forget(job.sha)
                 made = False
             if not made and not job.stopped():
-                it["noproxy"] = True  # it failed: not tried again (a cancelled one is, on the next open)
+                it["noproxy"] = True  # it failed: not tried again (make_proxy recorded it; a cancelled one is)
             with self.proxy_lock:
                 if self.proxy_job is job:
                     self.proxy_job = None

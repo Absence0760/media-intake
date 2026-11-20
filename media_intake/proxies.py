@@ -1,13 +1,15 @@
 #!/usr/bin/env python3
 """Make the gallery's video proxies ahead of time, so every video plays at once.
 
-  media-intake proxies [--dry-run] [--inhibit]
+  media-intake proxies [--dry-run] [--inhibit] [--retry-failed]
   python3 -I media_intake/proxies.py         (same flags)
 
 For each library video the gallery shows whose codec browsers can't play (HEVC), makes the H.264 proxy the
 gallery would make on first open: the same commands (gallery.make_proxy), the same cache
 (~/.cache/media-intake/proxies/<sha256>.mp4, folder 0700, files 0600), one at a time, skipping any already
-made, so stopping it (Ctrl-C) loses only the one in progress and running it again goes on from there. The
+made, so stopping it (Ctrl-C) loses only the one in progress and running it again goes on from there. A video
+no proxy could be made of (every command failed or stalled: gallery.proxy_failed) is skipped on later runs, and
+said so, until --retry-failed. Exit 1 when one failed this run (the gallery still plays its original). The
 library is read as the gallery reads it (gallery.scan_library: never the state folder, never a file scan
 flagged, quarantined or erased); each video is checked again just before its turn and after its proxy is made
 (label.refused), and a proxy whose video was trashed or erased meanwhile is deleted at once. Originals are only
@@ -28,22 +30,25 @@ def still_shown(path):
             and not label.refused([path], gallery.STATE))
 
 
-def plan(items):
+def plan(items, retry_failed=False):
     """([(item, proxy path)] still to make, one per content; how many are made already; how many play as they
-    are). Probes each video's codec (ffprobe) and hashes the ones that need a proxy."""
+    are; how many failed before and are skipped (none with retry_failed: they are in the list again)). Probes
+    each video's codec (ffprobe) and hashes the ones that need a proxy."""
     app = gallery.App(items)
-    todo, have, plain = {}, set(), 0
+    todo, have, plain, failed = {}, set(), 0, set()
     for it in items:
         if it["media"] != "video" or it["show"] != "video":  # one the gallery's player never gets
             continue
-        dst = app.proxy_needed(it)
+        dst = app.proxy_needed(it, failed=True)
         if not dst:
             plain += 1
         elif os.path.isfile(dst):
             have.add(dst)
+        elif gallery.proxy_failed(dst) and not retry_failed:
+            failed.add(dst)
         else:
             todo.setdefault(dst, it)  # copies with the same content share one proxy
-    return [(it, dst) for dst, it in todo.items()], len(have), plain
+    return [(it, dst) for dst, it in todo.items()], len(have), plain, len(failed)
 
 
 def main(argv=None, prog="media-intake proxies"):
@@ -51,13 +56,18 @@ def main(argv=None, prog="media-intake proxies"):
         prog=prog, formatter_class=argparse.RawDescriptionHelpFormatter, allow_abbrev=False,  # --inhibit re-execs
         description="Make the gallery's H.264 copies of videos the browser can't play (HEVC, most\n"
                     "phones) now, one at a time, so the gallery plays them at once instead of\n"
-                    "converting on first open. Run it again to go on after a stop.\n\n"
+                    "converting on first open. Run it again to go on after a stop. A video that\n"
+                    "can't be converted is remembered and skipped next time (--retry-failed).\n"
+                    "Exits 1 when one failed this run; the gallery still plays its original.\n\n"
                     "Touches: reads the library; writes ~/.cache/media-intake/proxies only. Never\n"
                     "  a flagged, quarantined or erased file.\n"
-                    "Deletes: only a copy it just made of a video trashed or erased meanwhile.")
+                    "Deletes: only a copy it just made of a video trashed or erased meanwhile, and\n"
+                    "  a video's failure record once its copy is made.")
     ap.add_argument("--dry-run", action="store_true", help="only count what would be made; make nothing")
     ap.add_argument("--inhibit", action="store_true",
                     help="keep the laptop from sleeping while it runs (systemd-inhibit)")
+    ap.add_argument("--retry-failed", action="store_true",
+                    help="try again the videos an earlier run (or the gallery) could not convert")
     a = ap.parse_args(argv)
     if a.inhibit:
         if not shutil.which("systemd-inhibit"):
@@ -67,9 +77,11 @@ def main(argv=None, prog="media-intake proxies"):
                                       "--why=media-intake video proxies", sys.executable, "-I",
                                       os.path.abspath(__file__), *args])
     items, skipped = gallery.scan_library()
-    todo, have, plain = plan(items)
+    todo, have, plain, failed_before = plan(items, a.retry_failed)
     print(f"{len(todo)} to make, {have} made already, {plain} play as they are"
           f" ({skipped} flagged or erased left out)", flush=True)
+    if failed_before:
+        print(f"{failed_before} failed before, skipped (--retry-failed tries them again)", flush=True)
     if a.dry_run or not todo:
         return 0
     gallery.private_cache()

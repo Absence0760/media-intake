@@ -194,14 +194,15 @@ def gallery_thumb_path(sha, turn):
 
 def gallery_cache_paths(sha):
     """gallery.py's cached copies of this content (keyed by sha256): every thumbnail variant (each rotation,
-    and <sha256>.jpg, the content-only key before rotation was part of it) and its H.264 video proxy."""
+    and <sha256>.jpg, the content-only key before rotation was part of it), its H.264 video proxy and the
+    record that no proxy could be made of it (<sha256>.failed)."""
     return ([os.path.join(THUMBS, sha + ".jpg")] + [gallery_thumb_path(sha, t) for t in THUMB_TURNS]
-            + [os.path.join(PROXIES, sha + ".mp4")])
+            + [os.path.join(PROXIES, sha + ext) for ext in (".mp4", ".failed")])
 
 
 def gallery_thumb_forget(sha):
-    """Delete gallery.py's cached thumbnails (every rotation, and the older content-only key) and video proxy
-    of this content (keyed by sha256). Returns how many went."""
+    """Delete gallery.py's cached thumbnails (every rotation, and the older content-only key), video proxy and
+    proxy failure record of this content (keyed by sha256). Returns how many went."""
     if not re.fullmatch(r"[0-9a-f]{64}", sha or ""):
         return 0
     n = 0
