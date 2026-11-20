@@ -59,7 +59,7 @@ check, CSRF value on every POST, no-store + strict CSP, media by opaque id only.
 Originals are never written: sidecars (<file>.<ext>.xmp) only. docs/gallery.md.
 """
 import argparse, collections, contextlib, datetime, hashlib, html, http.server, io, json, math, os, re, secrets, select
-import shutil, sqlite3, subprocess, sys, tempfile, threading, time, unicodedata
+import shutil, signal, sqlite3, subprocess, sys, tempfile, threading, time, unicodedata
 import xml.etree.ElementTree as ET
 
 HERE = os.path.dirname(os.path.abspath(__file__))
@@ -251,9 +251,13 @@ def under_state(p):
     return os.path.realpath(p).startswith(os.path.realpath(STATE) + os.sep)
 
 
-def scan_library():
+def scan_library(missed=None):
     """[item] for every library media file, newest first. Never quarantine/staging/flagged/erased, nor a photo
-    handed to the records inbox and still held (intake.records_handed)."""
+    handed to the records inbox and still held (intake.records_handed). Dot-folders, symlinks and what is under
+    a symlinked folder are never listed, by design. missed: a list to which the paths the walk could not see
+    are added: a subfolder it could not read, a symlinked subfolder and a broken symlink (its target may be on
+    a drive that isn't mounted). Files may be there that the scan would otherwise list or that carry an event,
+    so the start's event-name prune is skipped when any was (main)."""
     index = intake.load(os.path.join(STATE, "index.json"), {}) or {}
     flagged = label.flagged(STATE)
     sizes = set(flagged.values())
@@ -264,8 +268,13 @@ def scan_library():
         if not os.path.isdir(root) or under_state(root):
             continue
         rroot = os.path.realpath(root)
-        for d, dirs, names in os.walk(root, followlinks=False):
+        for d, dirs, names in os.walk(root, onerror=lambda e: missed is not None and missed.append(e.filename),
+                                      followlinks=False):
             dirs[:] = sorted(x for x in dirs if not x.startswith("."))
+            if missed is not None:
+                missed.extend(os.path.join(d, x) for x in dirs if os.path.islink(os.path.join(d, x)))
+                missed.extend(os.path.join(d, x) for x in names if not x.startswith(".")
+                              and os.path.islink(os.path.join(d, x)) and not os.path.exists(os.path.join(d, x)))
             for n in names:
                 ext = os.path.splitext(n)[1].lower()
                 if ext not in IMG | VID:
@@ -669,6 +678,16 @@ class ProxyJob:
         self.written = False  # the last attempt's tool exited with its whole file written (remux may follow)
         self.cancel = threading.Event()
         self.thread = None
+        self.proc = None  # the running attempt's process (_run_watched), so close_proxies can end it at once
+        self.work = None  # make_proxy's work folder, removed by close_proxies if the thread can't finish in time
+
+    def running(self, proc):
+        with self.cond:
+            self.proc = proc
+
+    def working(self, work):
+        with self.cond:
+            self.work = work
 
     def started(self, attempt, out):
         with self.cond:
@@ -745,8 +764,15 @@ def _run_watched(argv, out, job):
     """Run one proxy command; while it runs, tell job how far out has grown. Its exit code; STALLED when out
     hasn't grown for PROXY_STALL seconds (the encoder hung: the next command may still work); TIMED_OUT past
     PROXY_TIMEOUT while it was still writing (the next command would take as long); None when job was cancelled.
-    The process never outlives this call."""
-    proc = subprocess.Popen(argv, stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+    The process never outlives this call: it runs in a process group of its own (so a Ctrl-C in the terminal
+    reaches the server, which ends it, never the encoder alone) and its PID is written to <work>/pid (work: out's
+    folder), so the next start's sweep_proxy_work can end it if this server was killed without a chance to."""
+    proc = subprocess.Popen(argv, stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+                            start_new_session=True)
+    with contextlib.suppress(OSError):
+        write_private_bytes(os.path.join(os.path.dirname(out), "pid"), str(proc.pid).encode())
+    if job:
+        job.running(proc)
     start = grew_at = time.monotonic()
     size = 0
     try:
@@ -777,9 +803,94 @@ def _run_watched(argv, out, job):
                 job.grew(os.path.getsize(out))
         return rc
     finally:
-        if proc.poll() is None:
+        if job:
+            job.running(None)
+        end_proxy_process(proc)
+
+
+def end_proxy_process(proc):
+    """Kill a proxy command's process group (its own, from start_new_session) and reap it. Safe to call twice,
+    and from another thread while _run_watched waits on it."""
+    if proc.poll() is None:
+        with contextlib.suppress(OSError):
+            os.killpg(proc.pid, signal.SIGKILL)  # pgid == pid: the group is its own, never ours
+        with contextlib.suppress(OSError):
             proc.kill()
-            proc.wait()
+    with contextlib.suppress(subprocess.SubprocessError):
+        proc.wait(10)
+
+
+PROXY_WORK = ".work-"  # make_proxy's work folders in PROXIES: .work-<pid of the process that made it>-<random>
+PROXY_WORK_LEGACY_AGE = 2 * PROXY_TIMEOUT  # a work folder named without its owner's PID is stale past this
+
+
+def _alive(pid):
+    try:
+        os.kill(pid, 0)
+    except ProcessLookupError:
+        return False
+    except OSError:  # EPERM: it exists, someone else's
+        return True
+    return True
+
+
+def _runs_in(pid, work):
+    """True when process pid is still a proxy command of work: its command line names a path in that folder
+    (the PID alone may have been reused by an unrelated process since)."""
+    try:
+        with open(f"/proc/{pid}/cmdline", "rb") as f:
+            args = f.read().split(b"\0")
+    except OSError:
+        return False
+    w = os.fsencode(work + os.sep)
+    return any(w in a for a in args)
+
+
+def sweep_proxy_work(cache=None):
+    """Remove the proxy work folders (PROXY_WORK) left by a gallery or `media-intake proxies` that ended without
+    cleaning up (killed, a crash, a power cut), at the start of either. A folder is left alone while the process
+    named in it runs (another gallery or proxies run is converting there); this process's own PID counts as gone
+    (a dead owner's PID reused by us: nothing of ours runs yet). Before its folder goes, a proxy command still
+    running there (its PID in <work>/pid, checked against its command line) is killed with its process group, so
+    an encoder orphaned by a killed server doesn't hang on for hours. A folder without a PID in its name (made by
+    an older version) goes once it is PROXY_WORK_LEGACY_AGE old. Returns how many folders were removed."""
+    cache = cache or PROXIES
+    try:
+        names = os.listdir(cache)
+    except OSError:
+        return 0
+    removed = 0
+    now = time.time()
+    for n in names:
+        if not n.startswith(PROXY_WORK):
+            continue
+        work = os.path.join(cache, n)
+        if os.path.islink(work) or not os.path.isdir(work):
+            continue
+        owner = n[len(PROXY_WORK):].split("-", 1)[0]
+        if owner.isdigit() and "-" in n[len(PROXY_WORK):]:
+            if int(owner) != os.getpid() and _alive(int(owner)):
+                continue
+        else:
+            try:
+                if now - os.lstat(work).st_mtime < PROXY_WORK_LEGACY_AGE:
+                    continue
+            except OSError:
+                continue
+        try:
+            with open(os.path.join(work, "pid")) as f:
+                child = int(f.read().strip() or 0)
+        except (OSError, ValueError):
+            child = 0
+        if child > 1 and child != os.getpid() and _runs_in(child, work):
+            with contextlib.suppress(OSError):
+                if os.getpgid(child) == child:
+                    os.killpg(child, signal.SIGKILL)
+                else:
+                    os.kill(child, signal.SIGKILL)
+        shutil.rmtree(work, ignore_errors=True)
+        removed += not os.path.lexists(work)
+    return removed
 
 
 def proxy_failed_path(dst):
@@ -802,7 +913,9 @@ def make_proxy(src, dst, job=None):
     True once one did; False, with nothing left behind, when none did or job was cancelled. When commands ran
     and none made a proxy (not cancelled), the failure is recorded (proxy_failed_path) so it isn't tried on
     every run; a proxy made later clears it. The original is only read."""
-    work = tempfile.mkdtemp(prefix=".work-", dir=os.path.dirname(dst))  # 0700
+    work = tempfile.mkdtemp(prefix=f"{PROXY_WORK}{os.getpid()}-", dir=os.path.dirname(dst))  # 0700 (sweep_proxy_work)
+    if job:
+        job.working(work)
     out, plain = os.path.join(work, "out.mp4"), os.path.join(work, "plain.mp4")
     tried = False
     try:
@@ -1795,13 +1908,22 @@ class App:
             job.end(made)
 
     def close_proxies(self):
-        """Stop the transcode still running (the server is stopping): its process ends, its work folder goes."""
+        """Stop the transcode still running (the server is stopping: Stop server, Ctrl-C, SIGTERM): its process
+        group is killed now, not at the job thread's next look, and its work folder goes, by the thread or, if
+        it can't finish in time (a remux or ffprobe still running), here."""
         with self.proxy_lock:
             job = self.proxy_job
-        if job:
-            job.cancel.set()
-            if job.thread:
-                job.thread.join(30)
+        if not job:
+            return
+        job.cancel.set()
+        with job.cond:
+            proc, work = job.proc, job.work
+        if proc:
+            end_proxy_process(proc)
+        if job.thread:
+            job.thread.join(30)
+        if work and job.thread and job.thread.is_alive():
+            shutil.rmtree(work, ignore_errors=True)
 
     def drop_thumb(self, it):
         """After a rotate: the item's new turn has its own cache key, so its next /t/ request shows it at once.
@@ -3419,36 +3541,61 @@ def main(argv=None):
         sys.exit(f"--drive {a.drive}: not a directory")
     t0 = time.monotonic()
     jobs.sweep()  # a trash/erase that died while no page watched: marked crashed, an erase's output scrubbed
-    items, skipped = scan_library()
+    sweep_proxy_work()  # conversions a killed gallery or proxies run left behind: their encoder ends, folder goes
+    missed = []
+    items, skipped = scan_library(missed)
     views = view_list([v for vs in plugins.call("gallery_views") for v in vs])
     app = App(items, os.path.abspath(a.drive) if a.drive else None, views, a.share_out)
-    if not skipped and all(os.path.isdir(r) for r in ROOTS):  # names of events emptied while no gallery ran
-        with app.lock:
-            app.prune_names()
-    running = app.sync()  # a trash/erase started before a restart: its files stay busy until it ends
-    threading.Thread(target=app.check_text, daemon=True).start()
+    got, httpd = [], None
+    prev = stop_on_signals(got)  # from here on, a conversion can start: SIGTERM and Ctrl-C end it (finally)
     try:
-        httpd, url = serve(app, a.port)
-    except OSError as e:  # the port is taken, or not ours to use
-        sys.exit(f"port {a.port} can't be used ({e.strerror or e}): pick another with --port, or leave it out")
-    print(f"xdg-open '{url}'", flush=True)
-    reg = f" Plugin tabs: {', '.join(v['title'] for v in views)}." if views else ""
-    print(f"({len(items)} items in {time.monotonic() - t0:.1f} s, {skipped} flagged/erased left out.{reg} "
-          "A private browser window keeps it out of history. "
-          "Ctrl-C or the page's Stop server button stops it.)", flush=True)
-    if running and not running["done"]:
-        print("(a trash/erase started earlier is still running; the page shows its progress)", flush=True)
-    try:
+        if not skipped and not missed and all(os.path.isdir(r) for r in ROOTS):  # events emptied while none ran
+            with app.lock:
+                app.prune_names()
+        running = app.sync()  # a trash/erase started before a restart: its files stay busy until it ends
+        threading.Thread(target=app.check_text, daemon=True).start()
+        try:
+            httpd, url = serve(app, a.port)
+        except OSError as e:  # the port is taken, or not ours to use
+            sys.exit(f"port {a.port} can't be used ({e.strerror or e}): pick another with --port, or leave it out")
+        print(f"xdg-open '{url}'", flush=True)
+        reg = f" Plugin tabs: {', '.join(v['title'] for v in views)}." if views else ""
+        print(f"({len(items)} items in {time.monotonic() - t0:.1f} s, {skipped} flagged/erased left out.{reg} "
+              "A private browser window keeps it out of history. "
+              "Ctrl-C or the page's Stop server button stops it.)", flush=True)
+        if running and not running["done"]:
+            print("(a trash/erase started earlier is still running; the page shows its progress)", flush=True)
+        if missed:
+            print(f"({len(missed)} folder(s) or link(s) could not be read; event names are kept until a full "
+                  "scan)", flush=True)
         httpd.serve_forever(poll_interval=0.2)
     except KeyboardInterrupt:
         st = jobs.status(JOB_KEY)
         print("stopped" + ("; the trash/erase keeps going on its own (<state>/jobs/gallery.json)"
                            if st and not st["done"] else ""))
-        return 130
+        return 128 + (got[0] if got else signal.SIGINT)
     finally:
         app.close_proxies()
-        httpd.server_close()
+        if httpd:
+            httpd.server_close()
+        for sig, h in prev.items():
+            signal.signal(sig, h)
     return 0
+
+
+def stop_on_signals(got):
+    """SIGTERM (systemd, kill, a closed session) stops the server as Ctrl-C does: KeyboardInterrupt in the main
+    thread, so main's finally ends the running conversion and removes its work folder. Without it, Python dies
+    at once and the encoder is left running as an orphan. The signal's number is appended to got. Returns the
+    handlers replaced ({} off the main thread, where Python can't set one)."""
+    if threading.current_thread() is not threading.main_thread():
+        return {}
+
+    def handler(signum, frame):
+        got.append(signum)
+        raise KeyboardInterrupt
+
+    return {sig: signal.signal(sig, handler) for sig in (signal.SIGTERM, signal.SIGINT)}
 
 
 PAGE = r"""<!doctype html>

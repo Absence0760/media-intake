@@ -15,7 +15,7 @@ flagged, quarantined or erased); each video is checked again just before its tur
 (label.refused), and a proxy whose video was trashed or erased meanwhile is deleted at once. Originals are only
 read; nothing is fetched. docs/gallery.md, "Video proxies".
 """
-import argparse, contextlib, os, shutil, sys, time
+import argparse, contextlib, os, shutil, signal, sys, time
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, HERE)
@@ -85,7 +85,9 @@ def main(argv=None, prog="media-intake proxies"):
     if a.dry_run or not todo:
         return 0
     gallery.private_cache()
+    gallery.sweep_proxy_work()  # what a killed gallery or run left: its encoder ends, its work folder goes
     made = failed = gone = 0
+    prev = gallery.stop_on_signals([])  # SIGTERM stops it as Ctrl-C does: make_proxy ends its encoder and folder
     try:
         for n, (it, dst) in enumerate(todo, 1):
             p = it["path"]
@@ -110,6 +112,9 @@ def main(argv=None, prog="media-intake proxies"):
     except KeyboardInterrupt:
         print(f"\nstopped: {made} made; run it again to go on", flush=True)
         return 130
+    finally:
+        for sig, h in prev.items():
+            signal.signal(sig, h)
     print(f"done: {made} made, {failed} failed, {gone} gone meanwhile, {have} made already", flush=True)
     return 1 if failed else 0
 

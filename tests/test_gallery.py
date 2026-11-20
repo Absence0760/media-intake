@@ -1261,6 +1261,11 @@ class ViewsEndpointsTest(unittest.TestCase):
         self.assertEqual(stored(), {"beach": "Sea days"})
         os.makedirs(self.env["PERSONAL_FOOTAGE"])
         os.makedirs(os.path.join(self.home, "Videos/demo-footage/originals"))
+        link = os.path.join(self.lib, "on-a-drive")  # a symlinked folder whose drive isn't mounted: not a full scan
+        os.symlink(os.path.join(self.home, "no-such-drive"), link)
+        self.start().stop()
+        self.assertEqual(stored(), {"beach": "Sea days"})
+        os.remove(link)
         self.start().stop()
         self.assertEqual(stored(), {})
 
