@@ -1238,6 +1238,7 @@ own namespace; your tags win.
 | `Label\|*`, `Review\|maybe-trash`, `Review\|untagged-*` | SigLIP (`label.py` via `tag`/`tag-files`) | replaced as a set on every labelled run (`--no-labels` leaves them) |
 | `Review\|child-in-shot` | SigLIP | added, never removed by a tool; only you clear it |
 | `AI\|vlm/<model>/...` (and the older `Review\|vlm-trash/*`, `Review\|vlm-keep`) | the VLM (`vlm_trash.py`) | its own; tagging never touches them |
+| `AI\|bestshot/cover`, `AI\|bestshot/not-best` | `best-shot` (`best_shot.py`; [gallery.md](gallery.md), "Best shot") | its own, replaced on every run; never written to a file you decided on, named, used or protected |
 | `Used\|<slug>` | `mark-used` | never removed |
 | `People\|<Name>`, `Pets\|<Name>` | `people tag` and `pets tag` ([recognition.md](recognition.md)), only for names you gave or confirmed | removes only tags it wrote that no longer apply; never re-adds one you removed from the sidecar; your own `People\|` and `Pets\|` tags are never touched |
 | `Calibrate\|<label>\|yes`, `Calibrate\|<label>\|no` | you (the gallery's "+ tag") | never touched by a tool; only `calibrate` reads them ([configuration.md](configuration.md), "Calibrating label thresholds") |

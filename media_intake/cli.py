@@ -33,6 +33,7 @@ Erase and trash
   trash FILE...             DELETES junk (not private files), with --yes
   purge-review BATCH        DELETES a batch's review folder, with --yes
   suggest-trash             find Suggested junk; opens the review page
+  best-shot                 best shot of each burst; the rest to Suggested junk
   not-trash FILE...         Keep suggested files: never suggest them again
   vlm-trash                 a vision model's opinion on junk (venv, Ollama)
 
@@ -418,10 +419,15 @@ def _prune_cache(rest):  # cli.py's too: it reads the library as the gallery doe
     return cache_prune.main(rest)
 
 
+def _best_shot(rest):  # cli.py's too: it reads the library as the gallery does (best_shot imports gallery)
+    import best_shot
+    return best_shot.main(rest)
+
+
 # cli.py's own commands; VENV_SCRIPTS run in the venv; everything else goes to intake.py's parser.
 COMMANDS = {"doctor": lambda rest: doctor(), "queue": _queue, "review": _review, "backup": _backup,
             "gallery": _gallery, "proxies": _proxies, "prune-cache": _prune_cache, "zip-check": _zip_check,
-            "places": _places}
+            "places": _places, "best-shot": _best_shot}
 HELP = ("-h", "--help", "help")
 
 
