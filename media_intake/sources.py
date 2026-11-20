@@ -527,10 +527,13 @@ def _check_folder_root(root):
             raise Denied(f"{root} is, is inside, or contains {why} ({d}): not a source folder")
     # erase's sweeps never enter the records folder (intake.walk_files), so a source there could never be erased.
     # Is or is inside: always; contains: only when it is there (a missing one doesn't rule out ~/Documents).
-    rec = os.path.realpath(config.get()["records_root"])
-    if _within(rp, rec, fold=True) or (os.path.isdir(rec) and _within(rec, rp, fold=True)):
-        raise Denied(f"{root} is, is inside, or contains your private records folder (records.root, {rec}): "
-                     "not a source folder")
+    cfg = config.get()
+    for rec, key in [(os.path.realpath(cfg["records_root"]), "records.root")] + \
+            [(os.path.realpath(x), "records.protect") for x in cfg.get("records_protect", [])] + \
+            ([(os.path.realpath(cfg["records_staging"]), "to-records staging")] if cfg.get("records_staging") else []):
+        if _within(rp, rec, fold=True) or (os.path.isdir(rec) and _within(rec, rp, fold=True)):
+            raise Denied(f"{root} is, is inside, or contains your private records folder ({key}, {rec}): "
+                         "not a source folder")
     rel = os.path.relpath(rp, home)
     if any(p.startswith(".") for p in rel.split(os.sep)):
         raise Denied(f"{root} is a hidden folder (app data): copy the photos somewhere visible first")

@@ -365,6 +365,21 @@ class Folder(unittest.TestCase):
         os.makedirs(os.path.join(scans, "2026"))
         self.assertEqual(sources.check_folder_root(scans), os.path.realpath(scans))
 
+    def test_a_protect_folder_and_the_staging_folder_are_refused(self):
+        """records.protect folders and to-records' staging folder are skipped by every sweep like records.root, so
+        none is a source: is or is inside always, contains only when it is there; a name prefix is no match."""
+        h = self.home
+        consume, media = os.path.join(h, "doc-tool", "consume"), os.path.join(h, "doc-tool", "media")
+        with open(os.environ["MEDIA_INTAKE_CONFIG"], "a") as f:
+            f.write(f'\n[records]\ninbox = "{consume}"\nprotect = ["{consume}", "{media}"]\n')
+        self.refused(consume, "records.protect")
+        self.refused(os.path.join(media, "originals"), "records.protect")
+        self.refused(os.path.join(h, "doc-tool", ".consume.staging"), "to-records staging")
+        self.refused(os.path.join(h, "doc-tool"), "private records folder")  # it holds them, now there
+        near = os.path.join(h, "doc-tool-scans")  # shares a prefix only: still a source
+        os.makedirs(os.path.join(near, "2026"))
+        self.assertEqual(sources.check_folder_root(near), os.path.realpath(near))
+
     def test_symlinked_parent_into_state_or_library_refused(self):
         """A link in a parent folder (not the last component) that leads into the state or the library:
         only the resolved path can tell, and it is what every check compares."""

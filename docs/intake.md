@@ -835,8 +835,12 @@ own path ([records.md](records.md)).
   near-duplicate search. A copy of an erased photo filed there stays, and the
   coverage report lists the folder under "not checked". The folder is
   resolved through symlinks and compared ignoring letter case (`walk_files`
-  in `intake.py`). `records.inbox` must be inside it on purpose: a photo
-  `to-records` hands there is never swept with its original.
+  in `intake.py`). Every `records.protect` folder (a document tool's consume
+  folder and its storage) and `to-records`' staging folder beside the inbox
+  get the same skip and the same "not checked" line, and `stage` refuses all
+  of them as sources. `records.inbox` must be inside `records.root` or a
+  `records.protect` folder on purpose: a photo `to-records` hands there is
+  never swept with its original.
 - **The gallery's caches.** Its thumbnails
   (`~/.cache/media-intake/thumbs/<sha256>-r<turn>.jpg`, one per rotation, and
   `<sha256>.jpg` from older versions) and H.264 video proxies
@@ -1427,7 +1431,7 @@ dropping the rest (dry run, unreadable files, symlinked cache folders, the libra
 and git repos, content in the library index left alone, counts only); `test_records_skip`: a copy under the records
 folder (the default with no config, `$PRIVATE_RECORDS` through a symlink and in another letter case, one on the
 drive) survives `sweep-erased --yes`, `forget` and its erase, and `verify-gone`, and in-process neither `sweep` nor
-`drive_purge` hashes a file there, plus `records.root`'s config rules; `test_to_records`: the records inbox
+`drive_purge` hashes a file there, plus `records.root`'s and `records.protect`'s config rules and `walk_files` skipping a `records.protect` folder; `test_to_records`: the records inbox
 handoff and `--finish` ([records.md](records.md), Tests); `test_library_ops_media_kinds`: every
 library-side command on a photo, an mp4 and a .mov, alone and mixed; `test_detectors_media_kinds`: scan,
 vlm_trash, semantic, label and the plugin hook on photos, videos and mixed batches, broken videos that
