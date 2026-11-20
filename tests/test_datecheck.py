@@ -66,16 +66,34 @@ class RulesTest(unittest.TestCase):
                                           ("Google", "Pixel 7a", (2023, 5), "Pixel 7a"),
                                           ("Google", "Pixel XL", (2016, 10), "Pixel"),
                                           ("samsung", "SM-S921B", (2024, 1), "Galaxy S24"),
-                                          ("GoPro", "GoPro Max", (2019, 10), "GoPro MAX")):
+                                          ("GoPro", "GoPro Max", (2019, 10), "GoPro MAX"),
+                                          ("SONY", "ILCE-7M4", (2021, 12), "Sony α7 IV"),
+                                          ("SONY", "ILCE-7RM5", (2022, 11), "Sony α7R V"),
+                                          ("Canon", "Canon EOS R5", (2020, 7), "Canon EOS R5"),
+                                          ("Canon", "Canon EOS R6m2", (2022, 12), "Canon EOS R6 Mark II"),
+                                          ("Canon", "Canon EOS R6 Mark II", (2022, 12), "Canon EOS R6 Mark II"),
+                                          ("Canon", "Canon EOS RP", (2019, 3), "Canon EOS RP"),
+                                          ("Canon", "Canon EOS R", (2018, 10), "Canon EOS R"),
+                                          ("DJI", "Osmo Pocket 3", (2023, 10), "DJI Osmo Pocket 3"),
+                                          ("DJI", "OsmoAction4", (2023, 8), "DJI Osmo Action 4"),
+                                          ("DJI", "DJI Osmo Action 5 Pro", (2024, 9), "DJI Osmo Action 5 Pro"),
+                                          ("Arashi Vision", "Insta360 X3", (2022, 9), "Insta360 X3"),
+                                          ("", "Insta360 ONE X2", (2020, 10), "Insta360 ONE X2")):
             self.assertEqual(datecheck.first_sale(make, model), (when, family), model)
-        for make, model in (("GoPro", "HERO"), ("Apple", "iPad Pro"), ("Canon", "EOS R5"), ("", ""),
-                            ("SyntheticCam", "HERO12 Black")):
+        for make, model in (("GoPro", "HERO"), ("Apple", "iPad Pro"), ("", ""), ("SyntheticCam", "HERO12 Black"),
+                            ("Canon", "Canon EOS R7"), ("Canon", "Canon EOS R6m3"), ("Canon", "Canon EOS R5 C"),
+                            ("SONY", "ILCE-7M2"), ("SONY", "ILCE-7M4K"), ("SyntheticCam", "ILCE-7M4"),
+                            ("DJI", "FC3582"), ("DJI", "Osmo Action 3"), ("Arashi Vision", "Insta360 X4 Air"),
+                            ("Canon", "Canon EOS R6 Mark III")):
             self.assertIsNone(datecheck.first_sale(make, model), model)
         f = datecheck.check_era(rec(make="GoPro", model="HERO12 Black", used=D(2016, 1, 4)))
         self.assertEqual((f["kind"], f["confidence"]), ("era", "high"))
         self.assertIn("September 2023", f["reason"])
         self.assertIsNone(datecheck.check_era(rec(make="GoPro", model="HERO12 Black", used=D(2023, 8, 1))))  # slack
         self.assertIsNone(datecheck.check_era(rec(make="GoPro", model="HERO12 Black", used=D(2024, 5, 1))))
+        f = datecheck.check_era(rec(make="Canon", model="Canon EOS R5m2", used=D(2023, 1, 10)))
+        self.assertIn("Canon EOS R5 Mark II, first sold in August 2024", f["reason"])
+        self.assertIsNone(datecheck.check_era(rec(make="DJI", model="Osmo Pocket 3", used=D(2023, 7, 15))))  # slack
 
     def test_codec_floor(self):
         f = datecheck.check_codec(rec(video=True, ext=".mp4", codec="hvc1", used=D(2010, 6, 1)))

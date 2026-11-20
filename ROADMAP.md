@@ -77,7 +77,10 @@ The goal: someone else can install it on Fedora, import a phone, and trust it.
       gallery's Dates to check / Fix date, sidecars only, undoable (`docs/dates.md`).
 - [ ] Re-file a fixed file into its right YYYY/YYYY-MM folder: an explicit step with its own dry run
       (index, plans and backup record rekeyed); today a fix leaves the file where it is.
-- [ ] Device era for more makers (DJI, Insta360, Sony, Canon), and HEVC 10-bit / HDR vs the model.
+- [x] Device era for more makers: Sony α7 III/IV/V and α7R V, Canon EOS R bodies, DJI Osmo
+      Action 4 / 5 Pro and Pocket 3, Insta360 ONE X2 / X3 / X4 (docs/dates.md, "Device era").
+- [ ] HEVC 10-bit / HDR vs the model: read bit depth and colour transfer in `check-dates` first,
+      then a maker-sourced list of models that record them (docs/dates.md, "Video format").
 - [x] Source kind `folder` for laptop folders (refuse HOME itself, hidden/config dirs, repos,
       the state dir, library roots, password-manager paths; offload refuses folder sources).
 

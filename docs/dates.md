@@ -93,9 +93,33 @@ one. Confidence: high.
 | iPhone 6 to 17, 6s, X, XS, XR, 16e, Air, SE (2nd and 3rd generation) | 2014-09, 2015-09, 2016-09, 2017-09, 2017-11, 2018-09, 2018-10, 2019-09, 2020-10, 2021-09, 2022-09, 2023-09, 2024-09, 2025-02, 2025-09, 2020-04, 2022-03 | [Apple: Identify your iPhone model](https://support.apple.com/en-us/108044) (years), Apple Newsroom (months) |
 | Google Pixel to Pixel 10 (a models too) | 2016-10 (Pixel, Pixel XL), 2017-10, 2018-10, 2019-05 (3a), 2019-10, 2020-08 (4a), 2020-10, 2021-08 (5a), 2021-10, 2022-07 (6a), 2022-10, 2023-05 (7a), 2023-10, 2024-05 (8a), 2024-08, 2025-04 (9a), 2025-08 | [Google: Identify your Pixel phone](https://support.google.com/pixelphone/answer/7158570) (years), the Google blog (months) |
 | Samsung Galaxy S8 to S25 (model codes `SM-G95…` to `SM-S93…`) | 2017-04, 2018-03, 2019-03, 2020-03, 2021-01, 2022-02, 2023-02, 2024-01, 2025-02 | [Samsung Newsroom](https://news.samsung.com/global/) |
+| Sony α7 III (`ILCE-7M3`) | 2018-03 (on sale 23 March) | [Sony Japan press release, 2018-02-27](https://www.sony.jp/CorporateCruise/Press/201802/18-0227/) |
+| Sony α7 IV (`ILCE-7M4`) | 2021-12 (17 December) | [Sony Japan press release, 2021-12-02](https://www.sony.jp/CorporateCruise/Press/202112/21-1202/) |
+| Sony α7R V (`ILCE-7RM5`) | 2022-11 (25 November) | [Sony Japan press release, 2022-10-26](https://www.sony.jp/CorporateCruise/Press/202210/22-1026B/) |
+| Sony α7 V (`ILCE-7M5`) | 2025-12 (19 December) | [Sony Japan press release, 2025-12-02](https://www.sony.jp/CorporateCruise/Press/202512/25-1202/) |
+| Canon EOS R, RP, R5, R6, R3, R10, R6 Mark II, R50, R8, R100, R5 Mark II, R1 (`Canon EOS R6m2`; "Mark II" spelled out also matches) | 2018-10, 2019-03, 2020-07, 2020-08, 2021-11, 2022-07, 2022-12, 2023-03, 2023-04, 2023-06, 2024-08, 2024-11 | Canon Camera Museum, "Marketed" month: [EOS R](https://global.canon/en/c-museum/product/dslr877.html), [RP](https://global.canon/en/c-museum/product/dslr880.html), [R5](https://global.canon/en/c-museum/product/dslr894.html), [R6](https://global.canon/en/c-museum/product/dslr895.html), [R3](https://global.canon/en/c-museum/product/dslr899.html), [R10](https://global.canon/en/c-museum/product/dslr902.html), [R6 Mark II](https://global.canon/en/c-museum/product/dslr905.html), [R50](https://global.canon/en/c-museum/product/dslr906.html), [R8](https://global.canon/en/c-museum/product/dslr907.html), [R100](https://global.canon/en/c-museum/product/dslr908.html), [R5 Mark II](https://global.canon/en/c-museum/product/dslr910.html), [R1](https://global.canon/en/c-museum/product/dslr913.html) |
+| DJI Osmo Action 4 | 2023-08 (2 August) | [DJI announcement](https://www.dji.com/media-center/announcements/dji-introduces-osmo-action-4-for-capturing-adventure-in-stunning-clarity) |
+| DJI Osmo Pocket 3 | 2023-10 (shipping 25 October) | [DJI announcement](https://www.dji.com/media-center/announcements/dji-releases-the-osmo-pocket-3-for-moving-moments-with-unparalleled-precision-en) |
+| DJI Osmo Action 5 Pro | 2024-09 (19 September) | [DJI announcement](https://www.dji.com/media-center/announcements/dji-osmo-action-5-pro-en) |
+| Insta360 ONE X2 | 2020-10 | [Insta360 launch post](https://www.insta360.com/blog/news/insta360-one-x2-360-action-camera-announced.html) ("available to order today"; the post carries a later 2020-11-20 publish date, its images are filed 2020/10; the earlier month is the lenient one) |
+| Insta360 X3 | 2022-09 (8 September) | [Insta360 launch post](https://www.insta360.com/blog/news/insta360-x3-360-action-cam.html) |
+| Insta360 X4 | 2024-04 (16 April) | [Insta360 launch post](https://www.insta360.com/blog/news/insta360-x4-8K-360-action-camera-endless-creative-possibility.html) |
 
 Checked 2026-11-19 against those pages; some months are from the makers'
-launch posts rather than the support pages, which give years only.
+launch posts rather than the support pages, which give years only. The Sony,
+Canon, DJI and Insta360 rows were checked 2026-11-20. Sony's Japanese
+releases give the Japan sale date, which can be a few weeks off other
+markets; the three months of slack covers that. Matching is exact: a
+Sony kit or other body code, a Canon EOS R6 Mark III or R5 C, an Insta360
+X4 Air or an older DJI Osmo Action is not one of these and is skipped.
+
+Left out on purpose: the Canon EOS R7 (the museum gives 2022-11, months after
+it went on sale abroad, so it would flag real photos); DJI drones, whose
+EXIF Model is a camera code (`FC3582`, `L1D-20c`, ...) that DJI's own pages
+don't map to a product; other Sony and Canon bodies and older Insta360 and
+DJI handhelds, until each has a maker source. The Model strings DJI and
+Insta360 write are matched loosely (case, spaces, an optional `DJI` prefix)
+because the makers don't document them.
 
 ### Video format (`codec`)
 
@@ -107,7 +131,10 @@ A HEIC / HEIF photo is an HEVC still, so it gets the HEVC floor. Confidence:
 high. It rarely fires (a 2016 reset date is newer than all three); later
 idea, not done because it isn't reliable from metadata alone: 10-bit HEVC or
 HDR (HLG, Dolby Vision) newer than a phone model that could shoot it, and an
-encoder or firmware string newer than the date.
+encoder or firmware string newer than the date. `check-dates` reads only
+`CompressorID` today, not bit depth or the colour transfer, so that check
+needs those fields read first and a maker source for which models record
+10-bit or HDR.
 
 ### Sequence (`sequence`)
 
