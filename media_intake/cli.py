@@ -54,6 +54,7 @@ Library
   migrate-tags              one-off: rename an older tool tag in your sidecars
   proxies                   make the gallery's video copies now, so they play
   prune-cache               DELETES gallery thumbnails nothing shows any more
+  space                     what takes room and what it frees; changes nothing
 
 Backup drive
   backup DRIVE              copy the library to the backup drive (no deletes)
@@ -421,7 +422,7 @@ def _prune_cache(rest):  # cli.py's too: it reads the library as the gallery doe
 # cli.py's own commands; VENV_SCRIPTS run in the venv; everything else goes to intake.py's parser.
 COMMANDS = {"doctor": lambda rest: doctor(), "queue": _queue, "review": _review, "backup": _backup,
             "gallery": _gallery, "proxies": _proxies, "prune-cache": _prune_cache, "zip-check": _zip_check,
-            "places": _places}
+            "places": _places, "space": lambda rest: importlib.import_module("space").main(rest)}
 HELP = ("-h", "--help", "help")
 
 

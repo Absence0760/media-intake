@@ -136,7 +136,9 @@ The goal: someone else can install it on Fedora, import a phone, and trust it.
       stripped share-safe folder.
 - [ ] Free up space: a read-only report of what takes room (largest videos, duplicate sets,
       Suggested junk, cached proxies) with the space each would free, and links into the
-      gallery to act on it. Changes nothing itself.
+      gallery to act on it. Changes nothing itself. The report is done (`media-intake space`,
+      docs/gallery.md "Free up space"); left: the links into the gallery (a view per section,
+      or the report as a gallery page).
 - [ ] Backup health in the gallery: when the last `backup` ran, to which drive, and how many
       library files are not on it yet; a link to the command to run. Read-only.
 - [x] Bulk edits on a selection: add/remove tags, set event, rotate.
