@@ -933,8 +933,9 @@ their size); `media-intake prune-cache` deletes:
   served now;
 - a `<sha256>-r<turn>.jpg` when no library copy of that content shows that
   turn (the sidecar's orientation on top of the file's own, as above);
-- every thumbnail and `proxies/<sha256>.mp4` of content no longer in the
-  library. A proxy of content still there is kept.
+- every thumbnail, `proxies/<sha256>.mp4` and `proxies/<sha256>.failed` (the
+  record that no proxy could be made) of content no longer in the library. A
+  proxy or record of content still there is kept.
 
 "In the library" is what the gallery lists: the library, videos and project
 folders, never the state folder or a flagged file (so a flagged file's cached
@@ -945,9 +946,9 @@ a file can't be read, what the library holds is unknown: only the legacy
 thumbnails go, and the summary says why.
 
 Only names the gallery writes are touched (`<sha256>.jpg`,
-`<sha256>-r<0|90|180|270>.jpg`, `<sha256>.mp4`), and only regular files: a
-symlink under one of those names is never followed or removed (the summary
-counts it), and a folder in the cache path that is a symlink is not entered.
+`<sha256>-r<0|90|180|270>.jpg`, `<sha256>.mp4`, `<sha256>.failed`), and only
+regular files: a symlink under one of those names is never followed or
+removed (the summary counts it), and a folder in the cache path that is a symlink is not entered.
 Temporary files and the proxy work folders (`proxies/.work-*`) are left alone.
 Originals and sidecars are only read. Output is counts and sizes, never file
 names. The real run holds the library lock (docs/intake.md, "One writer at a
@@ -985,27 +986,35 @@ and serves that instead; every other video is served as it is.
   that reply simply ends early; the next open follows the next attempt. A
   paused player that stops reading keeps its reply (and so its transcode)
   open, as a watched one.
-- **Ahead of time**: `media-intake proxies [--dry-run] [--inhibit]` makes
-  every missing proxy now, one at a time, with the same commands and cache,
-  so the gallery never converts. It reads the library as the gallery does
-  (never the state folder, never a flagged, quarantined or erased file),
-  checks each video again just before and after its turn, deletes a proxy
-  whose video was trashed or erased meanwhile, prints counts and the path of
-  each video it converts, and exits 1 when one failed. Stop it any time
-  (Ctrl-C loses only the one in progress) and run it again to go on;
-  `--inhibit` keeps the laptop awake (`systemd-inhibit`).
+- **Ahead of time**: `media-intake proxies [--dry-run] [--inhibit]
+  [--retry-failed]` makes every missing proxy now, one at a time, with the
+  same commands and cache, so the gallery never converts. It reads the
+  library as the gallery does (never the state folder, never a flagged,
+  quarantined or erased file), checks each video again just before and after
+  its turn, deletes a proxy whose video was trashed or erased meanwhile,
+  prints counts and the path of each video it converts, and exits 1 when one
+  failed this run (the gallery still plays its original; in a `set -e`
+  script, run it last or add `|| true` so later steps still run). A video
+  that failed before is skipped and counted (`N failed before, skipped`);
+  `--retry-failed` tries those again. Stop it any time (Ctrl-C loses only
+  the one in progress) and run it again to go on; `--inhibit` keeps the
+  laptop awake (`systemd-inhibit`).
 - **How**: ffmpeg first, only when it has an HEVC decoder (`libx264`, else
   `libopenh264`); Fedora's `ffmpeg-free` has none, so it isn't run there.
   Then GStreamer's GPU decoder (`vah265dec` or Vulkan, as for thumbnails)
   into `vah264enc` (VA-API: decoded, scaled and encoded on the GPU) and then
   one CPU encoder (`x264enc`, else `openh264enc`), each with the sound when it
-  is AAC, then without. `media-intake doctor` lists an H.264 encoder as
-  optional (`gstreamer1-plugin-openh264`) and says whether it runs on the
-  GPU. Measured on a synthetic 25 s 4K/60 HEVC clip (AMD iGPU, VA-API): the
-  first bytes reached the player after 1.7 s, against 77 s before (the whole
-  transcode, `openh264enc` at 4K, was waited for); the whole proxy took 27 s
-  (`vah264enc`, 1080p) against 77 s. Nothing is fetched; the original is
-  only read.
+  is AAC, then without. An attempt whose output hasn't grown for 2 minutes
+  (`PROXY_STALL`: a GPU encoder that hung, using no CPU) is stopped and the
+  next command is tried, so a hang ends on the CPU encoder instead of waiting
+  out the hour; one still writing after an hour (`PROXY_TIMEOUT`) ends the
+  video, since the next command would take as long. `media-intake doctor`
+  lists an H.264 encoder as optional (`gstreamer1-plugin-openh264`) and says
+  whether it runs on the GPU. Measured on a synthetic 25 s 4K/60 HEVC clip
+  (AMD iGPU, VA-API): the first bytes reached the player after 1.7 s, against
+  77 s before (the whole transcode, `openh264enc` at 4K, was waited for); the
+  whole proxy took 27 s (`vah264enc`, 1080p) against 77 s. Nothing is
+  fetched; the original is only read.
 - **File names never reach a pipeline.** ffmpeg gets the original as a
   `file:` path. `gst-launch-1.0` re-parses its arguments as one pipeline, so a
   name holding `!`, quotes or spaces could add elements: it reads the
@@ -1017,16 +1026,22 @@ and serves that instead; every other video is served as it is.
 - **Cached** in `~/.cache/media-intake/proxies/<sha256>.mp4` (folder 0700,
   files 0600), written in the work folder first (removed afterwards) and kept
   only when ffprobe reads it back as H.264. They are copies of video content, so
-  `trash`, `forget` and `erase` delete them by sha256 with the thumbnail,
-  `verify-gone` reports one that is still there as STILL PRESENT. A
+  `trash`, `forget` and `erase` delete them by sha256 with the thumbnail and
+  the `.failed` record ("When it fails", below), and `verify-gone` reports one
+  that is still there as STILL PRESENT. A
   transcode whose video goes into a Trash or Erase job stops (its process
   ends, its stream to the page ends, nothing of it is kept), and one finished
   just after its video was trashed or erased is deleted. Stopping the
   gallery (the page's button) stops its transcode too.
-- **When it fails** (no H.264 encoder, no decoder, a timeout after an hour),
+- **When it fails** (every command failed or stalled, or an hour passed),
   the original is served as before and the page says the browser can't play
-  it, with **Open in the system player**; that video isn't tried again until
-  the gallery restarts (`media-intake proxies` tries it again).
+  it, with **Open in the system player**. The failure is recorded as
+  `proxies/<sha256>.failed` (empty, 0600), so neither the gallery nor
+  `media-intake proxies` spends time on that video again until
+  `media-intake proxies --retry-failed`; a proxy made later deletes the
+  record. A cancelled transcode (you moved on, Ctrl-C) records nothing.
+  `trash`, `forget`, `erase` and `prune-cache` delete the record with the
+  proxy, and `verify-gone` counts one left behind with the proxies.
 - Safe to delete the whole folder at any time; proxies are made again.
 - The review page ([review-ui.md](review-ui.md)) serves a batch's quarantine
   and review files as they are, with no proxy: quarantined files can hold
@@ -1271,9 +1286,18 @@ proxies. `media-intake proxies` through the real `cli.py`: `--dry-run`
 counts (a duplicate is one proxy, an erased clip is left out and never named),
 a run makes the plain proxy once, a second run finds it made, the gallery then
 serves it at once with Range, a starred clip is proxied like any other, a
-failing tool exits 1 leaving nothing, and its help says what it touches and
-deletes. `ProxiesRunTest` runs it in-process with the plan and `make_proxy`
-stood in for: a video trashed, erased or flagged while its proxy is made
+failing tool exits 1 leaving only its `.failed` record, the next run skips it
+(`1 failed before, skipped`, exit 0) and `--retry-failed` tries it again, and
+its help says what it touches and deletes. `MakeProxyTest` runs `make_proxy`
+in-process with Python stand-ins for the commands: an attempt that hangs
+(after its first bytes, or before any) gives way to the next command within
+`PROXY_STALL`, one that keeps writing slowly is not stalled, one still writing
+at `PROXY_TIMEOUT` ends it without the next command, every command failing
+writes the 0600 record and a later success deletes it, a cancel records
+nothing, and the gallery serves the original of a recorded failure.
+`PlanTest`: `proxies.plan` counts a recorded failure and skips it, or plans it
+again with `retry_failed`. `ProxiesRunTest` runs it in-process with the plan
+and `make_proxy` stood in for: a video trashed, erased or flagged while its proxy is made
 leaves no proxy ("gone meanwhile", exit 0), and one `still_shown` refuses
 before its turn (a symlink, a file under the state folder, an erased one) gets
 none made. In-process: `App.playable` with

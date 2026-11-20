@@ -30,7 +30,7 @@ import intake  # noqa: E402  (THUMBS, PROXIES, sha256)
 import library_lock  # noqa: E402
 
 THUMB_NAME = re.compile(r"([0-9a-f]{64})(?:-r(0|90|180|270))?\.jpg")
-PROXY_NAME = re.compile(r"([0-9a-f]{64})\.mp4")
+PROXY_NAME = re.compile(r"([0-9a-f]{64})\.(?:mp4|failed)")  # a proxy, or the record that none could be made
 LEGACY, TURN, GONE_THUMB, GONE_PROXY = ("legacy thumbnails (<sha256>.jpg)", "thumbnails of a turn no copy shows",
                                         "thumbnails of content not in the library",
                                         "video proxies of content not in the library")

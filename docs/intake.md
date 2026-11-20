@@ -194,7 +194,7 @@ media-intake check-dates [PATHS...] [--json] [--quick]   # wrong-looking dates; 
 media-intake fix-dates FILE... --set W|--shift ±N|--suggested|--from-neighbours|--like GOOD [--reason T] [--yes]
 media-intake fix-dates --undo [ID] [--yes]    # sidecars only; a dry run without --yes (dates.md)
 media-intake gallery [--drive DRIVE] [--share-out DIR]
-media-intake proxies [--dry-run] [--inhibit]  # make the gallery's HEVC video proxies ahead of time (gallery.md)
+media-intake proxies [--dry-run] [--inhibit] [--retry-failed]  # the gallery's HEVC video proxies ahead of time (gallery.md)
 media-intake prune-cache [--dry-run]          # gallery thumbnails and proxies nothing shows any more
 media-intake calibrate [--precision P] [--json]   # label thresholds vs your marks, report only (configuration.md)
 media-intake backup DRIVE [--verify] [--dry-run] [--skip PART]   # library, videos, sidecars to the backup drive (backup.md)
@@ -822,7 +822,8 @@ quarantine. A file named twice is forgotten once.
 - **The gallery's caches.** Its thumbnails
   (`~/.cache/media-intake/thumbs/<sha256>-r<turn>.jpg`, one per rotation, and
   `<sha256>.jpg` from older versions) and H.264 video proxies
-  (`~/.cache/media-intake/proxies/<sha256>.mp4`) are not exact copies, so the
+  (`~/.cache/media-intake/proxies/<sha256>.mp4`, and `<sha256>.failed`, the
+  record that none could be made) are not exact copies, so the
   sweep can't find them: `erase`, `forget` and `trash` delete them by the
   erased item's sha256 (every rotation), and `verify-gone` reports any left.
   The same goes for people and pets recognition data (detections, vectors,

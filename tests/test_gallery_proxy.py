@@ -9,9 +9,12 @@ H.264 encoder) and an H.264 .mp4. The real gallery server serves them; trash, fo
 verify-gone run the real intake.py. Failure paths put fake ffmpeg / GStreamer tools first on the
 server's PATH (ffprobe stays the real one), which record their arguments and fail. ProxiesRunTest runs
 proxies.main in-process (a video trashed, erased or flagged mid-make; still_shown's refusals). PlayableTest
-runs App.playable in-process with make_proxy held on an event (who waits for which transcode).
+runs App.playable in-process with make_proxy held on an event (who waits for which transcode). MakeProxyTest
+runs make_proxy with Python stand-ins for the commands (a stalled attempt, the deadline, the failure record);
+PlanTest runs proxies.plan with the App stood in for (a recorded failure skipped, or retried).
 """
-import contextlib, glob, http.client, io, json, os, shutil, stat, subprocess, sys, tempfile, threading, unittest
+import contextlib, glob, http.client, io, json, os, shutil, stat, subprocess, sys, tempfile, threading, time
+import unittest
 import unittest.mock as mock
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
@@ -223,7 +226,7 @@ class ProxyBase(unittest.TestCase):
 
     def assert_no_partial(self):
         if os.path.isdir(self.proxies):
-            self.assertEqual([f for f in os.listdir(self.proxies) if not f.endswith(".mp4")], [])
+            self.assertEqual([f for f in os.listdir(self.proxies) if not f.endswith((".mp4", ".failed"))], [])
 
     def stream(self, s, i):
         """Open GET /m/<i> as the player does (Range: bytes=0-) and return (connection, response) once its
@@ -371,7 +374,7 @@ class ProxyTest(ProxyBase):
             self.assertIn("video/x-raw,width=320,height=240", a)  # its own size: smaller than PROXY_PX
         self.assertIn("aacparse", launches[0])
         self.assertNotIn("aacparse", launches[1])
-        self.assertEqual(os.listdir(self.proxies), [])  # work folder gone
+        self.assertEqual(os.listdir(self.proxies), [G.sha(hv) + ".failed"])  # work folder gone; the failure recorded
         self.assertEqual(G.sha(hv), orig)
 
     # ------------------------------------------------------------ a transcode held before it ends
@@ -551,16 +554,17 @@ class ProxyTest(ProxyBase):
         sa, sk = G.sha(a), G.sha(k)
         os.makedirs(self.proxies)
         pa, pk = (os.path.join(self.proxies, h + ".mp4") for h in (sa, sk))
+        fa, fk = (os.path.join(self.proxies, h + ".failed") for h in (sa, sk))  # no proxy could be made: recorded
         other = os.path.join(self.proxies, "f" * 64 + ".mp4")
-        for p in (pa, pk, other):
+        for p in (pa, pk, fa, fk, other):
             open(p, "wb").close()
         r = subprocess.run([G.PY, "-I", G.INTAKE, "trash", a, "--yes"], env=self.env, capture_output=True, text=True)
         self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
-        self.assertFalse(os.path.exists(pa))
+        self.assertFalse(os.path.exists(pa) or os.path.exists(fa))
         r = subprocess.run([G.PY, "-I", G.INTAKE, "forget", k, "--yes"], env=self.env, capture_output=True,
                            text=True)
         self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
-        self.assertFalse(os.path.exists(pk))
+        self.assertFalse(os.path.exists(pk) or os.path.exists(fk))
         self.assertTrue(os.path.exists(other))  # only those shas
         with open(os.path.join(self.state, "erase-log.txt")) as f:
             self.assertIn(sk, f.read())
@@ -644,15 +648,25 @@ class ProxiesCommandTest(ProxyBase):
         self.assertIn("done: 1 made, 0 failed, 0 gone meanwhile, 0 made already", r.stdout)
         self.assertTrue(os.path.isfile(self.proxy_of(hv)))
 
-    def test_a_failed_proxy_says_so_and_leaves_nothing(self):
+    def test_a_failed_proxy_says_so_leaves_only_its_record_and_is_skipped_next_time(self):
         self.need_hevc(proxy=False)
-        self.clips()
+        hv, _, _ = self.clips()
         self.fakes("ffmpeg", "gst-inspect-1.0")  # ffmpeg fails; GStreamer has no HEVC decoder
         r = self.run_cli()
         self.assertEqual(r.returncode, 1, r.stdout + r.stderr)
         self.assertIn("failed (the gallery serves it as it is)", r.stdout)
         self.assertIn("done: 0 made, 1 failed", r.stdout)
-        self.assertEqual(os.listdir(self.proxies), [])
+        record = self.proxy_of(hv)[:-4] + ".failed"
+        self.assertEqual(os.listdir(self.proxies), [os.path.basename(record)])
+        self.assertEqual((os.path.getsize(record), oct(os.stat(record).st_mode & 0o777)), (0, "0o600"))
+        r = self.run_cli()  # not tried again: no hour lost on it every run
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+        self.assertIn("0 to make, 0 made already", r.stdout)
+        self.assertIn("1 failed before, skipped (--retry-failed tries them again)", r.stdout)
+        r = self.run_cli("--retry-failed")
+        self.assertEqual(r.returncode, 1, r.stdout + r.stderr)
+        self.assertIn("1 to make, 0 made already", r.stdout)
+        self.assertIn("done: 0 made, 1 failed", r.stdout)
 
     def test_help_says_what_it_touches_and_deletes(self):
         r = self.run_cli("--help")
@@ -709,7 +723,7 @@ class ProxiesRunTest(unittest.TestCase):
                 meanwhile(src)
             return True
         out = io.StringIO()
-        with mock.patch.object(self.px, "plan", lambda items: (todo, 0, 0)), \
+        with mock.patch.object(self.px, "plan", lambda items, retry_failed=False: (todo, 0, 0, 0)), \
                 mock.patch.object(self.g, "make_proxy", make), contextlib.redirect_stdout(out):
             code = self.px.main([])
         return code, out.getvalue()
@@ -1110,6 +1124,186 @@ class ProxyCommandsTest(unittest.TestCase):
         self.assertEqual(size(4032, 3024), (1920, 1440))
         for w, h in ((0, 0), (None, 1080), (1920, 0)):
             self.assertIsNone(size(w, h))
+
+
+# Stand-in proxy commands for MakeProxyTest: each is `python3 -I -c CODE OUT LOG NAME`; it logs NAME when it
+# starts, then does what its NAME says to OUT (the work folder's out.mp4).
+STAND_IN = r"""
+import sys, time
+out, log, name = sys.argv[1:4]
+with open(log, "a") as f:
+    f.write(name + "\n")
+if name == "hang-after-bytes":  # a GPU encoder that writes its first fragment, then stops for good
+    with open(out, "ab") as f:
+        f.write(b"x" * 100)
+    time.sleep(120)
+elif name == "hang-silent":  # one that never writes a byte
+    time.sleep(120)
+elif name == "slow":  # a slow encoder that keeps writing: never stalled
+    for _ in range(8):
+        with open(out, "ab") as f:
+            f.write(b"x")
+        time.sleep(0.4)
+    with open(out, "ab") as f:
+        f.write(b"h264")
+elif name == "endless":  # one still writing when the deadline comes
+    while True:
+        with open(out, "ab") as f:
+            f.write(b"x")
+        time.sleep(0.1)
+elif name == "ok":
+    with open(out, "wb") as f:
+        f.write(b"h264 proxy")
+else:  # "fail"
+    sys.exit(1)
+"""
+
+
+class StubJob:
+    """What make_proxy asks of a ProxyJob; stop_after: how many polls until it reads as cancelled."""
+    def __init__(self, stop_after=None):
+        self.polls, self.stop_after = 0, stop_after
+
+    def stopped(self):
+        self.polls += 1
+        return self.stop_after is not None and self.polls > self.stop_after
+
+    def started(self, n, out):
+        pass
+
+    def grew(self, size):
+        pass
+
+    def wrote(self):
+        pass
+
+
+class MakeProxyTest(unittest.TestCase):
+    """gallery.make_proxy in-process with proxy_commands, the codec probe and the remux stood in for (small
+    Python stand-ins, no media tool runs): a stalled attempt gives way to the next command within PROXY_STALL;
+    one still writing at PROXY_TIMEOUT ends it; a failure is recorded (<sha>.failed, 0600) and a later success
+    clears it; a cancel records nothing."""
+
+    def setUp(self):
+        import gallery
+        self.g = gallery
+        self.tmp = tempfile.mkdtemp(prefix="gallery-make-proxy-")
+        self.addCleanup(shutil.rmtree, self.tmp, True)
+        self.cache = os.path.join(self.tmp, "proxies")
+        os.makedirs(self.cache, mode=0o700)
+        self.src = os.path.join(self.tmp, "clip.MOV")
+        with open(self.src, "wb") as f:
+            f.write(b"an HEVC clip, as far as this test goes")
+        self.dst = os.path.join(self.cache, "a" * 64 + ".mp4")
+        self.record = os.path.join(self.cache, "a" * 64 + ".failed")
+        self.log = os.path.join(self.tmp, "ran.log")
+        self.names = []
+
+        def codec(path):
+            with open(path, "rb") as f:
+                return "h264" if b"h264" in f.read() else None
+        commands = lambda src, work, size=None: [  # noqa: E731
+            [sys.executable, "-I", "-c", STAND_IN, os.path.join(work, "out.mp4"), self.log, n] for n in self.names]
+        for name, value in (("proxy_commands", commands), ("video_codec", codec), ("video_info", lambda p: {}),
+                            ("remux_proxy", lambda src, dst: False), ("PROXY_STALL", 1.5), ("PROXY_POLL", 0.05)):
+            p = mock.patch.object(gallery, name, value)
+            p.start()
+            self.addCleanup(p.stop)
+
+    def run_make(self, *names, job=None):
+        self.names = list(names)
+        with contextlib.suppress(FileNotFoundError):
+            os.remove(self.log)
+        t0 = time.monotonic()
+        ok = self.g.make_proxy(self.src, self.dst, job)
+        took = time.monotonic() - t0
+        with open(self.log) as f:
+            ran = f.read().split()
+        self.assertEqual([f for f in os.listdir(self.cache) if f.startswith(".work-")], [])  # work folder gone
+        return ok, ran, took
+
+    def test_a_stalled_attempt_gives_way_to_the_next_command(self):
+        for hang in ("hang-after-bytes", "hang-silent"):
+            with self.subTest(hang=hang):
+                ok, ran, took = self.run_make(hang, "ok")
+                self.assertTrue(ok)
+                self.assertEqual(ran, [hang, "ok"])
+                self.assertLess(took, 30)  # PROXY_STALL (1.5 s here), not the 120 s the stand-in hangs for
+                with open(self.dst, "rb") as f:
+                    self.assertEqual(f.read(), b"h264 proxy")
+                self.assertFalse(os.path.exists(self.record))
+                os.remove(self.dst)
+
+    def test_an_attempt_that_keeps_writing_is_not_stalled(self):
+        ok, ran, _ = self.run_make("slow", "ok")  # about 3 s in all, with no gap over PROXY_STALL
+        self.assertTrue(ok)
+        self.assertEqual(ran, ["slow"])
+
+    def test_every_command_failing_is_recorded_and_a_later_success_clears_it(self):
+        ok, ran, _ = self.run_make("hang-silent", "fail")
+        self.assertFalse(ok)
+        self.assertEqual(ran, ["hang-silent", "fail"])
+        self.assertFalse(os.path.exists(self.dst))
+        self.assertEqual((os.path.getsize(self.record), oct(os.stat(self.record).st_mode & 0o777)), (0, "0o600"))
+        self.assertTrue(self.g.proxy_failed(self.dst))
+        ok, _, _ = self.run_make("fail")  # failing again keeps the one record
+        self.assertFalse(ok)
+        self.assertEqual(sorted(os.listdir(self.cache)), [os.path.basename(self.record)])
+        ok, _, _ = self.run_make("ok")  # --retry-failed, and it worked this time
+        self.assertTrue(ok)
+        self.assertFalse(os.path.exists(self.record))
+
+    def test_still_writing_at_the_deadline_ends_it_without_the_next_command(self):
+        with mock.patch.object(self.g, "PROXY_TIMEOUT", 1.0):
+            ok, ran, took = self.run_make("endless", "ok")
+        self.assertFalse(ok)
+        self.assertEqual(ran, ["endless"])  # the next command would take as long
+        self.assertLess(took, 30)
+        self.assertTrue(os.path.exists(self.record))
+
+    def test_a_cancel_records_nothing(self):
+        ok, ran, _ = self.run_make("hang-silent", "ok", job=StubJob(stop_after=3))
+        self.assertFalse(ok)
+        self.assertEqual(ran, ["hang-silent"])
+        self.assertEqual(os.listdir(self.cache), [])
+
+    def test_the_gallery_serves_the_original_of_a_recorded_failure(self):
+        it = dict(path=self.src, media="video", mime="video/quicktime", vcodec="hevc", sha="a" * 64)
+        with mock.patch.object(self.g, "PROXIES", self.cache):
+            app = self.g.App([it])
+            self.assertEqual(app.proxy_needed(it), self.dst)
+            open(self.record, "wb").close()
+            self.assertIsNone(app.proxy_needed(it))
+            self.assertEqual(app.proxy_needed(it, failed=True), self.dst)
+            self.assertEqual(app.playable(it), (self.src, "video/quicktime"))
+            self.assertIsNone(app.proxy_state(it))
+
+
+class PlanTest(unittest.TestCase):
+    """proxies.plan with the gallery's App stood in for (no ffprobe): a video whose proxy failed before is
+    counted and skipped, or planned again with retry_failed; a made one is counted as made."""
+
+    def test_recorded_failures_are_skipped_unless_retried(self):
+        import gallery
+        import proxies
+        tmp = tempfile.mkdtemp(prefix="gallery-proxies-plan-")
+        self.addCleanup(shutil.rmtree, tmp, True)
+        dsts = {n: os.path.join(tmp, h * 64 + ".mp4") for n, h in (("made", "a"), ("failed", "b"), ("new", "c"))}
+        open(dsts["made"], "wb").close()
+        open(dsts["failed"][:-4] + ".failed", "wb").close()
+        items = [dict(path=n, media="video", show="video") for n in dsts]
+
+        class App:
+            def __init__(self, items):
+                pass
+
+            def proxy_needed(self, it, failed=False):
+                return dsts[it["path"]]
+        with mock.patch.object(gallery, "App", App):
+            todo, have, plain, failed = proxies.plan(items)
+            self.assertEqual(([it["path"] for it, _ in todo], have, plain, failed), (["new"], 1, 0, 1))
+            todo, have, plain, failed = proxies.plan(items, retry_failed=True)
+            self.assertEqual(([it["path"] for it, _ in todo], have, plain, failed), (["failed", "new"], 1, 0, 0))
 
 
 if __name__ == "__main__":

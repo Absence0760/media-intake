@@ -74,7 +74,8 @@ backup drive, quarantine, review folder, Keep, Trash, Erase, ...).
   sit directly inside the share-safe folder.
 - The gallery's H.264 copies of HEVC videos live in
   `~/.cache/media-intake/proxies` (`0700`, files `0600`); `erase`, `forget`
-  and `trash` delete them, `verify-gone` reports any left, and quarantine and
+  and `trash` delete them and the record of a failed one, `verify-gone`
+  reports any left, and quarantine and
   review files never get one.
 - `erase` and `forget` also drop the erased files' entries from the backup
   records in the state folder (`backup/`, which name library files), so no
@@ -170,7 +171,7 @@ media-intake offload phone-1 --phone <phone folder>   # after a backup: free the
 | `pets` | The same for your own pets (cats and dogs by default), tagged `Pets\|<Name>` (off until `setup.sh --recognition`) |
 | `calibrate` | Report precision and recall of each label's threshold against your own marks; changes nothing |
 | `gallery` | Local web gallery: browse, Keep, Favorite, Trash, Erase, tag, rotate, events, bulk edits, share-safe copies, naming people and pets (once recognition is on) |
-| `proxies` | Make the gallery's H.264 copies of HEVC videos now, so they play at once (`--dry-run`, `--inhibit`) |
+| `proxies` | Make the gallery's H.264 copies of HEVC videos now, so they play at once (`--dry-run`, `--inhibit`, `--retry-failed`) |
 | `prune-cache` | Delete gallery thumbnails and video proxies nothing in the library shows any more (`--dry-run` first) |
 | `backup` | Copy the library (photos, videos, sidecars) to the backup drive: incremental, never deletes there |
 | `queue add/run/status/offload` | Import a source drive or a big laptop folder in resumable chunks |

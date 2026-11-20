@@ -101,12 +101,13 @@ class PruneCacheTest(unittest.TestCase):
         P = lambda name: os.path.join(self.proxies, name)  # noqa: E731
         self.keep = [T(self.A + "-r0.jpg"), T(self.A + "-r180.jpg"), T(self.R + "-r90.jpg"), T(self.V + "-r0.jpg"),
                      P(self.V + ".mp4"), P(self.A + ".mp4"),  # a proxy is kept while its content is there
+                     P(self.V + ".failed"),  # and so is the record that none could be made
                      # names the gallery doesn't write as a cache entry: never touched
                      T(self.A + "-r0.jpg.123.140.tmp"), T(self.O + "-r45.jpg"), T("notes.txt"), P("x.mp4")]
         self.legacy = [T(h + ".jpg") for h in (self.A, self.R, self.O)]
         self.turns = [T(self.A + "-r90.jpg"), T(self.A + "-r270.jpg"), T(self.R + "-r0.jpg")]
         self.gone = [T(self.O + "-r0.jpg"), T(self.O + "-r180.jpg"), T(self.S + "-r0.jpg"),
-                     P(self.O + ".mp4"), P(self.S + ".mp4")]
+                     P(self.O + ".mp4"), P(self.S + ".mp4"), P(self.O + ".failed")]
         for p in self.keep + self.legacy + self.turns + self.gone:
             with open(p, "wb") as f:
                 f.write(b"x" * 10)
@@ -149,15 +150,15 @@ class PruneCacheTest(unittest.TestCase):
         self.assertIn("would delete 3 legacy thumbnails", r.stdout)
         self.assertIn("would delete 3 thumbnails of a turn no copy shows", r.stdout)
         self.assertIn("would delete 3 thumbnails of content not in the library", r.stdout)
-        self.assertIn("would delete 2 video proxies of content not in the library", r.stdout)
-        self.assertIn("would delete 11 files", r.stdout)
+        self.assertIn("would delete 3 video proxies of content not in the library", r.stdout)
+        self.assertIn("would delete 12 files", r.stdout)
         self.assertIn("left 3 entries that are not regular files", r.stdout)
         self.assert_untouched_outside()
 
     def test_prune(self):
         r = self.run_cli()
         self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
-        self.assertIn("deleted 11 files", r.stdout)
+        self.assertIn("deleted 12 files", r.stdout)
         self.assertEqual(self.present(self.legacy + self.turns + self.gone), [])
         self.assertEqual(self.present(self.keep), self.keep)
         self.assertNotIn(self.lib, r.stdout + r.stderr)  # counts, never media paths
