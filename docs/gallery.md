@@ -226,8 +226,9 @@ page's own handlers and fails when the list leaves one out.
 - **Suggested junk** (was "Trash suggestions"): the one place for what
   `media-intake vlm-trash` judged junk, beside the other suggestions:
   `Review|maybe-trash` (Tagged as junk), an `AI|vlm/<model>/trash/*` verdict
-  with that model's `conf` >= the view's Junk score (0.7, the same line as
-  `vlm_trash.TRASH_MIN`, unless you lower it; or the older
+  with that model's `conf` >= the view's Junk score (0.7, `vlm_trash.TRASH_MIN`,
+  read through `vlm_trash.junk_score` as `suggest-trash` does, unless you
+  lower it; or the older
   `Review|vlm-trash/*`), or `Owner|trash` (a copy of content you trashed
   elsewhere, flag "Copy of a trashed photo"); never a file with `Owner|not-trash` (or the legacy
   `Review|not-trash`), `Owner|keep`, digiKam Accepted, a favorite (`xmp:Rating` >= 5),

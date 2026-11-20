@@ -107,6 +107,29 @@ def add_tag(p, t):
                    check=True)
 
 
+class JunkScore(unittest.TestCase):
+    """junk_score: the one reading of a trash verdict that Suggested junk, suggest-trash and the review page share."""
+
+    def test_reading(self):
+        import vlm_trash
+        js = vlm_trash.junk_score
+        self.assertEqual(js(["Label|food", "AI|vlm/m/keep", "AI|vlm/m/conf/0.9"]), (None, None))  # no trash verdict
+        self.assertEqual(js(["AI|vlm/m/trash/blurry", "AI|vlm/m/conf/0.4"]), (0.4, "blurry"))
+        self.assertEqual(js(["AI|vlm/m/trash"]), (0.0, ""))  # no score written: 0, below any line but Any score
+        self.assertEqual(js(["AI|vlm/a/trash/dark", "AI|vlm/a/conf/0.8", "AI|vlm/b/trash/packaging",
+                             "AI|vlm/b/conf/0.95", "AI|vlm/c/conf/1.0"]), (0.95, "packaging"))  # c said no trash
+        self.assertEqual(js(["AI|vlm/m/trash/other", "AI|vlm/m/conf/x.y.z"]), (0.0, "other"))  # malformed score
+        self.assertEqual(js(["Review|vlm-trash/floor"]), (vlm_trash.TRASH_MIN, "floor"))  # the older tag: the line
+        self.assertEqual(js(["Review|vlm-trash/floor", "AI|vlm/m/trash/dark", "AI|vlm/m/conf/0.9"]), (0.9, "dark"))
+        self.assertEqual(set(vlm_trash.REASON_WORDS), set(vlm_trash.REASONS))  # every reason has its words
+
+    def test_one_line(self):
+        """The gallery's Suggested junk line is this module's, and suggest-trash's default is the same."""
+        import gallery, intake, vlm_trash
+        self.assertEqual(gallery.SUGGEST_MIN, vlm_trash.TRASH_MIN)
+        self.assertEqual(intake.build_parser().parse_args(["suggest-trash"]).junk_score, vlm_trash.TRASH_MIN)
+
+
 class VlmTrash(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
