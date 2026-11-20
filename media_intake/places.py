@@ -377,6 +377,33 @@ def forget_paths(state, paths):
     return n, ""
 
 
+def rekey_paths(state, moves):
+    """refile: {old path: new path}. Each record of an old path in places.json (tagged, declined; every
+    library's entry) names the new one instead. Returns (records rekeyed, "" or why the file could not be
+    read or rewritten). Never raises. The caller holds the library lock."""
+    libs = read_all(state)
+    if libs is None:
+        return 0, f"{FILE} is unreadable: its records were not rekeyed"
+    n = 0
+    for entry in libs.values():
+        for k in ("tagged", "declined"):
+            rec = entry.get(k) if isinstance(entry, dict) else None
+            if not isinstance(rec, dict):
+                continue
+            for pid, v in rec.items():
+                if isinstance(v, list) and any(p in moves for p in v if isinstance(p, str)):
+                    n += sum(isinstance(p, str) and p in moves for p in v)
+                    rec[pid] = [moves.get(p, p) if isinstance(p, str) else p for p in v]
+    if not n:
+        return 0, ""
+    try:
+        write_private(os.path.join(state, FILE),
+                      json.dumps({"version": VERSION, "libraries": libs}, ensure_ascii=False, indent=1).encode())
+    except OSError as e:
+        return 0, f"{FILE} could not be rewritten ({type(e).__name__})"
+    return n, ""
+
+
 def stale_count(state, roots):
     """verify-gone: records in places.json of files gone from a library folder that is there."""
     try:

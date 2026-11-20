@@ -56,7 +56,8 @@ backup drive, quarantine, review folder, Keep, Trash, Erase, ...).
   or printed; [docs/places.md](docs/places.md)), and `datecheck.json` and
   `date-fixes.json` (check-dates' last report and every fix-dates write, with
   paths and dates; erase, forget, trash and sweep-erased drop their files'
-  records; [docs/dates.md](docs/dates.md)). `ocr-text.db` (`0600`) holds the
+  records; [docs/dates.md](docs/dates.md)), and `refiles.json` (each `refile`
+  run's old and new paths, for `refile --undo`). `ocr-text.db` (`0600`) holds the
   text read from photos flagged for nothing, for `search --text`; erase, forget,
   trash and sweep-erased drop their rows, and `verify-gone` checks them
   ([docs/search.md](docs/search.md)). `records-handoff.json` (`0600`)
@@ -173,6 +174,7 @@ media-intake offload phone-1 --phone <phone folder>   # after a backup: free the
 | `tag`, `tag-files`, `mark-used`, `find` | Sidecar tags and searching them |
 | `places list/add/rename/remove/suggest/tag` | My places: your own named places (Home, ...) as `Place\|<name>` tags beside the city; kept only in the state folder ([docs/places.md](docs/places.md)) |
 | `check-dates`, `fix-dates` | Find library files whose date looks wrong (clock-reset defaults, a camera newer than its date, numbering out of order, disagreeing dates; changes nothing), and correct them in their sidecars (a dry run until `--yes`; `--undo`) ([docs/dates.md](docs/dates.md)) |
+| `refile` | Move date-fixed files, each with its sidecar, into the `YYYY/YYYY-MM` folder of their fixed date, rekeying every record of their path (a dry run until `--yes`; `--undo`) ([docs/dates.md](docs/dates.md)) |
 | `migrate-tags` | One-shot: rewrite the legacy `Review\|not-trash` tag as `Owner\|not-trash` |
 | `index`, `search`, `similar` | Local semantic search (SigLIP); `search --text` and `index --text` find the words written in photos (Tesseract, no model) |
 | `vlm-trash` | Local vision-model second opinion on Suggested junk |

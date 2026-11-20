@@ -3344,6 +3344,11 @@ def cmd_fix_dates(a):
     datecheck.cmd_fix_dates(a)
 
 
+def cmd_refile(a):
+    import refile  # docs/dates.md, "Re-filing a fixed file"
+    refile.cmd_refile(a)
+
+
 def cmd_mark_used(a):
     need_exiftool()
     if not POST_SLUG.match(a.post):
@@ -3781,6 +3786,17 @@ def build_parser(prog=None):
     s.add_argument("--reason", metavar="TEXT", help="why, kept in the fix record (optional)")
     s.add_argument("--yes", action="store_true", help="write the sidecars (without it, a dry run)")
 
+    s = cmd("refile", "move date-fixed files into their date's YYYY/YYYY-MM folder; a dry run until --yes",
+            "Move each file fix-dates corrected into the YYYY/YYYY-MM folder its new date belongs in, with\n"
+            "its .xmp sidecar, and update every record of its path (index, plans, date fixes, places,\n"
+            "recognition, search). Never replaces a file; each run is recorded, so --undo puts it back.",
+            "renames library files and their sidecars (same filesystem only), the records that name them in "
+            "the state folder, and refiles.json; the photos and videos themselves are never written.",
+            "no file; a folder a move leaves empty is removed.")
+    s.add_argument("--undo", nargs="?", const="last", metavar="ID", help="put back one earlier refile (default: "
+                   "the last one)")
+    s.add_argument("--yes", action="store_true", help="move the files (without it, a dry run)")
+
     s = cmd("mark-used", "record that library files were used in a post (a Used|<post> tag)",
             "Tag library files as used in a post, so find --unused-since and --never-used can skip them.",
             "the files' sidecars.",
@@ -3809,7 +3825,8 @@ def build_parser(prog=None):
 # of these (tests/test_library_lock.py checks), and main() is the only place that takes it for the CLI.
 LOCKED = {"stage", "plan", "scan", "apply", "release", "erase", "forget", "to-records", "sweep-erased", "offload",
           "purge-review",
-          "trash", "not-trash", "suggest-trash", "tag", "tag-files", "mark-used", "migrate-tags", "fix-dates"}
+          "trash", "not-trash", "suggest-trash", "tag", "tag-files", "mark-used", "migrate-tags", "fix-dates",
+          "refile"}
 # check-dates writes only its own report in the state folder, so a long run never blocks the gallery's edits.
 READ_ONLY = {"quarantine", "verify-gone", "wipe-free", "share-copy", "social-copy", "find", "check-dates"}
 
