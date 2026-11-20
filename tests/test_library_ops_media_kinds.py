@@ -455,8 +455,10 @@ class CtrlCAtThePrompt(unittest.TestCase):
 class KeepAndSuggest(Base):
     def test_suggest_and_not_trash_on_photo_and_videos(self):
         p, v, m = self.trio()
-        for x, t in ((p, "Review|maybe-trash"), (v, "Review|vlm-trash/dark"), (m, "AI|vlm/m/trash/blurry")):
-            self.xmp(x, t, "Label|food")
+        # a vision-check verdict counts at its confidence (vlm_trash.junk_score), as vlm-trash writes it
+        for x, t in ((p, ["Review|maybe-trash"]), (v, ["Review|vlm-trash/dark"]),
+                     (m, ["AI|vlm/m/trash/blurry", "AI|vlm/m/conf/0.9"])):
+            self.xmp(x, *t, "Label|food")
         kept = clip(os.path.join(self.vids, "2026/2026-11/kept.mov"), seed=12)
         self.xmp(kept, "Review|maybe-trash", "Owner|keep")
         used = clip(os.path.join(self.vids, "2026/2026-11/used.mp4"), seed=13)

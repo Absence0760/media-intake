@@ -26,6 +26,8 @@ the path carries, path); piped or captured, `score  path` lines (3 decimals) and
 "N results" on stderr, the form gallery.py parses. index prints counts-only progress
 and a summary on stderr (meter.py) and its counts as one JSON line on stdout.
 No index or no model: one line naming the fix (media-intake index, bash setup.sh).
+search --text / index --text: the words in photos instead (ocr_index.py, stdlib only, no model), and the
+local captions in their sidecars (captions.py, opt-in).
 Filters read the XMP sidecars: --project P (Project|P), --unused-since Nd (no
 Used|<YYYY-MM-DD-slug> in the last N days, like intake.py find), --clean (no
 Review|child-in-shot, no Owner|trash, and no Review|maybe-trash or AI|vlm/*/trash/*
@@ -316,12 +318,16 @@ def need_index(np):
     return shas, emb, files
 
 
-def rank(np, q, a, exclude=None, store=None):
-    shas, emb, files = store or need_index(np)
+def unused_cutoff(a):
     m = re.fullmatch(r"(\d+)d", a.unused_since or "0d")
     if not m:
         sys.exit("--unused-since wants Nd, e.g. 30d")
-    cutoff = datetime.date.today() - datetime.timedelta(days=int(m.group(1))) if a.unused_since else None
+    return datetime.date.today() - datetime.timedelta(days=int(m.group(1))) if a.unused_since else None
+
+
+def rank(np, q, a, exclude=None, store=None):
+    shas, emb, files = store or need_index(np)
+    cutoff = unused_cutoff(a)
     flagged = label.flagged(STATE)  # anything flagged since indexing never comes back
     score = emb @ q
     by_sha = {}
@@ -333,6 +339,11 @@ def rank(np, q, a, exclude=None, store=None):
             by_sha.setdefault(s, []).append(p)
     idx = {s: i for i, s in enumerate(shas)}
     cands = sorted(((float(score[idx[s]]), p) for s, ps in by_sha.items() if s in idx for p in ps), reverse=True)
+    emit(cands, a, cutoff)
+
+
+def emit(cands, a, cutoff, unit="cosine, compare within one query"):
+    """Filter [(score, path)] (best first) by the sidecar filters and print the first a.n, human or machine."""
     need = a.project or cutoff or a.clean
     out = []
     for i in range(0, len(cands), 500):
@@ -343,7 +354,7 @@ def rank(np, q, a, exclude=None, store=None):
             break
     out = out[:a.n]
     if human(a):
-        show(out, a)
+        show(out, a, unit=unit)
         return
     for s, p in out:  # the machine form: the gallery parses `score  /path` (gallery.py, App.semantic)
         print(f"{s:.3f}  {p}")
@@ -374,7 +385,7 @@ def path_date(p):
     return f"{m.group(1)}-{m.group(2)}" if m and 1 <= int(m.group(2)) <= 12 else ""
 
 
-def show(out, a, file=None):
+def show(out, a, file=None, unit="cosine, compare within one query"):
     """Numbered list for a person: rank, score (2 decimals), date if the path has one, path."""
     file = file or sys.stdout
     if not out:
@@ -384,8 +395,47 @@ def show(out, a, file=None):
     w = len(str(len(out)))
     for i, (s, p) in enumerate(out, 1):
         print(f"{i:>{w}}. {s:.2f}  {path_date(p) or '':<10}  {p}", file=file)
-    print(f"{len(out)} result{'s' if len(out) != 1 else ''}, best first (score: cosine, compare within one query)",
-          file=file)
+    print(f"{len(out)} result{'s' if len(out) != 1 else ''}, best first (score: {unit})", file=file)
+
+
+def cmd_search_text(a):
+    """search --text: files whose photo text (ocr_index, kept by the scan) or local caption (captions.py, in the
+    sidecar) holds every word of the query. Score: how often the words appear in both. Paths come from the
+    library index (index.json), flagged content never.
+    Read-only, like every search: nothing is pruned or written here (index --text does that)."""
+    import captions, ocr_index
+    if not ocr_index.words(a.query):
+        sys.exit("semantic: search --text needs a word to look for")
+    try:
+        hits = ocr_index.search(a.query, STATE)
+    except ocr_index.sqlite3.DatabaseError as e:
+        sys.exit(f"semantic: the text index can't be read ({e}): check ocr-text.db in the state folder, or "
+                 "delete it and run media-intake index --text")
+    try:
+        with open(os.path.join(STATE, "index.json")) as f:
+            lib = json.load(f) or {}
+    except (FileNotFoundError, ValueError):
+        lib = {}
+    flagged = label.flagged(STATE)
+    cap = captions.search(a.query, list(lib))  # read-only: sidecars of library files
+    cands = []
+    for p, e in lib.items():
+        s = e.get("sha") if isinstance(e, dict) else None
+        if (s not in hits and p not in cap) or flagged.get(s) == e.get("size") or not os.path.isfile(p):
+            continue
+        ext = os.path.splitext(p)[1].lower()
+        if (a.videos and ext not in VID) or (a.photos and ext not in IMG):
+            continue
+        cands.append((float(hits.get(s, 0) + cap.get(p, 0)), p))
+    cands.sort(key=lambda x: (-x[0], x[1]))
+    emit(cands, a, unused_cutoff(a), unit="how often the words appear in the photo's text and caption")
+
+
+def cmd_index_text(a):
+    """index --text: read the text of library photos the text index has no row for (scanned before it
+    existed). A photo whose text trips a sensitive check is not kept (counted only)."""
+    import ocr_index
+    print(json.dumps(ocr_index.backfill(STATE)))
 
 
 def cmd_search(a, np, ort):
@@ -418,11 +468,14 @@ def main(argv=None, prog="media-intake"):
         prog=prog, description="Search your library by what is in the pictures, offline on this laptop. Needs the "
                                "venv and model that bash setup.sh installs (docs/search.md).")
     sub = ap.add_subparsers(dest="cmd", required=True, metavar="index|search|similar")
-    sub.add_parser("index", help="build or update the search index",
+    ix = sub.add_parser("index", help="build or update the search index",
                    description="Build or update the search index: reads every photo and video in the library "
                                "once (later runs only new ones) and stores a short summary of each in the "
                                "media-intake state folder. Changes no photo, video or tag. Run it before search, "
-                               "similar or calibrate.")
+                               "similar or calibrate. --text instead reads the words in library photos the "
+                               "text index doesn't have yet (needs tesseract).")
+    ix.add_argument("--text", action="store_true",
+                    help="update the text index (words in photos, for search --text) instead; needs tesseract")
     filters = ("Filters: --photos or --videos, --project NAME, --unused-since Nd, --clean. Output on a terminal is a "
                "numbered list, best match first; piped, it is `score  path` lines.")
     for name in ("search", "similar"):
@@ -450,10 +503,15 @@ def main(argv=None, prog="media-intake"):
                        help="human: numbered list with dates; machine: `score  path` lines (what the gallery "
                             "reads); auto (default): human on a terminal, machine otherwise")
         if name == "search":
+            s.add_argument("--text", action="store_true",
+                           help="find the words written in photos (screenshots, receipts, signs), not a "
+                                "description; every word must appear. Needs no model")
             s.add_argument("--no-ensemble", action="store_true",
                            help="embed the query as typed, not averaged over prompt templates "
                                 "(\"a photo of ...\", \"a picture of ...\", as typed); to compare results")
     a = ap.parse_args(argv)
+    if getattr(a, "text", False):  # the text index is stdlib only: no numpy, no model
+        return cmd_search_text(a) if a.cmd == "search" else cmd_index_text(a)
     try:
         import numpy as np
         import onnxruntime as ort

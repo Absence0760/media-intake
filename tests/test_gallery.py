@@ -829,6 +829,14 @@ class GalleryTest(unittest.TestCase):
         self.assertEqual((code, j), (200, {"got": {"a": 1}}))
         self.assertEqual(s.get("/plugin/toy/posts"), {"posts": 2})
 
+    # ------------------------------------------------------------ an unplayable video's codec
+    def test_item_gives_a_videos_codec(self):
+        """/api/item says the codec ffprobe read (the large view names HEVC only when it is), none for a photo."""
+        s = self.start()
+        ids = {i["n"]: i["id"] for i in s.get("/api/list?limit=50")["items"]}
+        self.assertIsNone(s.get(f"/api/item/{ids['a.jpg']}")["codec"])
+        self.assertEqual(s.get(f"/api/item/{ids['v.mp4']}")["codec"], "h264")
+
     # ------------------------------------------------------------ page layout and the sidebar's counts
     def test_page_layout_and_facet_counts(self):
         """Left sidebar (views, search, filters), bottom action bar, lightbox info pane; nothing external."""
@@ -1261,6 +1269,11 @@ class ViewsEndpointsTest(unittest.TestCase):
         self.assertEqual(stored(), {"beach": "Sea days"})
         os.makedirs(self.env["PERSONAL_FOOTAGE"])
         os.makedirs(os.path.join(self.home, "Videos/demo-footage/originals"))
+        link = os.path.join(self.lib, "on-a-drive")  # a symlinked folder whose drive isn't mounted: not a full scan
+        os.symlink(os.path.join(self.home, "no-such-drive"), link)
+        self.start().stop()
+        self.assertEqual(stored(), {"beach": "Sea days"})
+        os.remove(link)
         self.start().stop()
         self.assertEqual(stored(), {})
 
@@ -1862,6 +1875,157 @@ class AddedFilterTest(unittest.TestCase):
         for it, f, want in ((old, {"added": "30"}, False), (new, {"added": "30"}, True), (old, {"added": "41"}, True),
                             (old, {"added": "0"}, True), (old, {"added": "x"}, True), (old, {}, True)):
             self.assertEqual(app.matches(it, f), want, (it["ctime"], f))
+
+
+class NotBestShotTest(unittest.TestCase):
+    """best-shot's AI|bestshot/not-best reaches Suggested junk as "Not the best shot" (at any Junk score, after every
+    scored verdict, owner guards first) and AI|bestshot/cover leads its burst stack. Items are built from tags
+    with gallery.facts, as load_sidecar does: no sidecar, no exiftool."""
+
+    def it(self, name, *tags, size=1, **kw):
+        import gallery
+        it = dict(path=f"/lib/2026/2026-11/{name}", root="/lib", tags=list(tags), pick="", rating="", gone=False,
+                  media="photo", date="2026-11-01 10:00", size=size, burst=None, burst_pos=None)
+        it.update(kw)
+        gallery.facts(it)
+        return it
+
+    def test_constants_match_best_shot(self):
+        import best_shot, gallery, intake
+        self.assertEqual((gallery.BEST_COVER, gallery.NOT_BEST), (best_shot.COVER, best_shot.NOT_BEST))
+        self.assertEqual(intake.BESTSHOT_NOT_BEST, best_shot.NOT_BEST)
+        self.assertEqual(gallery.WORDS["why"][gallery.WHY_BEST], "Not the best shot")
+
+    def test_offered_at_any_floor_with_its_reason(self):
+        import gallery
+        nb = self.it("nb.jpg", "AI|bestshot/not-best")
+        cover = self.it("cover.jpg", "AI|bestshot/cover")
+        app = gallery.App([nb, cover])
+        for floor in (gallery.SUGGEST_MIN, 0.0, 1.0):
+            self.assertTrue(app.suggested(nb, floor), floor)
+            self.assertEqual(app.junk_why(nb, floor), {gallery.WHY_BEST}, floor)
+            self.assertFalse(app.suggested(cover, floor), "the cover is no junk")
+        self.assertTrue(app.matches(nb, dict(view="suggest", why=gallery.WHY_BEST)))
+        self.assertFalse(app.matches(nb, dict(view="suggest", why="blurry")))
+        # the Why filter's counts list the reason
+        self.assertIn([gallery.WHY_BEST, 1], [list(x) for x in app.junk_summary([0, 1], dict(view="suggest"))["why"]])
+
+    def test_owner_guards_win(self):
+        import gallery
+        nb = "AI|bestshot/not-best"
+        prot = sorted(gallery.PROTECTED)[0] if gallery.PROTECTED else None
+        guarded = [self.it("kept.jpg", nb, "Owner|keep"), self.it("fav.jpg", nb, rating="5"),
+                   self.it("used.jpg", nb, "Used|2026-11-01-post"), self.it("named.jpg", nb, "People|Ann")]
+        if prot:
+            guarded.append(self.it("prot.jpg", nb, prot))
+        app = gallery.App(guarded)
+        for it in guarded:
+            for floor in (gallery.SUGGEST_MIN, 0.0):
+                self.assertFalse(app.suggested(it, floor), (it["path"], floor))
+
+    def test_sorted_after_scored_verdicts(self):
+        import gallery
+        items = [self.it("nb.jpg", "AI|bestshot/not-best"),
+                 self.it("low.jpg", "AI|vlm/m/trash/dark", "AI|vlm/m/conf/0.1"),
+                 self.it("hi.jpg", "AI|vlm/m/trash/blurry", "AI|vlm/m/conf/0.9"),
+                 self.it("label.jpg", "Review|maybe-trash"),
+                 self.it("both.jpg", "AI|bestshot/not-best", "AI|vlm/m/trash/dark", "AI|vlm/m/conf/0.8")]
+        app = gallery.App(items)
+        order = sorted(items, key=app.junk_rank)
+        self.assertEqual([os.path.basename(i["path"]) for i in order],
+                         ["hi.jpg", "both.jpg", "label.jpg", "low.jpg", "nb.jpg"])
+        both = items[4]
+        self.assertEqual(app.junk_why(both, gallery.SUGGEST_MIN), {"dark", gallery.WHY_BEST})
+
+    def test_cover_leads_its_burst_stack(self):
+        import gallery
+        items = [self.it(f"s{k}.jpg", *(["AI|bestshot/cover"] if k == 2 else ["AI|bestshot/not-best"]),
+                         burst=0, burst_pos=k) for k in range(3)]
+        app = gallery.App(items)
+        ids, info = app.stacked([0, 1, 2])
+        self.assertEqual(ids, [2, 0, 1])
+        self.assertTrue(info[2]["bc"])
+        self.assertFalse(info[0]["bc"])
+        # no best-shot tags: the earliest shot is the cover, as before
+        plain = [self.it(f"p{k}.jpg", burst=0, burst_pos=k) for k in range(3)]
+        self.assertEqual(gallery.App(plain).stacked([2, 1, 0])[0], [0, 1, 2])
+
+    def test_large_view_gets_the_verdict(self):
+        """/api/item's detail carries what the large view's verdict line needs: the junk reason (why), the vision
+        check's fine verdict (ai_keep) and best-shot's not-best, beside the score (ai)."""
+        import gallery
+        items = [self.it("hi.jpg", "AI|vlm/m/trash/blurry", "AI|vlm/m/conf/0.9", "AI|bestshot/not-best"),
+                 self.it("fine.jpg", "AI|vlm/m/keep"), self.it("plain.jpg")]
+        for it in items:
+            it.update(res="1x1", show="image", ext=".jpg", has_xmp=True, gps=None, myplaces=[])
+        app = gallery.App(items)
+        got = {os.path.basename(app.items[i]["path"]): app.detail(i) for i in range(3)}
+        pick = lambda d: (d["ai"], d["why"], d["ai_keep"], d["not_best"])  # noqa: E731
+        self.assertEqual(pick(got["hi.jpg"]), (0.9, "blurry", False, True))
+        self.assertEqual(pick(got["fine.jpg"]), (None, None, True, False))
+        self.assertEqual(pick(got["plain.jpg"]), (None, None, False, False))
+        # the page words them as the grid does ("Junk score 0.90 (blurry)", "Not the best shot", "Judged fine")
+        self.assertIn("function verdictText(d)", gallery.PAGE)
+        self.assertIn('WORDS.why["not-best"]', gallery.PAGE)
+        self.assertEqual(gallery.WORDS["why"]["blurry"].lower(), "blurry")
+
+    def test_space_lists_them(self):
+        import gallery, space
+        nb, plain = self.it("nb.jpg", "AI|bestshot/not-best", size=9), self.it("plain.jpg", size=5)
+        got = space.junk([nb, plain])
+        self.assertEqual([(os.path.basename(i["path"]), w) for i, w in got], [("nb.jpg", ["Not the best shot"])])
+
+
+class PageAfterTrashTest(unittest.TestCase):
+    """The page's own code (gallery.PAGE, no server): a Trash that went well drops its tiles in place (no reload)
+    and ends in a message with Details, not the Done dialog; tile labels are 12 px, short and never cut with an
+    ellipsis; a video the browser can't play is called HEVC only when /api/item says its codec is HEVC."""
+
+    def setUp(self):
+        import gallery
+        self.page = gallery.PAGE
+
+    def rule(self, sel):
+        r = self.page[self.page.index("\n" + sel) + 1:]
+        return r[:r.index("}")]
+
+    def test_trash_keeps_your_place(self):
+        p = self.page
+        self.assertIn("if(trashed)dropItems(job.gone||job.ids);else{closeViewer();reset()}", p)
+        self.assertIn("function dropItems(ids)", p)
+        self.assertIn("job.gone=keep.concat(trash)", p)  # Suggested junk's Apply drops every decided tile
+        self.assertIn("if(k>=0&&k<items.length)openViewer(k);else closeViewer()", p)  # the large view moves on
+
+    def test_after_trash_a_message_with_details(self):
+        p = self.page
+        self.assertIn("if(trashed&&jobInDialog())closeModal();", p)
+        self.assertIn("else if(trashed)detailsToast(job.status)", p)
+        self.assertIn('el("button",null,"Details");b.type="button";b.id="tdetails"', p)
+
+    def test_tile_labels_are_12px_short_and_whole(self):
+        for sel in (".tile .badge{", ".tile .x{", ".flag{"):
+            r = self.rule(sel)
+            self.assertIn("font-size:12px", r, sel)
+            self.assertNotIn("ellipsis", r, sel)
+        for sel in (".tile .x{", ".flag{"):
+            self.assertNotIn("nowrap", self.rule(sel), sel)  # a long one wraps
+        self.assertNotIn("text-overflow:ellipsis}\n/* a small tile", self.page)
+        # a phone tile: the flag sits above the star and Share, at most two lines so it stays inside the tile,
+        # with its whole text as the title (CI's browser test checks the boxes)
+        phone = self.page[self.page.index("\n .tile:has(.star) .flag{") + 1:]
+        phone = phone[:phone.index("}")]
+        for want in ("bottom:50px", "-webkit-line-clamp:2", "overflow:hidden"):
+            self.assertIn(want, phone)
+        self.assertEqual(self.page.count('const f=el("span","flag",fl);f.title=fl;t.append(f)'), 2)
+        self.assertIn('el("span","vh",it.bc?"Burst: ":"Burst: shot "),it.bc?`${it.bn} shots`:`${pos} of ${it.bn}`',
+                      self.page)
+
+    def test_an_unplayable_video_is_not_guessed_hevc(self):
+        p = self.page
+        self.assertNotIn("HEVC, most likely", p)
+        self.assertIn('d.codec==="hevc"?"This browser can\'t play HEVC video', p)
+        self.assertIn(':"This browser can\'t play this video."}', p)
+        self.assertIn(":noPlay(d))};", p)
 
 
 class PlainWordsTest(unittest.TestCase):

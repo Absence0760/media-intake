@@ -45,6 +45,7 @@ import owner  # noqa: E402
 import places as myplaces  # noqa: E402  (My places: Place|<name> tags, <state>/places.json)
 import sources  # noqa: E402
 import videohash  # noqa: E402
+import vlm_trash  # noqa: E402  (TRASH_MIN, junk_score: the vision check's one line; stdlib only at import)
 
 CFG = config.get()
 HOME = os.path.expanduser("~")
@@ -249,6 +250,14 @@ def recog_forget(shas):
     return recog.forget(shas)
 
 
+# The text index of photos (ocr_index.py: OCR text of clean photos, keyed by sha256, <state>/ocr-text.db): erase,
+# forget, trash and sweep-erased drop their rows (ocr_forget), verify-gone reports any left.
+def ocr_forget(shas):
+    """Drop the text index rows of this content: how many went, or -1 when the store can't be read."""
+    import ocr_index
+    return ocr_index.forget(shas)
+
+
 def recog_count(cnt):
     """What recog_forget or recog.leftovers counted, as one number (an unreadable store is reported apart)."""
     return sum(v for k, v in cnt.items() if k != "store unreadable")
@@ -266,6 +275,56 @@ def date_stale_count():
     """verify-gone: records in datecheck.json / date-fixes.json of files gone from a library folder there."""
     import datecheck
     return len(datecheck.stale(LIB_ROOTS, STATE))
+
+
+def _gone_test():
+    import sources
+    live = sources.present_roots(LIB_ROOTS)
+    return lambda p: sources.file_gone(p, LIB_ROOTS, live)
+
+
+def path_forget(paths):
+    """refile's undo log (refiles.json, each file's whole move history) and vlm-trash's and captions' resume
+    records (vlm-progress.json, captions-progress.json): drop these paths, and any recorded file gone from a
+    library folder that is there. (records dropped, "" or why not). The caller holds the library lock."""
+    import datecheck, refile
+    paths, gone, err = {p for p in paths if isinstance(p, str)}, _gone_test(), []
+    n, why = refile.forget_paths(paths, STATE, gone)
+    if why:
+        err.append(why)
+    for name in refile.PROGRESS:
+        p = os.path.join(STATE, name)
+        try:
+            d = load(p, None)
+        except (OSError, ValueError):
+            err.append(f"{name} is unreadable: its records were not checked")
+            continue
+        if not isinstance(d, dict):
+            continue
+        keep = {k: v for k, v in d.items() if k not in paths and not gone(k)}
+        if len(keep) != len(d):
+            try:
+                datecheck.save_private(p, keep)
+                n += len(d) - len(keep)
+            except OSError as e:
+                err.append(f"{name}: {e.strerror or e}")
+    return n, "; ".join(err)
+
+
+def path_stale_count():
+    """verify-gone: records in refiles.json, vlm-progress.json or captions-progress.json of files gone from a
+    library folder that is there."""
+    import refile
+    gone = _gone_test()
+    n = refile.stale_count(gone, STATE)
+    for name in refile.PROGRESS:
+        try:
+            d = load(os.path.join(STATE, name), None)
+        except (OSError, ValueError):
+            continue
+        if isinstance(d, dict):
+            n += sum(1 for k in d if gone(k))
+    return n
 
 
 def sidecar(path):
@@ -1637,6 +1696,11 @@ def verify_gone(sig, drive=None, left=None, home=True, names=True):
             found[RECOG_PLACE] += recog_count(rec)
         if rec["store unreadable"]:
             found["recognition store that could not be read (check it, or delete recognition.dir)"] += 1
+        import ocr_index
+        txt = ocr_index.leftovers(sig)
+        if txt:
+            found[ocr_index.PLACE if txt > 0 else "text index that could not be read (check it, or delete "
+                  "ocr-text.db in the state folder)"] += abs(txt)
     gthumbs = sum(p.endswith(".jpg") for p in cached)
     if gthumbs:
         found["gallery thumbnails (~/.cache/media-intake/thumbs)"] += gthumbs
@@ -1661,12 +1725,17 @@ def verify_gone(sig, drive=None, left=None, home=True, names=True):
     if date_recs:
         print(f"DATE RECORDS: {date_recs} entries in datecheck.json or date-fixes.json name files no longer in "
               "the library (erase removes them)")
+    path_recs = path_stale_count() if home else 0
+    if path_recs:
+        print(f"REFILE AND RESUME RECORDS: {path_recs} entries in refiles.json, vlm-progress.json or "
+              "captions-progress.json name files no longer in the library (erase removes them)")
     if left is not None:
         left["copies still present at verify-gone"] += sum(found.values())
         left["orphan sidecars at verify-gone"] += sum(orphans.values())
         left["your places' records of files gone at verify-gone"] += place_recs
         left["date records of files gone at verify-gone"] += date_recs
-    return not found and not orphans and not place_recs and not date_recs
+        left["refile and resume records of files gone at verify-gone"] += path_recs
+    return not found and not orphans and not place_recs and not date_recs and not path_recs
 
 
 def cmd_verify_gone(a):
@@ -1730,17 +1799,18 @@ def cmd_sweep_erased(a):
     for p in paths:
         thumbs += thumb_forget(p)
         index.pop(p, None)
-    rec = collections.Counter()
+    rec, txt = collections.Counter(), 0
     if home:
         for s in sig:
             gthumbs += gallery_thumb_forget(s)
         rec = recog_forget(sig)
+        txt = ocr_forget(sig)
     save(os.path.join(STATE, "index.json"), index)
     uris = {u for p in paths for u in file_uris(p)}
     recent = prune_recent(uris, []) if home else 0
     traces = prune_app_traces(uris, []) if home else collections.Counter()
     backups, _, _ = prune_backup_records(paths, set(sig))
-    place_recs = date_recs = 0
+    place_recs = date_recs = path_recs = 0
     if home:  # the deleted copies' records in places.json and the date files, so verify-gone finds none
         try:
             pstale = myplaces.Store(STATE, LIB_ROOTS).stale(LIB_ROOTS)
@@ -1748,6 +1818,7 @@ def cmd_sweep_erased(a):
             pstale = set()
         place_recs, _ = myplaces.forget_paths(STATE, set(paths) | pstale)
         date_recs, _ = date_forget(set(paths))
+        path_recs, _ = path_forget(set(paths))
     on_drive = sum(v for k, v in found.items() if k.startswith("drive:"))
     print(f"sweep-erased: {sum(found.values())} copies deleted in {where_}" + counts
           + (f"\n  sidecars (.xmp)              {stats['sidecars'] + sum(orphans.values())}"
@@ -1756,11 +1827,14 @@ def cmd_sweep_erased(a):
              if stats["trash entries"] or stats["drive trash entries"] else "")
           + (f"\n  thumbnails                   {thumbs + gthumbs}" if thumbs + gthumbs else "")
           + (f"\n  recognition rows and crops   {recog_count(rec)}" if recog_count(rec) else "")
+          + (f"\n  text index rows              {txt}" if txt > 0 else
+             "\n  the text index could not be read (check it)" if txt < 0 else "")
           + (f"\n  recent files entries         {recent}" if recent else "")
           + (f"\n  app traces                   {sum(traces.values())}" if sum(traces.values()) else "")
           + (f"\n  backup record entries        {backups}" if backups else "")
           + (f"\n  your places' records         {place_recs}" if place_recs else "")
-          + (f"\n  date records                 {date_recs}" if date_recs else ""))
+          + (f"\n  date records                 {date_recs}" if date_recs else "")
+          + (f"\n  refile and resume records    {path_recs}" if path_recs else ""))
     if home:
         print("  (not swept: toolchains, package/build caches, container storage, .git, node_modules)")
     if in_git:
@@ -1980,6 +2054,7 @@ def cmd_erase(a):
         index.pop(p, None)
     drive = drive_purge(a.drive, shas, stats) if a.drive else 0
     rec = recog_forget(set(shas))
+    txt = ocr_forget(set(shas))
     # The originals this quarantine's entries are copies of stay: an xcheck `of`, a near chain's `root_of`.
     spare = [v[k] for v in q.values() for k in ("of", "root_of") if isinstance(v.get(k), str)]
     near, near_batch, near_left = near_dups(refs, kept, index, a.batch, spare, stats)
@@ -1999,6 +2074,7 @@ def cmd_erase(a):
         stale = set()
     place_recs, place_err = myplaces.forget_paths(STATE, gone | stale)
     date_recs, date_err = date_forget(gone)  # datecheck.json and date-fixes.json (docs/dates.md)
+    path_recs, path_err = path_forget(gone)  # refiles.json, vlm-progress.json, captions-progress.json
     with open(os.path.join(STATE, "erase-log.txt"), "a") as f:
         for s, (size, _) in shas.items():
             f.write(f"{datetime.datetime.now():%Y-%m-%d %H:%M} {a.batch} sha256:{s} size:{size}\n")
@@ -2056,10 +2132,13 @@ def cmd_erase(a):
                                 "backup records that could not be read (they may keep names until the next backup "
                                 "to that drive)": backups_unread,
                                 "recognition store that could not be read": rec["store unreadable"],
+                                "text index that could not be read": int(txt < 0),
                                 "your places' records that could not be rewritten (places.json keeps the names)":
                                     int(bool(place_err)),
                                 "date records that could not be rewritten (datecheck.json or date-fixes.json "
-                                "keeps the names)": int(bool(date_err))})
+                                "keeps the names)": int(bool(date_err)),
+                                "refile and resume records that could not be rewritten (refiles.json, "
+                                "vlm-progress.json or captions-progress.json keeps the names)": int(bool(path_err))})
     ok = verify_gone(sig, a.drive, left)
     # The coverage report: every place this erase reached (counts), what it left, what it could not check.
     reached = {"quarantined files (state folder, quarantine/)": len(q),
@@ -2070,6 +2149,7 @@ def cmd_erase(a):
                "freedesktop thumbnails (~/.cache/thumbnails)": thumbs,
                "gallery thumbnails and video proxies (~/.cache/media-intake)": gthumbs,
                RECOG_PLACE: recog_count(rec),
+               "text index of photos (state folder, ocr-text.db)": max(txt, 0),
                "recent files entries (~/.local/share/recently-used.xbel)": recent,
                "Showtime playback positions and log lines (~/.local/state/showtime)":
                    traces["showtime positions"] + traces["showtime log lines"],
@@ -2077,7 +2157,9 @@ def cmd_erase(a):
                "near-duplicates moved to quarantine (not deleted)": near,
                "backup records: erased files dropped (state folder, backup/)": backups,
                "your places' records: erased files dropped (state folder, places.json)": place_recs,
-               "date records: erased files dropped (state folder, datecheck.json and date-fixes.json)": date_recs}
+               "date records: erased files dropped (state folder, datecheck.json and date-fixes.json)": date_recs,
+               "refile and resume records: erased files dropped (state folder, refiles.json, vlm-progress.json "
+               "and captions-progress.json)": path_recs}
     not_checked = []
     if gio_metadata_on():
         reached["gvfs-metadata entries cleared (~/.local/share/gvfs-metadata)"] = stats["gvfs-metadata cleared"]
@@ -2734,16 +2816,22 @@ def trash_files(files, batch=None, phone=None, dry=False):
                 ph += len(device_remove([src]))
     save(os.path.join(STATE, "index.json"), index)
     rec = recog_forget(gone)
+    txt = ocr_forget(gone)
     _, perr = myplaces.forget_paths(STATE, gone_paths)  # their records in places.json (the tag went with the sidecar)
     if perr:
         print(f"your places' records of the trashed files not dropped: {perr}")
     _, derr = date_forget(gone_paths)  # their findings and fixes in datecheck.json / date-fixes.json
     if derr:
         print(f"date records of the trashed files not dropped: {derr}")
+    _, rerr = path_forget(gone_paths)  # refiles.json, vlm-progress.json, captions-progress.json
+    if rerr:
+        print(f"refile and resume records of the trashed files not dropped: {rerr}")
     marked, spared, err = mark_trashed_copies(gone, index)
     print(f"trashed {n} files; sidecars {sc}; thumbnails {th}; phone {ph}"
           + (f"; recognition rows and crops {recog_count(rec)}" if recog_count(rec) else "")
           + ("; the recognition store could not be read (check it)" if rec["store unreadable"] else "")
+          + (f"; text index rows {txt}" if txt > 0 else "; the text index could not be read (check it)" if txt < 0
+             else "")
           + (f"; copies left on disk marked Owner|trash {marked}" if marked else "")
           + (f"; copies you kept left alone {spared}" if spared else "")
           + trash_refusals(refused, quarantined))
@@ -2852,10 +2940,21 @@ def cmd_migrate_tags(a):
     print(f"migrated {len(entries)} sidecars: Review|not-trash -> Owner|not-trash")
 
 
+def junk_score_arg(v):
+    """--junk-score: a number from 0 to 1."""
+    try:
+        f = float(v)
+    except ValueError:
+        f = -1.0
+    if not 0.0 <= f <= 1.0:
+        raise argparse.ArgumentTypeError(f"{v!r} is not a junk score from 0 to 1")
+    return f
+
+
 def cmd_suggest_trash(a):
-    """Library files the VLM called trash (Review|vlm-trash/*, written only at confidence >= 0.7, or
-    AI|vlm/<model>/trash...), SigLIP's Review|maybe-trash without a VLM keep, or a surviving copy of
-    content you trashed (Owner|trash). Never one you kept (owner.kept: Owner|keep, Owner|not-trash,
+    """Library files the VLM called trash with a Junk score of at least --junk-score (vlm_trash.junk_score;
+    vlm_trash.TRASH_MIN by default, the gallery's Suggested junk line), SigLIP's Review|maybe-trash without a VLM keep, best-shot's
+    AI|bestshot/not-best (at any score, as the gallery's Suggested junk), or a surviving copy of content you trashed (Owner|trash). Never one you kept (owner.kept: Owner|keep, Owner|not-trash,
     digiKam Accepted, a favorite: xmp:Rating >= 5), one with a person or pet you named (owner.named:
     People|<Name>, Pets|<Name>; unless it is a copy you trashed), Used|* or a protected project's Project| tag."""
     need_exiftool()
@@ -2872,9 +2971,11 @@ def cmd_suggest_trash(a):
     for row in json.loads(r.stdout or "[]") if r else []:
         media = row["SourceFile"][:-4]
         tags = as_list(row.get("HierarchicalSubject"))
-        vlm_trash = any(t.startswith("Review|vlm-trash/") or (t.startswith("AI|vlm/") and "/trash" in t) for t in tags)
+        score = vlm_trash.junk_score(tags)[0]
+        judged = score is not None and score >= a.junk_score
         vlm_keep = any(t == "Review|vlm-keep" or (t.startswith("AI|vlm/") and "/keep" in t) for t in tags)
-        if not (vlm_trash or ("Review|maybe-trash" in tags and not vlm_keep) or owner.TRASH in tags):
+        if not (judged or ("Review|maybe-trash" in tags and not vlm_keep) or BESTSHOT_NOT_BEST in tags
+                or owner.TRASH in tags):
             continue
         if owner.kept(tags, owner.pick_label(row.get("PickLabel")), row.get("Rating")) \
                 or (owner.named(tags) and owner.TRASH not in tags) or protected.intersection(tags) or any(t.startswith("Used|") for t in tags):
@@ -2888,7 +2989,7 @@ def cmd_suggest_trash(a):
     with os.fdopen(fd, "w") as f:
         json.dump({"batch": a.batch, "items": items}, f, indent=1)
     os.replace(out + ".tmp", out)
-    print(f"{len(items)} library files suggested as maybe-trash")
+    print(f"{len(items)} library files suggested as maybe-trash (junk score at least {a.junk_score:.2f})")
     if not items or a.no_serve:
         return
     cmd = [sys.executable, "-I", os.path.join(HERE, "review_ui.py"), "--maybe-trash"]
@@ -2910,6 +3011,9 @@ SOURCE = {"photo": "phone camera", "video": "phone camera", "gopro": "gopro",
           "screenshot": "screenshot", "screenrec": "screen recording"}
 GOPRO_NAME = re.compile(r"^(G[HXP]\d{6}|GOPR\d{4}|GP\d{6})\.", re.I)
 POST_SLUG = re.compile(r"^(\d{4}-\d\d-\d\d)-[a-z0-9][a-z0-9-]*$")
+
+
+BESTSHOT_NOT_BEST = "AI|bestshot/not-best"  # best_shot.NOT_BEST (it imports this module): suggest-trash lists it
 
 
 def need_exiftool():
@@ -3305,6 +3409,11 @@ def cmd_fix_dates(a):
     datecheck.cmd_fix_dates(a)
 
 
+def cmd_refile(a):
+    import refile  # docs/dates.md, "Re-filing a fixed file"
+    refile.cmd_refile(a)
+
+
 def cmd_mark_used(a):
     need_exiftool()
     if not POST_SLUG.match(a.post):
@@ -3667,6 +3776,10 @@ def build_parser(prog=None):
     s.add_argument("--batch", metavar="BATCH", help="only files this batch filed")
     s.add_argument("--phone", metavar="PHONE", help="passed to the review page, so Trash there also deletes the "
                    "originals from this phone or camera")
+    s.add_argument("--junk-score", type=junk_score_arg, default=vlm_trash.TRASH_MIN, metavar="N",
+                   help=f"list a vision-check verdict with a junk score of at least N, 0 to 1 (default "
+                        f"{vlm_trash.TRASH_MIN:.2f}, the gallery's Suggested junk line; lower lists more). Files "
+                        "tagged as junk and copies of photos you trashed are listed at any score")
     s.add_argument("--no-serve", action="store_true", help="write the list and stop (no review page)")
 
     for name in ("share-copy", "social-copy"):
@@ -3738,6 +3851,17 @@ def build_parser(prog=None):
     s.add_argument("--reason", metavar="TEXT", help="why, kept in the fix record (optional)")
     s.add_argument("--yes", action="store_true", help="write the sidecars (without it, a dry run)")
 
+    s = cmd("refile", "move date-fixed files into their date's YYYY/YYYY-MM folder; a dry run until --yes",
+            "Move each file fix-dates corrected into the YYYY/YYYY-MM folder its new date belongs in, with\n"
+            "its .xmp sidecar, and update every record of its path (index, plans, date fixes, places,\n"
+            "recognition, search). Never replaces a file; each run is recorded, so --undo puts it back.",
+            "renames library files and their sidecars (same filesystem only), the records that name them in "
+            "the state folder, and refiles.json; the photos and videos themselves are never written.",
+            "no file; a folder a move leaves empty is removed.")
+    s.add_argument("--undo", nargs="?", const="last", metavar="ID", help="put back one earlier refile (default: "
+                   "the last one)")
+    s.add_argument("--yes", action="store_true", help="move the files (without it, a dry run)")
+
     s = cmd("mark-used", "record that library files were used in a post (a Used|<post> tag)",
             "Tag library files as used in a post, so find --unused-since and --never-used can skip them.",
             "the files' sidecars.",
@@ -3766,7 +3890,8 @@ def build_parser(prog=None):
 # of these (tests/test_library_lock.py checks), and main() is the only place that takes it for the CLI.
 LOCKED = {"stage", "plan", "scan", "apply", "release", "erase", "forget", "to-records", "sweep-erased", "offload",
           "purge-review",
-          "trash", "not-trash", "suggest-trash", "tag", "tag-files", "mark-used", "migrate-tags", "fix-dates"}
+          "trash", "not-trash", "suggest-trash", "tag", "tag-files", "mark-used", "migrate-tags", "fix-dates",
+          "refile"}
 # check-dates writes only its own report in the state folder, so a long run never blocks the gallery's edits.
 READ_ONLY = {"quarantine", "verify-gone", "wipe-free", "share-copy", "social-copy", "find", "check-dates"}
 

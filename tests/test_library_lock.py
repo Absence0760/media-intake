@@ -360,10 +360,68 @@ class LibraryLockTest(unittest.TestCase):
         p.stdin.close()
         p.wait()
         if not shutil.which("exiftool"):
-            return
+            self.skipTest("exiftool missing: the write once the lock is free needs it (CI has it)")
         vlm_trash.write_verdicts([(a, "trash", "blurry", 0.9), (gone, "trash", "dark", 0.9)], {})
         self.assertIn("AI|vlm/", read(a + ".xmp"))
         self.assertFalse(os.path.exists(gone + ".xmp"))
+
+    def test_captions_write_under_the_lock(self):
+        """captions.py (sidecar writes, a CLI command run in the venv) waits for the lock, then refuses; a file
+        that went away meanwhile gets no sidecar."""
+        import captions
+        a, gone = os.path.join(self.lib, "a.jpg"), os.path.join(self.lib, "gone.jpg")
+        with open(a, "wb") as f:
+            f.write(b"x")
+        os.environ[library_lock.WAIT_ENV] = "0"
+        p = self.hold_in_child("intake.py apply")
+        with self.assertRaises(SystemExit) as cm:
+            captions.write([(a, "A red square")], self.state)
+        self.assertIn("refused: the library is busy: intake.py apply", str(cm.exception))
+        self.assertFalse(os.path.exists(a + ".xmp"))
+        p.stdin.close()
+        p.wait()
+        if not shutil.which("exiftool"):
+            self.skipTest("exiftool missing: the write once the lock is free needs it (CI has it)")
+        captions.write([(a, "A red square"), (gone, "A dark square")], self.state)
+        self.assertEqual(captions.read(a)["caption"], "A red square")
+        self.assertFalse(os.path.exists(gone + ".xmp"))
+
+    def test_best_shot_reads_and_writes_under_the_lock(self):
+        """best-shot (sidecar writes) refuses while another writer holds the lock, before it reads the library,
+        and writes nothing; once the lock is free it plans and writes under it. --dry-run takes no lock."""
+        import io
+        from contextlib import redirect_stderr, redirect_stdout
+        from unittest import mock
+        import best_shot
+        a, b = os.path.join(self.lib, "a.jpg"), os.path.join(self.lib, "b.jpg")
+        for x in (a, b):
+            with open(x, "wb") as f:
+                f.write(b"x")
+        items = [dict(path=x, media="photo", burst=0, tags=[], pick="", rating="", used=[], project="", gone=False)
+                 for x in (a, b)]
+        scores = {a: (1.0, 0.0), b: (2.0, 0.0)}
+        os.environ[library_lock.WAIT_ENV] = "0"
+        p = self.hold_in_child("intake.py apply")
+        err = io.StringIO()
+        with mock.patch("gallery.scan_library", return_value=(items, 0)) as scan, \
+                mock.patch.object(best_shot, "score_file", scores.get), \
+                mock.patch("intake.exiftool_batch") as run, redirect_stderr(err), redirect_stdout(io.StringIO()):
+            self.assertEqual(best_shot.main([]), 1)
+            scan.assert_not_called()  # the plan is made under the lock, never from a read before it
+            run.assert_not_called()
+            self.assertEqual(best_shot.main(["--dry-run"]), 0)  # reads only: no lock needed
+            run.assert_not_called()
+        self.assertIn("best-shot: refused: the library is busy: intake.py apply", err.getvalue())
+        self.assertFalse(os.path.exists(a + ".xmp") or os.path.exists(b + ".xmp"))
+        p.stdin.close()
+        p.wait()
+        with mock.patch("gallery.scan_library", return_value=(items, 0)), \
+                mock.patch.object(best_shot, "score_file", scores.get), \
+                mock.patch("intake.exiftool_batch", side_effect=lambda blocks: self.assertTrue(
+                    self.held_by("best_shot.py"))) as run, redirect_stdout(io.StringIO()):
+            self.assertEqual(best_shot.main([]), 0)
+        run.assert_called_once()
+        os.environ.pop(library_lock.WAIT_ENV)
 
     def test_bad_wait_setting(self):
         r = self.intake("purge-review", "q1", "--yes", env=dict(self.env, **{library_lock.WAIT_ENV: "soon"}))

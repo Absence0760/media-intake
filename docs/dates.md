@@ -15,6 +15,7 @@ media-intake check-dates --json               # the report as JSON
 media-intake fix-dates --suggested FILE...    # a dry run: each old and new date
 media-intake fix-dates --suggested FILE... --yes
 media-intake fix-dates --undo --yes           # put the last fix back
+media-intake refile --yes                     # move fixed files to their date's folder
 ```
 
 `media_intake/datecheck.py`; tests: `tests/test_datecheck.py`,
@@ -93,9 +94,33 @@ one. Confidence: high.
 | iPhone 6 to 17, 6s, X, XS, XR, 16e, Air, SE (2nd and 3rd generation) | 2014-09, 2015-09, 2016-09, 2017-09, 2017-11, 2018-09, 2018-10, 2019-09, 2020-10, 2021-09, 2022-09, 2023-09, 2024-09, 2025-02, 2025-09, 2020-04, 2022-03 | [Apple: Identify your iPhone model](https://support.apple.com/en-us/108044) (years), Apple Newsroom (months) |
 | Google Pixel to Pixel 10 (a models too) | 2016-10 (Pixel, Pixel XL), 2017-10, 2018-10, 2019-05 (3a), 2019-10, 2020-08 (4a), 2020-10, 2021-08 (5a), 2021-10, 2022-07 (6a), 2022-10, 2023-05 (7a), 2023-10, 2024-05 (8a), 2024-08, 2025-04 (9a), 2025-08 | [Google: Identify your Pixel phone](https://support.google.com/pixelphone/answer/7158570) (years), the Google blog (months) |
 | Samsung Galaxy S8 to S25 (model codes `SM-G95…` to `SM-S93…`) | 2017-04, 2018-03, 2019-03, 2020-03, 2021-01, 2022-02, 2023-02, 2024-01, 2025-02 | [Samsung Newsroom](https://news.samsung.com/global/) |
+| Sony α7 III (`ILCE-7M3`) | 2018-03 (on sale 23 March) | [Sony Japan press release, 2018-02-27](https://www.sony.jp/CorporateCruise/Press/201802/18-0227/) |
+| Sony α7 IV (`ILCE-7M4`) | 2021-12 (17 December) | [Sony Japan press release, 2021-12-02](https://www.sony.jp/CorporateCruise/Press/202112/21-1202/) |
+| Sony α7R V (`ILCE-7RM5`) | 2022-11 (25 November) | [Sony Japan press release, 2022-10-26](https://www.sony.jp/CorporateCruise/Press/202210/22-1026B/) |
+| Sony α7 V (`ILCE-7M5`) | 2025-12 (19 December) | [Sony Japan press release, 2025-12-02](https://www.sony.jp/CorporateCruise/Press/202512/25-1202/) |
+| Canon EOS R, RP, R5, R6, R3, R10, R6 Mark II, R50, R8, R100, R5 Mark II, R1 (`Canon EOS R6m2`; "Mark II" spelled out also matches) | 2018-10, 2019-03, 2020-07, 2020-08, 2021-11, 2022-07, 2022-12, 2023-03, 2023-04, 2023-06, 2024-08, 2024-11 | Canon Camera Museum, "Marketed" month: [EOS R](https://global.canon/en/c-museum/product/dslr877.html), [RP](https://global.canon/en/c-museum/product/dslr880.html), [R5](https://global.canon/en/c-museum/product/dslr894.html), [R6](https://global.canon/en/c-museum/product/dslr895.html), [R3](https://global.canon/en/c-museum/product/dslr899.html), [R10](https://global.canon/en/c-museum/product/dslr902.html), [R6 Mark II](https://global.canon/en/c-museum/product/dslr905.html), [R50](https://global.canon/en/c-museum/product/dslr906.html), [R8](https://global.canon/en/c-museum/product/dslr907.html), [R100](https://global.canon/en/c-museum/product/dslr908.html), [R5 Mark II](https://global.canon/en/c-museum/product/dslr910.html), [R1](https://global.canon/en/c-museum/product/dslr913.html) |
+| DJI Osmo Action 4 | 2023-08 (2 August) | [DJI announcement](https://www.dji.com/media-center/announcements/dji-introduces-osmo-action-4-for-capturing-adventure-in-stunning-clarity) |
+| DJI Osmo Pocket 3 | 2023-10 (shipping 25 October) | [DJI announcement](https://www.dji.com/media-center/announcements/dji-releases-the-osmo-pocket-3-for-moving-moments-with-unparalleled-precision-en) |
+| DJI Osmo Action 5 Pro | 2024-09 (19 September) | [DJI announcement](https://www.dji.com/media-center/announcements/dji-osmo-action-5-pro-en) |
+| Insta360 ONE X2 | 2020-10 | [Insta360 launch post](https://www.insta360.com/blog/news/insta360-one-x2-360-action-camera-announced.html) ("available to order today"; the post carries a later 2020-11-20 publish date, its images are filed 2020/10; the earlier month is the lenient one) |
+| Insta360 X3 | 2022-09 (8 September) | [Insta360 launch post](https://www.insta360.com/blog/news/insta360-x3-360-action-cam.html) |
+| Insta360 X4 | 2024-04 (16 April) | [Insta360 launch post](https://www.insta360.com/blog/news/insta360-x4-8K-360-action-camera-endless-creative-possibility.html) |
 
 Checked 2026-11-19 against those pages; some months are from the makers'
-launch posts rather than the support pages, which give years only.
+launch posts rather than the support pages, which give years only. The Sony,
+Canon, DJI and Insta360 rows were checked 2026-11-20. Sony's Japanese
+releases give the Japan sale date, which can be a few weeks off other
+markets; the three months of slack covers that. Matching is exact: a
+Sony kit or other body code, a Canon EOS R6 Mark III or R5 C, an Insta360
+X4 Air or an older DJI Osmo Action is not one of these and is skipped.
+
+Left out on purpose: the Canon EOS R7 (the museum gives 2022-11, months after
+it went on sale abroad, so it would flag real photos); DJI drones, whose
+EXIF Model is a camera code (`FC3582`, `L1D-20c`, ...) that DJI's own pages
+don't map to a product; other Sony and Canon bodies and older Insta360 and
+DJI handhelds, until each has a maker source. The Model strings DJI and
+Insta360 write are matched loosely (case, spaces, an optional `DJI` prefix)
+because the makers don't document them.
 
 ### Video format (`codec`)
 
@@ -107,7 +132,10 @@ A HEIC / HEIF photo is an HEVC still, so it gets the HEVC floor. Confidence:
 high. It rarely fires (a 2016 reset date is newer than all three); later
 idea, not done because it isn't reliable from metadata alone: 10-bit HEVC or
 HDR (HLG, Dolby Vision) newer than a phone model that could shoot it, and an
-encoder or firmware string newer than the date.
+encoder or firmware string newer than the date. `check-dates` reads only
+`CompressorID` today, not bit depth or the colour transfer, so that check
+needs those fields read first and a maker source for which models record
+10-bit or HDR.
 
 ### Sequence (`sequence`)
 
@@ -214,16 +242,75 @@ date; select and **Fix date…** offers the suggestion, a date or a shift, runs
 the same code, and its message has **Undo** (the same record: `fix-dates
 --undo` can undo a gallery fix too).
 
+## Re-filing a fixed file: refile
+
+```sh
+media-intake refile                 # a dry run: each file's old and new place
+media-intake refile --yes           # move them, each with its .xmp sidecar
+media-intake refile --undo --yes    # put the last refile back (or --undo ID)
+```
+
+`media_intake/refile.py`; tests: `tests/test_refile.py`.
+
+- **What moves**: each library file a fix-dates write covers (the latest fix
+  per file that no undo took back, in `date-fixes.json`) whose folder
+  disagrees with its fixed date. Only the dated folders of its path change:
+  the first `YYYY` folder under the library or videos folder, and the
+  `YYYY-MM` folder right under it; a camera's device folder and the name stay
+  (`2016/2016-01/gopro-hero12-black/GOPR0104.JPG` to
+  `2024/2024-05/gopro-hero12-black/GOPR0104.JPG`; `Screenshots/2016/` to
+  `Screenshots/2024/`). A file in no dated folder (a project folder, which is
+  named by day and event, or a folder of your own), one scan flagged,
+  quarantined or erased, and one no longer in the library are refused and
+  listed. It reads no file: the date is the one the fix wrote.
+- **A dry run until `--yes`**: it prints each old and new path, the files
+  already in place (a count) and every refusal.
+- **A move is a rename**, the file and its `.xmp` together (if the sidecar
+  can't follow, the file goes back), on the same filesystem only: a
+  destination on another drive is refused, never copied and deleted. Nothing
+  at the destination is ever replaced: a name already taken (by a file or its
+  sidecar) gets the next free `<stem>_<n>`, as `apply` does, and the move
+  itself is a hard link then an unlink, which fails rather than overwrite
+  (where the filesystem has no hard links, a check then a rename, under the
+  lock). A folder the move leaves empty is removed, up to the library folder.
+  The photo or video is never written.
+- **Every record of the path follows it**: `index.json`, the batches'
+  `plan.json` (`dst`, `lib_dst`), `datecheck.json` and `date-fixes.json` (so
+  `fix-dates --undo` and `tag BATCH` find the file), `places.json`, the
+  recognition store's `files` and `written` rows, the search index's file list
+  (`embeddings.npz`, when the system Python has numpy; otherwise the next
+  `media-intake index` finds the file again and says so) and
+  `maybe-trash.json`. The backup record (`<state>/backup/<drive>.json`) drops
+  the old path's entries instead: the drive has no copy under the new path,
+  so the next `backup` copies the file there, and the copy under the old path
+  stays on the drive (`backup` never deletes; [backup.md](backup.md)).
+  `vlm-progress.json` and `captions-progress.json` (the resume records of
+  `vlm-trash --all` and `captions --all`) follow it too: a rename keeps the
+  size and time they check, so the moved photo is not judged or captioned
+  again. Nothing
+  else names a library path: event display names are by event, and the
+  thumbnails, proxies, `trashed.json` and the text index by sha256. GNOME's
+  own thumbnail cache and recent files (by URI) are not touched.
+- **Recorded**: `<state>/refiles.json` (0600) keeps each run's moves (an id,
+  the time, each old and new path). erase, forget, trash and sweep-erased
+  drop a file's moves from it, its whole history (each earlier refile of the
+  same file too), and any history whose every path is gone; `verify-gone`
+  counts what is left (`REFILE AND RESUME RECORDS: N`, never a name).
+  `--undo [ID]` (the last by default; a dry
+  run until `--yes`) moves them back and rekeys the records again; it refuses,
+  moving nothing, when a moved file is gone or something now sits at its old
+  place.
+- **Under the library lock** (`intake.LOCKED`), the dry run and `--undo`'s
+  dry run too: they read `date-fixes.json` and the library, which another
+  job may be changing, so what they print is one steady view (with a job
+  running, it waits, then refuses as any locked command does). A second run
+  with nothing to move changes nothing. Output is paths and counts.
+
 ## Limits
 
-- **Files are not moved.** A fixed file stays in its old `YYYY/YYYY-MM`
-  folder: nothing in media-intake moves a filed file when its date changes
-  (`plan` picks the folder once, `apply` files it), so fix-dates doesn't
-  either. The gallery, `find` and digiKam go by the sidecar date, so it shows
-  in the right month there. Moving would also leave the backup drive's copy
-  under the old path (`backup` never deletes) and needs `index.json`, the
-  batches' plans and the backup record rekeyed; if it is wanted, it belongs
-  in an explicit step of its own with a dry run, not in fix-dates.
+- **Files move only when you ask.** fix-dates leaves a fixed file in its old
+  `YYYY/YYYY-MM` folder (the gallery, `find` and digiKam go by the sidecar
+  date, so it shows in the right month there); `refile`, below, moves it.
 - **The report is a snapshot**: the gallery shows the last run's findings; a
   file changed since (by another tool) is shown as it was found. Run
   `check-dates` again after a batch of fixes.

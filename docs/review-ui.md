@@ -141,7 +141,12 @@ review files it prints `nothing to review for BATCH` and exits 0.
   private, remembered by checksum so `plan` drops it next time; with `--phone` when the page has it). It runs first in each
   of those tabs. `--maybe-trash` (or `media-intake suggest-trash`, which opens it)
   adds a "Maybe trash" tab from `maybe-trash.json`, re-checked against the
-  library roots: Keep runs `not-trash` (`Owner|keep` + `Owner|not-trash`, the
+  library roots (`suggest-trash` lists a vision-check verdict from the
+  gallery's Junk score line, 0.70, or its `--junk-score N`). Each card's labels
+  are plain words, never tags: a vision-check verdict reads as the gallery's
+  tile does, "Junk score 0.90 (blurry)" (`vlm_trash.junk_score` and
+  `REASON_WORDS`), `Review|maybe-trash` as "Tagged as junk", `Owner|trash` as
+  "Copy of a trashed photo" ([words.md](words.md)): Keep runs `not-trash` (`Owner|keep` + `Owner|not-trash`, the
   gallery's Keep rule), Trash runs `trash` (the sha256 goes in `trashed.json`,
   the durable `Owner|trash`; copies left on disk get `Owner|trash` in their
   sidecar: [intake.md](intake.md), "Owner decisions"). With no BATCH,

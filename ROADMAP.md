@@ -75,9 +75,12 @@ The goal: someone else can install it on Fedora, import a phone, and trust it.
 - [x] Wrong dates already in the library: `check-dates` (clock-reset defaults, device era, video
       format, numbering order, disagreeing sources, copies, GPS 0,0, place), `fix-dates` and the
       gallery's Dates to check / Fix date, sidecars only, undoable (`docs/dates.md`).
-- [ ] Re-file a fixed file into its right YYYY/YYYY-MM folder: an explicit step with its own dry run
-      (index, plans and backup record rekeyed); today a fix leaves the file where it is.
-- [ ] Device era for more makers (DJI, Insta360, Sony, Canon), and HEVC 10-bit / HDR vs the model.
+- [x] Re-file a fixed file into its right YYYY/YYYY-MM folder: `refile`, a dry run until `--yes`, file and
+      sidecar renamed together, every path record rekeyed, undoable (`docs/dates.md`).
+- [x] Device era for more makers: Sony α7 III/IV/V and α7R V, Canon EOS R bodies, DJI Osmo
+      Action 4 / 5 Pro and Pocket 3, Insta360 ONE X2 / X3 / X4 (docs/dates.md, "Device era").
+- [ ] HEVC 10-bit / HDR vs the model: read bit depth and colour transfer in `check-dates` first,
+      then a maker-sourced list of models that record them (docs/dates.md, "Video format").
 - [x] Source kind `folder` for laptop folders (refuse HOME itself, hidden/config dirs, repos,
       the state dir, library roots, password-manager paths; offload refuses folder sources).
 
@@ -128,7 +131,10 @@ The goal: someone else can install it on Fedora, import a phone, and trust it.
       tiles for private photos from a third-party server.
 - [ ] Best shot per burst and near-duplicate set: pick the sharpest, best-exposed frame
       (eyes open where faces are found) as the cover, and offer the rest to Suggested junk
-      with the reason "Not the best shot"; never trash on its own.
+      with the reason "Not the best shot"; never trash on its own. (Done: `media-intake
+      best-shot` picks it by sharpness and exposure and writes `AI|bestshot/` tags;
+      docs/gallery.md, "Best shot"; Suggested junk, `suggest-trash` and the stack's cover
+      read them. Left: eyes open.)
 - [ ] "On this day": a sidebar view of photos and videos taken on today's date in past
       years, grouped by year; hides flagged, trashed and erased items like every view.
 - [ ] Albums: hand-picked collections that cross dates and events (stored in sidecars like
@@ -136,7 +142,9 @@ The goal: someone else can install it on Fedora, import a phone, and trust it.
       stripped share-safe folder.
 - [ ] Free up space: a read-only report of what takes room (largest videos, duplicate sets,
       Suggested junk, cached proxies) with the space each would free, and links into the
-      gallery to act on it. Changes nothing itself.
+      gallery to act on it. Changes nothing itself. The report is done (`media-intake space`,
+      docs/gallery.md "Free up space"); left: the links into the gallery (a view per section,
+      or the report as a gallery page).
 - [ ] Backup health in the gallery: when the last `backup` ran, to which drive, and how many
       library files are not on it yet; a link to the command to run. Read-only.
 - [x] Bulk edits on a selection: add/remove tags, set event, rotate.
@@ -169,15 +177,22 @@ The goal: someone else can install it on Fedora, import a phone, and trust it.
       erase path; suggestions only until the owner confirms: core and CLI (`pets.py`,
       `media-intake pets`, YOLOX + DINOv2, `pets eval` against your own names;
       docs/recognition.md, decisions in docs/research-pets.md) and the gallery's naming view.
-- [ ] Pets: date-aware propagation (prefer photos close in date when growing a name, so a
-      kitten and the grown cat need fewer merges; docs/research-pets.md).
-- [ ] Search the text in photos: keep the OCR text the sensitive-content scan already reads
-      (screenshots, receipts, signs) in a private local index and let `search` and the
-      gallery find files by what they say; flagged and erased files never indexed, erase
-      and verify-gone cover the index.
-- [ ] Local captions: a short description of each photo from the local vision model
+- [x] Pets: date-aware propagation (prefer photos close in date when growing a name, so a
+      kitten and the grown cat need fewer merges): an unnamed cluster is compared with a name
+      where the two meet in time and gets it as a suggestion; `recognition.pet_date_neighbours`,
+      `pets eval` reports the merges it saves (docs/recognition.md, docs/research-pets.md).
+- [x] Search the text in photos: keep the OCR text the sensitive-content scan already reads
+      (screenshots, receipts, signs) in a private local index and let `search` find files by
+      what they say (`search --text`, `index --text` for older photos); flagged and erased
+      files never indexed, erase and verify-gone cover the index (docs/search.md, "Text in
+      photos").
+- [ ] The gallery's search box for the text in photos (`search --text --format machine`
+      gives the same lines it parses today).
+- [x] Local captions: a short description of each photo from the local vision model
       (Ollama, already used by `vlm-trash`), kept in the sidecar as the tool's own field and
-      searchable; off by default, resumable overnight like `vlm-trash --all`.
+      searchable; off by default, resumable overnight like `vlm-trash --all`
+      (`media-intake captions`, found by `search --text`; docs/search.md, "Local captions").
+- [ ] Captions for videos (a few sampled frames, as `vlm-trash` does); photos only today.
 - [x] Video near-duplicates (perceptual video hash) for re-encoded or trimmed copies
       (`videohash.py`; docs/intake.md, Duplicates).
 - [x] Text search quality: prompt ensembles for queries (`--no-ensemble` to compare) and

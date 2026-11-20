@@ -769,19 +769,46 @@ class Trash(unittest.TestCase):
     def test_suggest_sources_and_owner_precedence(self):
         f = {}
         for n, args in (("vlm", ["-XMP-lr:HierarchicalSubject+=Review|vlm-trash/packaging"]),
-                        ("vlm-ai", ["-XMP-lr:HierarchicalSubject+=AI|vlm/qwen/trash/blurry"]),
+                        ("vlm-ai", ["-XMP-lr:HierarchicalSubject+=AI|vlm/qwen/trash/blurry",
+                                    "-XMP-lr:HierarchicalSubject+=AI|vlm/qwen/conf/0.9"]),
+                        ("vlm-low", ["-XMP-lr:HierarchicalSubject+=AI|vlm/qwen/trash/dark",
+                                     "-XMP-lr:HierarchicalSubject+=AI|vlm/qwen/conf/0.4"]),
+                        ("vlm-noconf", ["-XMP-lr:HierarchicalSubject+=AI|vlm/qwen/trash/other"]),
                         ("siglip-vlm-keep", ["-XMP-lr:HierarchicalSubject+=Review|maybe-trash",
                                              "-XMP-lr:HierarchicalSubject+=Review|vlm-keep"]),
                         ("accepted", ["-XMP-lr:HierarchicalSubject+=Review|maybe-trash", "-XMP-digiKam:PickLabel=3"]),
                         ("rejected-only", ["-XMP-digiKam:PickLabel=1"]),
                         ("owner-keep", ["-XMP-lr:HierarchicalSubject+=Review|vlm-trash/floor",
-                                        "-XMP-lr:HierarchicalSubject+=Owner|keep"])):
+                                        "-XMP-lr:HierarchicalSubject+=Owner|keep"]),
+                        ("owner-keep-ai", ["-XMP-lr:HierarchicalSubject+=AI|vlm/qwen/trash/blurry",
+                                           "-XMP-lr:HierarchicalSubject+=AI|vlm/qwen/conf/0.9",
+                                           "-XMP-lr:HierarchicalSubject+=Owner|not-trash"]),
+                        ("not-best", ["-XMP-lr:HierarchicalSubject+=AI|bestshot/not-best"]),
+                        ("not-best-kept", ["-XMP-lr:HierarchicalSubject+=AI|bestshot/not-best",
+                                           "-XMP-xmp:Rating=5"]),
+                        ("cover", ["-XMP-lr:HierarchicalSubject+=AI|bestshot/cover"])):
             f[n] = os.path.join(self.lib, f"2026/2026-11/{n}.jpg")
             save_jpg(pattern(18), f[n])
             self.xmp(f[n], *args)
-        self.intake("suggest-trash", "--no-serve")
+        out = self.intake("suggest-trash", "--no-serve")
+        self.assertIn("junk score at least 0.70", out)
         got = [x["path"] for x in jload(os.path.join(self.state, "maybe-trash.json"))["items"]]
-        self.assertEqual(got, sorted([f["vlm"], f["vlm-ai"]]))  # digiKam Rejected: only trash --from-digikam
+        # the gallery's Suggested junk line (vlm_trash.TRASH_MIN): a verdict below it, or with no score, waits
+        # best-shot's "not the best shot" at any score, as the gallery's Suggested junk; never its cover
+        self.assertEqual(got, sorted([f["vlm"], f["vlm-ai"], f["not-best"]]))  # digiKam Rejected: only trash --from-digikam
+        self.assertIn("junk score at least 0.30", self.intake("suggest-trash", "--no-serve", "--junk-score", "0.3"))
+        got = [x["path"] for x in jload(os.path.join(self.state, "maybe-trash.json"))["items"]]
+        self.assertEqual(got, sorted([f["vlm"], f["vlm-ai"], f["vlm-low"], f["not-best"]]))  # lower lists more
+        self.intake("suggest-trash", "--no-serve", "--junk-score", "0")
+        got = [x["path"] for x in jload(os.path.join(self.state, "maybe-trash.json"))["items"]]
+        self.assertEqual(got, sorted([f["vlm"], f["vlm-ai"], f["vlm-low"], f["vlm-noconf"], f["not-best"]]))  # Any score
+        for kept in ("owner-keep", "owner-keep-ai", "not-best-kept", "accepted", "siglip-vlm-keep", "cover"):
+            self.assertNotIn(f[kept], got, f"{kept}: your Keep wins at any score")
+        for bad in ("1.5", "-0.1", "-1", "nan", "high", "abc"):
+            r = subprocess.run([PY, "-I", INTAKE, "suggest-trash", "--no-serve", "--junk-score", bad], env=self.env,
+                               capture_output=True, text=True, stdin=subprocess.DEVNULL)
+            self.assertEqual(r.returncode, 2, bad)
+            self.assertIn("junk score from 0 to 1", r.stderr)
 
     def fake_venv(self, labels):
         """A stand-in venv interpreter in the temp state that answers label.py with canned labels."""

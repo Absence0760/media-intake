@@ -6,7 +6,7 @@ recommendations the same day ("Decisions" below). Built with them: a video is
 tagged only when the pet is in 3 or more of its frames
 (`recognition.pet_min_frames`); `pets eval` takes the owner's own names and
 `Pets|` tags as truth, plus `Calibrate|pets|<Name>` (not `Calibrate|pet|`).
-Date-aware propagation is not built.
+Date-aware propagation is built too (2026-11-20, "Growing up" below).
 
 Goal: tag each of a household's own pets by name (`Pets|<Name>`), the same way a
 face pipeline tags people (`People|<Name>`), and move that face pipeline into
@@ -186,7 +186,14 @@ What differs from faces:
   above the merge threshold) the way it suggests names for faces.
 - **Growing up.** A kitten and the adult cat may never link directly. Union-find
   chains help when the library has photos in between; otherwise the owner merges
-  once. Optional later: prefer neighbours close in date when propagating.
+  once. Built (2026-11-20): after clustering, a cluster holding no name is
+  compared with each name where the two meet in time (each side's
+  `recognition.pet_date_neighbours`, default 5, detections nearest in date to
+  the other; mean cosine against the merge threshold) and gets the name as a
+  suggestion when exactly one name passes; it then counts as that name's, so
+  the name spreads along the timeline. Dates come from the path (no file is
+  opened). Suggestions only (decision 1); `pets eval` reports merges saved and
+  wrong suggestions, and `0` turns it off.
 - **Several pets per photo** is common (and pets with people): one photo can
   carry `Pets|A`, `Pets|B` and `People|C`.
 - **Look-alikes** (littermates, two black labs): the case the evaluation must
@@ -398,9 +405,10 @@ re-running. The NVIDIA GPU is not needed; CUDA could be an opt-in later
 
 ## Still open
 
-- Date-aware suggestions (prefer neighbours close in date, for kittens and
-  puppies): worth the complexity, or leave it to owner merges? Decide after the
-  first real clusters.
+- Date-aware suggestions: built on by default for pets (suggestions only), so
+  the owner's first real clusters can judge it; whether it stays on is the
+  owner's call from `pets eval`'s `date_aware` numbers (`wrong_suggestions`
+  above 0: set `recognition.pet_date_neighbours = 0`). Faces don't use it.
 - How many frames a video must show a pet or person in before it gets the tag
   (`k` in "Videos"); a first guess of 3 is calibrated by `pets eval`.
 

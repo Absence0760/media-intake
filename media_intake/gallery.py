@@ -59,7 +59,7 @@ check, CSRF value on every POST, no-store + strict CSP, media by opaque id only.
 Originals are never written: sidecars (<file>.<ext>.xmp) only. docs/gallery.md.
 """
 import argparse, collections, contextlib, datetime, hashlib, html, http.server, io, json, math, os, re, secrets, select
-import shutil, sqlite3, subprocess, sys, tempfile, threading, time, unicodedata
+import shutil, signal, sqlite3, subprocess, sys, tempfile, threading, time, unicodedata
 import xml.etree.ElementTree as ET
 
 HERE = os.path.dirname(os.path.abspath(__file__))
@@ -71,6 +71,7 @@ import jobs  # noqa: E402  (trash / erase run as a detached job: <state>/jobs/ga
 import library_lock  # noqa: E402  (Keep, my tags, Rotate write sidecars under the library lock)
 import label  # noqa: E402  (flagged / refused: stdlib only at import)
 import owner  # noqa: E402  (owner decisions: Owner|keep / not-trash / trash)
+import vlm_trash  # noqa: E402  (TRASH_MIN, junk_score, REASON_WORDS: stdlib only at import)
 import places  # noqa: E402  (My places: Place|<name>, <state>/places.json)
 import plugins  # noqa: E402  (extra tabs: gallery_views())
 import recog  # noqa: E402  (people and pets: the store, names, suggestions, crops; numpy only when used)
@@ -104,11 +105,10 @@ TOOL_PREFIXES = ("project|", "source|", "event|", "place|", "label|", "review|",
 TAG_RE = re.compile(r"^[^\x00-\x1f\x7f]{1,64}$")
 DEG = {1: 0, 6: 90, 3: 180, 8: 270}
 ORIENT = {0: 1, 90: 6, 180: 3, 270: 8}
-AI_TRASH = re.compile(r"^AI\|vlm/([^/]+)/trash(?:/([^|]*))?$")
-AI_CONF = re.compile(r"^AI\|vlm/([^/]+)/conf/([0-9.]+)$")
-SUGGEST_MIN = 0.7  # Suggested junk's line for a vision-check verdict (vlm_trash.TRASH_MIN); the view can go lower
-# Suggested junk's Why (?why=): a vision-check reason (vlm_trash.REASONS, or any other a model wrote), or these two
-WHY_LABEL, WHY_COPY = "label", "copy"
+SUGGEST_MIN = vlm_trash.TRASH_MIN  # Suggested junk's line for a vision-check verdict (suggest-trash's too); the view can go lower
+# Suggested junk's Why (?why=): a vision-check reason (vlm_trash.REASONS, or any other a model wrote), or these three
+WHY_LABEL, WHY_COPY, WHY_BEST = "label", "copy", "not-best"
+BEST_COVER, NOT_BEST = "AI|bestshot/cover", "AI|bestshot/not-best"  # best_shot.py's tags (best_shot.COVER, NOT_BEST)
 OPENER = "xdg-open"  # the desktop's default app (found on PATH): media the browser can't decode, a Share's folder
 RECENT_DAYS = 30  # "Added in the last 30 days": filed into the library in the last N days (inode change time)
 UNDO_KEEP = 50  # the last N undoable actions (Keep, Favorite, my tags, Rotate, Set event) this server can still undo
@@ -217,28 +217,11 @@ def facts(it):
     it["labels"] = pre("Label|")
     it["mine"] = [t for t in tags if owner_tag(t)]
     it["used"] = sorted(t[5:] for t in tags if t.startswith("Used|"))
-    trash_why = {}  # model -> the reason it gave ("blurry", ...; "" when none)
-    for t in tags:
-        m = AI_TRASH.match(t)
-        if m:
-            trash_why[m.group(1)] = m.group(2) or trash_why.get(m.group(1), "")
-    trash_models = set(trash_why)
-    confs = {}
-    for t in tags:
-        m = AI_CONF.match(t)
-        if m:
-            try:
-                confs[m.group(1)] = float(m.group(2))
-            except ValueError:
-                pass  # malformed confidence in a sidecar: ignore that one tag
-    ai = max((confs.get(mo, 0.0) for mo in trash_models), default=None)
-    why = trash_why[max(trash_models, key=lambda mo: (confs.get(mo, 0.0), mo))] if trash_models else None
-    old = [t[len("Review|vlm-trash/"):] for t in tags if t.startswith("Review|vlm-trash/")]
-    if old:  # the older verdict tag, written only at confidence >= 0.7
-        why = why or old[0].split("/")[0]
-        ai = max(ai or 0.0, SUGGEST_MIN)
+    ai, why = vlm_trash.junk_score(tags)
     it["ai_trash"] = ai
     it["ai_why"] = why or None  # the reason of the most confident trash verdict, if it gave one
+    it["not_best"] = NOT_BEST in tags  # best-shot: another shot of its burst or near-duplicate set is better
+    it["best_cover"] = BEST_COVER in tags  # best-shot's pick: shown first in its burst stack
     it["ai_keep"] = any(t == "Review|vlm-keep" or (t.startswith("AI|vlm/") and "/keep" in t) for t in tags)
     it["kept"] = owner.kept(tags, it.get("pick", ""))  # your Keep (the tile's "Kept"); a favorite is it["fav"]
     it["fav"] = owner.favorite(it.get("rating"))
@@ -251,9 +234,13 @@ def under_state(p):
     return os.path.realpath(p).startswith(os.path.realpath(STATE) + os.sep)
 
 
-def scan_library():
+def scan_library(missed=None):
     """[item] for every library media file, newest first. Never quarantine/staging/flagged/erased, nor a photo
-    handed to the records inbox and still held (intake.records_handed)."""
+    handed to the records inbox and still held (intake.records_handed). Dot-folders, symlinks and what is under
+    a symlinked folder are never listed, by design. missed: a list to which the paths the walk could not see
+    are added: a subfolder it could not read, a symlinked subfolder and a broken symlink (its target may be on
+    a drive that isn't mounted). Files may be there that the scan would otherwise list or that carry an event,
+    so the start's event-name prune is skipped when any was (main)."""
     index = intake.load(os.path.join(STATE, "index.json"), {}) or {}
     flagged = label.flagged(STATE)
     sizes = set(flagged.values())
@@ -264,8 +251,13 @@ def scan_library():
         if not os.path.isdir(root) or under_state(root):
             continue
         rroot = os.path.realpath(root)
-        for d, dirs, names in os.walk(root, followlinks=False):
+        for d, dirs, names in os.walk(root, onerror=lambda e: missed is not None and missed.append(e.filename),
+                                      followlinks=False):
             dirs[:] = sorted(x for x in dirs if not x.startswith("."))
+            if missed is not None:
+                missed.extend(os.path.join(d, x) for x in dirs if os.path.islink(os.path.join(d, x)))
+                missed.extend(os.path.join(d, x) for x in names if not x.startswith(".")
+                              and os.path.islink(os.path.join(d, x)) and not os.path.exists(os.path.join(d, x)))
             for n in names:
                 ext = os.path.splitext(n)[1].lower()
                 if ext not in IMG | VID:
@@ -669,6 +661,16 @@ class ProxyJob:
         self.written = False  # the last attempt's tool exited with its whole file written (remux may follow)
         self.cancel = threading.Event()
         self.thread = None
+        self.proc = None  # the running attempt's process (_run_watched), so close_proxies can end it at once
+        self.work = None  # make_proxy's work folder, removed by close_proxies if the thread can't finish in time
+
+    def running(self, proc):
+        with self.cond:
+            self.proc = proc
+
+    def working(self, work):
+        with self.cond:
+            self.work = work
 
     def started(self, attempt, out):
         with self.cond:
@@ -745,8 +747,15 @@ def _run_watched(argv, out, job):
     """Run one proxy command; while it runs, tell job how far out has grown. Its exit code; STALLED when out
     hasn't grown for PROXY_STALL seconds (the encoder hung: the next command may still work); TIMED_OUT past
     PROXY_TIMEOUT while it was still writing (the next command would take as long); None when job was cancelled.
-    The process never outlives this call."""
-    proc = subprocess.Popen(argv, stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+    The process never outlives this call: it runs in a process group of its own (so a Ctrl-C in the terminal
+    reaches the server, which ends it, never the encoder alone) and its PID is written to <work>/pid (work: out's
+    folder), so the next start's sweep_proxy_work can end it if this server was killed without a chance to."""
+    proc = subprocess.Popen(argv, stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+                            start_new_session=True)
+    with contextlib.suppress(OSError):
+        write_private_bytes(os.path.join(os.path.dirname(out), "pid"), str(proc.pid).encode())
+    if job:
+        job.running(proc)
     start = grew_at = time.monotonic()
     size = 0
     try:
@@ -777,9 +786,94 @@ def _run_watched(argv, out, job):
                 job.grew(os.path.getsize(out))
         return rc
     finally:
-        if proc.poll() is None:
+        if job:
+            job.running(None)
+        end_proxy_process(proc)
+
+
+def end_proxy_process(proc):
+    """Kill a proxy command's process group (its own, from start_new_session) and reap it. Safe to call twice,
+    and from another thread while _run_watched waits on it."""
+    if proc.poll() is None:
+        with contextlib.suppress(OSError):
+            os.killpg(proc.pid, signal.SIGKILL)  # pgid == pid: the group is its own, never ours
+        with contextlib.suppress(OSError):
             proc.kill()
-            proc.wait()
+    with contextlib.suppress(subprocess.SubprocessError):
+        proc.wait(10)
+
+
+PROXY_WORK = ".work-"  # make_proxy's work folders in PROXIES: .work-<pid of the process that made it>-<random>
+PROXY_WORK_LEGACY_AGE = 2 * PROXY_TIMEOUT  # a work folder named without its owner's PID is stale past this
+
+
+def _alive(pid):
+    try:
+        os.kill(pid, 0)
+    except ProcessLookupError:
+        return False
+    except OSError:  # EPERM: it exists, someone else's
+        return True
+    return True
+
+
+def _runs_in(pid, work):
+    """True when process pid is still a proxy command of work: its command line names a path in that folder
+    (the PID alone may have been reused by an unrelated process since)."""
+    try:
+        with open(f"/proc/{pid}/cmdline", "rb") as f:
+            args = f.read().split(b"\0")
+    except OSError:
+        return False
+    w = os.fsencode(work + os.sep)
+    return any(w in a for a in args)
+
+
+def sweep_proxy_work(cache=None):
+    """Remove the proxy work folders (PROXY_WORK) left by a gallery or `media-intake proxies` that ended without
+    cleaning up (killed, a crash, a power cut), at the start of either. A folder is left alone while the process
+    named in it runs (another gallery or proxies run is converting there); this process's own PID counts as gone
+    (a dead owner's PID reused by us: nothing of ours runs yet). Before its folder goes, a proxy command still
+    running there (its PID in <work>/pid, checked against its command line) is killed with its process group, so
+    an encoder orphaned by a killed server doesn't hang on for hours. A folder without a PID in its name (made by
+    an older version) goes once it is PROXY_WORK_LEGACY_AGE old. Returns how many folders were removed."""
+    cache = cache or PROXIES
+    try:
+        names = os.listdir(cache)
+    except OSError:
+        return 0
+    removed = 0
+    now = time.time()
+    for n in names:
+        if not n.startswith(PROXY_WORK):
+            continue
+        work = os.path.join(cache, n)
+        if os.path.islink(work) or not os.path.isdir(work):
+            continue
+        owner = n[len(PROXY_WORK):].split("-", 1)[0]
+        if owner.isdigit() and "-" in n[len(PROXY_WORK):]:
+            if int(owner) != os.getpid() and _alive(int(owner)):
+                continue
+        else:
+            try:
+                if now - os.lstat(work).st_mtime < PROXY_WORK_LEGACY_AGE:
+                    continue
+            except OSError:
+                continue
+        try:
+            with open(os.path.join(work, "pid")) as f:
+                child = int(f.read().strip() or 0)
+        except (OSError, ValueError):
+            child = 0
+        if child > 1 and child != os.getpid() and _runs_in(child, work):
+            with contextlib.suppress(OSError):
+                if os.getpgid(child) == child:
+                    os.killpg(child, signal.SIGKILL)
+                else:
+                    os.kill(child, signal.SIGKILL)
+        shutil.rmtree(work, ignore_errors=True)
+        removed += not os.path.lexists(work)
+    return removed
 
 
 def proxy_failed_path(dst):
@@ -802,7 +896,9 @@ def make_proxy(src, dst, job=None):
     True once one did; False, with nothing left behind, when none did or job was cancelled. When commands ran
     and none made a proxy (not cancelled), the failure is recorded (proxy_failed_path) so it isn't tried on
     every run; a proxy made later clears it. The original is only read."""
-    work = tempfile.mkdtemp(prefix=".work-", dir=os.path.dirname(dst))  # 0700
+    work = tempfile.mkdtemp(prefix=f"{PROXY_WORK}{os.getpid()}-", dir=os.path.dirname(dst))  # 0700 (sweep_proxy_work)
+    if job:
+        job.working(work)
     out, plain = os.path.join(work, "out.mp4"), os.path.join(work, "plain.mp4")
     tried = False
     try:
@@ -894,10 +990,9 @@ WORDS = {
     "ai": {"trash": "Judged junk", "keep": "Judged fine", "none": "Not checked"},
     "score": "Junk score",  # an AI trash verdict's confidence, 0-1
     # Suggested junk's Why (?why=, summary()["r"]): the vision check's reasons (vlm_trash.REASONS), then the
-    # other two reasons a file is suggested; a reason not listed here shows as the model wrote it
-    "why": {"blurry": "Blurry", "accidental": "Accidental shot", "dark": "Too dark", "packaging": "Packaging",
-            "random-object": "Random object", "screenshot-junk": "Junk screenshot", "duplicate-ish": "Near-copy",
-            "other": "Other", WHY_LABEL: "Tagged as junk", WHY_COPY: "Copy of a trashed photo"},
+    # other reasons a file is suggested; a reason not listed here shows as the model wrote it
+    "why": {**vlm_trash.REASON_WORDS, WHY_LABEL: "Tagged as junk", WHY_COPY: "Copy of a trashed photo",
+            WHY_BEST: "Not the best shot"},
     # filter sections and their chips
     "filter": {"kind": "Kind", "ym": "When", "project": "Project", "source": "Source", "place": "Place",
                "event": "Event", "label": "Looks like", "mine": "My tag", "review": "Flags", "ai": "Junk check",
@@ -1795,13 +1890,22 @@ class App:
             job.end(made)
 
     def close_proxies(self):
-        """Stop the transcode still running (the server is stopping): its process ends, its work folder goes."""
+        """Stop the transcode still running (the server is stopping: Stop server, Ctrl-C, SIGTERM): its process
+        group is killed now, not at the job thread's next look, and its work folder goes, by the thread or, if
+        it can't finish in time (a remux or ffprobe still running), here."""
         with self.proxy_lock:
             job = self.proxy_job
-        if job:
-            job.cancel.set()
-            if job.thread:
-                job.thread.join(30)
+        if not job:
+            return
+        job.cancel.set()
+        with job.cond:
+            proc, work = job.proc, job.work
+        if proc:
+            end_proxy_process(proc)
+        if job.thread:
+            job.thread.join(30)
+        if work and job.thread and job.thread.is_alive():
+            shutil.rmtree(work, ignore_errors=True)
 
     def drop_thumb(self, it):
         """After a rotate: the item's new turn has its own cache key, so its next /t/ request shows it at once.
@@ -1841,6 +1945,9 @@ class App:
                     video=it["show"] == "video", date=it["date"], place=it["place"], event=it["event"],
                     project=it["project"], source=it["source"], folder=folder, res=it["res"],
                     size=R.human(it["size"]), tags=it["tags"], mine=it["mine"], rot=rot, ai=it["ai_trash"],
+                    # the large view's verdict line: the junk reason (a WORDS["why"] key, or the model's own word),
+                    # the vision check's "fine" verdict and best-shot's "not the best shot"
+                    why=it["ai_why"], ai_keep=bool(it["ai_keep"]), not_best=bool(it.get("not_best")),
                     used=it["used"], kept=it["kept"], fav=it["fav"], has_xmp=it["has_xmp"],
                     heic=it["ext"] in R.CONVERT_IMG and it["show"] == "none",  # no pillow-heif: a thumbnail only
                     gps=it["gps"] is not None, myplaces=it["myplaces"], probably=self.probably(i),
@@ -1907,15 +2014,17 @@ class App:
                     dates_checked=(self.dc_report or {}).get("checked"), rec=self.rec.facet(who))
 
     def suggested(self, it, floor=SUGGEST_MIN):
-        """Suggested junk: a copy of something you trashed, a content label's junk flag, or a vision-check trash
-        verdict scoring at least `floor` (the view's Junk score; SUGGEST_MIN unless you lower it). Never a file you
-        kept or starred, one used in a post or one in a protected project, whatever the floor. A file with a person
-        or pet you named (People|, Pets|) is never suggested by a label or the vision check; a copy you trashed
-        still is (a name is no Keep)."""
+        """Suggested junk: a copy of something you trashed, a content label's junk flag, best-shot's "not the best
+        shot" (AI|bestshot/not-best, at any floor: it has no score), or a vision-check trash verdict scoring at
+        least `floor` (the view's Junk score; SUGGEST_MIN unless you lower it). Never a file you kept or starred,
+        one used in a post or one in a protected project, whatever the floor. A file with a person or pet you named
+        (People|, Pets|) is never suggested by a label, best-shot or the vision check; a copy you trashed still is
+        (a name is no Keep)."""
         if it["kept"] or it["fav"] or it["used"] or f"Project|{it['project']}" in PROTECTED or PROTECTED.intersection(it["tags"]):
             return False
-        return it["trashed"] or not it.get("named") and ("Review|maybe-trash" in it["tags"] or
-                                                         (it["ai_trash"] is not None and it["ai_trash"] >= floor))
+        return bool(it["trashed"] or not it.get("named") and (
+            "Review|maybe-trash" in it["tags"] or it.get("not_best")
+            or (it["ai_trash"] is not None and it["ai_trash"] >= floor)))
 
     @staticmethod
     def junk_floor(f):
@@ -1927,7 +2036,7 @@ class App:
         return min(1.0, max(0.0, v)) if not math.isnan(v) else SUGGEST_MIN
 
     def junk_why(self, it, floor):
-        """The Why values an item is suggested for at this floor (a reason, WHY_LABEL, WHY_COPY)."""
+        """The Why values an item is suggested for at this floor (a reason, WHY_LABEL, WHY_COPY, WHY_BEST)."""
         out = set()
         if it["ai_trash"] is not None and it["ai_trash"] >= floor:
             out.add(it["ai_why"] or "other")
@@ -1935,7 +2044,16 @@ class App:
             out.add(WHY_LABEL)
         if it["trashed"]:
             out.add(WHY_COPY)
+        if it.get("not_best"):
+            out.add(WHY_BEST)
         return out
+
+    def junk_rank(self, it):
+        """Suggested junk's order: by Junk score, most confident first (a label's or a copy's 0.5); a shot offered
+        only as "not the best shot" (no score of its own) after every scored one."""
+        only_best = it.get("not_best") and it["ai_trash"] is None and not it["trashed"] \
+            and "Review|maybe-trash" not in it["tags"]
+        return (bool(only_best), -(it["ai_trash"] if it["ai_trash"] is not None else 0.5))
 
     def matches(self, it, f):
         if it["gone"]:
@@ -2073,7 +2191,7 @@ class App:
                 junk = self.junk_summary([i for i in ids if self.live(i)], f)
             ids = [i for i in ids if self.live(i) and self.matches(self.items[i], f)]
             if f.get("view") == "suggest":
-                ids.sort(key=lambda i: -(self.items[i]["ai_trash"] if self.items[i]["ai_trash"] is not None else 0.5))
+                ids.sort(key=lambda i: self.junk_rank(self.items[i]))
                 ranked = True
             dated = self.date_findings() if f.get("dates") else {}
             if f.get("dates"):  # grouped by what check-dates found (its first kind), then by date
@@ -2123,8 +2241,8 @@ class App:
 
     def stacked(self, ids):
         """The timeline with each burst as one run: when two or more of a burst's shots are listed (after the
-        filters), they follow one another in time order at the place of the first one listed, the earliest
-        shot first (the cover). Returns (ids, {id: {b: group, bn: shots listed, bc: cover?, mo: the cover's
+        filters), they follow one another in time order at the place of the first one listed, the cover first:
+        best-shot's pick (AI|bestshot/cover) when it is listed, else the earliest shot. Returns (ids, {id: {b: group, bn: shots listed, bc: cover?, mo: the cover's
         month}}). A burst with one shot listed is a plain tile. Ranked lists (search, Similar, Trash
         suggestions) are never stacked: their order is not time."""
         shots = {}
@@ -2142,7 +2260,7 @@ class App:
             if g in placed:
                 continue
             placed.add(g)
-            ms = sorted(ms, key=lambda j: self.items[j]["burst_pos"])
+            ms = sorted(ms, key=lambda j: (not self.items[j].get("best_cover"), self.items[j]["burst_pos"]))
             out.extend(ms)
             mo = self.items[ms[0]]["date"][:7]
             for k, j in enumerate(ms):
@@ -3170,8 +3288,11 @@ class Handler(R.Handler):
                     t.startswith(WHO_PREFIXES) for t in it["tags"]) else []
             except OSError:
                 appear = []
+            # the video's codec as ffprobe read it (proxy_state caches it on the item), so the page names HEVC
+            # only when it is HEVC
+            codec = it.get("vcodec") if it["media"] == "video" else None
             with app.lock:
-                self.json(200, dict(app.detail(i, appear), conv=conv))
+                self.json(200, dict(app.detail(i, appear), conv=conv, codec=codec))
         elif m := re.fullmatch(r"/([tmp])/([0-9]{1,9})", path):
             i = int(m.group(2))
             if not app.servable(i):
@@ -3419,36 +3540,61 @@ def main(argv=None):
         sys.exit(f"--drive {a.drive}: not a directory")
     t0 = time.monotonic()
     jobs.sweep()  # a trash/erase that died while no page watched: marked crashed, an erase's output scrubbed
-    items, skipped = scan_library()
+    sweep_proxy_work()  # conversions a killed gallery or proxies run left behind: their encoder ends, folder goes
+    missed = []
+    items, skipped = scan_library(missed)
     views = view_list([v for vs in plugins.call("gallery_views") for v in vs])
     app = App(items, os.path.abspath(a.drive) if a.drive else None, views, a.share_out)
-    if not skipped and all(os.path.isdir(r) for r in ROOTS):  # names of events emptied while no gallery ran
-        with app.lock:
-            app.prune_names()
-    running = app.sync()  # a trash/erase started before a restart: its files stay busy until it ends
-    threading.Thread(target=app.check_text, daemon=True).start()
+    got, httpd = [], None
+    prev = stop_on_signals(got)  # from here on, a conversion can start: SIGTERM and Ctrl-C end it (finally)
     try:
-        httpd, url = serve(app, a.port)
-    except OSError as e:  # the port is taken, or not ours to use
-        sys.exit(f"port {a.port} can't be used ({e.strerror or e}): pick another with --port, or leave it out")
-    print(f"xdg-open '{url}'", flush=True)
-    reg = f" Plugin tabs: {', '.join(v['title'] for v in views)}." if views else ""
-    print(f"({len(items)} items in {time.monotonic() - t0:.1f} s, {skipped} flagged/erased left out.{reg} "
-          "A private browser window keeps it out of history. "
-          "Ctrl-C or the page's Stop server button stops it.)", flush=True)
-    if running and not running["done"]:
-        print("(a trash/erase started earlier is still running; the page shows its progress)", flush=True)
-    try:
+        if not skipped and not missed and all(os.path.isdir(r) for r in ROOTS):  # events emptied while none ran
+            with app.lock:
+                app.prune_names()
+        running = app.sync()  # a trash/erase started before a restart: its files stay busy until it ends
+        threading.Thread(target=app.check_text, daemon=True).start()
+        try:
+            httpd, url = serve(app, a.port)
+        except OSError as e:  # the port is taken, or not ours to use
+            sys.exit(f"port {a.port} can't be used ({e.strerror or e}): pick another with --port, or leave it out")
+        print(f"xdg-open '{url}'", flush=True)
+        reg = f" Plugin tabs: {', '.join(v['title'] for v in views)}." if views else ""
+        print(f"({len(items)} items in {time.monotonic() - t0:.1f} s, {skipped} flagged/erased left out.{reg} "
+              "A private browser window keeps it out of history. "
+              "Ctrl-C or the page's Stop server button stops it.)", flush=True)
+        if running and not running["done"]:
+            print("(a trash/erase started earlier is still running; the page shows its progress)", flush=True)
+        if missed:
+            print(f"({len(missed)} folder(s) or link(s) could not be read; event names are kept until a full "
+                  "scan)", flush=True)
         httpd.serve_forever(poll_interval=0.2)
     except KeyboardInterrupt:
         st = jobs.status(JOB_KEY)
         print("stopped" + ("; the trash/erase keeps going on its own (<state>/jobs/gallery.json)"
                            if st and not st["done"] else ""))
-        return 130
+        return 128 + (got[0] if got else signal.SIGINT)
     finally:
         app.close_proxies()
-        httpd.server_close()
+        if httpd:
+            httpd.server_close()
+        for sig, h in prev.items():
+            signal.signal(sig, h)
     return 0
+
+
+def stop_on_signals(got):
+    """SIGTERM (systemd, kill, a closed session) stops the server as Ctrl-C does: KeyboardInterrupt in the main
+    thread, so main's finally ends the running conversion and removes its work folder. Without it, Python dies
+    at once and the encoder is left running as an orphan. The signal's number is appended to got. Returns the
+    handlers replaced ({} off the main thread, where Python can't set one)."""
+    if threading.current_thread() is not threading.main_thread():
+        return {}
+
+    def handler(signum, frame):
+        got.append(signum)
+        raise KeyboardInterrupt
+
+    return {sig: signal.signal(sig, handler) for sig in (signal.SIGTERM, signal.SIGINT)}
 
 
 PAGE = r"""<!doctype html>
@@ -3482,6 +3628,9 @@ button:disabled{opacity:.45;cursor:not-allowed}
 .btn.trash{color:var(--trash);border-color:color-mix(in srgb,var(--trash) 45%,transparent);background:color-mix(in srgb,var(--trash) 10%,var(--panel))}
 .btn.erase{color:var(--erase);border-color:color-mix(in srgb,var(--erase) 45%,transparent);background:color-mix(in srgb,var(--erase) 9%,var(--panel))}
 .btn.primary{background:var(--acc);border-color:var(--acc);color:var(--on-acc)}
+/* the confirm button of a Trash or Erase dialog, in that action's colour (amber, red), never the accent blue */
+.btn.primary.gotrash{background:var(--trash);border-color:var(--trash);color:var(--on-acc)}
+.btn.primary.goerase{background:var(--erase);border-color:var(--erase);color:var(--on-acc)}
 ::placeholder{color:var(--mut);opacity:1}
 kbd{font:600 11px/1 ui-monospace,monospace;border:1px solid currentColor;border-radius:4px;padding:2px 4px}
 .icon{display:inline-flex;align-items:center;justify-content:center;width:36px;height:36px;border:0;border-radius:8px;background:none;color:var(--mut);position:relative}
@@ -3648,7 +3797,12 @@ output{font-variant-numeric:tabular-nums;color:var(--fg);font-weight:600}
 .chip .x{border:0;background:none;color:inherit;width:22px;height:22px;border-radius:50%;font-size:15px;line-height:1}
 .chip .x:hover{background:var(--acc-soft)}
 #note,#helpb{padding:0 24px}
-#helpb .hshort,#hmore{display:none}
+/* the burst help: one line, "more" for the whole text (open / closed remembered), × hides it for good in this browser */
+#helpb{display:flex;align-items:baseline;gap:2px 6px;flex-wrap:wrap}
+#helpb .hfull{display:none}#helpb.more .hshort{display:none}#helpb.more .hfull{display:inline}
+#helpb:not(.more){flex-wrap:nowrap}#helpb:not(.more) .hshort{min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}#hmore,#hgone{flex-shrink:0}  /* closed, the help stays one line in any font: the short text gives way, "more" has the whole of it */
+#hgone{border:0;background:none;color:var(--mut);font-size:15px;line-height:1;padding:2px 6px;border-radius:6px}
+#hgone:hover{background:var(--hover);color:var(--fg)}
 #note{margin:10px 0 0}
 main{padding:4px 24px 48px;flex:1 0 auto}
 h2.month{position:sticky;top:var(--hh);z-index:2;margin:0;padding:16px 0 8px;font-size:14px;font-weight:650;background:var(--bg)}
@@ -3695,10 +3849,11 @@ body.marqing,body.marqing *{user-select:none;-webkit-user-select:none}
 .tile.stack{box-shadow:4px 4px 0 -1px var(--bg),4px 4px 0 0 var(--mut),8px 8px 0 -1px var(--bg),8px 8px 0 0 var(--mut)}
 .tile.stack.cur{box-shadow:inset 0 0 0 3px var(--fg),4px 4px 0 -1px var(--bg),4px 4px 0 0 var(--mut),8px 8px 0 -1px var(--bg),8px 8px 0 0 var(--mut)}
 .tile.inb{box-shadow:0 0 0 2px var(--acc)}  /* the shots of an open stack: one ring colour, one group */
-.tile .badge{position:absolute;right:6px;top:6px;z-index:2;background:var(--acc);color:var(--on-acc);font-size:11px;font-weight:700;border-radius:999px;padding:1px 8px;white-space:nowrap}
-.tile .x{position:absolute;right:6px;top:28px;z-index:2;font-size:11px;padding:2px 8px;border-radius:6px;border:1px solid var(--line);background:var(--panel);color:var(--fg);cursor:pointer;white-space:nowrap}
-/* on a small tile they shorten (ellipsis) rather than run over the checkbox or out of the tile */
-.tile .badge,.tile .x{max-width:calc(100% - 40px);overflow:hidden;text-overflow:ellipsis}
+/* tile labels: 12 px, short ("3 shots", "2 of 3": "Burst" is read out, not shown), never cut short: a label that
+   doesn't fit wraps, clear of the checkbox */
+.tile .badge{position:absolute;right:6px;top:6px;z-index:2;background:var(--acc);color:var(--on-acc);font-size:12px;font-weight:700;border-radius:999px;padding:1px 8px;white-space:nowrap}
+.tile .x{position:absolute;right:6px;top:30px;z-index:2;font-size:12px;padding:2px 8px;border-radius:6px;border:1px solid var(--line);background:var(--panel);color:var(--fg);cursor:pointer;text-align:right}
+.tile .badge,.tile .x{max-width:calc(100% - 40px)}
 /* a small tile (phone) shows a compact "×N" instead: on the cover a button that opens / closes the stack,
    on an open stack's other shots the badge drawn as "×N" (its full text stays for screen readers) */
 .tile{container:tile/inline-size}
@@ -3718,7 +3873,7 @@ body.marqing,body.marqing *{user-select:none;-webkit-user-select:none}
 .tile:has(.star) .flag{max-width:calc(100% - 88px)}  /* clear of the corner group: the star, then Share */
 @media (hover:hover){.tile .tshare{opacity:0;transition:opacity .1s}.tile:hover .tshare,.tile:focus-within .tshare{opacity:1}}
 @media (forced-colors:active){.tile .tshare{border:1px solid ButtonText}}
-.flag{position:absolute;left:6px;bottom:6px;width:max-content;max-width:calc(100% - 12px);background:rgba(0,0,0,.62);color:#fff;font-size:11px;border-radius:4px;padding:1px 6px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.flag{position:absolute;left:6px;bottom:6px;width:max-content;max-width:calc(100% - 12px);background:rgba(0,0,0,.62);color:#fff;font-size:12px;line-height:1.3;border-radius:4px;padding:1px 6px;overflow-wrap:anywhere}
 #sentinel{height:40px}
 /* bottom action bar: only while something is selected (or the Trash suggestions view's Apply) */
 /* sticky, last in #app: it floats over the grid while scrolling, but takes its own room at the end, so no tile
@@ -3728,6 +3883,17 @@ body.marqing,body.marqing *{user-select:none;-webkit-user-select:none}
 .fixopt{display:flex;flex-wrap:wrap;gap:6px 8px;align-items:center;margin:8px 0}.fixopt input:not([type=radio]){flex:1 1 12em;min-width:0;max-width:100%}.fixopt input[type=radio]{height:auto;padding:0;margin:0}
 .fixlist{margin:4px 0 8px;padding-left:1.2em;max-height:9em;overflow:auto;overflow-wrap:anywhere}
 #seln,#sugn{font-weight:650;font-size:14px;margin-right:4px;white-space:nowrap}
+/* the selection bar is one row: Keep, Trash, Erase, More… (the rest, in a popup above it) and Clear */
+/* the count goes on a line of its own first when the row has no room; the buttons stay one row down to 360 px */
+#selgrp{justify-content:center}#selgrp .sm{display:none}
+/* a narrow bar (a phone, or 800 px beside the sidebar): no key hints; narrower still, More… and Clear as ⋯ and ✕
+   (their names stay "More…" and "Clear selection") and tighter buttons, so the five stay one row at 360 px */
+#actionbar{container-type:inline-size}
+@container (max-width:560px){#actionbar kbd,#actionbar .sep{display:none}}
+@container (max-width:400px){#selgrp .lg{display:none}#selgrp .sm{display:inline}.selbtns{gap:4px}#actionbar .selbtns .btn{padding:0 6px}}
+.selbtns{display:flex;flex-wrap:wrap;gap:6px;align-items:center;justify-content:center;position:relative;max-width:100%}
+#selmore{position:absolute;bottom:calc(100% + 12px);right:0;z-index:13;display:flex;flex-direction:column;align-items:stretch;gap:4px;min-width:200px;padding:6px;background:var(--panel);border:1px solid var(--line);border-radius:10px;box-shadow:var(--shadow)}
+#selmore .btn{justify-content:flex-start;border-color:transparent}
 .sep{width:1px;height:22px;background:var(--line)}
 #toast{position:fixed;left:50%;bottom:24px;transform:translateX(-50%);z-index:40;background:var(--fg);color:var(--bg);padding:8px 14px;border-radius:8px;font-size:14px;max-width:min(560px,90vw);box-shadow:var(--shadow);opacity:0;pointer-events:none;transition:opacity .2s;display:flex;align-items:center;gap:12px}
 #toast.on{opacity:1;pointer-events:auto}
@@ -3770,6 +3936,12 @@ body.marqing,body.marqing *{user-select:none;-webkit-user-select:none}
 #info .btn.share{flex:none;gap:6px;background:#2456d3;border-color:#2456d3;color:#fff;font-weight:600}#info .btn.share:hover{background:#1d47b0}
 #modal .mopenp{display:flex;flex-wrap:wrap;gap:8px;align-items:center}
 #info .btn.keep{color:#5fd07c;border-color:#2f6b40}#info .btn.trash{color:#e8ad3c;border-color:#6e5420}#info .btn.erase{color:#ff7a6e;border-color:#7a2e29}
+/* Keep pressed: the item is kept (aria-pressed), shown by fill and an inset ring, never by colour alone */
+#info .btn.keep[aria-pressed=true]{background:#2f6b40;border-color:#5fd07c;color:#fff;font-weight:700;box-shadow:inset 0 0 0 2px #5fd07c}
+/* "N of M" over the photo, and the vision check's verdict under the name */
+#vpos{position:absolute;top:10px;left:50%;transform:translateX(-50%);z-index:3;margin:0;border-radius:999px;background:rgba(0,0,0,.6);color:#fff;padding:3px 12px;font-size:13px;font-variant-numeric:tabular-nums;pointer-events:none;white-space:nowrap}
+#vpos:empty{display:none}
+#info .verdict{margin:-10px 0 0;color:#d7d7dc;overflow-wrap:anywhere}
 .acts{display:grid;grid-template-columns:repeat(3,1fr);gap:6px}
 .acts .btn{justify-content:center;padding:0 6px}
 .tools{display:flex;flex-wrap:wrap;gap:6px}
@@ -3855,10 +4027,11 @@ dl.dt dd{margin:0;word-break:break-word}
 #mstatus{margin:12px 0 0;padding:10px 12px;border-radius:8px;background:var(--acc-soft)}
 #mstatus[data-state=done]{background:color-mix(in srgb,var(--keep) 12%,var(--panel));font-weight:600}
 #mstatus[data-state=failed],#mstatus[data-state=crashed]{background:color-mix(in srgb,var(--erase) 12%,var(--panel));font-weight:600}
-.mthumbs{display:flex;flex-wrap:wrap;gap:4px;align-items:center;margin:4px 0 8px}
-.mthumbs img{width:56px;height:56px;object-fit:cover;border-radius:6px;background:var(--card)}
+.mthumbs{display:flex;flex-wrap:wrap;gap:6px;align-items:center;margin:4px 0 8px}
+.mthumbs img{width:104px;height:104px;object-fit:cover;border-radius:6px;background:var(--card)}
 .mthumbs span{color:var(--mut);font-size:13px;margin-left:4px}
 .mnames{color:var(--mut);font-size:13px;word-break:break-word}
+#mhint{margin:-4px 0 0;font-size:13px}
 #jobpill{flex:0 1 auto;min-width:0;overflow:hidden;border-color:var(--acc);color:var(--acc)}
 
 /* ---------------------------------------------------------------- narrow: the header's controls fit beside the title */
@@ -3881,16 +4054,14 @@ dl.dt dd{margin:0;word-break:break-word}
  #count,.size .ic{display:none}
  #ball{padding:0 9px}
  #chips,#evbar,#whobar,#junkbar{padding:10px 12px 0}#note,#helpb{padding:0 12px}
- /* the burst help: one line, "more" for the whole text */
- #helpb .hshort,#hmore{display:inline}#helpb .hfull{display:none}
- #helpb.more .hshort{display:none}#helpb.more .hfull{display:inline}
- #hmore{margin-left:6px}
  main{padding:4px 12px 40px}
  .grid{gap:4px}
- #actionbar{margin:0 8px;bottom:8px;padding:8px;gap:6px}
+ #actionbar{margin:0 4px;bottom:8px;padding:8px 4px;gap:6px}
  #actionbar .btn{padding:0 9px}
  #actionbar kbd,#actionbar .sep{display:none}
- #seln{white-space:normal;min-width:0}
+ #seln{white-space:normal}
+ #selmore{right:-8px}
+ .mthumbs img{width:96px;height:96px}
 }
 /* ---------------------------------------------------------------- touch targets: 44 px on a phone or a touch screen */
 @media (max-width:760px),(pointer:coarse){
@@ -3907,12 +4078,13 @@ dl.dt dd{margin:0;word-break:break-word}
  .tile .ckw{width:44px;height:44px}
  .tile .star{width:44px;height:44px;right:44px;bottom:0}
  .tile .tshare{width:44px;height:44px;right:0;bottom:0}
- .tile:has(.star) .flag{bottom:50px;max-width:calc(100% - 12px)}  /* a phone tile is too narrow beside two 44 px taps: above them */
+ .tile:has(.star) .flag{bottom:50px;max-width:calc(100% - 12px);display:-webkit-box;-webkit-box-orient:vertical;-webkit-line-clamp:2;line-clamp:2;overflow:hidden}  /* a phone tile is too narrow beside two 44 px taps: above them, at most two lines so it stays inside the tile (the whole text is its title and in the large view) */
  .tile .bx{top:8px;right:8px}
  .tile .bx::after{content:"";position:absolute;inset:-8px}
  .link::after{content:"";position:absolute;inset:-11px -8px}
  .link{position:relative;z-index:3}  /* its hit area over the month heading below */
  #helpb{margin-top:12px}  /* room for "more"'s hit area under the header */
+ #hgone{position:relative;z-index:3;margin-left:16px}#hgone::after{content:"";position:absolute;inset:-13px -12px}  /* a 44 px tap that keeps the line one line */
  .tile .dec .btn{height:44px}
  .arrow{width:44px}
  /* Erase sits apart from Keep and Trash, so a slip of the thumb doesn't land on it */
@@ -4003,14 +4175,18 @@ dl.dt dd{margin:0;word-break:break-word}
   <button type="button" class="btn" id="jlower" hidden></button>
  </div>
  <p id="note" class="note" hidden></p>
- <p id="helpb" class="note" hidden><span class="hshort"><span class="kb">Bursts are stacked; X opens one.</span><span class="tch">Burst stacks: tap ×N to open one.</span></span><span class="hfull">A stack is a burst (shots from one camera a moment apart): its Show all button (×N on a small tile) or the X key opens or closes it; the shots of an open stack share a coloured ring. On a closed stack, selecting and every action (Keep, Trash, Erase, tags, Rotate, Set event, Share) act on the cover shot only; open the stack to act on the others.</span><button type="button" class="link" id="hmore" aria-controls="helpb" aria-expanded="false">more</button></p>
+ <p id="helpb" class="note" hidden><span class="hshort"><span class="kb">Bursts are stacked; X opens one.</span><span class="tch">Burst stacks: tap ×N to open one.</span></span><span class="hfull">A stack is a burst (shots from one camera a moment apart): its Show all button (×N on a small tile) or the X key opens or closes it; the shots of an open stack share a coloured ring. On a closed stack, selecting and every action (Keep, Trash, Erase, tags, Rotate, Set event, Share) act on the cover shot only; open the stack to act on the others.</span><button type="button" class="link" id="hmore" aria-controls="helpb" aria-expanded="false">more</button><button type="button" id="hgone" aria-label="Dismiss the burst help" title="Dismiss the burst help (this browser stops showing it)">×</button></p>
  <main id="main" aria-busy="true"><div id="list"><div class="state" role="status"><p><span class="spin" aria-hidden="true"></span>Loading your library…</p></div></div><div id="sentinel"></div><div id="plugin" hidden></div></main>
  <div id="actionbar" hidden>
   <div class="grp" id="selgrp" role="toolbar" aria-label="Selection actions" hidden><span id="seln"></span>
-   <button type="button" class="btn keep" id="bkeep">Keep <kbd>K</kbd></button><button type="button" class="btn trash" id="btrash">Trash <kbd>T</kbd></button><button type="button" class="btn erase" id="berase">Erase <kbd>E</kbd></button>
+   <span class="selbtns"><button type="button" class="btn keep" id="bkeep">Keep <kbd>K</kbd></button><button type="button" class="btn trash" id="btrash">Trash <kbd>T</kbd></button><button type="button" class="btn erase" id="berase">Erase <kbd>E</kbd></button>
    <span class="sep"></span>
-   <button type="button" class="btn" id="bfav" title="Star the selection as favorites (F toggles)">★ Favorite <kbd>F</kbd></button><button type="button" class="btn" id="bunfav" title="Take the selection out of Favorites">☆ Unfavorite</button>
-   <button type="button" class="btn" id="btag">+ tag</button><button type="button" class="btn" id="buntag">− tag</button><button type="button" class="btn" id="bevent">Set event…</button><button type="button" class="btn" id="bfixdate" hidden>Fix date…</button><button type="button" class="btn" id="brot">Rotate ⟳</button><button type="button" class="btn" id="bshare">Share</button><button type="button" class="btn" id="bnone">Clear selection <kbd>Esc</kbd></button>
+   <button type="button" class="btn" id="bmore" aria-label="More…" aria-expanded="false" aria-controls="selmore"><span class="lg">More…</span><span class="sm" aria-hidden="true">⋯</span></button>
+   <div id="selmore" role="group" aria-label="More actions" hidden>
+    <button type="button" class="btn" id="bfav" title="Star the selection as favorites (F toggles)">★ Favorite <kbd>F</kbd></button><button type="button" class="btn" id="bunfav" title="Take the selection out of Favorites">☆ Unfavorite</button>
+    <button type="button" class="btn" id="btag">+ tag</button><button type="button" class="btn" id="buntag">− tag</button><button type="button" class="btn" id="bevent">Set event…</button><button type="button" class="btn" id="bfixdate" hidden>Fix date…</button><button type="button" class="btn" id="brot">Rotate ⟳</button><button type="button" class="btn" id="bshare">Share</button>
+   </div>
+   <button type="button" class="btn" id="bnone" aria-label="Clear selection (Esc)"><span class="lg">Clear</span><span class="sm" aria-hidden="true">✕</span> <kbd>Esc</kbd></button></span>
   </div>
   <div class="grp" id="suggrp" role="group" aria-label="Decisions" hidden><span id="sugn"></span><span class="note" style="margin:0">Mark Keep or Trash on each, then Apply<span class="kbonly"> (keys: K, T, arrows)</span></span><button type="button" class="btn" id="bmarkall" title="Mark every tile shown Trash (a tile marked Keep keeps its mark); nothing changes until Apply">Mark all shown as Trash</button><button type="button" class="btn" id="bclearm" title="Take every Keep and Trash mark off (asks first)">Clear marks</button><button type="button" class="btn primary" id="sugapply">Apply…</button></div>
  </div>
@@ -4019,13 +4195,14 @@ dl.dt dd{margin:0;word-break:break-word}
 <p id="selsay" class="vh" role="status" aria-live="polite"></p>
 <div id="etoast" role="alert" aria-atomic="true"></div>
 <div id="viewer" role="dialog" aria-modal="true" aria-label="Item" tabindex="-1">
- <div id="stage"><div id="media"></div>
+ <div id="stage"><div id="media"></div><p id="vpos"></p>
   <button type="button" class="arrow" id="vprev" aria-label="Previous (Left arrow)">‹</button><button type="button" class="arrow" id="vnext" aria-label="Next (Right arrow)">›</button></div>
  <aside id="info" aria-label="Details"></aside>
 </div>
 <div class="modal" id="modal" role="dialog" aria-modal="true" aria-labelledby="mh" data-dialog="confirm"><div class="box"><h3 id="mh"></h3><div id="mb"></div>
  <p id="mfieldp" hidden><label for="mfield" id="mflabel"></label><input id="mfield" list="evnames" autocomplete="off" spellcheck="false"><datalist id="evnames"></datalist><datalist id="mytags"></datalist><datalist id="recnames"></datalist></p>
- <p id="mtype" hidden>Type <b>ERASE</b> to confirm: <input id="mtyped" autocomplete="off" spellcheck="false" aria-label="Type ERASE"></p>
+ <p id="mtype" hidden>Type <b>ERASE</b> in capital letters to confirm: <input id="mtyped" autocomplete="off" spellcheck="false" aria-label="Type ERASE" aria-describedby="mhint"></p>
+ <p id="mhint" class="warn" role="status" hidden></p>
  <p id="mstatus" role="status" hidden></p><pre id="mout" hidden></pre>
  <div class="mbtns"><button type="button" class="btn" id="mno">Cancel</button><button type="button" class="btn primary" id="mgo">Confirm</button></div></div></div>
 <div class="modal" id="rzoom" role="dialog" aria-modal="true" aria-labelledby="rzh"><div class="box">
@@ -4128,7 +4305,7 @@ function monthName(k){const [y,m]=k.split("-");return new Date(+y,+m-1,1).toLoca
 function monthOnly(k){const [y,m]=k.split("-");return new Date(+y,+m-1,1).toLocaleString(undefined,{month:"long"})}
 function chipVal(k){const v=F[k];if(k==="kind")return v==="photo"?"Photos":"Videos";if(k==="ym")return v.length===4?v:monthName(v);if(k==="review")return REVIEW[v]||v;
  if(k==="ai")return v==="trash"?WORDS.score+" ≥ "+(+F.aimin||0).toFixed(2):AIV[v]||v;if(k==="used")return v==="used"?"in a post":(F.days?"not in "+F.days+" days":"never");
- if(k==="added")return "last "+v+" days";if(k==="myplace")return plName(v);if(k==="dates")return v==="all"?"all":WORDS.dates[v]||v;if(k==="who")return whoName(v);return v}
+ if(k==="added")return "last "+v+" days";if(k==="myplace")return plName(v);if(k==="dates")return v==="all"?"all":WORDS.dates[v]||v;if(k==="who")return whoName(v);if(k==="event")return evLabel(v);return v}
 // ---------------------------------------------------------------- sidebar: layout
 const mqPhone=matchMedia("(max-width:760px)");let railPref=LS.get("rail","0")==="1",drawer=false;
 function layout(){const ph=mqPhone.matches,col=ph?!drawer:railPref;document.body.classList.toggle("collapsed",col);document.body.classList.toggle("overlay",ph&&drawer);
@@ -4136,10 +4313,12 @@ function layout(){const ph=mqPhone.matches,col=ph?!drawer:railPref;document.body
 function expandSidebar(){if(mqPhone.matches)drawer=true;else{railPref=false;LS.set("rail","0")}layout()}
 $("#rail").onclick=()=>{if(mqPhone.matches)drawer=!drawer;else{railPref=!railPref;LS.set("rail",railPref?"1":"0")}layout()};
 $("#scrim").onclick=()=>{drawer=false;layout()};
-// the burst help at phone width: one line, "more" for the whole text (remembered per browser)
+// the burst help: one line, "more" for the whole text (remembered per browser); × hides it for good in this browser
+let helpGone=LS.get("helpgone","0")==="1";
 function helpMore(on){$("#helpb").classList.toggle("more",on);$("#hmore").textContent=on?"less":"more";$("#hmore").setAttribute("aria-expanded",String(on))}
 helpMore(LS.get("helpmore","0")==="1");
 $("#hmore").onclick=()=>{const on=!$("#helpb").classList.contains("more");helpMore(on);LS.set("helpmore",on?"1":"0")};
+$("#hgone").onclick=()=>{helpGone=true;LS.set("helpgone","1");$("#helpb").hidden=true;toast("Burst help hidden in this browser. The shortcut list (?) still says what X does.");const m=$("#main");m.setAttribute("tabindex","-1");m.focus({preventScroll:true})};
 mqPhone.addEventListener("change",()=>{drawer=false;layout()});
 $("#rsearch").onclick=()=>{expandSidebar();$("#q").focus()};
 // ---------------------------------------------------------------- sidebar: width (its right edge; desktop, expanded only)
@@ -4212,7 +4391,7 @@ function renderWhen(){const box=$("#when");box.replaceChildren();const ent=facet
  if(yrs.length>YRSHOW){const m=el("button","link yrmore",yrAll?"Fewer years":"All years ("+fmt(yrs.length)+")");m.type="button";m.setAttribute("aria-expanded",String(yrAll));
   m.onclick=()=>{yrAll=!yrAll;LS.set("whenall",yrAll?"1":"0");renderWhen();syncUI();const b=$("#when .yrmore");if(b)b.focus()};box.append(m)}}
 async function loadFacets(tries){facets=await api("/api/facets");const fc=facets.facets,c=facets.counts||{};
- ["project","source","place","event","label","mine"].forEach(k=>renderOpts(k,fc[k]||[]));
+ ["project","source","place","label","mine"].forEach(k=>renderOpts(k,fc[k]||[]));renderOpts("event",fc.event||[],evLabel);$$('.opts[data-k=event] .opt').forEach(b=>{if(evLabel(b.dataset.val)!==b.dataset.val)b.title+=" (event "+b.dataset.val+")"});
  renderOpts("review",Object.keys(REVIEW).map(v=>[v,c["review:"+v]||0]),v=>REVIEW[v]);
  renderOpts("ai",Object.keys(AIV).map(v=>[v,v==="trash"?judgedAt(F.aimin):c["ai:"+v]||0]),v=>AIV[v]);
  renderOpts("used",[["used",c["used:used"]||0],["unused",c["used:unused"]||0]],v=>v==="used"?WORDS.flag.used:"Not used");
@@ -4233,7 +4412,7 @@ function evLabel(n){const m=facets&&facets.event_names,x=m&&Object.hasOwn(m,n)?m
 // the tag field's suggestions: every tag of yours in the library (the My tags facet)
 function renderMyTags(){$("#mytags").replaceChildren(...((facets&&facets.facets.mine)||[]).map(([n])=>{const o=el("option");o.value=n;return o}))}
 function renderEvents(){const L=$("#evlist");L.replaceChildren();const ev=(facets&&facets.facets.event)||[];
- $("#evnames").replaceChildren(...ev.map(([n])=>{const o=el("option");o.value=n;return o}));
+ $("#evnames").replaceChildren(...ev.map(([n])=>{const o=el("option");o.value=n;if(evLabel(n)!==n)o.label=evLabel(n)+" ("+n+")";return o}));
  if(!ev.length){L.append(el("div","empty","No events yet"));return}
  const show=evAll?ev.slice():ev.slice(0,EVSHOW);if(F.event&&!show.some(([n])=>n===F.event)){const x=ev.find(([n])=>n===F.event);if(x)show.push(x)}
  show.forEach(([n,c])=>{const b=el("button","nv");b.type="button";b.dataset.ev=n;b.title="Event: "+n;b.insertAdjacentHTML("beforeend",'<svg class="ic"><use href="#i-cal"/></svg>');b.append(el("span","lbl",evLabel(n)),el("span","ct",fmt(c)));
@@ -4257,9 +4436,9 @@ function askField(title,lines,label,value,go,list){confirmBox(title,lines,false,
 async function afterEvent(j,ev){closeModal();toast(j.result,j.undo);if(ev!==undefined){if(ev)F.event=ev;else delete F.event}await loadFacets();reset()}
 $("#evlabel").onclick=()=>{const ev=F.event,m=facets&&facets.event_names,x=m&&Object.hasOwn(m,ev)?m[ev]:null;askField("Display name for the event "+ev+"?",["The sidebar and the title show this name instead of "+ev+". The sidecars keep "+ev+": your files and tags don't change.","Leave it empty for the default. A name that looks like another event's (the same but for case or spacing) is refused."],"Display name",x?x.name:"",
  async()=>{const j=await api("/api/event/name",{event:ev,name:$("#mfield").value});closeModal();toast(j.result);await loadFacets()},null)};
-$("#evren").onclick=()=>{const old=F.event;askField("Rename the event "+old+"?",["Every photo and video in "+old+" moves to the new name. Only the event changes: the files and your other tags stay as they are.","Use lowercase letters, digits and dashes, like summer-2026. To join an event that already exists, use Merge."],"New name",old,
+$("#evren").onclick=()=>{const old=F.event,lb=evLabel(old),was=lb===old?old:lb+" ("+old+")";askField("Rename the event "+lb+"?",["Every photo and video in "+was+" moves to the new name. Only the event changes: the files and your other tags stay as they are.","Use lowercase letters, digits and dashes, like summer-2026. To join an event that already exists, use Merge."],"New name",old,
  async()=>afterEvent(await api("/api/event/rename",{from:old,to:$("#mfield").value.trim()}),$("#mfield").value.trim()))};
-$("#evmerge").onclick=()=>{const src=F.event;askField("Merge "+src+" into another event?",["Every photo and video in "+src+" moves to the event you name, and "+src+" is gone afterwards. The files and your other tags don't change."],"Merge into (an event that exists)","",
+$("#evmerge").onclick=()=>{const src=F.event,lb=evLabel(src);askField("Merge "+lb+" into another event?",["Every photo and video in "+(lb===src?src:lb+" ("+src+")")+" moves to the event you name, and "+lb+" is gone afterwards. The files and your other tags don't change."],"Merge into (an event that exists)","",
  async()=>afterEvent(await api("/api/event/merge",{from:[src],into:$("#mfield").value.trim()}),$("#mfield").value.trim()))};
 // ---------------------------------------------------------------- people and pets (recog.py): the sidebar section, the naming view
 // Off without a recognition store (/api/facets rec: null). Only names you gave or confirmed are tags; the sidebar lists
@@ -4541,19 +4720,22 @@ async function more(){if(loading||done||failed||plugView())return;loading=true;c
   if(g!==gen)stale=true;else{total=j.total;ranked=j.ranked;const start=items.length;items=items.concat(j.items);done=items.length>=total;
    if(!start)$("#list").replaceChildren();render(start);$("#main").removeAttribute("aria-busy");
    const n=plainNote(j.note);setNote(view==="sug"?SUGNOTE+(n?" "+n:""):n);if(!start&&j.junk)renderJunk(j.junk);
-   $("#count").textContent=view==="sug"&&j.junk&&j.junk.unfiltered!==total?fmt(j.junk.unfiltered)+" suggested, "+fmt(total)+" shown with your filters"
-    :fmt(total)+(total===1?" item":" items")+(view==="sug"?" suggested":"");
+   junkSeen=j.junk||null;paintCount();
    if(!items.length){if(simId!==null)setNote("");emptyState(n)}
    if(!start&&sugFocus&&view==="sug"&&items.length){sugFocus=false;const a=document.activeElement;if(!a||a===document.body||a.closest(".nv"))$("#t"+items[0].id).focus({preventScroll:true})}
    document.body.dataset.ready="1"}}
  catch(e){if(g===gen){failed=true;loadError(e)}}finally{loading=false}
  if(stale){more();return}
  if(!done&&$("#sentinel").getBoundingClientRect().top<innerHeight+600)more()}
+// the count over the grid (Suggested junk: how many are suggested in all, when the filters show fewer)
+let junkSeen=null;
+function paintCount(){const jk=view==="sug"?junkSeen:null;$("#count").textContent=jk&&jk.unfiltered!==total?fmt(jk.unfiltered)+" suggested, "+fmt(total)+" shown with your filters"
+ :fmt(total)+(total===1?" item":" items")+(view==="sug"?" suggested":"")}
 function groupKey(it){if(F.dates&&it.dq&&view==="lib")return it.dq;return ranked?(view==="sug"?"Most likely junk first":"Best matches first"):it.mo}
 function render(start){const L=$("#list");let sec=L.lastElementChild,g=sec&&sec.querySelector(".grid"),gk=sec?sec.dataset.k:null;
  for(let n=start;n<items.length;n++){const it=items[n],k=groupKey(it);
   if(k!==gk){sec=el("section");sec.dataset.k=k;sec.append(el("h2","month",ranked?k:monthName(k)));g=el("div","grid");sec.append(g);L.append(sec);gk=k}
-  g.append(tile(it,n))}$("#helpb").hidden=!items.some(i=>i.b!=null);allSel=null;paintSel();if(mq)mqFrame()}
+  g.append(tile(it,n))}$("#helpb").hidden=helpGone||!items.some(i=>i.b!=null);allSel=null;paintSel();if(mq)mqFrame()}
 /* Bursts (bursts.py, server side): the listed shots of one burst follow one another, the cover (it.bc) first.
    A closed stack shows only its cover; a shot of a closed stack is never selected, shown or stepped to. */
 function hiddenAt(n){const it=items[n];return !!it&&it.b!=null&&!it.bc&&!openB[it.b]}
@@ -4575,11 +4757,11 @@ function tile(it,n){const t=el("div","tile"),sug=view==="sug";t.id="t"+it.id;t.d
  if(it.m==="video")t.append(el("span","play","▶"));
  if(it.b!=null){t.dataset.burst=it.b;if(openB[it.b])t.classList.add("inb");
   let pos=1;for(let i=n-1;i>=0&&items[i].b===it.b;i--)pos++;
-  const bd=el("span","badge",it.bc?`Burst: ${it.bn} shots`:`Burst: shot ${pos} of ${it.bn}`);bd.dataset.count=it.bn;if(!it.bc)bd.dataset.pos=pos;t.append(bd);
+  const bd=el("span","badge");bd.append(el("span","vh",it.bc?"Burst: ":"Burst: shot "),it.bc?`${it.bn} shots`:`${pos} of ${it.bn}`);bd.dataset.count=it.bn;if(!it.bc)bd.dataset.pos=pos;t.append(bd);
   if(it.bc){const bx=el("button","bx");bx.type="button";bx.tabIndex=-1;paintBx(bx,it);bx.onclick=ev=>{ev.stopPropagation();toggleStack(n)};bd.before(bx);
    const x=el("button","x",stackLabel(it));x.type="button";x.tabIndex=-1;x.onclick=ev=>{ev.stopPropagation();toggleStack(n)};t.append(x);if(!openB[it.b])t.classList.add("stack")}
   else t.hidden=hiddenAt(n)}
- const fl=flagsOf(it);if(fl)t.append(el("span","flag",fl));
+ const fl=flagsOf(it);if(fl){const f=el("span","flag",fl);f.title=fl;t.append(f)}
  // the tile's corner group, bottom right: the star, then Share (this one item without selecting it first)
  if(!sug){t.append(starBtn(it));const sh=el("button","tshare");sh.type="button";sh.tabIndex=-1;sh.title=SHARE_TIP;sh.setAttribute("aria-label","Share "+it.n);
   sh.insertAdjacentHTML("beforeend",'<svg class="ic"><use href="#i-share"/></svg>');sh.onclick=ev=>{ev.stopPropagation();askShare([it.id])};t.append(sh)}
@@ -4619,7 +4801,7 @@ function flagsOf(it){const fl=[];if(it.dq)fl.push(it.ds?"Suggested "+it.ds:"No s
 // after an edit: the reply's summaries replace those items and their tiles' flags (kept, ...);
 // the tile, its focus and the selection stay
 function patchTiles(fresh){(fresh||[]).forEach(s=>{const n=items.findIndex(i=>i.id===s.id);if(n<0)return;const o=items[n];items[n]=o.b!=null?Object.assign(s,{b:o.b,bn:o.bn,bc:o.bc,mo:o.mo}):s;const t=$("#t"+s.id);if(!t)return;
-  const old=t.querySelector(".flag"),fl=flagsOf(s);if(old)old.remove();if(fl)t.append(el("span","flag",fl));paintStar(t.querySelector(".star"),s)})}
+  const old=t.querySelector(".flag"),fl=flagsOf(s);if(old)old.remove();if(fl){const f=el("span","flag",fl);f.title=fl;t.append(f)}paintStar(t.querySelector(".star"),s)})}
 /* Favorites (xmp:Rating 5 in the sidecar): the tile's star toggles one item, F and the bar's Favorite / Unfavorite
    the selection; F stars them all unless every one already is a favorite, then it unstars them */
 function paintStar(b,it){if(!b)return;b.setAttribute("aria-pressed",String(!!it.fav));b.textContent=it.fav?"★":"☆";
@@ -4637,7 +4819,7 @@ function paintSel(){const sugOn=view==="sug";$$(".tile").forEach(t=>{const id=+t
   // a mark in words too (top left), not by the outline's colour alone
   t.querySelectorAll("[data-dec]").forEach(b=>b.setAttribute("aria-pressed",String(b.dataset.dec===d)));
   let m=t.querySelector(".mark");if(d){if(!m){m=el("span");t.append(m)}m.className="mark "+d;m.textContent=d==="keep"?"Keep":"Trash"}else if(m)m.remove()});
- const selOn=sel.size>0&&!plugView()&&view!=="sug";$("#selgrp").hidden=!selOn;$("#bfixdate").hidden=navActive()!=="dates";$("#suggrp").hidden=!sugOn;$("#actionbar").hidden=!(selOn||sugOn);
+ const selOn=sel.size>0&&!plugView()&&view!=="sug";$("#selgrp").hidden=!selOn;$("#bfixdate").hidden=navActive()!=="dates";$("#suggrp").hidden=!sugOn;$("#actionbar").hidden=!(selOn||sugOn);if(!selOn&&!$("#selmore").hidden)moreOpen(false);
  document.body.classList.toggle("selecting",sel.size>0);
  $("#seln").textContent=allSel&&allSel.n===sel.size?allSel.text:fmt(sel.size)+" selected";$("#ball").hidden=!canSelectAll();
  // the counts (and Apply) are the listed tiles' marks; marks on items not listed now wait, and the line says so
@@ -4719,7 +4901,7 @@ function placeToast(){const b=$("#actionbar");let y=24;if(vi<0&&!b.hidden){const
  $("#toast").style.bottom=y+"px"}
 new ResizeObserver(placeToast).observe($("#actionbar"));addEventListener("resize",placeToast);
 addEventListener("scroll",()=>{if(isOn("#toast"))placeToast()},{passive:true});
-function hideToast(){const t=$("#toast");if(t.matches(":hover,:focus-within")){tt=setTimeout(hideToast,1500);return}
+function hideToast(now){const t=$("#toast");if(now!==true&&t.matches(":hover,:focus-within")){tt=setTimeout(hideToast,1500);return}
  t.classList.remove("on");undoTok=null;const b=$("#tundo");if(b)b.remove()}
 // act: {label, fn}, a button before Dismiss (e.g. "Show progress" when a Trash, Erase or Share is running)
 function errorToast(s,act){const t=$("#etoast"),x=el("button",null,"Dismiss"),off=()=>{t.classList.remove("on");t.replaceChildren()};x.type="button";x.setAttribute("aria-label","Dismiss error");
@@ -4734,7 +4916,10 @@ async function refused(what,e){let act=null;if(e.busy){try{const j=await api("/a
 async function doUndo(){const tok=undoTok;if(!tok)return;undoTok=null;const b=$("#tundo");if(b)b.remove();
  try{const j=await api("/api/undo",{undo:tok});toast(j.result);loadFacets();if((j.kind==="event"||j.kind==="date")&&vi<0){patchTiles(j.items);reset()}else if(j.kind==="rec"){patchTiles(j.items);if(j.who&&F.who===j.who.from)F.who=j.who.to;afterRec()}else refreshAfter(j.ids,j.thumbs,j.items)}
  catch(e){refused("Undo",e)}}
-async function doKeep(ids){try{const j=await api("/api/keep",{ids});toast(j.result,j.undo);refreshAfter(ids,false,j.items);loadFacets()}catch(e){refused("Keep",e)}}
+async function doKeep(ids){try{const j=await api("/api/keep",{ids});toast(j.result,j.undo);refreshAfter(ids,false,j.items);loadFacets();return true}catch(e){refused("Keep",e);return false}}
+// Keep on the selection (the bar or K): once it went well the selection is cleared, focus on the first kept tile
+async function keepSel(){const ids=selIds();if(!ids.length||!await doKeep(ids))return;const back=document.activeElement&&document.activeElement.closest&&document.activeElement.closest("#actionbar");
+ sel.clear();allSel=null;paintSel();if(back){const t=$("#t"+ids[0]);if(t&&!t.hidden)t.focus({preventScroll:true})}}
 /* In-page dialogs (the confirm / job dialog, the shortcut list): focus moves in, Tab stays in, Esc closes, and
    focus goes back to where it was. The large view is a dialog too (Tab stays in it, and its messages). */
 let modalReturn=null,keysReturn=null;
@@ -4755,8 +4940,10 @@ function trapTab(ev,d){const vis=e=>!e.disabled&&e.getClientRects().length>0;
 /* lines: text ("!..." a warning) or an element (the thumbnails); goLabel names the action ("Trash 2 files"), else Confirm */
 function confirmBox(title,lines,needType,go,goLabel){$("#mh").textContent=title;$("#mgo").textContent=goLabel||"Confirm";$("#mno").textContent="Cancel";const b=$("#mb");b.replaceChildren();
  lines.forEach(l=>b.append(typeof l==="string"?el("p",l.startsWith("!")?"warn":null,l.replace(/^!/,"")):l));
- $("#mtype").hidden=!needType;$("#mfieldp").hidden=true;$("#mtyped").value="";$("#mgo").disabled=!!needType;$("#mgo").hidden=false;$("#mout").hidden=true;$("#mout").textContent="";$("#mstatus").hidden=true;delete $("#mstatus").dataset.state;delete $("#modal").dataset.job;openModal();
- $("#mtyped").oninput=()=>{$("#mgo").disabled=$("#mtyped").value!=="ERASE"};if(needType)$("#mtyped").focus();else $("#mno").focus();
+ $("#mtype").hidden=!needType;$("#mhint").hidden=true;$("#mgo").classList.remove("gotrash","goerase");$("#mfieldp").hidden=true;$("#mtyped").value="";$("#mgo").disabled=!!needType;$("#mgo").hidden=false;$("#mout").hidden=true;$("#mout").textContent="";$("#mstatus").hidden=true;delete $("#mstatus").dataset.state;delete $("#modal").dataset.job;openModal();
+ $("#mtyped").oninput=()=>{const v=$("#mtyped").value,ok=v==="ERASE",low=!ok&&v.trim().toUpperCase()==="ERASE";$("#mgo").disabled=!ok;
+  // "erase" or "Erase" typed: say why the button stays off
+  $("#mhint").hidden=!low;$("#mhint").textContent=low?"Capital letters: type ERASE exactly.":""};if(needType)$("#mtyped").focus();else $("#mno").focus();
  $("#mgo").onclick=async()=>{$("#mgo").disabled=true;try{await go()}catch(e){$("#mout").hidden=false;$("#mout").textContent="Refused: "+e.message;$("#mgo").disabled=false}}}
 $("#mno").onclick=closeModal;
 $("#kclose").onclick=closeKeys;$("#bkeys").onclick=openKeys;
@@ -4773,14 +4960,14 @@ function warnings(ids){const its=ids.map(id=>items.find(i=>i.id===id)).filter(Bo
  const fv=its.filter(i=>i.fav).length;if(fv)w.push(one?"!This one is a favorite.":`!${fmt(fv)} of these ${fv===1?"is a favorite":"are favorites"}.`);return w}
 const these=n=>n===1?"this file":"these "+plural(n,"file");
 function trashText(n){return `Deletes ${these(n)} from this computer for good, with ${n===1?"its":"their"} tags and thumbnails. ${n===1?"It doesn't":"They don't"} go to the desktop Trash, and this can't be undone. If the same photo is imported again, it is skipped.`}
-function askTrash(ids){const n=ids.length;confirmBox(`Trash ${plural(n,"item")}?`,[thumbs(ids),names(ids),trashText(n)+" Use Erase for anything private.",...warnings(ids)],false,
- ()=>runJob("/api/trash",{ids,confirm:true},ids),"Trash "+plural(n,"file"))}
+function askTrash(ids){const n=ids.length;confirmBox(`Trash ${plural(n,"file")}?`,[thumbs(ids),names(ids),trashText(n)+" Use Erase for anything private.",...warnings(ids)],false,
+ ()=>runJob("/api/trash",{ids,confirm:true},ids),"Trash "+plural(n,"file"));$("#mgo").classList.add("gotrash")}
 // the backup drive is included only when the gallery was started with one (/api/facets "drive")
-function askErase(ids){const n=ids.length,dr=facets&&facets.drive;confirmBox(`Erase ${plural(n,"item")} everywhere?`,[thumbs(ids),names(ids),
+function askErase(ids){const n=ids.length,dr=facets&&facets.drive;confirmBox(`Erase ${plural(n,"file")} everywhere?`,[thumbs(ids),names(ids),
   `For private files. Erases every copy of ${these(n)}: in your library and the rest of your home folder, with ${n===1?"its":"their"} thumbnails and recent-file entries`
   +(dr?`, and on the backup drive (${dr}).`:". Not on a backup drive: the gallery was started without one.")+" This can't be undone.",...warnings(ids)],true,
- ()=>runJob("/api/erase",{ids,confirm:$("#mtyped").value},ids),"Erase "+plural(n,"file"))}
-function askSetEvent(ids){if(!ids.length)return;askField("Set the event on "+plural(ids.length,"item")+"?",[names(ids),"Each one goes into this event and out of any other. The photos and your other tags don't change. Leave it empty to take them out of every event."],"Event name (lowercase letters, digits and dashes, like summer-2026)",F.event||"",
+ ()=>runJob("/api/erase",{ids,confirm:$("#mtyped").value},ids),"Erase "+plural(n,"file"));$("#mgo").classList.add("goerase")}
+function askSetEvent(ids){if(!ids.length)return;askField("Set the event on "+plural(ids.length,"file")+"?",[names(ids),"Each one goes into this event and out of any other. The photos and your other tags don't change. Leave it empty to take them out of every event."],"Event name (lowercase letters, digits and dashes, like summer-2026)",F.event||"",
  async()=>{const ev=$("#mfield").value.trim(),j=await api("/api/event/set",{ids,event:ev});if(vi>=0){closeModal();toast(j.result,j.undo);loadFacets();openViewer(vi,{keep:true})}else afterEvent(j)})}
 /* Fix date (Dates to check): check-dates' suggested date, a date you type, or a shift, on the selection. The server runs
    fix-dates' own code (sidecars only; files stay in their folders) and answers with an Undo token. */
@@ -4790,7 +4977,7 @@ function askFixDate(ids){if(!ids.length)return;const its=ids.map(id=>items.find(
  const [ps,rs]=opt("suggested",ns===n?"Use the suggested date":`Use the suggested date (${fmt(ns)} of ${fmt(n)} have one; the others stay as they are)`);rs.disabled=!ns;
  const [pd,rd]=opt("set","Set the date to","YYYY-MM-DD or YYYY-MM-DD HH:MM"),[ph]=opt("shift","Shift by","+8y, -3h30m, +2d");(ns?rs:rd).checked=true;
  const list=el("ul","fixlist");its.slice(0,10).forEach(i=>list.append(el("li",null,i.n+": "+(i.dd||i.d)+" → "+(i.ds?i.ds+" suggested":"no suggestion"))));if(its.length>10)list.append(el("li",null,`and ${fmt(its.length-10)} more`));
- confirmBox("Fix the date of "+plural(n,"item")+"?",[list,"The new date goes to each file's sidecar only: the photo or video itself and its folder don't change. A date alone keeps each file's time of day; a shift uses y (years), d (days), h (hours) and m (minutes). Undo puts it back.",ps,pd,ph],false,
+ confirmBox("Fix the date of "+plural(n,"file")+"?",[list,"The new date goes to each file's sidecar only: the photo or video itself and its folder don't change. A date alone keeps each file's time of day; a shift uses y (years), d (days), h (hours) and m (minutes). Undo puts it back.",ps,pd,ph],false,
   async()=>{const mode=($('input[name=fixmode]:checked')||rs).value,value=mode==="suggested"?null:$("#fixv-"+mode).value.trim();
    const j=await api("/api/dates/fix",{ids,mode,value});closeModal();toast(j.result,j.undo);sel.clear();await loadFacets();reset()},"Fix dates");
  $("#mno").focus()}
@@ -4800,7 +4987,7 @@ $("#bfixdate").onclick=()=>askFixDate(selIds());
    When the job this click started ends cleanly, the server opens that folder in the file manager (POST
    /api/share/open names the job, never a path), so the copies can be dragged into a chat or an email; the dialog and
    the message offer Open folder again, also on a page that re-attached (no automatic open there: not its click). */
-function askShare(ids){if(!ids.length)return;confirmBox("Share "+plural(ids.length,"item")+"?",[thumbs(ids),names(ids),"Makes copies without location (GPS) or other hidden info, in a new folder under "+((facets&&facets.share_out)||"the share-safe folder")+", then opens that folder so you can drag them into a chat or an email. Your originals are not changed."],false,
+function askShare(ids){if(!ids.length)return;confirmBox("Share "+plural(ids.length,"file")+"?",[thumbs(ids),names(ids),"Makes copies without location (GPS) or other hidden info, in a new folder under "+((facets&&facets.share_out)||"the share-safe folder")+", then opens that folder so you can drag them into a chat or an email. Your originals are not changed."],false,
  ()=>runShare(ids))}
 async function runShare(ids){let j;try{j=await api("/api/share",{ids})}catch(e){if(e.busy&&await attachJob())return;throw e}
  jobDest=j.dest;startJob("share",ids);job.sid=j.job;job.auto=true}
@@ -4831,7 +5018,7 @@ function startJob(kind,ids,log){job={kind,ids:ids||[],log:log||"",state:"running
 const jobInDialog=()=>isOn("#modal")&&$("#modal").dataset.job!==undefined;
 // (re)open the dialog on the job: no confirm text, buttons or fields of the dialog that started it
 function showJob(){if(!job)return;const b=$("#mb");b.replaceChildren();if(job.kind==="share"&&jobDest){const p=el("p",null,"Destination: "+jobDest);p.id="mdest";b.append(p)}
- $("#mgo").hidden=true;$("#mtype").hidden=true;$("#mfieldp").hidden=true;$("#mout").hidden=false;$("#mout").textContent="";$("#modal").dataset.job=job.state;openModal();paintJob();shareBits();$("#mno").focus()}
+ $("#mgo").hidden=true;$("#mtype").hidden=true;$("#mhint").hidden=true;$("#mfieldp").hidden=true;$("#mout").hidden=false;$("#mout").textContent="";$("#modal").dataset.job=job.state;openModal();paintJob();shareBits();$("#mno").focus()}
 function paintJob(){paintPill();if(!job)return;const d=$("#modal");if(d.dataset.job!==undefined)d.dataset.job=job.state;  // also while hidden
  if(!jobInDialog())return;$("#mh").textContent=job.head;
  const o=$("#mout");if(o.textContent!==job.log){o.textContent=job.log;o.scrollTop=1e9}
@@ -4854,11 +5041,43 @@ async function poll(since){const me=job;let j;try{j=await api("/api/job?since="+
  if(job.kind==="share"&&j.dest){jobDest=j.dest;job.sid=j.id}  // a Share this server started: its folder, by job
  if(!j.done){job.state="running";job.head=jobWord(job.kind)+" running"+stepText(j);job.status=JOBRUN[job.kind]||"Working… you can close this page, it keeps running.";paintJob();setTimeout(()=>poll(j.next),600);return}
  job.state=j.state==="crashed"?"crashed":j.ok?"done":"failed";[job.head,job.status]=jobEnd(j);
- const seen=jobInDialog();paintJob();shareBits();job.ids.forEach(id=>sel.delete(id));closeViewer();loadFacets();reset();
+ // a Trash that went well ends in a message (its output behind Details), not the dialog, and its tiles go where they
+ // are: the grid keeps its place and the large view moves on (anything else, or a Trash with problems, reloads the list)
+ const trashed=job.kind==="trash"&&job.state==="done";if(trashed&&jobInDialog())closeModal();
+ const seen=jobInDialog();paintJob();shareBits();job.ids.forEach(id=>sel.delete(id));loadFacets();
+ if(trashed)dropItems(job.gone||job.ids);else{closeViewer();reset()}
  const auto=shareReady()&&job.auto;job.auto=false;
  // a Share this click started opens its folder now (the message then says so); one this page re-attached to offers it
- if(!seen&&!auto){if(job.state!=="done")errorToast(job.status,{label:"Details",fn:showJob});else if(shareReady())shareToast(job.status);else toast(job.status)}
+ if(!seen&&!auto){if(job.state!=="done")errorToast(job.status,{label:"Details",fn:showJob});else if(shareReady())shareToast(job.status);else if(trashed)detailsToast(job.status);else toast(job.status)}
  if(auto)openShare(true)}
+// the message for a Trash that went well: what happened, and Details (the job's dialog with its output); it stays 10 s
+function detailsToast(s){toast(s);const b=el("button",null,"Details");b.type="button";b.id="tdetails";b.title="Show what the Trash did";b.onclick=()=>{hideToast(true);showJob()};
+ $("#toast").append(b);clearTimeout(tt);tt=setTimeout(hideToast,10000)}
+/* Items gone (a Trash that went well): their tiles leave the grid where they are, with no reload, so the grid keeps
+   its place: the first tile still in view stays where it was on screen. A burst that lost its cover gets the next
+   shot as cover. The large view on one of them moves on to the next item left (the one before at the end; it closes
+   when none is left); on another item it stays there. */
+function dropItems(ids){const out=new Set(ids.map(String)),gone={has:id=>out.has(String(id))};
+ // none of them loaded here (a Trash from another page, or files beyond what was scrolled to): the count is unknown, so reload
+ if(!items.some(i=>gone.has(i.id))){closeViewer();reset();return}
+ [...sel].forEach(id=>{if(gone.has(id))sel.delete(id)});
+ const top=parseFloat(getComputedStyle(document.documentElement).getPropertyValue("--hh"))||0;
+ let anchor=null;for(const t of document.querySelectorAll("#list .tile")){if(t.hidden||gone.has(t.id.slice(1)))continue;const r=t.getBoundingClientRect();if(r.height&&r.bottom>top){anchor=[t.id,r.top];break}}
+ const vid=vi>=0?items[vi].id:null,at=vi>=0?items.slice(0,vi).filter(i=>!gone.has(i.id)).length:-1,first=items.findIndex(i=>gone.has(i.id));
+ const left=items.filter(i=>!gone.has(i.id)),n=items.length-left.length;
+ // bursts: the count goes down by the shots gone; one left on its own is no burst any more
+ const lost={};items.forEach(i=>{if(gone.has(i.id)&&i.b!=null)lost[i.b]=(lost[i.b]||0)+1});
+ Object.keys(lost).forEach(b=>{const g=left.filter(i=>String(i.b)===b);if(!g.length)return;const bn=Math.max(g.length,g[0].bn-lost[b]);
+  g.forEach(i=>{i.bn=bn;if(bn<2){i.b=null;i.bc=false}});if(bn>=2&&!g.some(i=>i.bc))g[0].bc=true});
+ if(loading)gen++;  // a page on its way was asked for at the old offset: asked again
+ items=left;total=Math.max(0,total-n);if(junkSeen)junkSeen.unfiltered=Math.max(0,junkSeen.unfiltered-n);cur=-1;last=null;hov=-1;allSel=null;
+ $("#list").replaceChildren();render(0);paintCount();
+ if(anchor){const t=$("#"+anchor[0]);if(t)scrollBy(0,t.getBoundingClientRect().top-anchor[1])}
+ if(!items.length&&done)emptyState("");else if(!done)more();
+ if(vid!==null){if(!gone.has(vid)){const k=items.findIndex(i=>i.id===vid);if(k!==vi)openViewer(k,{keep:true});else paintPos()}
+  else{let k=at;if(k<items.length&&hiddenAt(k))k=stepVis(k,1);if(k>=items.length)k=stepVis(Math.min(at,items.length),-1);
+   if(k>=0&&k<items.length)openViewer(k);else closeViewer()}}
+ else if(vi<0&&!isOn("#modal")){const it=items[Math.min(first,items.length-1)],t=it&&$("#t"+it.id);if(t&&!t.hidden)t.focus({preventScroll:true})}}
 // a job this page didn't start (a reload, another tab, a restarted server): true when one is running and shown
 async function attachJob(){if(job&&job.state==="running"){showJob();return true}let j;try{j=await api("/api/job")}catch(e){return false}if(j.done)return false;
  job={kind:jobKind(j),ids:j.ids||[],log:"",state:"running",head:"",status:""};job.head=jobWord(job.kind)+" running";showJob();poll(0);return true}
@@ -4867,24 +5086,39 @@ async function attachJob(){if(job&&job.state==="running"){showJob();return true}
 const TOOL_NS=["project|","source|","event|","place|","label|","review|","ai|","used|","owner|","people|","pets|"];
 function tagProblem(t){if(!t||[...t].length>64||/[\x00-\x1f\x7f]/.test(t)||t.startsWith("-")||t.includes("@@sep@@"))return "a tag is 1-64 characters on one line";
  if(TOOL_NS.some(p=>t.toLowerCase().startsWith(p)))return WORDS.tools+" tags belong to the tools; pick another name";return ""}
-function tagAsk(op){const ids=vi>=0&&!sel.size?[items[vi].id]:selIds();if(!ids.length)return;const n=plural(ids.length,"item");
+function tagAsk(op){const ids=vi>=0&&!sel.size?[items[vi].id]:selIds();if(!ids.length)return;const n=plural(ids.length,"file");
  askField(op==="add"?"Add a tag of yours to "+n+"?":"Remove a tag of yours from "+n+"?",[names(ids),"Your own tags only (not "+WORDS.tools.replace(" and "," or ")+", which belong to the tools). Use | for a group, like Trips|Spain. The photos themselves don't change."],
   "Tag (yours: suggestions as you type)","",async()=>{const t=$("#mfield").value.trim(),why=tagProblem(t);if(why)throw new Error(why);
    const j=await api("/api/tag",{ids,tag:t,op});closeModal();toast(j.result,j.undo);loadFacets();refreshAfter(ids,false,j.items)},"mytags")}
 async function rot(ids,dir){try{const j=await api("/api/rotate",{ids,dir});toast(j.result,j.undo);refreshAfter(ids,true,j.items)}catch(e){refused("Rotate",e)}}
 function refreshAfter(ids,thumbs,fresh){patchTiles(fresh);if(thumbs)ids.forEach(id=>{const t=$("#t"+id);if(t){const im=t.querySelector("img");if(im)im.src="/t/"+id+"?r="+Date.now()}});
  if(vi>=0)openViewer(vi,{keep:true});else if(view==="sug")reset()}
-$("#bkeep").onclick=()=>doKeep(selIds());$("#btrash").onclick=()=>askTrash(selIds());$("#berase").onclick=()=>askErase(selIds());
+$("#bkeep").onclick=keepSel;$("#btrash").onclick=()=>askTrash(selIds());$("#berase").onclick=()=>askErase(selIds());
 $("#bfav").onclick=()=>doFav(selIds(),true);$("#bunfav").onclick=()=>doFav(selIds(),false);
 $("#btag").onclick=()=>tagAsk("add");$("#buntag").onclick=()=>tagAsk("remove");$("#brot").onclick=()=>rot(selIds(),"cw");
 $("#bshare").title=SHARE_TIP;$("#ball").onclick=selectAll;$("#bevent").onclick=()=>askSetEvent(selIds());$("#bshare").onclick=()=>askShare(selIds());$("#bnone").onclick=()=>{sel.clear();paintSel()};
+/* More…: the bar's other actions, in a popup above it (a disclosure: its buttons stay buttons). Up / Down move through
+   them, Esc or Tab out of it closes it, Esc gives focus back to More…; picking one closes it first. */
+function moreOpen(on,back){$("#selmore").hidden=!on;$("#bmore").setAttribute("aria-expanded",String(on));if(on){const b=moreBtns()[0];if(b)b.focus()}else if(back)$("#bmore").focus()}
+const moreBtns=()=>[...$$("#selmore button")].filter(b=>!b.hidden&&!b.disabled);
+$("#bmore").onclick=()=>moreOpen($("#selmore").hidden);
+$("#bmore").onkeydown=ev=>{if(ev.key==="ArrowDown"||ev.key==="ArrowUp"){ev.preventDefault();moreOpen(true);if(ev.key==="ArrowUp"){const b=moreBtns();if(b.length)b[b.length-1].focus()}}};
+$("#selmore").addEventListener("click",ev=>{if(ev.target.closest("button"))moreOpen(false,true)},true);  // before the item's own action: a dialog it opens gives focus back to More…
+$("#selmore").onkeydown=ev=>{const b=moreBtns(),i=b.indexOf(document.activeElement);
+ if(ev.key==="Escape"){ev.preventDefault();ev.stopPropagation();moreOpen(false,true)}
+ else if(ev.key==="ArrowDown"||ev.key==="ArrowUp"){ev.preventDefault();if(b.length)b[(i+(ev.key==="ArrowDown"?1:-1)+b.length)%b.length].focus()}
+ else if(ev.key==="Home"||ev.key==="End"){ev.preventDefault();if(b.length)(ev.key==="Home"?b[0]:b[b.length-1]).focus()}};
+$("#selmore").addEventListener("focusout",ev=>{const to=ev.relatedTarget;if(to&&!$("#selmore").contains(to)&&to!==$("#bmore"))moreOpen(false)});
+document.addEventListener("pointerdown",ev=>{if(!$("#selmore").hidden&&!ev.target.closest("#selmore,#bmore"))moreOpen(false)},true);
 $("#bmarkall").onclick=markAll;$("#bclearm").onclick=clearMarks;
 $("#sugapply").onclick=()=>{const {keep,trash}=sugMarks();
  const nk=keep.length,nt=trash.length;
- confirmBox(`Apply: ${nk} keep, ${nt} trash?`,[nk?`Keep ${plural(nk,"item")}: ${nk===1?"it":"they"} won't be suggested as junk again.`:"",...(nt?[thumbs(trash),names(trash),"Trash: "+trashText(nt)]:[])].filter(Boolean),false,
+ confirmBox(`Apply: ${nk} keep, ${nt} trash?`,[nk?`Keep ${plural(nk,"file")}: ${nk===1?"it":"they"} won't be suggested as junk again.`:"",...(nt?[thumbs(trash),names(trash),"Trash: "+trashText(nt)]:[])].filter(Boolean),false,
   async()=>{const j=await api("/api/decide",{keep,trash,confirm:true});keep.concat(trash).forEach(id=>delete dec[id]);
    // a file starred or kept since its mark is skipped by the server (j.trashed: what the job got)
-   const sent=j.trashed||[];if(sent.length){jobDest="";startJob("trash",sent,j.result+"\n")}else{closeModal();toast(j.result);loadFacets();reset()}},nt?"Apply and trash "+plural(nt,"file"):"Apply")};
+   // once it went well, every file decided leaves Suggested junk where it is: kept, trashed, or skipped by the
+   // server because it was starred or kept since its mark (never suggested again either way)
+   const sent=j.trashed||[];if(sent.length){jobDest="";startJob("trash",sent,j.result+"\n");job.gone=keep.concat(trash)}else{closeModal();toast(j.result);loadFacets();reset()}},nt?"Apply and trash "+plural(nt,"file"):"Apply");if(nt)$("#mgo").classList.add("gotrash")};
 // ---------------------------------------------------------------- large view
 function curVideo(){return $("#media video")}
 function stopVideo(){const v=curVideo();if(v){v.pause();v.removeAttribute("src");v.load()}}  // releases the file
@@ -4898,6 +5132,10 @@ function cantPlay(d,why,bare){stopVideo();const M=$("#media");M.replaceChildren(
  const c=el("div","cant");c.append(w);const o=el("button",null,"Open in the system player");o.type="button";
  o.onclick=async()=>{try{toast((await api("/api/open",{ids:[d.id]})).result)}catch(e){errorToast("Refused: "+e.message)}};c.append(o);
  box.append(im,c);M.append(box);const u=$("#unmute");if(u)u.remove();dropConv()}
+// why a video doesn't play: HEVC only when the server read that codec (no H.264 copy could be made of it), else
+// nothing is guessed
+function noPlay(d){return d.codec==="hevc"?"This browser can't play HEVC video, and no copy it can play could be made on this computer."
+ :"This browser can't play this video."}
 // an HEVC video's H.264 copy is being made: say so until it plays (it starts on the first seconds converted)
 function dropConv(){const c=$("#conv");if(c)c.remove()}
 function converting(v){if(v.readyState>=3||curVideo()!==v)return;dropConv();const c=el("div",null,"Converting this video for the browser. It starts in a few seconds.");c.id="conv";c.setAttribute("role","status");
@@ -4906,7 +5144,7 @@ function startVideo(v){const ok=()=>{const u=$("#unmute");if(u)u.remove()};
  v.play().then(ok).catch(()=>{if(curVideo()!==v)return;v.muted=true;v.play().then(()=>{if(curVideo()!==v||$("#unmute"))return;const u=el("button",null,"Unmute");u.id="unmute";u.type="button";
   u.onclick=()=>{v.muted=false;u.remove()};$("#stage").append(u)}).catch(()=>{})})}
 async function openViewer(n,opt){opt=opt||{};if(n<0||n>=items.length)return;if(vi<0)lastFocus=document.activeElement;
- const v0=curVideo(),tKeep=opt.keep&&v0&&v0.dataset.id==items[n].id?v0.currentTime:null;stopVideo();vi=n;cur=n;
+ const v0=curVideo(),tKeep=opt.keep&&v0&&v0.dataset.id==items[n].id?v0.currentTime:null;stopVideo();vi=n;cur=n;paintPos();
  const pend=api("/api/item/"+items[n].id);$("#viewer").classList.add("on");document.body.classList.add("noscroll");
  const M=$("#media");const u0=$("#unmute");if(u0)u0.remove();dropConv();
  // a video is made and started inside the click's handler (the user gesture), before the details arrive
@@ -4918,7 +5156,7 @@ async function openViewer(n,opt){opt=opt||{};if(n<0||n>=items.length)return;if(v
  if(vi!==n)return;
  const v=curVideo();
  if(d.video&&d.src&&v){v.dataset.rot=d.rot;fitMedia();
-  const bad=()=>{if(curVideo()===v)cantPlay(d,d.conv==="waiting"?"Another video is being converted for this browser. Open this one again once that one plays, or open it in the system player.":"This browser can't play this video (HEVC, most likely).")};
+  const bad=()=>{if(curVideo()===v)cantPlay(d,d.conv==="waiting"?"Another video is being converted for this browser. Open this one again once that one plays, or open it in the system player.":noPlay(d))};
   if(d.conv==="converting")converting(v);
   const nopic=()=>{if(curVideo()===v&&v.readyState>=1&&!v.videoWidth)bad()};
   v.addEventListener("error",bad);v.addEventListener("loadedmetadata",nopic);if(v.error)bad();else nopic()}
@@ -4929,18 +5167,21 @@ async function openViewer(n,opt){opt=opt||{};if(n<0||n>=items.length)return;if(v
  const s=$("#info");s.replaceChildren();
  const head=el("div","ihead"),x=el("button","icon");x.id="vclose";x.type="button";x.setAttribute("aria-label","Close (Esc)");x.title="Close (Esc)";x.insertAdjacentHTML("beforeend",'<svg class="ic"><use href="#i-x"/></svg>');x.onclick=closeViewer;
  head.append(el("h2",null,d.name),x);s.append(head);
+ {const w=verdictText(d);if(w){const p=el("p","verdict",w);p.id="vwhy";s.append(p)}}
  const vs=el("button","btn share");vs.id="vshare";vs.type="button";vs.title=SHARE_TIP;vs.insertAdjacentHTML("beforeend",'<svg class="ic"><use href="#i-share"/></svg>');vs.append("Share");vs.onclick=()=>askShare([d.id]);x.before(vs);
  const acts=el("div","acts"),mk=(box,t,f,c)=>{const b=el("button","btn"+(c?" "+c:""),t);b.type="button";b.onclick=f;box.append(b);return b};
  if(view==="sug")[["keep","Mark Keep (K)"],["trash","Mark Trash (T)"]].forEach(([k,l])=>{const b=mk(acts,l,()=>viewMark(k),k);b.setAttribute("aria-pressed",String(dec[d.id]===k))});
- else{mk(acts,"Keep (K)",()=>doKeep([d.id]),"keep");mk(acts,"Trash (T)",()=>askTrash([d.id]),"trash")}mk(acts,"Erase (E)",()=>askErase([d.id]),"erase");s.append(acts);
+ else{const kb=mk(acts,"Keep (K)",viewKeep,"keep");kb.setAttribute("aria-pressed",String(!!d.kept));kb.setAttribute("aria-keyshortcuts","K");
+  kb.title=d.kept?"Kept: it won't be suggested as junk again. Press to go on to the next":"Keep: never suggest it as junk again, and go on to the next";
+  mk(acts,"Trash (T)",()=>askTrash([d.id]),"trash")}mk(acts,"Erase (E)",()=>askErase([d.id]),"erase");s.append(acts);
  {const fb=mk(acts,"★ Favorite (F)",()=>doFav([d.id],!d.fav),"favb");fb.setAttribute("aria-pressed",String(!!d.fav));fb.setAttribute("aria-keyshortcuts","F");fb.title=d.fav?"A favorite: press to unstar":"Add to "+WORDS.view.fav}
  const tools=el("div","tools");mk(tools,"Rotate left (Shift+R)",()=>rot([d.id],"ccw")).setAttribute("aria-keyshortcuts","Shift+R");mk(tools,"Rotate right (R)",()=>rot([d.id],"cw")).setAttribute("aria-keyshortcuts","R");
  mk(tools,"Set event…",()=>askSetEvent([d.id]));
  if(d.gps)mk(tools,"Add a place here…",()=>askPlace(d,n)).title="Name the spot where this was taken (Home, …)";
  mk(tools,"Find similar",()=>{simId=d.id;simName=d.name;closeViewer();$("#q").value="";syncUI();reset()}).title="Photos that look like this one";s.append(tools);
  const dl=el("dl","dt"),row=(k,v)=>{if(v){dl.append(el("dt",null,k),el("dd",null,v))}};
- row("Date",d.date);row("Place",d.place);row(WORDS.filter.myplace,(d.myplaces||[]).join(", "));row("Event",d.event);row("Project",d.project);row("Source",d.source);row("Folder",d.folder);row("Resolution",d.res);row("Size",d.size);
- if(d.ai!=null)row(WORDS.score,d.ai.toFixed(2));if(d.used.length)row("Used in",d.used.join(", "));if(d.kept)row("Your decision","Marked Keep");
+ row("Date",d.date);row("Place",d.place);row(WORDS.filter.myplace,(d.myplaces||[]).join(", "));row("Event",d.event&&evLabel(d.event));row("Project",d.project);row("Source",d.source);row("Folder",d.folder);row("Resolution",d.res);row("Size",d.size);
+ if(d.used.length)row("Used in",d.used.join(", "));if(d.kept)row("Your decision","Marked Keep");
  const det=el("div");det.append(el("p","sh","Details"),dl);s.append(det);
  // "probably here": this has no location, but a shot from the same camera close in time was in one of your places
  (d.probably||[]).forEach(pl=>{const box=el("div","probably");box.setAttribute("role","group");box.setAttribute("aria-label","Probably at "+pl.name);
@@ -4962,6 +5203,21 @@ async function openViewer(n,opt){opt=opt||{};if(n<0||n>=items.length)return;if(v
  if(!opt.keep)$("#viewer").focus({preventScroll:true});
  $("#viewer").dataset.current=d.name;  // last: the keys (Space, arrows) act on this item from here on
  if(n>=items.length-20)more()}
+// "N of M" over the photo: its place among the items the grid shows (a closed stack's hidden shots don't count), of
+// every match (the server's count, less the hidden shots loaded)
+function paintPos(){const p=$("#vpos");if(vi<0||!items[vi]){p.textContent="";return}let n=0,h=0;
+ items.forEach((it,k)=>{const hid=hiddenAt(k);if(k<=vi&&(!hid||k===vi))n++;if(hid&&k!==vi)h++});
+ p.textContent=fmt(n)+" of "+fmt(Math.max(n,total-h))}
+// the vision check's verdict under the name, in the grid's words: "Junk score 0.90 (blurry)", "Judged fine",
+// "Not the best shot" (best-shot)
+function verdictText(d){const w=[];if(d.ai!=null)w.push(WORDS.score+" "+d.ai.toFixed(2)+(d.why?" ("+whyWord(d.why).toLowerCase()+")":""));
+ else if(d.ai_keep)w.push(AIV.keep);if(d.not_best)w.push(WORDS.why["not-best"]);return w.join(" · ")}
+// the large view's Keep (K): keeps the item (never suggested as junk again), then steps to the next, as Trash does
+async function viewKeep(){if(vi<0)return;const n=vi,id=items[n].id;let j;
+ try{j=await api("/api/keep",{ids:[id]})}catch(e){refused("Keep",e);return}
+ toast(j.result,j.undo);patchTiles(j.items);loadFacets();
+ if(vi!==n||!items[n]||items[n].id!==id)return;  // moved on meanwhile: stay where the user went
+ const nx=stepVis(n,1);if(nx<items.length)openViewer(nx);else openViewer(n,{keep:true})}
 // Suggested junk's large view marks (nothing changes until Apply), then steps to the next item
 function viewMark(k){if(vi<0)return;const id=items[vi].id;dec[id]=k;lastBy[k]=id;paintSel();toast(`Marked ${MARKW[k]}: ${items[vi].n}. Nothing changes until Apply.`);
  const nx=stepVis(vi,1);if(nx<items.length)openViewer(nx);else openViewer(vi,{keep:true})}
@@ -4999,7 +5255,7 @@ document.addEventListener("keydown",ev=>{const tg=ev.target,modal=isOn("#modal")
   if(k==="Escape")closeViewer();else if(k==="ArrowRight")openViewer(stepVis(vi,1));else if(k==="ArrowLeft")openViewer(stepVis(vi,-1));
   else if(k===" "){if(tg.tagName==="VIDEO"||tg.tagName==="BUTTON")return;const v=curVideo();if(!v)return;v.paused?v.play().catch(()=>{}):v.pause()}
   else if((k==="k"||k==="K"||k==="t"||k==="T")&&view==="sug")viewMark(k.toLowerCase()==="k"?"keep":"trash");
-  else if(k==="k"||k==="K")doKeep([id]);else if(k==="t"||k==="T")askTrash([id]);else if(k==="e"||k==="E")askErase([id]);
+  else if(k==="k"||k==="K")viewKeep();else if(k==="t"||k==="T")askTrash([id]);else if(k==="e"||k==="E")askErase([id]);
   else if(k==="f"||k==="F")favToggle([id]);
   else if(k==="r")rot([id],"cw");else if(k==="R")rot([id],"ccw");else return;ev.preventDefault();return}
  if(k==="/"){ev.preventDefault();expandSidebar();$("#q").focus();return}
@@ -5014,7 +5270,7 @@ document.addEventListener("keydown",ev=>{const tg=ev.target,modal=isOn("#modal")
  if(k==="Escape"&&drawer){drawer=false;layout();return}
  // F: the selection, or with none the focused tile
  if(k==="f"||k==="F"){const t=sel.size?null:tg.closest&&tg.closest(".tile");const ids=sel.size?selIds():t&&!t.hidden?[+t.id.slice(1)]:[];if(!ids.length)return;ev.preventDefault();favToggle(ids);return}
- if(!sel.size)return;if(k==="k"||k==="K")doKeep(selIds());else if(k==="t"||k==="T")askTrash(selIds());else if(k==="e"||k==="E")askErase(selIds());else if(k==="Escape"){sel.clear();paintSel()}else return;ev.preventDefault()});
+ if(!sel.size)return;if(k==="k"||k==="K")keepSel();else if(k==="t"||k==="T")askTrash(selIds());else if(k==="e"||k==="E")askErase(selIds());else if(k==="Escape"){sel.clear();paintSel()}else return;ev.preventDefault()});
 // ---------------------------------------------------------------- views (plugin tabs go in the sidebar, after the built-in ones)
 VIEWS.forEach(v=>{const b=el("button","nv");b.type="button";b.dataset.v="p-"+v.id;b.title=v.title;b.insertAdjacentHTML("beforeend",'<svg class="ic"><use href="#i-plug"/></svg>');const rl=el("span","rl",v.title);rl.setAttribute("aria-hidden","true");b.append(el("span","lbl",v.title),rl);$("#ptabs").append(b)});
 function setView(v){view=v;simId=null;sugFocus=v==="sug";document.body.dataset.view=v;const plug=plugView();

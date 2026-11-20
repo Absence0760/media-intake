@@ -33,6 +33,7 @@ Erase and trash
   trash FILE...             DELETES junk (not private files), with --yes
   purge-review BATCH        DELETES a batch's review folder, with --yes
   suggest-trash             find Suggested junk; opens the review page
+  best-shot                 best shot of each burst; the rest to Suggested junk
   not-trash FILE...         Keep suggested files: never suggest them again
   vlm-trash                 a vision model's opinion on junk (venv, Ollama)
 
@@ -40,12 +41,14 @@ Library
   gallery                   browse the library: Keep, Trash, Erase, tags
   find                      search the tags (event, place, project, tag)
   index                     build or update the search index (venv)
-  search "TEXT"             find photos by a description (venv)
+  search "TEXT"             find photos by a description, --text by words (venv)
   similar FILE              find photos that look like this one (venv)
+  captions --all            describe photos for search --text (venv, opt-in)
   tag-files FILE...         write tags again for library files
   places list|add|tag|...   your own named places (Home, ...) as tags
   check-dates [PATHS]       find files whose date looks wrong; changes nothing
   fix-dates FILE...         correct dates in sidecars, with --yes; --undo
+  refile                    move fixed files to their date's folder; --yes
   mark-used FILE --post P   record that files were used in a post
   share-copy FILE --out D   copy without GPS or metadata (or social-copy)
   calibrate                 test content labels on your marks; changes nothing
@@ -54,6 +57,7 @@ Library
   migrate-tags              one-off: rename an older tool tag in your sidecars
   proxies                   make the gallery's video copies now, so they play
   prune-cache               DELETES gallery thumbnails nothing shows any more
+  space                     what takes room and what it frees; changes nothing
 
 Backup drive
   backup DRIVE              copy the library to the backup drive (no deletes)
@@ -75,7 +79,7 @@ import config  # noqa: E402
 
 VENV_SCRIPTS = {"index": ("semantic.py", ["index"]), "search": ("semantic.py", ["search"]),
                 "similar": ("semantic.py", ["similar"]), "vlm-trash": ("vlm_trash.py", []),
-                "people": ("people.py", []), "pets": ("pets.py", [])}
+                "captions": ("captions.py", []), "people": ("people.py", []), "pets": ("pets.py", [])}
 # Recognition kinds (recog.py's core): module -> what doctor calls it. Optional: off until setup.sh --recognition.
 RECOGNITION = {"people": "people recognition", "pets": "pets recognition"}
 # Each thing doctor checks, with the Fedora package that provides it: the one source for the
@@ -356,7 +360,7 @@ def _check_ollama(probe, report):
     import label
     model, pinned = label.PINS["ollama"]["model"], label.PINS["ollama"]["digest"]
     if not probe.which("ollama"):
-        report("optional", "ollama not installed (only vlm-trash needs it; https://ollama.com/)")
+        report("optional", "ollama not installed (only vlm-trash and captions need it; https://ollama.com/)")
         return True
     version = (probe.output(["ollama", "--version"]).strip().splitlines() or ["ollama, version unknown"])[-1]
     report("ok", version)
@@ -373,7 +377,7 @@ def _check_ollama(probe, report):
             report("BAD", f"ollama {model} digest {_short(m.get('digest'))}, pinned {_short(pinned)} "
                           "(vlm-trash refuses it; see CONTRIBUTING.md, Pins)")
             return False
-    report("optional", f"ollama {model} not pulled (ollama pull {model}; only vlm-trash needs it)")
+    report("optional", f"ollama {model} not pulled (ollama pull {model}; only vlm-trash and captions need it)")
     return True
 
 
@@ -418,10 +422,15 @@ def _prune_cache(rest):  # cli.py's too: it reads the library as the gallery doe
     return cache_prune.main(rest)
 
 
+def _best_shot(rest):  # cli.py's too: it reads the library as the gallery does (best_shot imports gallery)
+    import best_shot
+    return best_shot.main(rest)
+
+
 # cli.py's own commands; VENV_SCRIPTS run in the venv; everything else goes to intake.py's parser.
 COMMANDS = {"doctor": lambda rest: doctor(), "queue": _queue, "review": _review, "backup": _backup,
             "gallery": _gallery, "proxies": _proxies, "prune-cache": _prune_cache, "zip-check": _zip_check,
-            "places": _places}
+            "places": _places, "space": lambda rest: importlib.import_module("space").main(rest), "best-shot": _best_shot}
 HELP = ("-h", "--help", "help")
 
 

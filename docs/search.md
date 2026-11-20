@@ -4,10 +4,14 @@ Two tools beside intake, both offline:
 
 - `media_intake/semantic.py` (`media-intake index|search|similar`): find
   library photos and videos by a text query or by example (SigLIP
-  embeddings).
+  embeddings), or, with `--text`, photos by the words written in them
+  (`media_intake/ocr_index.py`; "Text in photos" below).
 - `media_intake/vlm_trash.py` (`media-intake vlm-trash`): a second opinion on
   trash from the local vision model `qwen3-vl:2b` (Ollama, Apache-2.0), as
   tags in the AI's own namespace.
+- `media_intake/captions.py` (`media-intake captions`, off by default): a
+  short description of each photo from the same local model, in the
+  sidecar, found by `search --text` ("Local captions" below).
 
 Both run in the venv `bash setup.sh` builds (`<state>/venv`); the
 `media-intake` launcher starts them there. Run long jobs under your own memory
@@ -28,11 +32,15 @@ one line saying the command needs the venv: `run bash setup.sh first`.
   with such a file exits 3 and sends nothing; scans skip them. `semantic.py`
   never indexes them, drops vectors of files flagged later, and filters
   flagged shas at query time too.
-- **No descriptions are stored.** `semantic.py` stores only float16 vectors,
-  sha256s and paths in `<state>/embeddings.npz` (0600, in the 0700 state
-  dir). `vlm_trash.py` asks for a fixed JSON shape (verdict, a reason from a
-  fixed list, confidence) and writes only tags from that shape; free text from
-  the model is discarded. Output is counts only.
+- **No descriptions are stored unless you ask for captions.** `semantic.py`
+  stores only float16 vectors, sha256s and paths in `<state>/embeddings.npz`
+  (0600, in the 0700 state dir). `vlm_trash.py` asks for a fixed JSON shape
+  (verdict, a reason from a fixed list, confidence) and writes only tags from
+  that shape; free text from the model is discarded. The one exception is
+  `media-intake captions`, which you run yourself: its one-sentence caption
+  goes in the photo's own sidecar ("Local captions"). Output is counts only.
+- **The text in photos is kept only for photos the scan flagged nothing in**,
+  in `<state>/ocr-text.db` (0600); below, "Text in photos".
 - Frames sampled from videos go to a 0700 temp dir in `~/.cache/media-intake`
   and are deleted straight after.
 - Originals are never written; only `<file>.<ext>.xmp` sidecars.
@@ -140,6 +148,107 @@ for alternative takes, and after using one, `media-intake mark-used FILE...
 `Review|child-in-shot` flag means "not checked", not "no child": watch every
 clip before you publish it.
 
+## Text in photos
+
+```
+media-intake search --text "receipt coffee" -n 20 --photos --project NAME --unused-since 30d --clean
+media-intake index --text      # read the words in library photos scanned before this existed
+```
+
+- **Where the text comes from.** The sensitive-content scan
+  (`scan_sensitive.py`, at `media-intake scan`) already reads every photo's
+  text with Tesseract to look for IDs, cards and secret words. For a photo it
+  flagged nothing in, that text (whitespace collapsed, at most 20,000
+  characters) is kept in `<state>/ocr-text.db`, keyed by the photo's sha256.
+  The scan never prints it, and its summary line counts it only
+  (`text_indexed`).
+- **Never kept:** a photo the scan flagged for any reason (`unscanned-*`
+  included), and anything quarantined, erased or trashed (`label.flagged`,
+  `trashed.json`). Content flagged after its text was kept is never shown by
+  `search --text` (left out as it reads), and its row is dropped by the next
+  `index --text` (counted as `pruned`), or at once by `erase`, `forget` and
+  `trash`.
+  Videos have no text kept.
+- **Erase covers it.** `erase`, `forget`, `trash` and `sweep-erased --yes`
+  delete the rows of what they remove (by sha256; sqlite's `secure_delete`
+  overwrites the freed space), erase's coverage report counts them, and
+  `verify-gone` fails while a row of erased content is left
+  ([intake.md](intake.md)).
+- **`search --text QUERY`** lists library files (`index.json`, on disk now)
+  whose text, or local caption ("Local captions" below), holds every word of
+  the query, matched without case from the
+  start of a word (`rec` finds `Receipt`, `ceipt` does not). The score is how
+  often the words appear (text and caption added up), best first. Read-only like every search: it opens
+  the text index read-only and changes nothing; an unreadable index stops it
+  with a message. It needs no model and no search index;
+  the filters and `--format` are the same as `search`'s, and the machine form
+  is the same `score  path` lines (score to 3 decimals) the gallery parses.
+- **`index --text`** reads library photos (`index.json`) the text index has no
+  row for, as the scan would: refused files are never opened, and a photo
+  whose text trips a sensitive check is not kept. It prints counts only, as
+  one JSON line: `read`, `kept`, `no text`, `sensitive, not kept`,
+  `unreadable`, `refused`. A photo it counts as sensitive was filed before the
+  check that finds it; look at it yourself and `media-intake forget` it if it
+  is private. Needs `tesseract`; a photo already kept is not read again.
+- The gallery's search box does not search the text yet (ROADMAP).
+
+## Local captions
+
+Off by default: nothing runs it for you (not intake, the queue or `tag`).
+
+```
+media-intake captions FILE...                  # these library photos
+media-intake captions --all --dry-run          # how many an overnight run would caption
+media-intake captions --all --inhibit          # every library photo, holding a sleep inhibitor
+media-intake search --text "bicycle"           # then find photos by their caption's words
+```
+
+Other options: `--redo` (caption again), `--host http://127.0.0.1:PORT`,
+`--allow-cpu`. Photos only; videos are not captioned yet (ROADMAP).
+
+- **Same model and client as `vlm-trash`** (`media_intake/captions.py` calls
+  `vlm_trash.py`'s): `qwen3-vl:2b` pinned by its digest in
+  `media_intake/pins.json`, Ollama on `127.0.0.1` only, no proxy, the same
+  768 px in-memory JPEG, `temperature 0`, `num_ctx 8192`, the GPU check after
+  the first photo and `keep_alive 0` on the last request ("VLM trash opinion"
+  below).
+- **Refused files are never opened or sent**, as for `vlm-trash`: anything
+  under the state's `quarantine/` or `batches/`, anything the scan flagged,
+  quarantined or erased (`label.refused()`), and anything outside the
+  library, videos and project folders. `captions FILE...` with such a file
+  exits 3 and sends nothing; `--all` skips and counts them.
+- **The prompt** asks for one sentence of at most 20 words (what is in the
+  photo, what is happening, the kind of place) and not to copy out any text,
+  numbers, names or addresses it can read. The reply must be JSON with exactly
+  `{"caption": "..."}`; the text is kept on one line, without control
+  characters, at most 200 characters. Anything else (malformed, empty, a
+  near-limit token count, a network error) writes nothing and counts as
+  `no-caption`; the next run tries that photo again.
+- **Where it is kept:** the photo's `<file>.<ext>.xmp` sidecar, in this
+  tool's own XMP namespace (`http://ns.media-intake.invalid/captions/1.0/`,
+  prefix `mediaintake`): `XMP-mediaintake:Caption` and
+  `XMP-mediaintake:CaptionModel` (the model's tag). No keyword is added and no
+  field you or another program writes (`dc:Description` included) is touched.
+  exiftool learns the namespace from a config written to a 0700 temp folder
+  for each write. Sidecars are written under the library lock.
+- **Search.** `search --text` reads the captions of library files from their
+  sidecars (stdlib XML, read-only) beside the text index; flagged content is
+  left out as for the text. No separate caption index exists: erase,
+  forget and trash delete a file's sidecar, and its caption with it.
+- **Resumable:** `<state>/captions-progress.json` (0600) records path,
+  size+mtime and model digest (never a caption), saved with the sidecars every
+  25 photos; a photo is skipped when its record matches and its sidecar holds
+  this model's caption, so a killed run loses at most 25 captions. Paths whose
+  file is gone are dropped on each save; erase, forget, trash and
+  sweep-erased drop their files' entries at once (`verify-gone` counts any
+  left), and `refile` rekeys a moved photo's entry, so it isn't captioned
+  again. A sidecar that can't be written is
+  skipped up front (`unwritable`).
+- Output, counts only, never a file name or a caption: progress lines on
+  stderr (`captions: done/total files ...`, as `vlm-trash`), a summary line
+  (`captions: captioned N, skipped M (...)`), and the counts as one JSON line
+  on stdout.
+
 ## VLM trash opinion
 
 A second opinion on Suggested junk from a local vision model; its verdict
@@ -220,7 +329,9 @@ AI|vlm/qwen3-vl-2b/conf/<0.0-1.0>     the model's confidence, one decimal
 - Incremental and resumable: `<state>/vlm-progress.json` (0600) records path,
   size, mtime, model digest and verdict, written with the sidecars every 25
   files; a file is skipped when that record matches and its sidecar has this
-  model's verdict tag. A kill loses at most 25 judgements.
+  model's verdict tag. A kill loses at most 25 judgements. erase, forget,
+  trash and sweep-erased drop their files' entries (`verify-gone` counts any
+  left), and `refile` rekeys a moved file's entry, so it isn't judged again.
 - `--inhibit` re-execs under `systemd-inhibit --what=sleep:idle`.
 - A file whose `.xmp` sidecar can't be written (a read-only folder or
   sidecar) is skipped before anything is sent and counted as `unwritable`,
@@ -317,11 +428,19 @@ against the local Ollama. The progress, summary and output-format cases in
 `test_semantic.py` (`Meter`, `Ui`) fake the encoders and need only numpy; they
 also check that the gallery still parses the machine form. The prompt-ensemble
 cases (`TextEnsemble`) use a fake tokenizer and text model, also numpy only.
-`-p test_calibrate.py` checks `media-intake calibrate`'s precision, recall and threshold
+`-p test_captions.py` covers captions with the same kind of stub Ollama:
+the reply checks, reading a caption from a sidecar, refusals, `--dry-run`
+and `search --text` over captions need no exiftool; the cases that write
+sidecars do. `-p test_ocr_index.py` covers the text index: what the scan keeps (a fake
+`tesseract` and a stub detector), `search --text`, `index --text`, and erase,
+trash and verify-gone; the real `tesseract` case skips when it isn't
+installed. `-p test_calibrate.py` checks `media-intake calibrate`'s precision, recall and threshold
 sweep on fake scores ([configuration.md](configuration.md), "Calibrating label thresholds").
 
 ## Unverified
 
+- Caption quality and speed on real photos: not measured; tested against a
+  stub only. Treat captions as a search aid, not a record.
 - Verdict quality on real photos: tested on synthetic images only. Treat
   `AI|vlm/*` as a hint for review, never as a decision.
 - SigLIP text search quality on real footage (the base 224 px model is small;

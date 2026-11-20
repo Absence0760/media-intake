@@ -68,6 +68,16 @@ def make_clip(path, seconds=30):
     return path
 
 
+def more(page, name, exact=False):
+    """A selection-bar action behind More… (Favorite, tags, Set event, Fix date, Rotate, Share): opens the popup if
+    it is closed and returns the button. `name` is the button's name, or an id selector ("#bfav")."""
+    pop = page.locator("#selmore")
+    if pop.is_hidden():
+        page.locator("#bmore").click()
+        expect(pop).to_be_visible()
+    return pop.locator(name) if name.startswith("#") else pop.get_by_role("button", name=name, exact=exact)
+
+
 def until(pred, what, timeout=30):
     """Poll a real condition (a FIFO's reader, a process) until it holds."""
     end = time.monotonic() + timeout

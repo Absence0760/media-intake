@@ -124,9 +124,9 @@ class GalleryMediaKindsBrowserTest(B.BrowserCase):
         for n in ("a.jpg", "v.mp4"):
             self.assertNotIn("Owner|keep", G.tags_of(self.path[n])[0], n)
             B.expect(self.tile(page, n).locator(".flag")).to_have_text("Tagged as junk")  # not kept yet
-        B.expect(bar).to_contain_text("2 selected")  # the selection stays for the next action
-        page.keyboard.press("Escape")
-        B.expect(bar).to_be_hidden()
+        B.expect(bar).to_be_hidden()  # a Keep that went through clears the selection
+        for n in ("b.png", "w.MOV"):
+            B.expect(self.box(page, n)).not_to_be_checked()
         # the whole grid by a shift-click range, a Ctrl-click on a tile takes one out and puts it back
         self.select_all_by_range(page)
         self.tile(page, "v.mp4").click(modifiers=["Control"])
@@ -149,7 +149,7 @@ class GalleryMediaKindsBrowserTest(B.BrowserCase):
             self.assertEqual(h.count("Owner|keep"), 1, n)
             B.expect(self.tile(page, n).locator(".flag")).to_have_text("Kept")  # Suggested junk gone too
         self.assertIn("Trips|coast", G.tags_of(self.path["v.mp4"])[0])
-        B.expect(bar).to_contain_text("4 selected")
+        B.expect(bar).to_be_hidden()  # a Keep that went through clears the selection
         # nothing is suggested for the trash any more
         page.get_by_role("navigation", name="Views").get_by_role("button", name="Suggested junk").click()
         B.expect(page.get_by_role("status").filter(has_text="No suggested junk right now.")).to_be_visible()
@@ -184,7 +184,7 @@ class GalleryMediaKindsBrowserTest(B.BrowserCase):
         bar = self.bar(page)
         self.select_all_by_range(page)
         dlg = page.locator("[data-dialog=confirm]")
-        bar.get_by_role("button", name="+ tag").click()
+        B.more(page, "+ tag").click()
         dlg.get_by_label("Tag (yours").fill("Trips|Spain")
         with page.expect_response(lambda r: r.url.endswith("/api/tag")) as resp:
             dlg.get_by_role("button", name="Confirm").click()
@@ -198,7 +198,7 @@ class GalleryMediaKindsBrowserTest(B.BrowserCase):
         page.keyboard.press("Escape")
         for n in ("a.jpg", "v.mp4"):
             self.box(page, n).click()
-        bar.get_by_role("button", name="− tag").click()
+        B.more(page, "− tag").click()
         dlg.get_by_label("Tag (yours").fill("Trips|Spain")
         with page.expect_response(lambda r: r.url.endswith("/api/tag")) as resp:
             dlg.get_by_label("Tag (yours").press("Enter")
@@ -208,8 +208,8 @@ class GalleryMediaKindsBrowserTest(B.BrowserCase):
         # Set event on the whole mixed grid
         page.keyboard.press("Escape")
         self.select_all_by_range(page)
-        bar.get_by_role("button", name="Set event…").click()
-        B.expect(dlg.get_by_role("heading")).to_have_text("Set the event on 4 items?")
+        B.more(page, "Set event…").click()
+        B.expect(dlg.get_by_role("heading")).to_have_text("Set the event on 4 files?")
         dlg.get_by_label("Event name").fill("beach")
         with page.expect_response(lambda r: r.url.endswith("/api/event/set")) as resp:
             dlg.get_by_role("button", name="Confirm").click()
@@ -221,7 +221,7 @@ class GalleryMediaKindsBrowserTest(B.BrowserCase):
         page.wait_for_function(THUMBS_LOADED)
         self.select_all_by_range(page)
         with page.expect_response(lambda r: r.url.endswith("/api/rotate")) as resp:
-            bar.get_by_role("button", name="Rotate ⟳").click()
+            B.more(page, "Rotate ⟳").click()
         self.assertEqual(resp.value.status, 200)
         for n, p in self.path.items():
             self.assertEqual(G.tags_of(p)[2], 6, n)
@@ -246,11 +246,14 @@ class GalleryMediaKindsBrowserTest(B.BrowserCase):
             self.box(page, n).click()
         page.keyboard.press("t")
         dlg = page.locator("[data-dialog=confirm]")
-        B.expect(dlg.get_by_role("heading")).to_have_text("Trash 2 items?")
+        B.expect(dlg.get_by_role("heading")).to_have_text("Trash 2 files?")
         B.expect(dlg).to_contain_text("a.jpg")
         B.expect(dlg).to_contain_text("w.MOV")
         dlg.get_by_role("button", name="Trash 2 files").click()
         B.expect(dlg).to_have_attribute("data-job", "done")
+        B.expect(dlg).to_be_hidden()  # a message instead of the Done dialog; Details opens it on the output
+        B.expect(page.locator("#toast > span")).to_have_text("Done: 2 files trashed.")
+        page.locator("#toast").get_by_role("button", name="Details").click()
         B.expect(dlg.get_by_role("heading")).to_have_text("Done")
         B.expect(dlg.locator("pre")).to_contain_text("trashed 2 files")
         B.expect(dlg.locator("pre")).to_contain_text("done: 2 of 2 gone from the library")
@@ -266,6 +269,33 @@ class GalleryMediaKindsBrowserTest(B.BrowserCase):
         self.assertEqual(sorted(self.tiles(page)), ["b.png", "v.mp4"])
         B.expect(self.bar(page)).to_be_hidden()  # the trashed ones left the selection
         self.assert_originals()
+
+    # ------------------------------------------------------------ Trash in the large view keeps your place
+    def test_trash_in_the_large_view_moves_on_and_keeps_the_grid(self):
+        """T in the large view, then Trash: the view moves on to the next item, the trashed tile leaves the grid
+        where it was, with no reload of the list, and the end is a message with Details, not the Done dialog."""
+        s = self.start()
+        page = self.page_for(s)
+        page.wait_for_function(THUMBS_LOADED)
+        names = self.tiles(page)
+        lists = []
+        page.on("request", lambda r: lists.append(r.url) if "/api/list" in r.url else None)
+        viewer = page.get_by_role("dialog", name="Item", exact=True)
+        self.tile(page, names[1]).click()
+        B.expect(viewer).to_have_attribute("data-current", names[1])
+        page.keyboard.press("t")
+        dlg = page.locator("[data-dialog=confirm]")
+        dlg.get_by_role("button", name="Trash 1 file").click()
+        B.expect(dlg).to_have_attribute("data-job", "done")
+        B.expect(dlg).to_be_hidden()
+        B.expect(viewer).to_have_attribute("data-current", names[2])  # moved on to the next item
+        B.expect(page.locator("#toast > span")).to_have_text("Done: 1 file trashed.")
+        B.expect(page.locator("#toast").get_by_role("button", name="Details")).to_be_visible()
+        B.expect(self.tile(page, names[1])).to_have_count(0)
+        self.assertEqual(self.tiles(page), names[:1] + names[2:])
+        self.assertEqual(lists, [])  # the tile went where it was: the list was not loaded again
+        B.expect(page.locator("#count")).to_have_text(f"{len(names) - 1} items")
+        self.assertFalse(os.path.exists(self.path[names[1]]))
 
     # ------------------------------------------------------------ the large view: each kind
     def test_large_view_heic_without_pillow_heif_says_small_preview(self):

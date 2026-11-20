@@ -14,7 +14,7 @@ HOME = os.path.expanduser("~")
 SLUG = re.compile(r"^[a-z0-9][a-z0-9-]{0,63}$")
 NAME = re.compile(r"^[A-Za-z0-9][A-Za-z0-9 ._-]{0,63}$")
 TOP_KEYS = {"library", "videos", "state", "phone", "drive", "queue", "projects", "plugins", "recognition", "records"}
-RECOGNITION_KEYS = {"dir", "pet_classes", "pet_min_frames"}
+RECOGNITION_KEYS = {"dir", "pet_classes", "pet_min_frames", "pet_date_neighbours"}
 RECORDS_KEYS = {"root", "inbox", "archive", "protect"}
 # Where personal documents and finances are kept by a separate tool (docs/configuration.md, records.root). Every
 # sweep skips it: never hashed, never deleted. The default is protected with no config at all.
@@ -116,6 +116,10 @@ def load(path=None):
     if not isinstance(mf, int) or isinstance(mf, bool) or not 1 <= mf <= 100:
         raise ConfigError("recognition.pet_min_frames: a whole number from 1 to 100")
     c["pet_min_frames"] = mf
+    dn = rec.get("pet_date_neighbours", 5)
+    if not isinstance(dn, int) or isinstance(dn, bool) or not 0 <= dn <= 50:
+        raise ConfigError("recognition.pet_date_neighbours: a whole number from 0 (off) to 50")
+    c["pet_date_neighbours"] = dn
 
     records = raw.get("records", {})
     if not isinstance(records, dict) or set(records) - RECORDS_KEYS:

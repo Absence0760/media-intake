@@ -183,7 +183,7 @@ media-intake offload BATCH --phone SOURCE [--yes]   # asks (type DELETE); refuse
 media-intake purge-review BATCH [--yes]   # a batch name, never a path; a dry run without --yes
 media-intake trash [BATCH] FILE... [--phone PHONE] [--yes]   # a dry run without --yes
 media-intake trash --from-digikam [--yes]
-media-intake suggest-trash [--batch BATCH] [--phone PHONE]
+media-intake suggest-trash [--batch BATCH] [--phone PHONE] [--junk-score N]   # N: 0 to 1, default 0.70 (the gallery's line)
 media-intake not-trash FILE...
 media-intake migrate-tags [--dry-run]
 media-intake share-copy FILE... --out DIR     # alias: social-copy
@@ -194,12 +194,16 @@ media-intake find [--tag T] [--event E] [--place P] [--project P] [--unused-sinc
 media-intake check-dates [PATHS...] [--json] [--quick]   # wrong-looking dates; report only (dates.md)
 media-intake fix-dates FILE... --set W|--shift ±N|--suggested|--from-neighbours|--like GOOD [--reason T] [--yes]
 media-intake fix-dates --undo [ID] [--yes]    # sidecars only; a dry run without --yes (dates.md)
+media-intake refile [--undo [ID]] [--yes]     # fixed files to their date's folder, with sidecars; a dry run without --yes (dates.md)
 media-intake gallery [--drive DRIVE] [--share-out DIR]
 media-intake proxies [--dry-run] [--inhibit] [--retry-failed]  # the gallery's HEVC video proxies ahead of time (gallery.md)
 media-intake prune-cache [--dry-run]          # gallery thumbnails and proxies nothing shows any more
+media-intake space [--top N] [--json]        # what takes room and what each clean-up frees; read-only (gallery.md)
 media-intake calibrate [--precision P] [--json]   # label thresholds vs your marks, report only (configuration.md)
 media-intake backup DRIVE [--verify] [--dry-run] [--skip PART]   # library, videos, sidecars to the backup drive (backup.md)
 media-intake zip-check ROOT [--known DIR]... [--out JSON]   # what export zips hold that you lack; read-only
+media-intake vlm-trash [FILE... | --all] [--redo] [--dry-run] [--inhibit]   # the local VLM's junk opinion (search.md)
+media-intake captions FILE... | --all [--redo] [--dry-run] [--inhibit]   # local photo captions in sidecars; off by default (search.md)
 ```
 
 `media-intake <command> --help` says what the command does, what it touches
@@ -369,7 +373,7 @@ run and a CLI `apply` never interleave (`media_intake/library_lock.py`):
 - **CLI:** `intake.py main()` takes it for every subcommand in
   `intake.LOCKED` (stage, plan, scan, apply, release, erase, forget,
   sweep-erased, offload, purge-review, trash, not-trash, suggest-trash, tag, tag-files, mark-used,
-  migrate-tags, fix-dates).
+  migrate-tags, fix-dates, refile; `refile`'s dry runs too, for a steady view of what would move).
   The read-only ones in `intake.READ_ONLY` (quarantine, verify-gone, wipe-free,
   share-copy, social-copy, find, check-dates) never do (check-dates writes only its own report in the
   state folder, so a long run never blocks the gallery); a new subcommand counts as locked until
@@ -379,12 +383,16 @@ run and a CLI `apply` never interleave (`media_intake/library_lock.py`):
   `media-intake prune-cache` is cli.py's too (it reads the library as the
   gallery does) and holds the lock while it deletes, for a steady view of the
   library; with `--dry-run` it writes nothing and doesn't take it.
+  `media-intake space` is cli.py's too (it reads the library as the gallery
+  does) and takes no lock: it writes nothing.
   `media-intake backup` is cli.py's too and takes no library lock: it only
   reads the library, and checks each file before and after copying it, so one
   that changes mid-copy is skipped for the next run ([backup.md](backup.md)).
   `media-intake zip-check` is cli.py's and read-only, so it takes no lock
   either (Cloud exports, below).
-  `vlm-trash` takes it around each batch of verdicts it writes.
+  `vlm-trash` takes it around each batch of verdicts it writes, and `captions`
+  around each batch of captions it writes to sidecars (asking the model
+  holds no lock).
 - **Jobs** (the review page's run, the gallery's Trash, Erase and Share) take it with
   their job lock at submit and hold it until their last step is over; each
   `intake.py` step inherits it from the worker (descriptor plus
@@ -852,6 +860,9 @@ own path ([records.md](records.md)).
   file rows and crops in `recognition.dir`, [recognition.md](recognition.md)):
   `erase`, `forget`, `trash` and `sweep-erased --yes` delete them by sha256,
   the coverage report counts them, and `verify-gone` fails while any is left.
+  The text index of photos (`<state>/ocr-text.db`, [search.md](search.md),
+  "Text in photos") is dropped the same way, by sha256, and `verify-gone`
+  fails while a row of erased content is left.
 - **verify-gone.** The erase log keeps checksum and size, no names, so
   `verify-gone [BATCH]` repeats the sweep read-only and exits 1 if anything is
   left (including orphaned sidecars, gallery thumbnails and gallery video
@@ -1209,13 +1220,19 @@ doctor`; CPU, onnxruntime.
   0.1, uncalibrated) plus a pixel check on the 224 px frame (variance of the
   Laplacian < 8, or mean grey < 10 of 255); images only. Either gives
   `Review|maybe-trash`.
-- `suggest-trash [--batch B]` lists files the VLM called trash
-  (`AI|vlm/<model>/trash/*` with that model's confidence >= 0.7, or the older
-  `Review|vlm-trash/*`), or with `Review|maybe-trash` and no VLM keep; never
-  ones you kept (`Owner|not-trash`, `Owner|keep`, the legacy
+- `suggest-trash [--batch B] [--junk-score N]` lists files the VLM called trash
+  with a Junk score of at least N (`AI|vlm/<model>/trash/*` scored by that
+  model's `conf`, the most confident model's counting; a verdict with no `conf`
+  scores 0; the older `Review|vlm-trash/*` scores 0.70). N defaults to
+  `vlm_trash.TRASH_MIN` (0.70), the same line as the gallery's Suggested junk,
+  read through the same `vlm_trash.junk_score`; a lower N lists more, as the
+  gallery's Junk score box does, and 0 is its Any score. Also, at any score,
+  files with `Review|maybe-trash` and no VLM keep, and `best-shot`'s
+  `AI|bestshot/not-best` (the gallery's "Not the best shot"); never ones you kept (`Owner|not-trash`, `Owner|keep`, the legacy
   `Review|not-trash`, digiKam Accepted, a favorite: `xmp:Rating` >= 5), `Used|*` or a protected project's
   `Project|<name>`; plus copies marked `Owner|trash`. They show in the review
-  page's "Maybe trash" tab: Keep runs `not-trash` (`Owner|keep` +
+  page's "Maybe trash" tab (a verdict as "Junk score 0.90 (blurry)", the
+  gallery's words, never its tags): Keep runs `not-trash` (`Owner|keep` +
   `Owner|not-trash` on; `Review|maybe-trash`, `Owner|trash` and the legacy
   spelling off), Trash runs `trash`. Nothing is deleted without a decision.
 - Videos: up to 30 frames spread over the clip (at most 0.5 fps), max score
@@ -1238,6 +1255,8 @@ own namespace; your tags win.
 | `Label\|*`, `Review\|maybe-trash`, `Review\|untagged-*` | SigLIP (`label.py` via `tag`/`tag-files`) | replaced as a set on every labelled run (`--no-labels` leaves them) |
 | `Review\|child-in-shot` | SigLIP | added, never removed by a tool; only you clear it |
 | `AI\|vlm/<model>/...` (and the older `Review\|vlm-trash/*`, `Review\|vlm-keep`) | the VLM (`vlm_trash.py`) | its own; tagging never touches them |
+| `XMP-mediaintake:Caption`, `XMP-mediaintake:CaptionModel` (not a tag: a one-sentence description and the model's tag) | `captions` (`captions.py`; [search.md](search.md), "Local captions") | its own fields; tagging never touches them; `captions --redo` replaces them |
+| `AI\|bestshot/cover`, `AI\|bestshot/not-best` | `best-shot` (`best_shot.py`; [gallery.md](gallery.md), "Best shot") | its own, replaced on every run; never written to a file you decided on, named, used or protected |
 | `Used\|<slug>` | `mark-used` | never removed |
 | `People\|<Name>`, `Pets\|<Name>` | `people tag` and `pets tag` ([recognition.md](recognition.md)), only for names you gave or confirmed | removes only tags it wrote that no longer apply; never re-adds one you removed from the sidecar; your own `People\|` and `Pets\|` tags are never touched |
 | `Calibrate\|<label>\|yes`, `Calibrate\|<label>\|no` | you (the gallery's "+ tag") | never touched by a tool; only `calibrate` reads them ([configuration.md](configuration.md), "Calibrating label thresholds") |
@@ -1423,7 +1442,10 @@ plan and apply run twice storing the same hashes once; `test_backup`: `backup` a
 drive folder (media and sidecars only, reruns, a corrupted, missing, changed or vanished copy, the
 laptop's own disk, the library or state folder, a symlink or a marker refused, originals unchanged, a
 private record); `test_cache_prune`: `prune-cache` keeping the library's thumbnails and proxies and
-dropping the rest (dry run, unreadable files, symlinked cache folders, the library lock);
+dropping the rest (dry run, unreadable files, symlinked cache folders, the library lock); `test_space`:
+`space`'s sections on a synthetic library (largest videos, an exact copy pair, a near-copy kept after
+review, a review folder, Suggested junk at the default Junk score but never a kept or favorite file, the
+cache and prune-cache's dry run), `--top`, `--json`, a flagged file never listed, and every file unchanged;
 `test_erase_coverage`: erase's coverage report, gvfs-metadata and localsearch against fake `gio` and
 `localsearch` (failed, hung, vanished and symlinked cases), and the backup records after `backup`, `erase --drive`,
 `forget` and `verify-gone` (an erase outside the backed-up folders, a shared sha256, a record it can't rewrite or read); `test_sweep_erased`:

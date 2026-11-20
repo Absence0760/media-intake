@@ -751,6 +751,26 @@ class ReviewUITest(unittest.TestCase):
         self.assertTrue(os.path.isfile(outside) and os.path.isfile(inq))
         self.assertEqual(s.p.wait(timeout=30), 0)
 
+    def test_maybe_trash_verdicts_in_plain_words(self):
+        """A vision-check verdict shows as the gallery words it ("Junk score 0.90 (blurry)"), never as its tags
+        (AI|vlm/..., Review|vlm-trash/...); a copy of a trashed photo says so."""
+        lib = os.path.join(self.home, "photo_library/2026/2026-11")
+        p = {n: os.path.join(lib, f"{n}.jpg") for n in ("ai", "old", "copy")}
+        for i, f in enumerate(p.values()):
+            img(f, (40 * i, 90, 120))
+        write_json(os.path.join(self.state, "maybe-trash.json"), {"batch": None, "items": [
+            {"path": p["ai"], "labels": ["AI|vlm/m-a/trash/blurry", "AI|vlm/m-a/conf/0.9", "AI|vlm/m-b/trash/dark",
+                                         "AI|vlm/m-b/conf/0.8", "Label|food"]},
+            {"path": p["old"], "labels": ["Review|vlm-trash/random-object"]},
+            {"path": p["copy"], "labels": ["Owner|trash"]}]})
+        s = self.start("--maybe-trash", batch=None)
+        got = {i["rel"].rsplit("/", 1)[1]: i["reasons"] for i in self.items(s)}
+        self.assertEqual(got, {"ai.jpg": ["Junk score 0.90 (blurry)", "Label|food"],
+                               "old.jpg": ["Junk score 0.70 (random object)"], "copy.jpg": ["Owner|trash"]})
+        _, page = s.req("GET", "/")
+        self.assertIn(b'"Owner|trash":"Copy of a trashed photo"', page)
+        self.assertNotIn(b'"Suggested junk"', page)  # a tag's label; Suggested junk is the whole list
+
     def test_burst_stack_keep_one_trash_the_rest(self):
         """A burst of library files in the maybe-trash tab is one stack; keep-one is Keep on it and Trash on
         the rest, through the same guarded submit (no endpoint of its own) and the existing trash path."""

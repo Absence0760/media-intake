@@ -113,9 +113,9 @@ class GalleryDialogsBrowserTest(B.BrowserCase):
         posts = []
         page.on("request", lambda r: posts.append(r.url) if r.method == "POST" else None)
         self.box(page, "b.jpg").click()
-        plus = bar.get_by_role("button", name="+ tag")
+        plus = B.more(page, "+ tag")
         plus.click()
-        B.expect(dlg.get_by_role("heading")).to_have_text("Add a tag of yours to 1 item?")
+        B.expect(dlg.get_by_role("heading")).to_have_text("Add a tag of yours to 1 file?")
         field = dlg.get_by_label("Tag (yours")
         B.expect(field).to_be_focused()
         # suggestions: the field's list holds every tag of mine in the library, never a tool's
@@ -137,12 +137,12 @@ class GalleryDialogsBrowserTest(B.BrowserCase):
             B.expect(dlg.locator("pre")).to_contain_text(why)  # alternating, so each check sees a new message
             B.expect(dlg).to_be_visible()
         self.assertFalse([u for u in posts if u.endswith("/api/tag")])
-        # Esc closes it and focus goes back to the button that opened it
+        # Esc closes it and focus goes back to More…, the bar's button that opened it (+ tag is in its closed popup)
         page.keyboard.press("Escape")
         B.expect(dlg).to_be_hidden()
-        B.expect(plus).to_be_focused()
+        B.expect(page.locator("#bmore")).to_be_focused()
         # a suggestion taken, Enter confirms
-        plus.click()
+        B.more(page, "+ tag").click()
         field.fill("Trips|Spain")
         with page.expect_response(lambda r: r.url.endswith("/api/tag")) as resp:
             field.press("Enter")
@@ -151,8 +151,8 @@ class GalleryDialogsBrowserTest(B.BrowserCase):
         self.assertEqual(G.tags_of(self.path["b.jpg"])[:2], (["Trips|Spain"], ["Spain"]))
         B.expect(page.locator("#toast")).to_contain_text("added 'Trips|Spain' on 1")
         # remove offers the same suggestions
-        bar.get_by_role("button", name="− tag").click()
-        B.expect(dlg.get_by_role("heading")).to_have_text("Remove a tag of yours from 1 item?")
+        B.more(page, "− tag").click()
+        B.expect(dlg.get_by_role("heading")).to_have_text("Remove a tag of yours from 1 file?")
         field.fill("Trips|Spain")
         with page.expect_response(lambda r: r.url.endswith("/api/tag")) as resp:
             dlg.get_by_role("button", name="Confirm").click()
@@ -198,7 +198,7 @@ class GalleryDialogsBrowserTest(B.BrowserCase):
         # a rotate first, so there is an Undo to try while the lock is held
         self.box(page, "b.jpg").click()
         with page.expect_response(lambda r: r.url.endswith("/api/rotate")):
-            self.bar(page).get_by_role("button", name="Rotate ⟳").click()
+            B.more(page, "Rotate ⟳").click()
         B.expect(page.locator("#toast").get_by_role("button", name="Undo")).to_be_visible()
         before = self.sidecar("b.jpg")
         page.keyboard.press("Escape")
@@ -238,7 +238,8 @@ class GalleryDialogsBrowserTest(B.BrowserCase):
         page.keyboard.press("Escape")
         # it ends while hidden: announced in the message (role=status), the pill gone
         B.open_gate(gate)
-        B.expect(page.locator("#toast")).to_have_text("Done: 1 file trashed.")
+        B.expect(page.locator("#toast > span")).to_have_text("Done: 1 file trashed.")
+        B.expect(page.locator("#toast").get_by_role("button", name="Details")).to_be_visible()
         B.expect(pill).to_be_hidden()
         B.expect(dlg).to_have_attribute("data-job", "done")
         B.expect(dlg).to_be_hidden()
@@ -308,7 +309,7 @@ class GalleryDialogsBrowserTest(B.BrowserCase):
         self.box(page, "a.jpg").click()
         self.box(page, "b.jpg").click()
         with page.expect_response(lambda r: r.url.endswith("/api/rotate")):
-            bar.get_by_role("button", name="Rotate ⟳").click()
+            B.more(page, "Rotate ⟳").click()
         self.assertEqual((self.sidecar("a.jpg")[2], self.sidecar("b.jpg")[2]), (6, 6))
         with page.expect_response(lambda r: r.url.endswith("/api/undo")) as resp:
             undo.click()
@@ -332,7 +333,7 @@ class GalleryDialogsBrowserTest(B.BrowserCase):
         page.keyboard.press("Escape")
         self.box(page, "a.jpg").click()
         self.box(page, "b.jpg").click()
-        bar.get_by_role("button", name="Set event…").click()
+        B.more(page, "Set event…").click()
         dlg.get_by_label("Event name").fill("beach")
         with page.expect_response(lambda r: r.url.endswith("/api/event/set")):
             dlg.get_by_role("button", name="Confirm").click()
@@ -368,7 +369,7 @@ class GalleryDialogsBrowserTest(B.BrowserCase):
         page.keyboard.press("Escape")
         self.box(page, "d.jpg").click()
         with page.expect_response(lambda r: r.url.endswith("/api/rotate")):
-            bar.get_by_role("button", name="Rotate ⟳").click()
+            B.more(page, "Rotate ⟳").click()
         subprocess.run(["exiftool", "-q", "-overwrite_original", "-XMP-dc:Subject+=elsewhere",
                         self.path["d.jpg"] + ".xmp"], check=True)
         changed = self.sidecar("d.jpg")
@@ -388,7 +389,7 @@ class GalleryDialogsBrowserTest(B.BrowserCase):
         page.on("response", lambda r: replies.append(r) if r.request.method == "POST" else None)
         # Share
         self.box(page, "d.jpg").click()
-        bar.get_by_role("button", name="Share", exact=True).click()
+        B.more(page, "Share", exact=True).click()
         dlg.get_by_role("button", name="Confirm").click()
         B.expect(dlg).to_have_attribute("data-job", "done")
         B.expect(undo).to_have_count(0)
@@ -396,18 +397,27 @@ class GalleryDialogsBrowserTest(B.BrowserCase):
         # Trash
         self.box(page, "b.jpg").click()
         page.keyboard.press("t")
-        B.expect(dlg.get_by_role("heading")).to_have_text("Trash 1 item?")
+        B.expect(dlg.get_by_role("heading")).to_have_text("Trash 1 file?")
+        B.expect(dlg.get_by_role("button", name="Trash 1 file")).to_have_class(re.compile(r"\bgotrash\b"))
         dlg.get_by_role("button", name="Trash 1 file").click()
         B.expect(dlg).to_have_attribute("data-job", "done")
+        B.expect(dlg).to_be_hidden()  # a Trash that went well ends in a message, not the dialog
         self.assertFalse(os.path.exists(self.path["b.jpg"]))
         B.expect(undo).to_have_count(0)
-        dlg.get_by_role("button", name="Close", exact=True).click()
         # Erase: still ERASE typed
         self.box(page, "c.png").click()
         page.keyboard.press("e")
         go = dlg.get_by_role("button", name="Erase 1 file")
         B.expect(go).to_be_disabled()
+        B.expect(dlg).to_contain_text("Type ERASE in capital letters to confirm")
+        hint = dlg.locator("#mhint")
+        B.expect(hint).to_be_hidden()
+        dlg.get_by_role("textbox", name="Type ERASE").fill("erase")  # lower case: refused, and the hint says why
+        B.expect(hint).to_have_text("Capital letters: type ERASE exactly.")
+        B.expect(go).to_be_disabled()
         dlg.get_by_role("textbox", name="Type ERASE").fill("ERASE")
+        B.expect(hint).to_be_hidden()
+        B.expect(go).to_have_class(re.compile(r"\bgoerase\b"))  # in Erase's own red, not the accent blue
         go.click()
         B.expect(dlg).to_have_attribute("data-job", "done")
         self.assertFalse(os.path.exists(self.path["c.png"]))
@@ -474,8 +484,9 @@ class GalleryDialogsBrowserTest(B.BrowserCase):
             page.keyboard.press("k")
         B.expect(page.locator("#toast")).to_contain_text("Kept 1. It won't be suggested as junk again.")
         scan("keep message")
+        self.box(page, "a.jpg").click()  # Keep cleared the selection: the same two again
         self.box(page, "b.jpg").click()
-        for key, title in (("t", "Trash 2 items?"), ("e", "Erase 2 items everywhere?")):
+        for key, title in (("t", "Trash 2 files?"), ("e", "Erase 2 files everywhere?")):
             page.keyboard.press(key)
             B.expect(dlg.get_by_role("heading")).to_have_text(title)
             B.expect(dlg.locator(".mthumbs img")).to_have_count(2)
@@ -483,7 +494,7 @@ class GalleryDialogsBrowserTest(B.BrowserCase):
             scan(title)
             page.keyboard.press("Escape")
         for button in ("+ tag", "Set event…", "Share"):
-            self.bar(page).get_by_role("button", name=button, exact=True).click()
+            B.more(page, button, exact=True).click()
             B.expect(dlg).to_be_visible()
             scan(button)
             page.keyboard.press("Escape")
@@ -506,6 +517,9 @@ class GalleryDialogsBrowserTest(B.BrowserCase):
         with page.expect_response(lambda r: r.url.endswith("/api/keep")):
             self.bar(page).get_by_role("button", name="Keep").tap()
         B.expect(toast).to_have_class(re.compile(r"\bon\b"))
+        B.expect(bar).to_be_hidden()  # Keep cleared the selection; a new one brings the bar back under the message
+        self.box(page, "a.jpg").tap()
+        B.expect(bar).to_be_visible()
         t, b = toast.bounding_box(), bar.bounding_box()
         self.assertLessEqual(t["y"] + t["height"], b["y"], (t, b))  # the whole message above the bar's top
         B.expect(toast.get_by_role("button", name="Undo")).to_be_visible()

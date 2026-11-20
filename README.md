@@ -35,8 +35,10 @@ backup drive, quarantine, review folder, Keep, Trash, Erase, ...).
   prints image content, and the docs and `CLAUDE.md` forbid an assistant from
   opening quarantined or flagged files.
 - **Originals are never modified.** Tags live in XMP sidecars
-  (`<file>.<ext>.xmp`, digiKam's naming), so sha256 stays stable for dedupe
-  and erase.
+  (`<file>.<ext>.xmp`, digiKam's naming), and so do captions if you run
+  `captions`, so sha256 stays stable for dedupe and erase. `refile` renames a
+  file and its sidecar together into their fixed date's folder but never
+  writes either.
 - **Nothing is deleted from a device or drive without your explicit `--yes`**
   (a laptop folder source is never offloaded: you delete it yourself),
   and only files with a verified copy in the library. A device delete is
@@ -56,7 +58,18 @@ backup drive, quarantine, review folder, Keep, Trash, Erase, ...).
   or printed; [docs/places.md](docs/places.md)), and `datecheck.json` and
   `date-fixes.json` (check-dates' last report and every fix-dates write, with
   paths and dates; erase, forget, trash and sweep-erased drop their files'
-  records; [docs/dates.md](docs/dates.md)). `records-handoff.json` (`0600`)
+  records; [docs/dates.md](docs/dates.md)), and `refiles.json` (each `refile`
+  run's old and new paths, for `refile --undo`), `vlm-progress.json` and
+  `captions-progress.json` (the resume records of `vlm-trash` and `captions`:
+  path, size, mtime and model digest, never a caption); erase, forget, trash
+  and sweep-erased drop their files' entries from all three, and
+  `verify-gone` counts any left. A caption, if you run `captions`, is a
+  one-sentence description of the photo from the local model on
+  `127.0.0.1`, kept only in the photo's sidecar (`XMP-mediaintake:Caption`)
+  and removed with it ([docs/search.md](docs/search.md)). `ocr-text.db` (`0600`) holds the
+  text read from photos flagged for nothing, for `search --text`; erase, forget,
+  trash and sweep-erased drop their rows, and `verify-gone` checks them
+  ([docs/search.md](docs/search.md)). `records-handoff.json` (`0600`)
   lists photos of documents handed to your records inbox and held until
   `to-records --finish`: names, checksums and times, never content; held
   quarantined ones wait in `quarantine/records-held/`, and `--finish` erases
@@ -170,15 +183,19 @@ media-intake offload phone-1 --phone <phone folder>   # after a backup: free the
 | `tag`, `tag-files`, `mark-used`, `find` | Sidecar tags and searching them |
 | `places list/add/rename/remove/suggest/tag` | My places: your own named places (Home, ...) as `Place\|<name>` tags beside the city; kept only in the state folder ([docs/places.md](docs/places.md)) |
 | `check-dates`, `fix-dates` | Find library files whose date looks wrong (clock-reset defaults, a camera newer than its date, numbering out of order, disagreeing dates; changes nothing), and correct them in their sidecars (a dry run until `--yes`; `--undo`) ([docs/dates.md](docs/dates.md)) |
+| `refile` | Move date-fixed files, each with its sidecar, into the `YYYY/YYYY-MM` folder of their fixed date, rekeying every record of their path (a dry run until `--yes`; `--undo`) ([docs/dates.md](docs/dates.md)) |
 | `migrate-tags` | One-shot: rewrite the legacy `Review\|not-trash` tag as `Owner\|not-trash` |
-| `index`, `search`, `similar` | Local semantic search (SigLIP) |
+| `index`, `search`, `similar` | Local semantic search (SigLIP); `search --text` and `index --text` find the words written in photos (Tesseract, no model) |
 | `vlm-trash` | Local vision-model second opinion on Suggested junk |
+| `captions` | Off by default: a short description of each photo from the same local vision model, kept in its sidecar (this tool's own XMP field) and found by `search --text` (`--all` overnight, resumable; [docs/search.md](docs/search.md)) |
 | `people` | Recognise people in photos, offline: you name them, it suggests and tags `People\|<Name>` once you confirm (off until `setup.sh --recognition`; [docs/recognition.md](docs/recognition.md)) |
 | `pets` | The same for your own pets (cats and dogs by default), tagged `Pets\|<Name>` (off until `setup.sh --recognition`) |
 | `calibrate` | Report precision and recall of each label's threshold against your own marks; changes nothing |
 | `gallery` | Local web gallery: browse, Keep, Favorite, Trash, Erase, tag, rotate, events, bulk edits, share-safe copies, naming people and pets (once recognition is on) |
 | `proxies` | Make the gallery's H.264 copies of HEVC videos now, so they play at once (`--dry-run`, `--inhibit`, `--retry-failed`) |
+| `best-shot` | Pick the best shot of each burst and near-duplicate set; offer the rest to Suggested junk as "Not the best shot" (tags only; `--dry-run` counts) |
 | `prune-cache` | Delete gallery thumbnails and video proxies nothing in the library shows any more (`--dry-run` first) |
+| `space` | What takes room (largest videos, exact copies, near-copies, review folders, Suggested junk, the gallery cache) and what each clean-up would free; changes nothing (`--top N`, `--json`) |
 | `backup` | Copy the library (photos, videos, sidecars) to the backup drive: incremental, never deletes there |
 | `queue add/run/status/offload` | Import a source drive or a big laptop folder in resumable chunks |
 | `share-copy` | Copy files with GPS and metadata stripped, for posting |

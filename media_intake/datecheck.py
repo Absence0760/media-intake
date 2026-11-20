@@ -89,6 +89,19 @@ _PIXEL = {"": (2016, 10), "2": (2017, 10), "3": (2018, 10), "3a": (2019, 5), "4"
 _GALAXY_S = {"g95": (2017, 4, "S8"), "g96": (2018, 3, "S9"), "g97": (2019, 3, "S10"), "g98": (2020, 3, "S20"),
              "g99": (2021, 1, "S21"), "s90": (2022, 2, "S22"), "s91": (2023, 2, "S23"), "s92": (2024, 1, "S24"),
              "s93": (2025, 2, "S25")}
+# Sony: the body code in Model (ILCE-7M4); Canon: "Canon EOS R6m2" ("Mark II" spelled out accepted too);
+# DJI Osmo cameras and Insta360: the product name, spaces optional. The Canon EOS R7 is left out on purpose
+# (Canon's museum gives a later month than its first sale abroad), and so is every model not listed.
+_SONY = {"7m3": (2018, 3, "Sony α7 III"), "7m4": (2021, 12, "Sony α7 IV"), "7rm5": (2022, 11, "Sony α7R V"),
+         "7m5": (2025, 12, "Sony α7 V")}
+_CANON = {"r": (2018, 10, "Canon EOS R"), "rp": (2019, 3, "Canon EOS RP"), "r5": (2020, 7, "Canon EOS R5"),
+          "r6": (2020, 8, "Canon EOS R6"), "r3": (2021, 11, "Canon EOS R3"), "r10": (2022, 7, "Canon EOS R10"),
+          "r6m2": (2022, 12, "Canon EOS R6 Mark II"), "r50": (2023, 3, "Canon EOS R50"),
+          "r8": (2023, 4, "Canon EOS R8"), "r100": (2023, 6, "Canon EOS R100"),
+          "r5m2": (2024, 8, "Canon EOS R5 Mark II"), "r1": (2024, 11, "Canon EOS R1")}
+_DJI_OSMO = {"action4": (2023, 8, "DJI Osmo Action 4"), "action5pro": (2024, 9, "DJI Osmo Action 5 Pro"),
+             "pocket3": (2023, 10, "DJI Osmo Pocket 3")}
+_INSTA360 = {"onex2": (2020, 10, "Insta360 ONE X2"), "x3": (2022, 9, "Insta360 X3"), "x4": (2024, 4, "Insta360 X4")}
 ERAS = (
     ("gopro", re.compile(r"^hero(\d{1,2})(?:\+)?\b"), _GOPRO, "GoPro HERO{0}"),
     ("gopro", re.compile(r"^(?:gopro )?max$"), (2019, 10), "GoPro MAX"),
@@ -97,6 +110,10 @@ ERAS = (
     ("apple", re.compile(r"^iphone (\d{1,2}e?|\d{1,2}s|xs|xr|x|air)\b"), _IPHONE, "iPhone {0}"),
     ("google", re.compile(r"^pixel(?: (\d{1,2}a?))?(?: (?:pro|xl|pro xl|pro fold))?$"), _PIXEL, "Pixel {0}"),
     ("samsung", re.compile(r"^sm-([gs]9\d)\d"), _GALAXY_S, "Galaxy {0}"),
+    ("sony", re.compile(r"^ilce-(7m3|7m4|7rm5|7m5)$"), _SONY, "{0}"),
+    ("canon", re.compile(r"^(?:canon )?eos (r(?:p|\d{1,3})?(?:m2)?)$"), _CANON, "{0}"),
+    ("dji", re.compile(r"^(?:dji ?)?osmo ?(action ?4|action ?5 ?pro|pocket ?3)$"), _DJI_OSMO, "{0}"),
+    ("insta360", re.compile(r"^insta360 ?(one ?x2|x3|x4)$"), _INSTA360, "{0}"),
 )
 
 # Video formats that can't be older than their standard: QuickTime CompressorID -> (first year, month, name).
@@ -369,7 +386,7 @@ def check_reset(r):
 
 def first_sale(make, model):
     """((year, month), family) of the first model of this family on sale, else None (unknown model)."""
-    mk, md = make.casefold(), " ".join(model.casefold().split())
+    mk, md = make.casefold(), " ".join(model.casefold().split()).replace(" mark ii", "m2")
     for maker, rx, when, family in ERAS:
         if maker and maker not in mk and maker not in md:
             continue
@@ -379,7 +396,7 @@ def first_sale(make, model):
         if isinstance(when, tuple):
             return when, family
         key = m.groups()[-1] or ""
-        hit = when.get(key)
+        hit = when.get(key) or when.get(key.replace(" ", ""))
         if hit is None:
             return None
         name = hit[2] if len(hit) > 2 else key.upper() if key in ("x", "xs", "xr") else "Air" if key == "air" else key
@@ -1053,6 +1070,44 @@ def forget_paths(paths, state=None):
     if changed:
         try:
             save_private(fixes_path(state), dict(log, fixes=fixes))
+        except OSError as e:
+            err.append(f"{FIXES}: {e.strerror or e}")
+    return n, "; ".join(err)
+
+
+def rekey_paths(moves, state=None):
+    """refile: {old path: new path}. Every record of an old path in datecheck.json (findings) and
+    date-fixes.json (fixed files, set-aside findings) names the new one instead, so --undo and `tag BATCH`
+    follow the file. Both files are rewritten atomically, 0600. The caller holds the library lock. Returns
+    (records rekeyed, "" or why a file could not be rewritten). Never raises."""
+    state = state or state_dir()
+    n, err = 0, []
+
+    def swap(f):
+        nonlocal n
+        if isinstance(f, dict) and f.get("path") in moves:
+            n += 1
+            return dict(f, path=moves[f["path"]])
+        return f
+
+    rep = load_report(state)
+    if rep:
+        before = n
+        rep["findings"] = [swap(f) for f in rep["findings"]]
+        if n != before:
+            try:
+                save_private(report_path(state), rep)
+            except OSError as e:
+                err.append(f"{REPORT}: {e.strerror or e}")
+    elif os.path.exists(report_path(state)):
+        err.append(f"{REPORT} is unreadable: its records were not rekeyed")
+    log, before = load_fixes(state), n
+    for fx in log["fixes"]:
+        fx["files"] = [swap(f) for f in fx.get("files", [])]
+        fx["dropped"] = [swap(f) for f in fx.get("dropped", [])]
+    if n != before:
+        try:
+            save_private(fixes_path(state), log)
         except OSError as e:
             err.append(f"{FIXES}: {e.strerror or e}")
     return n, "; ".join(err)

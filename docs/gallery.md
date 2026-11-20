@@ -91,11 +91,16 @@ without one" (`/api/facets` gives `drive`, the mount or null).
   X button give way to a compact **×N** button on the cover (it opens and
   closes the stack, and is named "Burst: N shots, open stack" for screen
   readers) and an open stack's other shots show their badge as "×N"; on a
-  wider tile the full labels stay, shortening with an ellipsis rather than
-  covering the checkbox. At phone width the burst help above the grid is one
+  wider tile the labels stay. Tile labels (the badge, the stack button, the
+  flags) are 12 px and short, and not cut short: one that doesn't fit wraps
+  onto a second line, clear of the checkbox. The one exception is a phone,
+  where a tile's flags sit above its star and Share in a tile too small for
+  more than two lines: a longer one ends in "…" there so it stays inside the
+  tile, and keeps its whole text as its tooltip and in the large view's tags. The burst help above the grid is one
   line ("Burst stacks: tap ×N to open one." on a touch screen, "Bursts are
   stacked; X opens one." with a keyboard) with a **more** link for the whole
-  text (open / closed remembered per browser).
+  text (open / closed remembered per browser) and a **×** that hides it for good
+  in this browser (the shortcut list still says what X does).
 - **The grid's own states** (in place of the tiles, `role=status`):
   "Loading your library…" (with `aria-busy` on the grid) until the first page
   arrives; an empty library: "Your library is empty." with the commands that
@@ -117,6 +122,15 @@ without one" (`/api/facets` gives `drive`, the mount or null).
   rows, the size slider, a chip's ×, the tile checkbox (a 22 px box in a 44 px
   hit area), the ×N button and text links (a larger hit area around them).
   The selection bar's **Erase** sits apart from Keep and Trash.
+- **Selection bar**: **Keep**, **Trash**, **Erase**, **More…** and **Clear**
+  (Esc) on one row, down to a 360 px phone, with the count beside them or on a
+  line above when there is no room. A narrow bar drops the key hints, and a
+  phone's shows More… and Clear as ⋯ and ✕ (still named "More…" and "Clear
+  selection" for screen readers). **More…** opens the other actions above the bar
+  (Favorite, Unfavorite, + tag, − tag, Set event…, Fix date… in Dates to check,
+  Rotate, Share): Up / Down move through them, Esc closes it and gives focus
+  back to More…, picking one or clicking elsewhere closes it. A Keep from the
+  bar or K clears the selection once it went through.
 - **Colours** follow the system's light or dark scheme. Every label meets
   WCAG 2's 4.5:1 contrast in both: text on the accent colour (burst badges,
   ×N, the rail's filter count, primary buttons) is white in light and near
@@ -128,13 +142,23 @@ without one" (`/api/facets` gives `drive`, the mount or null).
   made on first open, starting within seconds while it is converted
   ("Video proxies" below; `media-intake proxies` makes them ahead of time). When the browser still can't
   decode it (no proxy could be made, or another codec), the thumbnail shows
-  large with **Open in the system player**, which
+  large with "This browser can't play this video." (it names HEVC only when
+  ffprobe read the video as HEVC: `/api/item` gives the codec) and
+  **Open in the system player**, which
   runs `xdg-open` on that one file (below; `xdg-open` comes from Fedora's
   `xdg-utils`, which `media-intake doctor` lists as optional).
   At phone width the photo takes most of the screen with the info pane
   below it; the close button stays pinned at the top right however far you
   scroll, a downward swipe on the photo closes the view (not while scrolled
   down to the info pane), and a reopened view starts at the photo.
+  For going through them one by one: "3 of 120" over the photo says where
+  you are (among the tiles the grid shows: a closed burst stack counts once;
+  of every match, not only those loaded), and the vision check's verdict sits
+  on a line under the name in the grid's words: "Junk score 0.90 (blurry)",
+  "Judged fine", and "Not the best shot" for `best-shot`'s pick against it
+  (`/api/item`'s `ai`, `why`, `ai_keep` and `not_best`). **Keep (K)** shows
+  pressed (`aria-pressed`, filled) on a kept item; it and **K** keep the item
+  and go on to the next, as a Trash does once it has run.
 
 - **Messages and dialogs**: the page never uses the browser's own `alert`,
   `confirm` or `prompt`. What an action did shows in a message at the bottom
@@ -195,7 +219,8 @@ closes it, and no other key acts while it is open.
   back (in Suggestions marks it "Not _Name_"); Z on a crop opens the zoom,
   where ← / → step through the card's crops and Esc closes it.
 - **Large view**: ← / → previous / next, Space plays / pauses, K / T / E
-  (in Suggested junk K / T mark and go to the next), F favorite / unfavorite,
+  (K keeps and goes to the next, T goes to the next once its Trash has run;
+  in Suggested junk K / T mark and go to the next), F favorite / unfavorite,
   R / Shift+R rotate, Esc closes.
 - **Suggested junk**: arrows (and J) move the outline, K / T mark it (as its
   Keep and Trash buttons do; with no outline yet, the tile under the pointer,
@@ -226,8 +251,9 @@ page's own handlers and fails when the list leaves one out.
 - **Suggested junk** (was "Trash suggestions"): the one place for what
   `media-intake vlm-trash` judged junk, beside the other suggestions:
   `Review|maybe-trash` (Tagged as junk), an `AI|vlm/<model>/trash/*` verdict
-  with that model's `conf` >= the view's Junk score (0.7, the same line as
-  `vlm_trash.TRASH_MIN`, unless you lower it; or the older
+  with that model's `conf` >= the view's Junk score (0.7, `vlm_trash.TRASH_MIN`,
+  read through `vlm_trash.junk_score` as `suggest-trash` does, unless you
+  lower it; or the older
   `Review|vlm-trash/*`), or `Owner|trash` (a copy of content you trashed
   elsewhere, flag "Copy of a trashed photo"); never a file with `Owner|not-trash` (or the legacy
   `Review|not-trash`), `Owner|keep`, digiKam Accepted, a favorite (`xmp:Rating` >= 5),
@@ -298,6 +324,10 @@ page's own handlers and fails when the list leaves one out.
     only when nothing else looks like it: beside an event `A b` (another
     tool's `XMP-iptcExt:Event` text), `a-b` stays `a-b`. Every name is put
     on the page as text, never as markup.
+  The display name is also what the Event filter's options and chip, the
+  large view's Event line and the Rename/Merge dialogs show (the slug in the
+  option's tooltip and beside the name in the dialogs); the slug stays the
+  value sent and the one Rename and Merge take.
   - **Rename…** (`POST /api/event/rename`, `{"from": old, "to": new}`): every
     sidecar with `Event|old` gets `Event|new` instead. The new name is a slug
     (lowercase letters, digits, dashes, like `plan --event`) that no event has
@@ -325,8 +355,13 @@ page's own handlers and fails when the list leaves one out.
   (Undo of a Set event) brings it back with its default name: set it again.
   An event emptied while no gallery ran (a CLI `erase` or `trash`) loses its
   name when the gallery next starts, but only when every library folder is
-  there and no file was left out as flagged (an unmounted drive's events
-  aren't gone); until then it would show the old name if made again.
+  there, no file was left out as flagged (an unmounted drive's events
+  aren't gone), and the scan saw every folder: a subfolder it could not
+  read, a symlinked subfolder or a broken symlink in the library keeps every
+  name (the start line says how many it could not read). Dot-folders are
+  never part of the library (the gallery never shows them), so an event
+  whose only files are in one counts as emptied. Until then it would show
+  the old name if made again.
 - **Places**: your own named places (My places), each with how many items
   carry it; a click shows them (the My place filter). The large view's
   **Add a place here…** (only on an item with GPS) names a new one at that
@@ -347,10 +382,11 @@ else the file time. Project and source fall back to where the file sits
 
 Shots of one burst (one camera, a moment apart) show as one stack, the same
 look and keys as the review page ([review-ui.md](review-ui.md)): the cover
-(the burst's first shot) with a stacked edge, a count badge ("Burst: 4
-shots") and a **Show all 4 (X)** button. **X** or `x` on a focused shot, or
+(best-shot's pick when `best-shot` has run, "Best shot" below; else the
+burst's first shot) with a stacked edge, a count badge ("4 shots", read
+out as "Burst: 4 shots") and a **Show all 4 (X)** button. **X** or `x` on a focused shot, or
 the button, opens the stack (every shot follows the cover, each with a badge
-giving its place, "Burst: shot 2 of 3", and the shots sharing a coloured ring)
+giving its place, "2 of 3", read out as "Burst: shot 2 of 3", and the shots sharing a coloured ring)
 or closes it, and focus goes back to the cover either way. A line
 above the grid says what a stack is and how actions behave. At phone width
 the cover shows a compact **×N** button instead ("Close" while the stack is
@@ -383,7 +419,34 @@ with a **more** link ("Layout" above).
   shows it as a plain tile, and the badge counts the shots listed. Ranked
   lists (search results, Find similar, Suggested junk) are never stacked,
   since their order is not time. A burst's shots sit together at the place
-  of the newest one, in time order.
+  of the newest one: the cover first, the others in time order.
+
+### Best shot
+
+`media-intake best-shot` (`media_intake/best_shot.py`; `--dry-run` counts
+only) picks the best shot of every burst stack and every near-duplicate set
+in the library (photos whose dHashes in `index.json` are at most 4 bits
+apart; a shot in both joins them into one set). Best is the sharpest frame
+(the variance of the Laplacian of a downscaled grey copy) among those not
+badly exposed (more than a quarter of the pixels crushed to black or blown
+to white loses to any frame under that); a tie goes to the earlier shot. The
+photo is read in memory only; RAW and other files Pillow can't decode are
+not scored and get no tag.
+
+It writes one tag per shot, in its own namespace in the sidecar:
+`AI|bestshot/cover` on the best, `AI|bestshot/not-best` on the others. A
+re-run replaces only those tags (a shot no longer in a set loses its tag).
+It reads and writes the sidecars under the library lock ([intake.md](intake.md),
+"One writer at a time"): while another writer holds it, it waits, then refuses
+and changes nothing; `--dry-run` takes no lock.
+Nothing is trashed, moved or deleted: the not-best shots are only offered to
+Suggested junk with the reason **Not the best shot** (at any Junk score: the
+tag has no score; they come after every scored verdict, and the **Why**
+filter lists the reason), for you to Keep or Trash. `suggest-trash` lists
+them by the same rule. The cover leads its burst stack. Your decisions win: a shot you kept, trashed, starred or gave a pick
+label, one with a person or pet you named, one used in a post or in a
+protected project gets no tag (it still counts when choosing the best).
+Eyes open is not measured yet (a later step, with the face detector).
 
 ## Favorites
 
@@ -779,7 +842,7 @@ the review page, "the media-intake apply command", ...), never a PID or the
 lock file's path, and while a gallery job runs the alert has **Show
 progress**.
 
-The dialog before Trash or Erase shows up to 12 of the grid's thumbnails ("and
+The dialog before Trash or Erase shows up to 12 of the grid's thumbnails (104 px; "and
 N more"), the names, and in plain words what happens: Trash "Deletes these 2
 files from this computer for good, with their tags and thumbnails. They don't
 go to the desktop Trash, and this can't be undone. If the same photo is
@@ -789,7 +852,9 @@ recent-file entries", and whether the backup drive is in, then "This can't be
 undone." It warns when any were used in a post, marked Keep earlier ("2 of
 these were marked Keep earlier.") or are favorites ("1 of these is a
 favorite."). The button names the action: **Trash 2
-files**, **Erase 2 files** (after ERASE is typed). Trash and Erase run one at
+files** (amber), **Erase 2 files** (red; after ERASE is typed in capital
+letters: "erase" typed says so under the field). Every confirm dialog counts
+in files ("Trash 2 files?", "Set the event on 3 files?"). Trash and Erase run one at
 a time with their output streamed into the dialog.
 
 Trash, Erase and Share run as a detached job (`media_intake/jobs.py`, the same module
@@ -806,9 +871,21 @@ one that has started:
   "Trash running… Show" button brings it back. When it ends the title says
   "Done" or "Finished with problems", the status line (`role=status`, read
   out) says how it ended ("Done: 2 files trashed.", "Done: 1 file erased
-  everywhere."), and the button becomes **Close**. If the dialog was hidden,
-  the end shows as a message instead ("Done: 2 files trashed."), or an alert
-  with **Details** when it finished with problems or crashed. A page opened (or
+  everywhere."), and the button becomes **Close**. A Trash that went well
+  closes its dialog by itself: the end shows as a message ("Done: 2 files
+  trashed.") with **Details**, which opens the dialog again on the job's
+  output. If the dialog was hidden, an Erase or Share ends in that message
+  too (without Details), and any job ends in an alert with **Details** when it
+  finished with problems or crashed.
+- After a Trash that went well the trashed tiles leave the grid where they
+  are, with no reload: the grid keeps its place (the first tile in view stays
+  where it was on screen), and a burst that lost its cover takes the next shot
+  as its cover. In the large view on a trashed item, it moves on to the next
+  item (the one before at the end of the list; it closes when nothing is
+  left). In Suggested junk, an Apply that trashed files drops every decided
+  tile (kept and trashed) the same way. When none of the trashed items is
+  loaded on the page (a Trash from another tab), the list reloads. An Erase, a Share or a Trash with
+  problems reloads the list as before. A page opened (or
   reloaded) while one runs, from this server or a restarted one, opens the
   dialog on the running job; the files it acts on stay hidden from thumbnails
   and media until it ends.
@@ -951,12 +1028,43 @@ Only names the gallery writes are touched (`<sha256>.jpg`,
 `<sha256>-r<0|90|180|270>.jpg`, `<sha256>.mp4`, `<sha256>.failed`), and only
 regular files: a symlink under one of those names is never followed or
 removed (the summary counts it), and a folder in the cache path that is a symlink is not entered.
-Temporary files and the proxy work folders (`proxies/.work-*`) are left alone.
+Temporary files and the proxy work folders (`proxies/.work-*`) are left alone
+(the gallery and `media-intake proxies` sweep stale ones at start, below).
 Originals and sidecars are only read. Output is counts and sizes, never file
 names. The real run holds the library lock (docs/intake.md, "One writer at a
 time"); `--dry-run` writes nothing and doesn't. With the gallery open, a
 thumbnail deleted mid-request shows again on a reload. The gallery doesn't
 prune on its own: run the command now and then, or after a big reorganisation.
+
+### Free up space
+
+`media-intake space` reports what takes room and how much each clean-up would
+free. It is read-only: it deletes, moves and writes nothing and takes no lock.
+
+- **Largest videos**, by size.
+- **Exact copies**: library files with the same content (sha256 from
+  `index.json` when the size matches, else hashed, and only for sizes two
+  files share). Keeping one of each frees the rest.
+- **Near-copies kept in the library**: files `plan` set aside as a
+  near-duplicate that were kept into the library since (from each batch's
+  `plan.json`). Nothing is compared anew.
+- **Review folders**: per batch, how many near-duplicates and junk `apply`
+  set aside and their size (counts only, no file names);
+  `media-intake purge-review BATCH --yes` frees one.
+- **Suggested junk**, exactly as the gallery's view shows it at its default
+  Junk score (0.70), with each file's Why. Never a file you kept or starred,
+  used in a post or in a protected project.
+- **Gallery cache**: thumbnails and video proxies, and what `prune-cache`
+  would free now (its dry run).
+
+It lists what the gallery lists: never a flagged, quarantined or erased file,
+nor a photo held for the records inbox (a trashed file is gone). Sections can
+overlap (a Suggested junk file may also be a copy), so their sizes are not
+added up. Each list shows the 10 largest; `--top N` changes that (`--top 0`
+lists every one) and `--json` prints one object for scripts. Paths under your
+home folder show as `~/...`. Acting on it is up to you: the gallery's
+Suggested junk view, `trash FILE... --yes`, `purge-review`, `prune-cache`.
+Links from the report into the gallery are not done yet (ROADMAP).
 
 ## Video proxies (HEVC in the browser)
 
@@ -1034,7 +1142,19 @@ and serves that instead; every other video is served as it is.
   transcode whose video goes into a Trash or Erase job stops (its process
   ends, its stream to the page ends, nothing of it is kept), and one finished
   just after its video was trashed or erased is deleted. Stopping the
-  gallery (the page's button) stops its transcode too.
+  gallery (the page's button, Ctrl-C, or SIGTERM from `kill` or systemd)
+  stops its transcode too: the encoder runs in a process group of its own,
+  which the gallery kills, and its work folder is removed before the gallery
+  exits (130 on Ctrl-C, 143 on SIGTERM). `media-intake proxies` does the
+  same on SIGTERM.
+- **Left-over work folders.** Each work folder is named
+  `.work-<pid>-<random>` after the gallery or `proxies` run that made it,
+  and holds the encoder's PID in `pid`. If that process was killed outright
+  (SIGKILL, a crash, a power cut), the next gallery or `proxies` start
+  removes the folder, first killing an encoder still converting there (its
+  PID is checked against its command line, which names the folder, never
+  matched by name). A folder whose owner still runs is left alone; one from
+  an older version (no PID in its name) goes once it is two hours old.
 - **When it fails** (every command failed or stalled, or an hour passed),
   the original is served as before and the page says the browser can't play
   it, with **Open in the system player**. The failure is recorded as
@@ -1199,7 +1319,10 @@ marks with the filters (Mark all shown as Trash, then a narrower Why and a
 higher Junk score: "(N more not listed now)" and only the listed marks in
 Apply's request), a star taking a Trash mark off (unstarring leaves it off,
 Apply sends only the other mark), and junk tiles with no star or Share (a
-Share asked and cancelled from Library leaving the marks as they were).
+Share asked and cancelled from Library leaving the marks as they were),
+and Library's large view for one-by-one review ("1 of 5" and the arrows
+moving it, the verdict line or none, Keep pressed on a kept file, K and the
+Keep button keeping and moving on).
 Apply's `/api/decide` is answered by the test there; `test_gallery.py`'s
 `test_apply_skips_a_trash_mark_starred_or_kept_since` runs the server side
 (a starred and a kept mark skipped, the rest trashed, no job when all are
@@ -1253,7 +1376,9 @@ deleted since the scan. `tests/browser/test_browser_gallery_media_kinds.py`
 does it on the page: a mixed selection by Space, a shift-click range and
 Ctrl-click, Keep by K and by the bar (sidecars and the tiles' "Kept" flags),
 a shift-click after the grid reloads, + tag / − tag, Set event, Rotate (the
-thumbnails made again turned) and Trash on a mixed selection, and the large
+thumbnails made again turned) and Trash on a mixed selection (a message with
+Details, not the Done dialog), Trash in the large view (it moves on to the
+next item and the tile leaves the grid with no reload of the list), and the large
 view playing an .mp4 and a .MOV and rotating a video, and a HEIC without
 pillow-heif showing its thumbnail as "a small preview" and why (never "can't
 show" over it), or "No preview" when it has no thumbnail.

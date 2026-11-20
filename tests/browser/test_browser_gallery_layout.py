@@ -191,10 +191,16 @@ class GalleryLayoutBrowserTest(LayoutCase):
         seln, box = page.locator("#seln").bounding_box(), page.locator("#actionbar").bounding_box()
         self.assertLessEqual(seln["x"] + seln["width"], box["x"] + box["width"] + 1, f"{what}: the label runs out of the bar")
         self.assertGreaterEqual(seln["x"], box["x"] - 1, f"{what}: the label runs out of the bar")
+        # Keep, Trash, Erase, More… and Clear stay one row (the count may take a line above them)
+        tops = {round(page.locator(f"#{b}").bounding_box()["y"]) for b in ("bkeep", "btrash", "berase", "bmore", "bnone")}
+        self.assertEqual(len(tops), 1, f"{what}: the selection bar's buttons wrap")
         self.assert_last_row_above_bar(page, f"{what}, Select all")
 
     def test_phone_width(self):
         self.check_size(PHONE, "390 px phone", "bx")
+
+    def test_small_phone_width(self):
+        self.check_size(dict(PHONE, viewport={"width": 360, "height": 740}), "360 px phone", "bx")
 
     def test_just_above_the_phone_breakpoint(self):
         self.check_size(NARROW, "800 px", "x")
@@ -256,10 +262,25 @@ class GalleryLayoutBrowserTest(LayoutCase):
         B.expect(helpb.locator(".hfull")).to_be_visible()
         page.get_by_role("button", name="less", exact=True).click()
         B.expect(helpb.locator(".hfull")).to_be_hidden()
-        # the desktop keeps the full paragraph and no toggle
+        # the desktop has the same one line, with the X key, and the same more
         desk = self.page(DESKTOP)
-        B.expect(desk.locator("#helpb .hfull")).to_be_visible()
-        B.expect(desk.locator("#hmore")).to_be_hidden()
+        dh = desk.locator("#helpb")
+        B.expect(dh.locator(".kb")).to_have_text("Bursts are stacked; X opens one.")
+        B.expect(dh.locator(".hfull")).to_be_hidden()  # the whole text only after more
+        B.expect(desk.locator("#hmore")).to_be_visible()
+        self.assertLess(dh.bounding_box()["height"], 40, "the desktop help is more than one line")
+
+    def test_burst_help_can_be_dismissed(self):
+        page = self.page(DESKTOP)
+        helpb = page.locator("#helpb")
+        B.expect(helpb).to_be_visible()
+        page.get_by_role("button", name="Dismiss the burst help").click()
+        B.expect(helpb).to_be_hidden()
+        B.expect(page.locator("#toast")).to_contain_text("Burst help hidden in this browser")
+        page.reload()  # remembered in the browser
+        B.expect(page.locator("body")).to_have_attribute("data-ready", "1")
+        B.expect(self.cover(page).locator(".badge")).to_be_visible()  # the stack is still there
+        B.expect(helpb).to_be_hidden()
 
     def open_lone(self, page):
         viewer = page.get_by_role("dialog", name="Item")
