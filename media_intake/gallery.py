@@ -5085,7 +5085,7 @@ function moreOpen(on,back){$("#selmore").hidden=!on;$("#bmore").setAttribute("ar
 const moreBtns=()=>[...$$("#selmore button")].filter(b=>!b.hidden&&!b.disabled);
 $("#bmore").onclick=()=>moreOpen($("#selmore").hidden);
 $("#bmore").onkeydown=ev=>{if(ev.key==="ArrowDown"||ev.key==="ArrowUp"){ev.preventDefault();moreOpen(true);if(ev.key==="ArrowUp"){const b=moreBtns();if(b.length)b[b.length-1].focus()}}};
-$("#selmore").addEventListener("click",ev=>{if(ev.target.closest("button"))moreOpen(false)},true);  // before the item's own action, which may open a dialog
+$("#selmore").addEventListener("click",ev=>{if(ev.target.closest("button"))moreOpen(false,true)},true);  // before the item's own action: a dialog it opens gives focus back to More…
 $("#selmore").onkeydown=ev=>{const b=moreBtns(),i=b.indexOf(document.activeElement);
  if(ev.key==="Escape"){ev.preventDefault();ev.stopPropagation();moreOpen(false,true)}
  else if(ev.key==="ArrowDown"||ev.key==="ArrowUp"){ev.preventDefault();if(b.length)b[(i+(ev.key==="ArrowDown"?1:-1)+b.length)%b.length].focus()}

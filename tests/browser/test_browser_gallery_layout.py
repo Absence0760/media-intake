@@ -256,10 +256,25 @@ class GalleryLayoutBrowserTest(LayoutCase):
         B.expect(helpb.locator(".hfull")).to_be_visible()
         page.get_by_role("button", name="less", exact=True).click()
         B.expect(helpb.locator(".hfull")).to_be_hidden()
-        # the desktop keeps the full paragraph and no toggle
+        # the desktop has the same one line, with the X key, and the same more
         desk = self.page(DESKTOP)
-        B.expect(desk.locator("#helpb .hfull")).to_be_visible()
-        B.expect(desk.locator("#hmore")).to_be_hidden()
+        dh = desk.locator("#helpb")
+        B.expect(dh.locator(".kb")).to_have_text("Bursts are stacked; X opens one.")
+        B.expect(dh.locator(".hfull")).to_be_hidden()  # the whole text only after more
+        B.expect(desk.locator("#hmore")).to_be_visible()
+        self.assertLess(dh.bounding_box()["height"], 40, "the desktop help is more than one line")
+
+    def test_burst_help_can_be_dismissed(self):
+        page = self.page(DESKTOP)
+        helpb = page.locator("#helpb")
+        B.expect(helpb).to_be_visible()
+        page.get_by_role("button", name="Dismiss the burst help").click()
+        B.expect(helpb).to_be_hidden()
+        B.expect(page.locator("#toast")).to_contain_text("Burst help hidden in this browser")
+        page.reload()  # remembered in the browser
+        B.expect(page.locator("body")).to_have_attribute("data-ready", "1")
+        B.expect(self.cover(page).locator(".badge")).to_be_visible()  # the stack is still there
+        B.expect(helpb).to_be_hidden()
 
     def open_lone(self, page):
         viewer = page.get_by_role("dialog", name="Item")
