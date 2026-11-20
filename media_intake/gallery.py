@@ -3800,6 +3800,7 @@ output{font-variant-numeric:tabular-nums;color:var(--fg);font-weight:600}
 /* the burst help: one line, "more" for the whole text (open / closed remembered), × hides it for good in this browser */
 #helpb{display:flex;align-items:baseline;gap:2px 6px;flex-wrap:wrap}
 #helpb .hfull{display:none}#helpb.more .hshort{display:none}#helpb.more .hfull{display:inline}
+#helpb:not(.more){flex-wrap:nowrap}#helpb:not(.more) .hshort{min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}#hmore,#hgone{flex-shrink:0}  /* closed, the help stays one line in any font: the short text gives way, "more" has the whole of it */
 #hgone{border:0;background:none;color:var(--mut);font-size:15px;line-height:1;padding:2px 6px;border-radius:6px}
 #hgone:hover{background:var(--hover);color:var(--fg)}
 #note{margin:10px 0 0}

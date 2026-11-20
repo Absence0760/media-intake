@@ -149,7 +149,7 @@ class GalleryMediaKindsBrowserTest(B.BrowserCase):
             self.assertEqual(h.count("Owner|keep"), 1, n)
             B.expect(self.tile(page, n).locator(".flag")).to_have_text("Kept")  # Suggested junk gone too
         self.assertIn("Trips|coast", G.tags_of(self.path["v.mp4"])[0])
-        B.expect(bar).to_contain_text("4 selected")
+        B.expect(bar).to_be_hidden()  # a Keep that went through clears the selection
         # nothing is suggested for the trash any more
         page.get_by_role("navigation", name="Views").get_by_role("button", name="Suggested junk").click()
         B.expect(page.get_by_role("status").filter(has_text="No suggested junk right now.")).to_be_visible()
