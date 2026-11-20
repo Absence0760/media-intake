@@ -183,7 +183,7 @@ media-intake offload BATCH --phone SOURCE [--yes]   # asks (type DELETE); refuse
 media-intake purge-review BATCH [--yes]   # a batch name, never a path; a dry run without --yes
 media-intake trash [BATCH] FILE... [--phone PHONE] [--yes]   # a dry run without --yes
 media-intake trash --from-digikam [--yes]
-media-intake suggest-trash [--batch BATCH] [--phone PHONE]
+media-intake suggest-trash [--batch BATCH] [--phone PHONE] [--junk-score N]   # N: 0 to 1, default 0.70 (the gallery's line)
 media-intake not-trash FILE...
 media-intake migrate-tags [--dry-run]
 media-intake share-copy FILE... --out DIR     # alias: social-copy
@@ -1209,13 +1209,18 @@ doctor`; CPU, onnxruntime.
   0.1, uncalibrated) plus a pixel check on the 224 px frame (variance of the
   Laplacian < 8, or mean grey < 10 of 255); images only. Either gives
   `Review|maybe-trash`.
-- `suggest-trash [--batch B]` lists files the VLM called trash
-  (`AI|vlm/<model>/trash/*` with that model's confidence >= 0.7, or the older
-  `Review|vlm-trash/*`), or with `Review|maybe-trash` and no VLM keep; never
-  ones you kept (`Owner|not-trash`, `Owner|keep`, the legacy
+- `suggest-trash [--batch B] [--junk-score N]` lists files the VLM called trash
+  with a Junk score of at least N (`AI|vlm/<model>/trash/*` scored by that
+  model's `conf`, the most confident model's counting; a verdict with no `conf`
+  scores 0; the older `Review|vlm-trash/*` scores 0.70). N defaults to
+  `vlm_trash.TRASH_MIN` (0.70), the same line as the gallery's Suggested junk,
+  read through the same `vlm_trash.junk_score`; a lower N lists more, as the
+  gallery's Junk score box does, and 0 is its Any score. Also, at any score,
+  files with `Review|maybe-trash` and no VLM keep; never ones you kept (`Owner|not-trash`, `Owner|keep`, the legacy
   `Review|not-trash`, digiKam Accepted, a favorite: `xmp:Rating` >= 5), `Used|*` or a protected project's
   `Project|<name>`; plus copies marked `Owner|trash`. They show in the review
-  page's "Maybe trash" tab: Keep runs `not-trash` (`Owner|keep` +
+  page's "Maybe trash" tab (a verdict as "Junk score 0.90 (blurry)", the
+  gallery's words, never its tags): Keep runs `not-trash` (`Owner|keep` +
   `Owner|not-trash` on; `Review|maybe-trash`, `Owner|trash` and the legacy
   spelling off), Trash runs `trash`. Nothing is deleted without a decision.
 - Videos: up to 30 frames spread over the clip (at most 0.5 fps), max score

@@ -45,6 +45,7 @@ import owner  # noqa: E402
 import places as myplaces  # noqa: E402  (My places: Place|<name> tags, <state>/places.json)
 import sources  # noqa: E402
 import videohash  # noqa: E402
+import vlm_trash  # noqa: E402  (TRASH_MIN, junk_score: the vision check's one line; stdlib only at import)
 
 CFG = config.get()
 HOME = os.path.expanduser("~")
@@ -2852,9 +2853,20 @@ def cmd_migrate_tags(a):
     print(f"migrated {len(entries)} sidecars: Review|not-trash -> Owner|not-trash")
 
 
+def junk_score_arg(v):
+    """--junk-score: a number from 0 to 1."""
+    try:
+        f = float(v)
+    except ValueError:
+        f = -1.0
+    if not 0.0 <= f <= 1.0:
+        raise argparse.ArgumentTypeError(f"{v!r} is not a junk score from 0 to 1")
+    return f
+
+
 def cmd_suggest_trash(a):
-    """Library files the VLM called trash (Review|vlm-trash/*, written only at confidence >= 0.7, or
-    AI|vlm/<model>/trash...), SigLIP's Review|maybe-trash without a VLM keep, or a surviving copy of
+    """Library files the VLM called trash with a Junk score of at least --junk-score (vlm_trash.junk_score;
+    vlm_trash.TRASH_MIN by default, the gallery's Suggested junk line), SigLIP's Review|maybe-trash without a VLM keep, or a surviving copy of
     content you trashed (Owner|trash). Never one you kept (owner.kept: Owner|keep, Owner|not-trash,
     digiKam Accepted, a favorite: xmp:Rating >= 5), one with a person or pet you named (owner.named:
     People|<Name>, Pets|<Name>; unless it is a copy you trashed), Used|* or a protected project's Project| tag."""
@@ -2872,9 +2884,10 @@ def cmd_suggest_trash(a):
     for row in json.loads(r.stdout or "[]") if r else []:
         media = row["SourceFile"][:-4]
         tags = as_list(row.get("HierarchicalSubject"))
-        vlm_trash = any(t.startswith("Review|vlm-trash/") or (t.startswith("AI|vlm/") and "/trash" in t) for t in tags)
+        score = vlm_trash.junk_score(tags)[0]
+        judged = score is not None and score >= a.junk_score
         vlm_keep = any(t == "Review|vlm-keep" or (t.startswith("AI|vlm/") and "/keep" in t) for t in tags)
-        if not (vlm_trash or ("Review|maybe-trash" in tags and not vlm_keep) or owner.TRASH in tags):
+        if not (judged or ("Review|maybe-trash" in tags and not vlm_keep) or owner.TRASH in tags):
             continue
         if owner.kept(tags, owner.pick_label(row.get("PickLabel")), row.get("Rating")) \
                 or (owner.named(tags) and owner.TRASH not in tags) or protected.intersection(tags) or any(t.startswith("Used|") for t in tags):
@@ -2888,7 +2901,7 @@ def cmd_suggest_trash(a):
     with os.fdopen(fd, "w") as f:
         json.dump({"batch": a.batch, "items": items}, f, indent=1)
     os.replace(out + ".tmp", out)
-    print(f"{len(items)} library files suggested as maybe-trash")
+    print(f"{len(items)} library files suggested as maybe-trash (junk score at least {a.junk_score:.2f})")
     if not items or a.no_serve:
         return
     cmd = [sys.executable, "-I", os.path.join(HERE, "review_ui.py"), "--maybe-trash"]
@@ -3667,6 +3680,10 @@ def build_parser(prog=None):
     s.add_argument("--batch", metavar="BATCH", help="only files this batch filed")
     s.add_argument("--phone", metavar="PHONE", help="passed to the review page, so Trash there also deletes the "
                    "originals from this phone or camera")
+    s.add_argument("--junk-score", type=junk_score_arg, default=vlm_trash.TRASH_MIN, metavar="N",
+                   help=f"list a vision-check verdict with a junk score of at least N, 0 to 1 (default "
+                        f"{vlm_trash.TRASH_MIN:.2f}, the gallery's Suggested junk line; lower lists more). Files "
+                        "tagged as junk and copies of photos you trashed are listed at any score")
     s.add_argument("--no-serve", action="store_true", help="write the list and stop (no review page)")
 
     for name in ("share-copy", "social-copy"):

@@ -53,6 +53,7 @@ import bursts  # noqa: E402  (burst groups: pure functions over date, device, dH
 import config  # noqa: E402
 import jobs  # noqa: E402  (detached, re-attachable runs: <state>/jobs/)
 import library_lock  # noqa: E402  (plain_holder: who holds the library lock, in words)
+import vlm_trash  # noqa: E402  (junk_score, REASON_WORDS: a verdict in plain words; stdlib only at import)
 
 HOME = os.path.expanduser("~")
 STATE = config.get()["state"]
@@ -396,9 +397,22 @@ def collect_maybe():
             continue
         k, mime = kind_of(p)
         rel = "~/" + os.path.relpath(p, HOME) if p.startswith(HOME + os.sep) else p
+        labels = [str(t) for t in x.get("labels") or [] if isinstance(t, str)]
         items.append(dict(tab="maybe", qbatch=None, rel=rel, path=p, why="", kind=k, mime=mime, releasable=True,
-                          reasons=[str(t) for t in x.get("labels") or [] if isinstance(t, str)]))
+                          reasons=maybe_reasons(labels)))
     return items
+
+
+def maybe_reasons(labels):
+    """A Maybe trash item's labels as the page shows them: the vision check's verdict tags (AI|vlm/<model>/...,
+    Review|vlm-*) folded into one "Junk score 0.90 (blurry)" (docs/words.md, the gallery's own wording); every
+    other label as it is (the page's FLAG / GROUP give it plain words)."""
+    score, why = vlm_trash.junk_score(labels)
+    rest = [t for t in labels if not t.startswith(("AI|vlm/", "Review|vlm-"))]
+    if score is None:
+        return rest
+    word = vlm_trash.REASON_WORDS.get(why or "", (why or "").replace("-", " ")).lower()  # as the gallery's tile
+    return [f"Junk score {score:.2f}" + (f" ({word})" if word else "")] + rest
 
 
 def attach_bursts(batch, items):
@@ -1236,9 +1250,9 @@ const FLAG={"nudity":"Possible nudity","unscanned-nudity":"Not checked for nudit
  "unscanned-barcode":"Barcodes not checked","unscanned-type":"File type not checked","unreadable":"Couldn't be read",
  "passport-mrz":"Looks like a passport","payment-card":"Looks like a payment card","id-barcode":"Looks like an ID card",
  "2fa-qr":"Two-factor code","wallet-qr":"Wallet code","near-duplicate":"Near-copy",
- "Review|maybe-trash":"Tagged as junk","Review|child-in-shot":"Possible child","Review|vlm-trash":"Suggested junk",
- "Review|vlm-keep":"Looked fine","Review|not-trash":"Marked Keep","Owner|keep":"Marked Keep","Owner|not-trash":"Marked Keep",
- "Owner|trash":"Marked Trash"};
+ "Review|maybe-trash":"Tagged as junk","Review|child-in-shot":"Possible child","Review|vlm-trash":"Judged junk",
+ "Review|vlm-keep":"Judged fine","Review|not-trash":"Marked Keep","Owner|keep":"Marked Keep","Owner|not-trash":"Marked Keep",
+ "Owner|trash":"Copy of a trashed photo"};
 const GROUP={nudity:"Possible nudity",document:"Looks like a document",text:"Private text","secret-words":"Private text",Label:"Looks like",Review:"Flag"};
 function plain(r){if(FLAG[r])return FLAG[r];const m=/^([^|:]+)[|:](.+)$/.exec(r);if(!m)return r.replace(/-/g," ");
  const g=GROUP[m[1]]||m[1],v=m[2].replace(/\|/g," / ").replace(/-/g," ");return m[1]==="nudity"?g:`${g}: ${v}`}

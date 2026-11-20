@@ -71,6 +71,7 @@ import jobs  # noqa: E402  (trash / erase run as a detached job: <state>/jobs/ga
 import library_lock  # noqa: E402  (Keep, my tags, Rotate write sidecars under the library lock)
 import label  # noqa: E402  (flagged / refused: stdlib only at import)
 import owner  # noqa: E402  (owner decisions: Owner|keep / not-trash / trash)
+import vlm_trash  # noqa: E402  (TRASH_MIN, junk_score, REASON_WORDS: stdlib only at import)
 import places  # noqa: E402  (My places: Place|<name>, <state>/places.json)
 import plugins  # noqa: E402  (extra tabs: gallery_views())
 import recog  # noqa: E402  (people and pets: the store, names, suggestions, crops; numpy only when used)
@@ -104,9 +105,7 @@ TOOL_PREFIXES = ("project|", "source|", "event|", "place|", "label|", "review|",
 TAG_RE = re.compile(r"^[^\x00-\x1f\x7f]{1,64}$")
 DEG = {1: 0, 6: 90, 3: 180, 8: 270}
 ORIENT = {0: 1, 90: 6, 180: 3, 270: 8}
-AI_TRASH = re.compile(r"^AI\|vlm/([^/]+)/trash(?:/([^|]*))?$")
-AI_CONF = re.compile(r"^AI\|vlm/([^/]+)/conf/([0-9.]+)$")
-SUGGEST_MIN = 0.7  # Suggested junk's line for a vision-check verdict (vlm_trash.TRASH_MIN); the view can go lower
+SUGGEST_MIN = vlm_trash.TRASH_MIN  # Suggested junk's line for a vision-check verdict (suggest-trash's too); the view can go lower
 # Suggested junk's Why (?why=): a vision-check reason (vlm_trash.REASONS, or any other a model wrote), or these two
 WHY_LABEL, WHY_COPY = "label", "copy"
 OPENER = "xdg-open"  # the desktop's default app (found on PATH): media the browser can't decode, a Share's folder
@@ -217,26 +216,7 @@ def facts(it):
     it["labels"] = pre("Label|")
     it["mine"] = [t for t in tags if owner_tag(t)]
     it["used"] = sorted(t[5:] for t in tags if t.startswith("Used|"))
-    trash_why = {}  # model -> the reason it gave ("blurry", ...; "" when none)
-    for t in tags:
-        m = AI_TRASH.match(t)
-        if m:
-            trash_why[m.group(1)] = m.group(2) or trash_why.get(m.group(1), "")
-    trash_models = set(trash_why)
-    confs = {}
-    for t in tags:
-        m = AI_CONF.match(t)
-        if m:
-            try:
-                confs[m.group(1)] = float(m.group(2))
-            except ValueError:
-                pass  # malformed confidence in a sidecar: ignore that one tag
-    ai = max((confs.get(mo, 0.0) for mo in trash_models), default=None)
-    why = trash_why[max(trash_models, key=lambda mo: (confs.get(mo, 0.0), mo))] if trash_models else None
-    old = [t[len("Review|vlm-trash/"):] for t in tags if t.startswith("Review|vlm-trash/")]
-    if old:  # the older verdict tag, written only at confidence >= 0.7
-        why = why or old[0].split("/")[0]
-        ai = max(ai or 0.0, SUGGEST_MIN)
+    ai, why = vlm_trash.junk_score(tags)
     it["ai_trash"] = ai
     it["ai_why"] = why or None  # the reason of the most confident trash verdict, if it gave one
     it["ai_keep"] = any(t == "Review|vlm-keep" or (t.startswith("AI|vlm/") and "/keep" in t) for t in tags)
@@ -895,9 +875,7 @@ WORDS = {
     "score": "Junk score",  # an AI trash verdict's confidence, 0-1
     # Suggested junk's Why (?why=, summary()["r"]): the vision check's reasons (vlm_trash.REASONS), then the
     # other two reasons a file is suggested; a reason not listed here shows as the model wrote it
-    "why": {"blurry": "Blurry", "accidental": "Accidental shot", "dark": "Too dark", "packaging": "Packaging",
-            "random-object": "Random object", "screenshot-junk": "Junk screenshot", "duplicate-ish": "Near-copy",
-            "other": "Other", WHY_LABEL: "Tagged as junk", WHY_COPY: "Copy of a trashed photo"},
+    "why": {**vlm_trash.REASON_WORDS, WHY_LABEL: "Tagged as junk", WHY_COPY: "Copy of a trashed photo"},
     # filter sections and their chips
     "filter": {"kind": "Kind", "ym": "When", "project": "Project", "source": "Source", "place": "Place",
                "event": "Event", "label": "Looks like", "mine": "My tag", "review": "Flags", "ai": "Junk check",

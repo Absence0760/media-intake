@@ -36,7 +36,7 @@ counts-only progress lines (meter.py: done/total, rate, time left) and a summary
 stdout ends with the counts as one JSON line (the machine form tests and logs read). The
 last request uses keep_alive 0, which unloads the model from the GPU.
 """
-import argparse, base64, collections, io, json, os, shutil, subprocess, sys, tempfile, time
+import argparse, base64, collections, io, json, os, re, shutil, subprocess, sys, tempfile, time
 import urllib.error, urllib.parse, urllib.request
 
 HERE = os.path.dirname(os.path.abspath(__file__))
@@ -63,10 +63,17 @@ HOST = "http://127.0.0.1:11434"
 NUM_CTX = 8192          # Ollama's 4096 default truncates silently
 KEEP_ALIVE = "2m"       # between requests; the last one sends 0
 MAX_PX = 768            # qwen3-vl: one token per 32x32 px (24*24 = 576); the fit check below assumes 28 px
-TRASH_MIN = 0.7
+TRASH_MIN = 0.7  # the one line for a trash verdict: Suggested junk (gallery), suggest-trash and the review page
 CHUNK = 25
 VIDEO_FRAMES = 3
 REASONS = ["blurry", "accidental", "dark", "packaging", "random-object", "screenshot-junk", "duplicate-ish", "other"]
+# A reason's plain words (docs/words.md, "Why"): the gallery's Why and the review page's Maybe trash tab
+REASON_WORDS = {"blurry": "Blurry", "accidental": "Accidental shot", "dark": "Too dark", "packaging": "Packaging",
+                "random-object": "Random object", "screenshot-junk": "Junk screenshot", "duplicate-ish": "Near-copy",
+                "other": "Other"}
+AI_TRASH = re.compile(r"^AI\|vlm/([^/]+)/trash(?:/([^|]*))?$")
+AI_CONF = re.compile(r"^AI\|vlm/([^/]+)/conf/([0-9.]+)$")
+OLD_TRASH = "Review|vlm-trash/"  # the older verdict tag, written only at confidence >= TRASH_MIN
 PROMPT = (
     "You help clean up a personal photo library. Decide whether this photo is worth keeping. "
     "TRASH means clearly junk: badly blurred, an accidental shot (pocket, floor, finger over the lens), "
@@ -92,6 +99,34 @@ class Refused(Exception):
 
 
 # ---------------------------------------------------------------- Ollama (loopback only)
+def junk_score(tags):
+    """(Junk score, reason) of a file's trash verdicts, from its tags; (None, None) when no model called it trash.
+
+    The score is the highest confidence among the models that said trash (0.0 when that model wrote none); the
+    reason is that most confident model's ("" when it gave none). The older Review|vlm-trash/<reason> tag counts
+    as TRASH_MIN. Suggested junk (gallery), suggest-trash and the review page all read verdicts through this, and
+    list one when its score is at least the line (TRASH_MIN unless you go lower)."""
+    why, confs = {}, {}
+    for t in tags:
+        m = AI_TRASH.match(t)
+        if m:
+            why[m.group(1)] = m.group(2) or why.get(m.group(1), "")
+            continue
+        m = AI_CONF.match(t)
+        if m:
+            try:
+                confs[m.group(1)] = float(m.group(2))
+            except ValueError:
+                pass  # malformed confidence in a sidecar: ignore that one tag
+    score = max((confs.get(mo, 0.0) for mo in why), default=None)
+    reason = why[max(why, key=lambda mo: (confs.get(mo, 0.0), mo))] if why else None
+    old = [t[len(OLD_TRASH):] for t in tags if t.startswith(OLD_TRASH)]
+    if old:
+        reason = reason or old[0].split("/")[0]
+        score = max(score or 0.0, TRASH_MIN)
+    return score, reason
+
+
 def check_host(host):
     u = urllib.parse.urlsplit(host)
     if u.scheme != "http" or u.hostname != "127.0.0.1" or u.username or u.password or u.path not in ("", "/"):
