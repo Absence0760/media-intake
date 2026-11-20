@@ -352,6 +352,19 @@ class Folder(unittest.TestCase):
         self.refused(os.path.join(h, "Pictures/library/2019"), "photo library")
         self.refused(os.path.join(h, "Videos/demo-footage/originals"), "Demo project folder")
 
+    def test_the_private_records_folder_is_refused(self):
+        """erase's sweeps never enter it (intake.walk_files), so a source there could never be erased: the default
+        ~/Documents/Records with no config, and $PRIVATE_RECORDS when set."""
+        h = self.home
+        for p in ("Documents/Records", "Documents/Records/00 Inbox", "Documents/records/scans"):
+            self.refused(os.path.join(h, p), "private records folder")
+        self.refused(os.path.join(h, "Documents"), "private records folder")  # it contains the records, now there
+        os.environ["PRIVATE_RECORDS"] = os.path.join(h, "Paperwork")
+        self.refused(os.path.join(h, "Paperwork/2026"), "private records folder")
+        scans = os.path.join(h, "Scans")  # holds no records folder: still a source
+        os.makedirs(os.path.join(scans, "2026"))
+        self.assertEqual(sources.check_folder_root(scans), os.path.realpath(scans))
+
     def test_symlinked_parent_into_state_or_library_refused(self):
         """A link in a parent folder (not the last component) that leads into the state or the library:
         only the resolved path can tell, and it is what every check compares."""

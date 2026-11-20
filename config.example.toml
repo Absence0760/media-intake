@@ -46,3 +46,8 @@
 # dir = "~/.local/share/media-intake/recognition"   # the default: <state>/recognition
 # pet_classes = ["cat", "dog"]   # the default; also bird, horse, sheep, cow, elephant, bear, zebra, giraffe
 # pet_min_frames = 3             # a video's Pets|<Name> needs that pet in this many sampled frames
+
+[records]
+# Your private records folder (documents, finances), kept by another tool. No sweep (erase, forget,
+# sweep-erased, verify-gone) ever hashes or deletes a file in it. $PRIVATE_RECORDS wins over this.
+# root = "~/Documents/Records"   # the default, protected with no config at all

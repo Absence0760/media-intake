@@ -5,7 +5,7 @@ venv, intake.py outside it.
 
 File: $MEDIA_INTAKE_CONFIG, else $XDG_CONFIG_HOME/media-intake/config.toml,
 else ~/.config/media-intake/config.toml. A missing file means all defaults.
-Env vars win over the file (MEDIA_INTAKE_STATE, PHOTO_LIBRARY, PERSONAL_FOOTAGE).
+Env vars win over the file (MEDIA_INTAKE_STATE, PHOTO_LIBRARY, PERSONAL_FOOTAGE, PRIVATE_RECORDS).
 Schema and defaults: docs/configuration.md and config.example.toml.
 """
 import fnmatch, os, re, tomllib
@@ -13,8 +13,12 @@ import fnmatch, os, re, tomllib
 HOME = os.path.expanduser("~")
 SLUG = re.compile(r"^[a-z0-9][a-z0-9-]{0,63}$")
 NAME = re.compile(r"^[A-Za-z0-9][A-Za-z0-9 ._-]{0,63}$")
-TOP_KEYS = {"library", "videos", "state", "phone", "drive", "queue", "projects", "plugins", "recognition"}
+TOP_KEYS = {"library", "videos", "state", "phone", "drive", "queue", "projects", "plugins", "recognition", "records"}
 RECOGNITION_KEYS = {"dir", "pet_classes", "pet_min_frames"}
+RECORDS_KEYS = {"root"}
+# Where personal documents and finances are kept by a separate tool (docs/configuration.md, records.root). Every
+# sweep skips it: never hashed, never deleted. The default is protected with no config at all.
+RECORDS_DEFAULT = "~/Documents/Records"
 # COCO's animal classes (YOLOX's), the only ones recognition.pet_classes may name (pets.py)
 PET_CLASSES = ("bird", "cat", "dog", "horse", "sheep", "cow", "elephant", "bear", "zebra", "giraffe")
 
@@ -107,6 +111,24 @@ def load(path=None):
         raise ConfigError("recognition.pet_min_frames: a whole number from 1 to 100")
     c["pet_min_frames"] = mf
 
+    records = raw.get("records", {})
+    if not isinstance(records, dict) or set(records) - RECORDS_KEYS:
+        raise ConfigError(f"records: a table with only {', '.join(sorted(RECORDS_KEYS))}")
+    c["records_root"] = _path(os.environ.get("PRIVATE_RECORDS") or records.get("root", RECORDS_DEFAULT),
+                              "records.root")
+    home = os.path.realpath(HOME)
+    rr = os.path.realpath(c["records_root"])
+    if home.casefold() == rr.casefold() or home.casefold().startswith(rr.casefold().rstrip(os.sep) + os.sep):
+        raise ConfigError("records.root (or $PRIVATE_RECORDS): a folder for your records, not your whole home "
+                          "folder or one above it")
+    for name, p in [("state", c["state"]), ("library", c["library"]), ("videos", c["videos"])] + \
+            [(f"projects.{k}.folder", v["folder"]) for k, v in c["projects"].items()]:
+        rp = os.path.realpath(p).casefold()
+        if rp == rr.casefold() or rp.startswith(rr.casefold().rstrip(os.sep) + os.sep) \
+                or rr.casefold().startswith(rp.rstrip(os.sep) + os.sep):
+            raise ConfigError(f"records.root (or $PRIVATE_RECORDS) and {name} overlap: no sweep enters the records "
+                              "folder, so media-intake's folders must be apart from it")
+
     plugins = raw.get("plugins", {})
     c["plugin_paths"] = [_path(x, "plugins.paths") for x in _strs(plugins.get("paths", []), "plugins.paths")]
     c["plugin_modules"] = _strs(plugins.get("modules", []), "plugins.modules")
@@ -119,7 +141,7 @@ _cache = {}
 def get():
     """Settings, loaded once per process (per config path and env). Exits on a bad config file."""
     key = (config_path(), HOME, *(os.environ.get(k) for k in ("MEDIA_INTAKE_STATE", "PHOTO_LIBRARY",
-                                                               "PERSONAL_FOOTAGE", "HOME")))
+                                                               "PERSONAL_FOOTAGE", "PRIVATE_RECORDS", "HOME")))
     if key not in _cache:
         try:
             _cache[key] = load()

@@ -49,6 +49,24 @@ HOME = os.path.expanduser("~")
 STATE, LIBRARY, VIDEOS = CFG["state"], CFG["library"], CFG["videos"]
 PROJECTS = CFG["projects"]  # {key: {name, folder, events, protect}}
 LIB_ROOTS = config.library_roots(CFG)  # library, videos, every project folder
+RECORDS = CFG["records_root"]  # personal documents and finances, another tool's: no sweep enters it
+
+
+def records_skip(root, bases):
+    """The casefolded paths under which walk_files never goes: root (the records folder) as configured and as
+    resolved (symlinks), and as each of bases (HOME, a drive's mount) spells it when root resolves inside the
+    base's real path (a symlinked HOME, say). Casefolded, so a case-insensitive disk's other spelling is skipped
+    too."""
+    out = {os.path.abspath(root), os.path.realpath(root)}
+    real = os.path.realpath(root)
+    for base in bases:
+        rb = os.path.realpath(base)
+        if real == rb or real.startswith(rb.rstrip(os.sep) + os.sep):
+            out.add(os.path.normpath(os.path.join(os.path.abspath(base), os.path.relpath(real, rb))))
+    return {p.casefold() for p in out}
+
+
+RECORDS_SKIP = records_skip(RECORDS, (HOME,))
 VENV_PY = f"{STATE}/venv/bin/python"
 SETUP = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "setup.sh")
 DEPS = ("sudo dnf install perl-Image-ExifTool tesseract tesseract-langpack-eng python3-zxing-cpp "
@@ -903,15 +921,22 @@ def gvfs_meta_forget(path, stats=None):
 
 
 def walk_files(root, skip_rel=(), git=False):
-    """Regular files under root, no symlinks followed, skip lists applied.
+    """Regular files under root, no symlinks followed, skip lists applied. The private records folder
+    (RECORDS, records.root) is never entered, from any root: every sweep, the drive purge and the near-duplicate
+    search go through here, so none hashes, moves or deletes a file there. A root inside it yields nothing.
 
     With git, yields (path, in_git): in_git when a folder at or above it (under root) holds .git.
     """
     skip = {os.path.join(root, s) for s in skip_rel}
+    rskip = RECORDS_SKIP | records_skip(RECORDS, (root,))
+    for spelled in {os.path.abspath(root).casefold(), os.path.realpath(root).casefold()}:  # a link into it too
+        if any(spelled == s or spelled.startswith(s.rstrip(os.sep) + os.sep) for s in rskip):
+            return
     repo = set()  # folders inside a git working tree
     for r, dirs, fs in os.walk(root, followlinks=False):
         in_git = r in repo or ".git" in dirs or ".git" in fs
-        dirs[:] = [d for d in dirs if d not in SWEEP_SKIP_NAMES and os.path.join(r, d) not in skip]
+        dirs[:] = [d for d in dirs if d not in SWEEP_SKIP_NAMES and os.path.join(r, d) not in skip
+                   and os.path.join(r, d).casefold() not in rskip]
         if in_git:
             repo.update(os.path.join(r, d) for d in dirs)
         for f in fs:
@@ -2067,6 +2092,9 @@ def cmd_erase(a):
                                + (" (--no-wipe-free)" if a.no_wipe_free else " (see above)"))
     else:
         not_checked.append("backup drive: no --drive")
+    if os.path.isdir(RECORDS):
+        not_checked.append(f"your private records folder ({shown_path(RECORDS)}, records.root): never searched, "
+                           "so a copy filed there stays; it is kept by your records tool, not media-intake")
     cov = erase_coverage(reached, left, not_checked)
     write_coverage(a.batch, cov)
     print(f"coverage report saved (the full report: media-intake verify-gone {a.batch}):")
