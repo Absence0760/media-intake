@@ -141,6 +141,14 @@ without one" (`/api/facets` gives `drive`, the mount or null).
   below it; the close button stays pinned at the top right however far you
   scroll, a downward swipe on the photo closes the view (not while scrolled
   down to the info pane), and a reopened view starts at the photo.
+  For going through them one by one: "3 of 120" over the photo says where
+  you are (among the tiles the grid shows: a closed burst stack counts once;
+  of every match, not only those loaded), and the vision check's verdict sits
+  on a line under the name in the grid's words: "Junk score 0.90 (blurry)",
+  "Judged fine", and "Not the best shot" for `best-shot`'s pick against it
+  (`/api/item`'s `ai`, `why`, `ai_keep` and `not_best`). **Keep (K)** shows
+  pressed (`aria-pressed`, filled) on a kept item; it and **K** keep the item
+  and go on to the next, as a Trash does once it has run.
 
 - **Messages and dialogs**: the page never uses the browser's own `alert`,
   `confirm` or `prompt`. What an action did shows in a message at the bottom
@@ -201,7 +209,8 @@ closes it, and no other key acts while it is open.
   back (in Suggestions marks it "Not _Name_"); Z on a crop opens the zoom,
   where ← / → step through the card's crops and Esc closes it.
 - **Large view**: ← / → previous / next, Space plays / pauses, K / T / E
-  (in Suggested junk K / T mark and go to the next), F favorite / unfavorite,
+  (K keeps and goes to the next, T goes to the next once its Trash has run;
+  in Suggested junk K / T mark and go to the next), F favorite / unfavorite,
   R / Shift+R rotate, Esc closes.
 - **Suggested junk**: arrows (and J) move the outline, K / T mark it (as its
   Keep and Trash buttons do; with no outline yet, the tile under the pointer,
@@ -1294,7 +1303,10 @@ marks with the filters (Mark all shown as Trash, then a narrower Why and a
 higher Junk score: "(N more not listed now)" and only the listed marks in
 Apply's request), a star taking a Trash mark off (unstarring leaves it off,
 Apply sends only the other mark), and junk tiles with no star or Share (a
-Share asked and cancelled from Library leaving the marks as they were).
+Share asked and cancelled from Library leaving the marks as they were),
+and Library's large view for one-by-one review ("1 of 5" and the arrows
+moving it, the verdict line or none, Keep pressed on a kept file, K and the
+Keep button keeping and moving on).
 Apply's `/api/decide` is answered by the test there; `test_gallery.py`'s
 `test_apply_skips_a_trash_mark_starred_or_kept_since` runs the server side
 (a starred and a kept mark skipped, the rest trashed, no job when all are

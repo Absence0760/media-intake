@@ -1950,6 +1950,25 @@ class NotBestShotTest(unittest.TestCase):
         plain = [self.it(f"p{k}.jpg", burst=0, burst_pos=k) for k in range(3)]
         self.assertEqual(gallery.App(plain).stacked([2, 1, 0])[0], [0, 1, 2])
 
+    def test_large_view_gets_the_verdict(self):
+        """/api/item's detail carries what the large view's verdict line needs: the junk reason (why), the vision
+        check's fine verdict (ai_keep) and best-shot's not-best, beside the score (ai)."""
+        import gallery
+        items = [self.it("hi.jpg", "AI|vlm/m/trash/blurry", "AI|vlm/m/conf/0.9", "AI|bestshot/not-best"),
+                 self.it("fine.jpg", "AI|vlm/m/keep"), self.it("plain.jpg")]
+        for it in items:
+            it.update(res="1x1", show="image", ext=".jpg", has_xmp=True, gps=None, myplaces=[])
+        app = gallery.App(items)
+        got = {os.path.basename(app.items[i]["path"]): app.detail(i) for i in range(3)}
+        pick = lambda d: (d["ai"], d["why"], d["ai_keep"], d["not_best"])  # noqa: E731
+        self.assertEqual(pick(got["hi.jpg"]), (0.9, "blurry", False, True))
+        self.assertEqual(pick(got["fine.jpg"]), (None, None, True, False))
+        self.assertEqual(pick(got["plain.jpg"]), (None, None, False, False))
+        # the page words them as the grid does ("Junk score 0.90 (blurry)", "Not the best shot", "Judged fine")
+        self.assertIn("function verdictText(d)", gallery.PAGE)
+        self.assertIn('WORDS.why["not-best"]', gallery.PAGE)
+        self.assertEqual(gallery.WORDS["why"]["blurry"].lower(), "blurry")
+
     def test_space_lists_them(self):
         import gallery, space
         nb, plain = self.it("nb.jpg", "AI|bestshot/not-best", size=9), self.it("plain.jpg", size=5)
