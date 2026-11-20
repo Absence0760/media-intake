@@ -360,7 +360,7 @@ class LibraryLockTest(unittest.TestCase):
         p.stdin.close()
         p.wait()
         if not shutil.which("exiftool"):
-            return
+            self.skipTest("exiftool missing: the write once the lock is free needs it (CI has it)")
         vlm_trash.write_verdicts([(a, "trash", "blurry", 0.9), (gone, "trash", "dark", 0.9)], {})
         self.assertIn("AI|vlm/", read(a + ".xmp"))
         self.assertFalse(os.path.exists(gone + ".xmp"))
@@ -381,7 +381,7 @@ class LibraryLockTest(unittest.TestCase):
         p.stdin.close()
         p.wait()
         if not shutil.which("exiftool"):
-            return
+            self.skipTest("exiftool missing: the write once the lock is free needs it (CI has it)")
         captions.write([(a, "A red square"), (gone, "A dark square")], self.state)
         self.assertEqual(captions.read(a)["caption"], "A red square")
         self.assertFalse(os.path.exists(gone + ".xmp"))

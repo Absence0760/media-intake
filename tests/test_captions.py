@@ -16,6 +16,8 @@ PY = sys.executable
 SCRIPT = os.path.join(support.PKG, "captions.py")
 SEMANTIC = os.path.join(support.PKG, "semantic.py")
 NS = captions.NS_URI
+HAVE_EXIFTOOL = bool(shutil.which("exiftool"))
+NEEDS_EXIFTOOL = unittest.skipUnless(HAVE_EXIFTOOL, "exiftool missing (captions are written with it; CI has it)")
 
 
 def sidecar(path, caption=None, model="qwen3-vl:2b", attr=False, keyword=None):
@@ -249,16 +251,19 @@ class Run(unittest.TestCase):
     def caption_of(self, p):
         return captions.read(p).get("caption")
 
+    @NEEDS_EXIFTOOL
     def test_captions_written_to_own_field_and_resumable(self):
         a = img(os.path.join(self.lib, "2026", "a.jpg"), size=(2000, 1500))
         b = img(os.path.join(self.lib, "2026", "b.jpg"), color=(9, 9, 9))
         subprocess.run(["exiftool", "-q", "-o", a + ".xmp", "-XMP-lr:HierarchicalSubject=Label|food",
                         "-XMP-dc:Description=my own words", a], check=True)
+        before = {p: sha(p) for p in (a, b)}
         code, c, err = self.run_c("--all")
         self.assertEqual((code, c["captioned"], c["todo"]), (0, 2, 2), err)
         self.assertNotIn("red square", err.lower())  # counts only
         self.assertEqual(self.caption_of(a), "A red square on a grey wall")
         self.assertEqual(self.caption_of(b), "A red square on a grey wall")
+        self.assertEqual({p: sha(p) for p in (a, b)}, before, "the photos themselves are never written")
         r = subprocess.run(["exiftool", "-j", "-q", "-HierarchicalSubject", "-Description", "-Subject", a + ".xmp"],
                            capture_output=True, text=True)
         row = json.loads(r.stdout)[0]
@@ -280,7 +285,9 @@ class Run(unittest.TestCase):
         code, c, _ = self.run_c("--all", "--redo")
         self.assertEqual(c["captioned"], 2)
         self.assertEqual(self.caption_of(a), "A dark square")
+        self.assertEqual({p: sha(p) for p in (a, b)}, before, "nor by --redo")
 
+    @NEEDS_EXIFTOOL
     def test_bad_reply_writes_nothing_and_retries(self):
         a = img(os.path.join(self.lib, "2026", "a.jpg"))
         Stub.reply = reply(None, raw="not json")
@@ -291,6 +298,7 @@ class Run(unittest.TestCase):
         code, c, _ = self.run_c("--all")
         self.assertEqual((c["todo"], c["captioned"]), (1, 1))
 
+    @NEEDS_EXIFTOOL
     def test_stops_when_model_not_on_gpu(self):
         for i in range(3):
             img(os.path.join(self.lib, "2026", f"{i}.jpg"), color=(i, i, i))
