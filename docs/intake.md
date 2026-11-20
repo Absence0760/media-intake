@@ -819,6 +819,16 @@ quarantine. A file named twice is forgotten once.
   or `__pycache__` folder (`SWEEP_SKIP` in `intake.py`). Exact copies inside a
   git working tree (any folder holding `.git`) are listed, not deleted: the
   repo would go dirty and git history keeps the content anyway.
+- **Your private records folder is never entered.** `records.root`
+  (`$PRIVATE_RECORDS`, default `~/Documents/Records`, protected with no config;
+  [configuration.md](configuration.md)) holds documents and finances that a
+  separate tool keeps. No sweep hashes, moves or deletes a file there: not
+  erase's and forget's HOME sweep, `sweep-erased`, `verify-gone`, the
+  backup-drive sweep (`--drive`, when the folder is on that drive) or the
+  near-duplicate search. A copy of an erased photo filed there stays, and the
+  coverage report lists the folder under "not checked". The folder is
+  resolved through symlinks and compared ignoring letter case (`walk_files`
+  in `intake.py`).
 - **The gallery's caches.** Its thumbnails
   (`~/.cache/media-intake/thumbs/<sha256>-r<turn>.jpg`, one per rotation, and
   `<sha256>.jpg` from older versions) and H.264 video proxies
@@ -1406,7 +1416,10 @@ dropping the rest (dry run, unreadable files, symlinked cache folders, the libra
 `localsearch` (failed, hung, vanished and symlinked cases), and the backup records after `backup`, `erase --drive`,
 `forget` and `verify-gone` (an erase outside the backed-up folders, a shared sha256, a record it can't rewrite or read); `test_sweep_erased`:
 `sweep-erased` on a fake drive (dry run, `--yes`, `--drive-only`, the drive's Trash and `.trashinfo`, the HOME skips
-and git repos, content in the library index left alone, counts only); `test_library_ops_media_kinds`: every
+and git repos, content in the library index left alone, counts only); `test_records_skip`: a copy under the records
+folder (the default with no config, `$PRIVATE_RECORDS` through a symlink and in another letter case, one on the
+drive) survives `sweep-erased --yes`, `forget` and its erase, and `verify-gone`, and in-process neither `sweep` nor
+`drive_purge` hashes a file there, plus `records.root`'s config rules; `test_library_ops_media_kinds`: every
 library-side command on a photo, an mp4 and a .mov, alone and mixed; `test_detectors_media_kinds`: scan,
 vlm_trash, semantic, label and the plugin hook on photos, videos and mixed batches, broken videos that
 must be flagged "not checked", never clean, and the GStreamer fallback with a hostile file name and its one-line skip note for an unsafe work folder (fake tools); `test_motion`: motion photos (Google,

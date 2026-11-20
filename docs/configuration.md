@@ -23,14 +23,17 @@ Paths take `~` and `$VARS`.
 | `recognition.dir` | `<state>/recognition` | People and pets recognition data (detections, vectors, names, crops; biometric). Kept `0700`, its files `0600`; refused inside the library, videos or a project folder, never backed up: [recognition.md](recognition.md). |
 | `recognition.pet_classes` | `["cat", "dog"]` | The animals `media-intake pets` looks for, from the detector's COCO animals: `bird`, `cat`, `dog`, `horse`, `sheep`, `cow`, `elephant`, `bear`, `zebra`, `giraffe`. A cat is never grouped with a dog. |
 | `recognition.pet_min_frames` | `3` | A video gets `Pets\|<Name>` only when that pet is in at least this many of its sampled frames (1 to 100). Photos need one. |
+| `records.root` | `~/Documents/Records` | Your private records folder (personal documents and finances), kept by a separate tool, not media-intake. Every sweep skips it, protected even with no config: `erase`, `forget`, `sweep-erased`, `verify-gone`, the backup-drive sweep and the near-duplicate search never hash, move or delete a file there, so a copy filed there stays, and the erase coverage report says it was not searched. Resolved through symlinks and compared ignoring letter case. Refused when it is your home folder or one above it, or when it is, is inside or holds `state`, `library`, `videos` or a project folder (those must be swept). `$PRIVATE_RECORDS` wins over it. |
 
 `state`, `library`, `videos` and every project's `folder` (as resolved, env
 vars included) are never accepted as a laptop folder source, nor any folder
 inside or containing one: `stage --kind folder` and `queue add --kind folder`
-refuse them ([queue.md](queue.md), "Laptop folders").
+refuse them ([queue.md](queue.md), "Laptop folders"). Nor is `records.root`, or
+a folder inside it, or one containing it while it is there: no sweep could
+erase a copy left in it.
 
 Environment variables win over the file: `MEDIA_INTAKE_STATE`, `PHOTO_LIBRARY`,
-`PERSONAL_FOOTAGE`, and `MEDIA_QUEUE_WRAPPER` (space-separated) for
+`PERSONAL_FOOTAGE`, `PRIVATE_RECORDS` (`records.root`), and `MEDIA_QUEUE_WRAPPER` (space-separated) for
 `queue.wrapper`. `MEDIA_INTAKE_LOCK_WAIT` (seconds, default 10, `0` to refuse
 at once, at most 86400) is how long a CLI command waits for the library lock
 before it exits 75 ([intake.md](intake.md), "One writer at a time").
