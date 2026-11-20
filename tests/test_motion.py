@@ -296,7 +296,7 @@ class Scan(Base):
             with mock.patch.dict(sys.modules, {"nudenet": fake_nudenet}), \
                     mock.patch.dict(os.environ, {"HOME": home}), \
                     mock.patch.object(sys, "argv", ["scan_sensitive.py", src, out, *extra]), \
-                    mock.patch.object(scan_sensitive, "ocr_flags", lambda im, tmp: []), \
+                    mock.patch.object(scan_sensitive, "ocr_flags", lambda im, tmp, keep=None: []), \
                     mock.patch("sys.stdout", new_callable=io.StringIO), \
                     mock.patch("sys.stderr", new_callable=io.StringIO):
                 FakeNudeDetector.calls = []

@@ -277,10 +277,10 @@ class ScanMediaKinds(Base):
         video(self.S("v/red.mp4"), RED)
         real = scan_sensitive.ocr_flags
 
-        def ocr(im, tmpdir):  # Tesseract hanging past its timeout on one picture
+        def ocr(im, tmpdir, keep=None):  # Tesseract hanging past its timeout on one picture (real's signature)
             if im.filename.endswith("a.jpg"):
                 raise subprocess.TimeoutExpired(["tesseract"], 120)
-            return real(im, tmpdir)
+            return real(im, tmpdir, keep)
         with mock.patch.object(scan_sensitive, "ocr_flags", ocr):
             flags, summary = run_scan(self.d, self.src, self.out)
         self.assertEqual(flags, {"p/a.jpg": ["unscanned-error"], "p/b.jpg": ["nudity"], "v/red.mp4": ["nudity"]})
@@ -565,10 +565,10 @@ class ScanApplyTag(Base):
         self.intake("plan", batch)
         real = scan_sensitive.ocr_flags
 
-        def ocr(im, tmpdir):
+        def ocr(im, tmpdir, keep=None):  # the real ocr_flags' signature
             if im.filename.endswith("121000.jpg"):
                 raise subprocess.TimeoutExpired(["tesseract"], 120)
-            return real(im, tmpdir)
+            return real(im, tmpdir, keep)
         with mock.patch.object(scan_sensitive, "ocr_flags", ocr), \
                 mock.patch.object(scan_sensitive, "IMG", scan_sensitive.IMG - {".gpr"}):
             flags, _ = run_scan(self.d, os.path.join(bd, "raw"), os.path.join(bd, "scan.json"))
