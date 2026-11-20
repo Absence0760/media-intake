@@ -111,8 +111,8 @@ media-intake pets tag
 Expect one pet to start as several clusters: a body changes with pose far
 more than a face does, so a dog lying down and the same dog running may not
 link. Merge them once; the merge is kept. Ignore strangers' dogs, toys,
-statues and pets on a TV. A kitten and the grown cat may need a merge too
-(preferring photos close in date when growing a name is not built yet).
+statues and pets on a TV. A kitten and the grown cat need fewer merges:
+names grow along the timeline (below).
 
 How it decides: YOLOX-s finds whole animals (from behind and the side too,
 where a face would be hidden), keeping the classes in
@@ -128,6 +128,25 @@ pet); `pets eval` measures them. A cat is never in a cluster with a dog, two
 animals in one photo (or one video frame) are never one pet, and two
 different names are never joined. Littermates or two black dogs may stay one
 cluster: name it "the dogs", ignore it, or tag by hand.
+
+**Names grow along the timeline.** A kitten and the grown cat may never
+link: each month looks like the next, but the first looks nothing like the
+last. So after clustering, `cluster` compares each cluster that holds no name
+with each pet you named where the two meet in time: the cluster's
+`recognition.pet_date_neighbours` (default 5) photos nearest in date to that
+pet's, against that pet's photos nearest in date to the cluster's, by
+average cosine. When that passes 0.75 (the merge threshold) for exactly one
+name, the whole cluster gets the name as a **suggestion** (never a tag until
+you confirm it), and it counts as that pet's for the next cluster along, so
+the name spreads month by month (`recog.date_suggest`). A cluster in a photo
+with that pet, a pet you took out of a name, a name you rejected for a pet,
+an ignored cluster and two names that both pass never get one. The date is
+the one the path carries, so no file is opened: a day in the file or folder
+name (`IMG_20261108_…`, `2026-11-08 trip/`), else the library's
+`YYYY/YYYY-MM` folder (the 15th); a pet without one is left to plain
+clustering. `cluster` prints how many suggestions came this way
+(`suggestions by date`); `pets eval` reports what it would save (below);
+`pet_date_neighbours = 0` turns it off. Faces don't use it.
 
 Videos are scanned through a few sampled frames each (Videos, below). A
 video gets `Pets|<Name>` only when that pet
@@ -181,7 +200,13 @@ poses. If SigLIP scores as well and mixes nothing, DINOv2 is not earning its
 download; if DINOv2 mixes two of your pets at every usable threshold, the
 stock model is not enough ([research-pets.md](research-pets.md), Evaluation
 plan). At most 300 pets per name are scored (evenly spread), so it stays
-quick on a large library.
+quick on a large library. For DINOv2 it also prints `date_aware`, what
+names growing along the timeline would add: with each pet's largest cluster
+named as you would, how many of its other clusters get its name
+(`merges_saved`), how many clusters get a wrong one (`wrong_suggestions`),
+the merges still needed (`merges_left`), and how many labelled pets carry a
+date in their path (`dated`). If `wrong_suggestions` is not 0, set
+`recognition.pet_date_neighbours = 0`.
 
 ## Your data: where it is and what removes it
 
@@ -217,8 +242,9 @@ life. They stay on this laptop.
 docstring documents the plug-in interface: a detector
 (`detect(image) -> [(box, score, species[, crop])]`), an embedder
 (`embed(crop) -> vector`), a `recog.Kind` naming the command, tag prefix,
-thresholds and models (optionally `min_frames` for videos and `eval_labels`,
-eval's truth), and frame sources for videos
+thresholds and models (optionally `min_frames` for videos, `eval_labels`,
+eval's truth, and `date_k`, names growing along the timeline; 0, off, unless
+set), and frame sources for videos
 (`frames.sample(path) -> iterator of (t_seconds, RGB array)`). The gallery
 calls `clusters`, `suggestions`, `cluster_hints`, `confirm`, `reject`,
 `name_cluster`, `merge_clusters`, `name_cluster(..., recog.IGNORED)`,

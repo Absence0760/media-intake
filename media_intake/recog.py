@@ -20,7 +20,9 @@ Plug-in interface (what a kind module gives the core)
       uses Kind.model's vectors. models: [(what, path, sha256)] that must exist for the command to run.
       Optional: min_frames (a video is tagged with a name only when that individual is in at least this many
       of its frames; default 1), eval_labels ((c, spec) -> {detection id: name}, eval's truth; default
-      calibration_labels, the Calibrate|<command>|<Name> tags).
+      calibration_labels, the Calibrate|<command>|<Name> tags), date_k (date-aware propagation, date_suggest:
+      how many detections on each side are compared where an unnamed cluster and a name meet in time; 0, the
+      default, turns it off).
 
 Frames (videos): ingest() takes any iterable of (t_seconds, rgb) frames; a photo is the one frame
 (None, rgb). Videos are scanned only when a frame source exists: frames.sample(path) -> iterator of
@@ -40,7 +42,8 @@ Files are keyed by path + size + mtime; the same content (sha256) at another pat
 
 how (who decided a detection's name):
   NULL         no name
-  suggested    the tool: the detection's cluster carries exactly one owner name. A suggestion, never a
+  suggested    the tool: the detection's cluster carries exactly one owner name (or, with date_k, an
+               unnamed cluster looks like a name where the two meet in time: date_suggest). A suggestion, never a
                tag, until the owner confirms it (confirm) or rejects it (reject: never suggested that name
                again)
   cluster      the owner named (or ignored, or merged into) the cluster it was in
@@ -79,12 +82,13 @@ class Kind:
     """What one command (people, pets) plugs into the core. See the module docstring."""
 
     def __init__(self, kind, command, prefix, model, link, same, models, engine, noun, max_side=1600,
-                 min_frames=1, eval_labels=None):
+                 min_frames=1, eval_labels=None, date_k=0):
         self.kind, self.command, self.prefix, self.model = kind, command, prefix, model
         self.link, self.same, self.models, self.engine = link, same, models, engine
         self.noun, self.max_side = noun, max_side
         self.min_frames = max(1, int(min_frames))  # a video's tag needs the individual in this many frames
         self.eval_labels = eval_labels  # (c, spec) -> {detection id: name} for eval; default calibration_labels
+        self.date_k = max(0, int(date_k))  # date_suggest's k (0: off): names grow along the timeline
 
     def missing(self):
         """The model files not installed (path), for the refusal and doctor."""
@@ -704,6 +708,114 @@ def cluster_vectors(emb, labels, merges=(), photos=None, link=0.45, same=0.363, 
     return np.array([uf.find(i) for i in range(n)])
 
 
+def date_suggest(emb, days, labels, comp, photos, same, k=5, rejected=None, taken_out=(), rounds=100):
+    """Date-aware propagation: {index: name} for detections in clusters holding no owner label, each a
+    suggestion only. A name grows along the timeline, so a kitten and the grown cat need fewer merges.
+
+    emb: N x D unit vectors; days: capture day of each (a number, None when unknown); labels: owner label of
+    each (name, IGNORED or None); comp: cluster id of each (cluster_vectors); photos: frame key of each;
+    rejected: {index: names the owner rejected for it}; taken_out: indices the owner took out of a name (never
+    an anchor, never suggested). A name's anchors are the members of a cluster holding exactly that one owner
+    name (what recluster already suggests) but those that rejected it, plus each cluster this pass gives it.
+    An unnamed cluster C is compared with name N where the two meet in time: C's k dated members nearest in date
+    to N's anchors against N's k dated anchors nearest in date to C (mean cosine of those pairs). C gets N when
+    that score is >= same for N and for no other name, and no member shares a photo or frame with an anchor of
+    N; then C's members become anchors too, and the pass repeats until nothing changes, so the name spreads
+    cluster by cluster along the timeline. A member that rejected N is left out. k 0: off ({})."""
+    import numpy as np
+    out = {}
+    if not k or not len(emb):
+        return out
+    rejected = rejected or {}
+    groups = collections.defaultdict(list)
+    for i, g in enumerate(comp):
+        groups[int(g)].append(i)
+    anchors = collections.defaultdict(list)   # name -> indices
+    taken_out = set(taken_out)
+
+    def ok(i, name):
+        return i not in taken_out and name not in rejected.get(i, ())
+
+    todo = []                                 # clusters without an owner label
+    for g, idx in groups.items():
+        names = {labels[i] for i in idx if labels[i]}
+        if not names:
+            todo.append(g)
+        elif len(names) == 1 and IGNORED not in names:
+            name = names.pop()
+            anchors[name].extend(i for i in idx if ok(i, name))
+
+    def dated(idx):
+        return [i for i in idx if days[i] is not None]
+
+    def edge(idx, od):
+        """The (up to) k of idx nearest in date to any of the sorted days od."""
+        d = np.array([days[i] for i in idx], dtype=float)
+        p = np.clip(np.searchsorted(od, d), 1, len(od)) - 1
+        gap = np.minimum(np.abs(d - od[p]), np.abs(d - od[np.minimum(p + 1, len(od) - 1)]))
+        return [idx[t] for t in np.argsort(gap, kind="stable")[:k]]
+
+    def sorted_days(idx):
+        return np.sort(np.array([days[i] for i in idx], dtype=float))
+
+    for _ in range(rounds):
+        won, before = {}, len(todo)
+        names = []  # (name, dated anchors, their sorted days, every anchor's photo)
+        for name, idx in anchors.items():
+            a = dated(idx)
+            if a:
+                names.append((name, a, sorted_days(a), {photos[i] for i in idx}))
+        for g in todo:
+            members = [i for i in dated(groups[g]) if i not in taken_out]
+            if not members:
+                continue
+            pics, md = {photos[i] for i in groups[g]}, sorted_days(members)
+            passing = []
+            for name, a, ad, apics in names:
+                if not pics.isdisjoint(apics):
+                    continue
+                score = float((emb[edge(members, ad)] @ emb[edge(a, md)].T).mean())
+                if score >= same:
+                    passing.append((score, name))
+            if len(passing) == 1:
+                won[g] = passing[0][1]
+        taken = {name: apics for name, _, _, apics in names}
+        for g, name in sorted(won.items()):
+            pics = {photos[i] for i in groups[g]}
+            if not pics.isdisjoint(taken[name]):
+                continue  # two pets of one photo both won the name this round: only the first gets it
+            taken[name] |= pics
+            todo.remove(g)
+            for i in groups[g]:
+                if ok(i, name):
+                    anchors[name].append(i)
+                    out[i] = name
+        if len(todo) == before:
+            break
+    return out
+
+
+def path_day(p):
+    """The capture day a path carries (semantic.path_date: a day in the file or folder name, else intake's
+    YYYY/YYYY-MM folder, then the 15th), as a day number; None when neither. No file is opened."""
+    import semantic
+    s = semantic.path_date(p)
+    try:
+        return datetime.date.fromisoformat(s if len(s) == 10 else f"{s}-15").toordinal() if s else None
+    except ValueError:
+        return None
+
+
+def sha_days(c):
+    """{sha: earliest capture day of its paths} for the files in the store that carry one in their path."""
+    out = {}
+    for r in c.execute("SELECT path, sha FROM files WHERE sha IS NOT NULL"):
+        d = path_day(r["path"])
+        if d is not None and (r["sha"] not in out or d < out[r["sha"]]):
+            out[r["sha"]] = d
+    return out
+
+
 def load_vectors(c, kind, model):
     """(rows, N x D float32 array) of kind's detections that have model's vector, by id."""
     import numpy as np
@@ -729,7 +841,8 @@ def rejected(c, ids):
 def recluster(c, spec, link=None):
     """Re-run clustering for spec.kind (each species on its own), renumber clusters by size (1 = largest)
     and suggest names: a detection in a cluster holding exactly one owner name gets it as how=suggested,
-    unless the owner rejected that name for it. Owner decisions are never changed. Returns counts."""
+    unless the owner rejected that name for it; with spec.date_k, a cluster holding none may get one from
+    date_suggest (capture days from the paths, sha_days). Owner decisions are never changed. Returns counts."""
     import numpy as np
     link = spec.link if link is None else link
     rows, emb = load_vectors(c, spec.kind, spec.model)
@@ -749,11 +862,20 @@ def recluster(c, spec, link=None):
                                photos=[frame_key(rows[i]) for i in idx], link=link, same=spec.same)
         comp[idx] = part + base
         base += len(idx)
+    rej = rejected(c, set(ids))
+    by_date = {}
+    if spec.date_k and rows:
+        days = sha_days(c)
+        for sp, idx in by_species.items():  # one species at a time, as clustering
+            got = date_suggest(emb[idx], [days.get(rows[i]["sha"]) for i in idx], [labels[i] for i in idx],
+                               comp[idx], [frame_key(rows[i]) for i in idx], spec.same, k=spec.date_k,
+                               rejected={t: rej[ids[i]] for t, i in enumerate(idx) if ids[i] in rej},
+                               taken_out=[t for t, i in enumerate(idx) if rows[i]["how"] == "out"])
+            by_date.update((idx[t], name) for t, name in got.items())
     groups = collections.defaultdict(list)
     for i, g in enumerate(comp):
         groups[int(g)].append(i)
     order = sorted(groups.values(), key=lambda g: (-len(g), ids[g[0]]))
-    rej = rejected(c, set(ids))
     out = collections.Counter()
     for num, g in enumerate(order, 1):
         names = {labels[i] for i in g if labels[i]}
@@ -765,6 +887,9 @@ def recluster(c, spec, link=None):
                 pass  # the owner's: never changed by a tool
             elif name and name not in rej.get(ids[i], ()):
                 nm, how = name, "suggested"
+            elif i in by_date:
+                nm, how = by_date[i], "suggested"
+                out["suggestions by date"] += 1
             else:
                 nm, how = None, None
             c.execute("UPDATE detections SET cluster=?, name=?, how=? WHERE id=?", (num, nm, how, ids[i]))
@@ -1390,13 +1515,53 @@ def eer(pos, neg):
     return round(float((frr[b] + far[b]) / 2), 4), round(float(ths[b]), 4)
 
 
+def date_effect(comp, truth, days, photos, X, species, same, k):
+    """What date_suggest adds at eval: the owner names each individual's largest cluster (an individual whose
+    largest cluster is already another's is skipped), then each other cluster that propagation names counts
+    as a merge saved when every member is that individual, else as a wrong suggestion. merges_left: the
+    clusters per individual beyond the first that still need a merge. dated: labelled detections with a day."""
+    import numpy as np
+    comp = np.asarray(comp)
+    per = collections.defaultdict(collections.Counter)
+    for i, g in enumerate(comp):
+        per[truth[i]][int(g)] += 1
+    named = {}
+    for name in sorted(per):
+        g = max(per[name].items(), key=lambda kv: (kv[1], -kv[0]))[0]
+        named.setdefault(g, name)
+    labels = [named.get(int(g)) for g in comp]
+    got = {}
+    by_species = collections.defaultdict(list)
+    for i, sp in enumerate(species):
+        by_species[sp].append(i)
+    for idx in by_species.values():
+        part = date_suggest(X[idx], [days[i] for i in idx], [labels[i] for i in idx], comp[idx],
+                            [photos[i] for i in idx], same, k=k)
+        got.update((idx[t], name) for t, name in part.items())
+    clusters = collections.defaultdict(set)
+    for i, name in got.items():
+        clusters[int(comp[i])].add(name)
+    saved = wrong = 0
+    for g, names in clusters.items():
+        members = {truth[i] for i in np.nonzero(comp == g)[0]}
+        if members == names and len(names) == 1:
+            saved += 1
+        else:
+            wrong += 1
+    extra = sum(len(v) - 1 for v in per.values())
+    return dict(k=k, dated=sum(d is not None for d in days), merges_saved=saved, wrong_suggestions=wrong,
+                merges_left=max(0, extra - saved))
+
+
 def evaluate(c, spec, labels, models=None, link=None):
     """Per embedding model: pairs, ROC AUC and equal error rate over same / different pairs of labelled
     detections, median same-individual cosine, the closest different pair, leave-one-out nearest-neighbour
     accuracy, and at the link threshold how many clusters each individual splits into and how many clusters
-    mix two. Numbers only; nothing is changed or shown."""
+    mix two; for the clustering model with spec.date_k, what date-aware propagation would add (date_effect).
+    Numbers only; nothing is changed or shown."""
     import numpy as np
     link = spec.link if link is None else link
+    days = None
     models = models or [r[0] for r in c.execute("SELECT DISTINCT e.model FROM embeddings e JOIN detections d "
                                                 "ON d.id=e.det WHERE d.kind=? ORDER BY e.model", (spec.kind,))]
     out = {}
@@ -1453,6 +1618,11 @@ def evaluate(c, spec, labels, models=None, link=None):
             mixed[int(g)].add(y[i])
         res["clusters_per_individual"] = {k: len(v) for k, v in sorted(per.items())}
         res["mixed_clusters"] = sum(1 for v in mixed.values() if len(v) > 1)
+        if model == spec.model and spec.date_k:
+            days = sha_days(c) if days is None else days
+            res["date_aware"] = date_effect(comp, y, [days.get(rows[i]["sha"]) for i in keep],
+                                            [frame_key(rows[i]) for i in keep], X,
+                                            [rows[i]["species"] or "" for i in keep], same_at, spec.date_k)
         out[model] = res
     return out
 

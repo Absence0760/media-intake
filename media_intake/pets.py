@@ -41,6 +41,12 @@ wrong pet): on one public sample (two tabby cats side by side, COCO val2017 0000
 puts the two cats at cosine 0.72 and each cat against its own mirror image at 0.92, so both thresholds sit
 between. `pets eval` measures them on your pets.
 
+Date-aware propagation (recognition.pet_date_neighbours, default DATE_K; 0 turns it off): a kitten and the
+grown cat may never link, so after clustering a cluster holding no name is compared with each name where the
+two meet in time (the DATE_K detections on each side nearest in capture date, the day each path carries) and
+gets that name as a suggestion when the average cosine passes SAME for that name alone; the name then grows
+on from there (recog.date_suggest). `pets eval` reports what it would add (date_aware).
+
 Videos: a few sampled frames each (frames.sample, via recog.default_frames); a video gets Pets|<Name> only
 when that pet is in at least recognition.pet_min_frames of its sampled frames (default 3). Store, names,
 suggestions, tags and erase: recog.py.
@@ -77,6 +83,7 @@ DINO_RESIZE, DINO_CROP = 256, 224
 DINO_MEAN, DINO_STD = (0.485, 0.456, 0.406), (0.229, 0.224, 0.225)
 LINK = 0.80                   # stage-1 link (uncalibrated first guess, leaning to splitting)
 SAME = 0.75                   # stage-2 merge and "looks like" (uncalibrated first guess)
+DATE_K = 5                    # date-aware propagation: detections compared on each side (recog.date_suggest)
 
 
 def classes(cfg=None):
@@ -277,7 +284,8 @@ def spec(state=None, cfg=None):
     cfg = cfg or config.get()
     return recog.Kind(kind="pet", command="pets", prefix="Pets|", model=MODEL, link=LINK, same=SAME,
                       models=model_files(state), engine=engine, noun="pet", max_side=MAX_SIDE,
-                      min_frames=cfg.get("pet_min_frames", 3), eval_labels=truth_labels)
+                      min_frames=cfg.get("pet_min_frames", 3), eval_labels=truth_labels,
+                      date_k=cfg.get("pet_date_neighbours", DATE_K))
 
 
 def main(argv=None, prog="media-intake pets"):
