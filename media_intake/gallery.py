@@ -4272,7 +4272,7 @@ function monthName(k){const [y,m]=k.split("-");return new Date(+y,+m-1,1).toLoca
 function monthOnly(k){const [y,m]=k.split("-");return new Date(+y,+m-1,1).toLocaleString(undefined,{month:"long"})}
 function chipVal(k){const v=F[k];if(k==="kind")return v==="photo"?"Photos":"Videos";if(k==="ym")return v.length===4?v:monthName(v);if(k==="review")return REVIEW[v]||v;
  if(k==="ai")return v==="trash"?WORDS.score+" ≥ "+(+F.aimin||0).toFixed(2):AIV[v]||v;if(k==="used")return v==="used"?"in a post":(F.days?"not in "+F.days+" days":"never");
- if(k==="added")return "last "+v+" days";if(k==="myplace")return plName(v);if(k==="dates")return v==="all"?"all":WORDS.dates[v]||v;if(k==="who")return whoName(v);return v}
+ if(k==="added")return "last "+v+" days";if(k==="myplace")return plName(v);if(k==="dates")return v==="all"?"all":WORDS.dates[v]||v;if(k==="who")return whoName(v);if(k==="event")return evLabel(v);return v}
 // ---------------------------------------------------------------- sidebar: layout
 const mqPhone=matchMedia("(max-width:760px)");let railPref=LS.get("rail","0")==="1",drawer=false;
 function layout(){const ph=mqPhone.matches,col=ph?!drawer:railPref;document.body.classList.toggle("collapsed",col);document.body.classList.toggle("overlay",ph&&drawer);
@@ -4356,7 +4356,7 @@ function renderWhen(){const box=$("#when");box.replaceChildren();const ent=facet
  if(yrs.length>YRSHOW){const m=el("button","link yrmore",yrAll?"Fewer years":"All years ("+fmt(yrs.length)+")");m.type="button";m.setAttribute("aria-expanded",String(yrAll));
   m.onclick=()=>{yrAll=!yrAll;LS.set("whenall",yrAll?"1":"0");renderWhen();syncUI();const b=$("#when .yrmore");if(b)b.focus()};box.append(m)}}
 async function loadFacets(tries){facets=await api("/api/facets");const fc=facets.facets,c=facets.counts||{};
- ["project","source","place","event","label","mine"].forEach(k=>renderOpts(k,fc[k]||[]));
+ ["project","source","place","label","mine"].forEach(k=>renderOpts(k,fc[k]||[]));renderOpts("event",fc.event||[],evLabel);$$('.opts[data-k=event] .opt').forEach(b=>{if(evLabel(b.dataset.val)!==b.dataset.val)b.title+=" (event "+b.dataset.val+")"});
  renderOpts("review",Object.keys(REVIEW).map(v=>[v,c["review:"+v]||0]),v=>REVIEW[v]);
  renderOpts("ai",Object.keys(AIV).map(v=>[v,v==="trash"?judgedAt(F.aimin):c["ai:"+v]||0]),v=>AIV[v]);
  renderOpts("used",[["used",c["used:used"]||0],["unused",c["used:unused"]||0]],v=>v==="used"?WORDS.flag.used:"Not used");
@@ -4377,7 +4377,7 @@ function evLabel(n){const m=facets&&facets.event_names,x=m&&Object.hasOwn(m,n)?m
 // the tag field's suggestions: every tag of yours in the library (the My tags facet)
 function renderMyTags(){$("#mytags").replaceChildren(...((facets&&facets.facets.mine)||[]).map(([n])=>{const o=el("option");o.value=n;return o}))}
 function renderEvents(){const L=$("#evlist");L.replaceChildren();const ev=(facets&&facets.facets.event)||[];
- $("#evnames").replaceChildren(...ev.map(([n])=>{const o=el("option");o.value=n;return o}));
+ $("#evnames").replaceChildren(...ev.map(([n])=>{const o=el("option");o.value=n;if(evLabel(n)!==n)o.label=evLabel(n)+" ("+n+")";return o}));
  if(!ev.length){L.append(el("div","empty","No events yet"));return}
  const show=evAll?ev.slice():ev.slice(0,EVSHOW);if(F.event&&!show.some(([n])=>n===F.event)){const x=ev.find(([n])=>n===F.event);if(x)show.push(x)}
  show.forEach(([n,c])=>{const b=el("button","nv");b.type="button";b.dataset.ev=n;b.title="Event: "+n;b.insertAdjacentHTML("beforeend",'<svg class="ic"><use href="#i-cal"/></svg>');b.append(el("span","lbl",evLabel(n)),el("span","ct",fmt(c)));
@@ -4401,9 +4401,9 @@ function askField(title,lines,label,value,go,list){confirmBox(title,lines,false,
 async function afterEvent(j,ev){closeModal();toast(j.result,j.undo);if(ev!==undefined){if(ev)F.event=ev;else delete F.event}await loadFacets();reset()}
 $("#evlabel").onclick=()=>{const ev=F.event,m=facets&&facets.event_names,x=m&&Object.hasOwn(m,ev)?m[ev]:null;askField("Display name for the event "+ev+"?",["The sidebar and the title show this name instead of "+ev+". The sidecars keep "+ev+": your files and tags don't change.","Leave it empty for the default. A name that looks like another event's (the same but for case or spacing) is refused."],"Display name",x?x.name:"",
  async()=>{const j=await api("/api/event/name",{event:ev,name:$("#mfield").value});closeModal();toast(j.result);await loadFacets()},null)};
-$("#evren").onclick=()=>{const old=F.event;askField("Rename the event "+old+"?",["Every photo and video in "+old+" moves to the new name. Only the event changes: the files and your other tags stay as they are.","Use lowercase letters, digits and dashes, like summer-2026. To join an event that already exists, use Merge."],"New name",old,
+$("#evren").onclick=()=>{const old=F.event,lb=evLabel(old),was=lb===old?old:lb+" ("+old+")";askField("Rename the event "+lb+"?",["Every photo and video in "+was+" moves to the new name. Only the event changes: the files and your other tags stay as they are.","Use lowercase letters, digits and dashes, like summer-2026. To join an event that already exists, use Merge."],"New name",old,
  async()=>afterEvent(await api("/api/event/rename",{from:old,to:$("#mfield").value.trim()}),$("#mfield").value.trim()))};
-$("#evmerge").onclick=()=>{const src=F.event;askField("Merge "+src+" into another event?",["Every photo and video in "+src+" moves to the event you name, and "+src+" is gone afterwards. The files and your other tags don't change."],"Merge into (an event that exists)","",
+$("#evmerge").onclick=()=>{const src=F.event,lb=evLabel(src);askField("Merge "+lb+" into another event?",["Every photo and video in "+(lb===src?src:lb+" ("+src+")")+" moves to the event you name, and "+lb+" is gone afterwards. The files and your other tags don't change."],"Merge into (an event that exists)","",
  async()=>afterEvent(await api("/api/event/merge",{from:[src],into:$("#mfield").value.trim()}),$("#mfield").value.trim()))};
 // ---------------------------------------------------------------- people and pets (recog.py): the sidebar section, the naming view
 // Off without a recognition store (/api/facets rec: null). Only names you gave or confirmed are tags; the sidebar lists
@@ -5124,7 +5124,7 @@ async function openViewer(n,opt){opt=opt||{};if(n<0||n>=items.length)return;if(v
  if(d.gps)mk(tools,"Add a place here…",()=>askPlace(d,n)).title="Name the spot where this was taken (Home, …)";
  mk(tools,"Find similar",()=>{simId=d.id;simName=d.name;closeViewer();$("#q").value="";syncUI();reset()}).title="Photos that look like this one";s.append(tools);
  const dl=el("dl","dt"),row=(k,v)=>{if(v){dl.append(el("dt",null,k),el("dd",null,v))}};
- row("Date",d.date);row("Place",d.place);row(WORDS.filter.myplace,(d.myplaces||[]).join(", "));row("Event",d.event);row("Project",d.project);row("Source",d.source);row("Folder",d.folder);row("Resolution",d.res);row("Size",d.size);
+ row("Date",d.date);row("Place",d.place);row(WORDS.filter.myplace,(d.myplaces||[]).join(", "));row("Event",d.event&&evLabel(d.event));row("Project",d.project);row("Source",d.source);row("Folder",d.folder);row("Resolution",d.res);row("Size",d.size);
  if(d.ai!=null)row(WORDS.score,d.ai.toFixed(2));if(d.used.length)row("Used in",d.used.join(", "));if(d.kept)row("Your decision","Marked Keep");
  const det=el("div");det.append(el("p","sh","Details"),dl);s.append(det);
  // "probably here": this has no location, but a shot from the same camera close in time was in one of your places
