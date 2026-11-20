@@ -238,7 +238,8 @@ class GalleryDialogsBrowserTest(B.BrowserCase):
         page.keyboard.press("Escape")
         # it ends while hidden: announced in the message (role=status), the pill gone
         B.open_gate(gate)
-        B.expect(page.locator("#toast")).to_have_text("Done: 1 file trashed.")
+        B.expect(page.locator("#toast > span")).to_have_text("Done: 1 file trashed.")
+        B.expect(page.locator("#toast").get_by_role("button", name="Details")).to_be_visible()
         B.expect(pill).to_be_hidden()
         B.expect(dlg).to_have_attribute("data-job", "done")
         B.expect(dlg).to_be_hidden()
@@ -399,9 +400,9 @@ class GalleryDialogsBrowserTest(B.BrowserCase):
         B.expect(dlg.get_by_role("heading")).to_have_text("Trash 1 item?")
         dlg.get_by_role("button", name="Trash 1 file").click()
         B.expect(dlg).to_have_attribute("data-job", "done")
+        B.expect(dlg).to_be_hidden()  # a Trash that went well ends in a message, not the dialog
         self.assertFalse(os.path.exists(self.path["b.jpg"]))
         B.expect(undo).to_have_count(0)
-        dlg.get_by_role("button", name="Close", exact=True).click()
         # Erase: still ERASE typed
         self.box(page, "c.png").click()
         page.keyboard.press("e")

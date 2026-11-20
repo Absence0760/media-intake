@@ -260,6 +260,7 @@ class ProxyTest(ProxyBase):
         ids = self.ids(s)
         self.assertEqual(s.get(f"/api/item/{ids['IMG_0001.MOV']}")["conv"], "converting")  # the page says so
         self.assertIsNone(s.get(f"/api/item/{ids['clip.mp4']}")["conv"])
+        self.assertEqual([s.get(f"/api/item/{ids[n]}")["codec"] for n in ("IMG_0001.MOV", "clip.mp4")], ["hevc", "h264"])
         r, body = s.req("GET", f"/m/{ids['IMG_0001.MOV']}")
         self.assertEqual((r.status, r.getheader("Content-Type")), (200, "video/mp4"))
         self.body_is_a_playable_proxy(body)  # streamed while it was made, or the finished file: playable either way
@@ -316,6 +317,7 @@ class ProxyTest(ProxyBase):
         self.assert_no_partial()
         self.assertEqual(G.sha(hv), h)
         self.assertIsNone(s.get(f"/api/item/{i}")["conv"])  # not "converting" again: it failed
+        self.assertEqual(s.get(f"/api/item/{i}")["codec"], "hevc")  # so the page's "can't play" names HEVC
         # the item and its actions still answer: the page shows "can't play" with Open in the system player
         self.assertEqual(s.get(f"/api/item/{i}")["name"], "IMG_0002.MOV")
         code, j = s.post("/api/keep", {"ids": [i]})

@@ -829,6 +829,14 @@ class GalleryTest(unittest.TestCase):
         self.assertEqual((code, j), (200, {"got": {"a": 1}}))
         self.assertEqual(s.get("/plugin/toy/posts"), {"posts": 2})
 
+    # ------------------------------------------------------------ an unplayable video's codec
+    def test_item_gives_a_videos_codec(self):
+        """/api/item says the codec ffprobe read (the large view names HEVC only when it is), none for a photo."""
+        s = self.start()
+        ids = {i["n"]: i["id"] for i in s.get("/api/list?limit=50")["items"]}
+        self.assertIsNone(s.get(f"/api/item/{ids['a.jpg']}")["codec"])
+        self.assertEqual(s.get(f"/api/item/{ids['v.mp4']}")["codec"], "h264")
+
     # ------------------------------------------------------------ page layout and the sidebar's counts
     def test_page_layout_and_facet_counts(self):
         """Left sidebar (views, search, filters), bottom action bar, lightbox info pane; nothing external."""
@@ -1862,6 +1870,51 @@ class AddedFilterTest(unittest.TestCase):
         for it, f, want in ((old, {"added": "30"}, False), (new, {"added": "30"}, True), (old, {"added": "41"}, True),
                             (old, {"added": "0"}, True), (old, {"added": "x"}, True), (old, {}, True)):
             self.assertEqual(app.matches(it, f), want, (it["ctime"], f))
+
+
+class PageAfterTrashTest(unittest.TestCase):
+    """The page's own code (gallery.PAGE, no server): a Trash that went well drops its tiles in place (no reload)
+    and ends in a message with Details, not the Done dialog; tile labels are 12 px, short and never cut with an
+    ellipsis; a video the browser can't play is called HEVC only when /api/item says its codec is HEVC."""
+
+    def setUp(self):
+        import gallery
+        self.page = gallery.PAGE
+
+    def rule(self, sel):
+        r = self.page[self.page.index("\n" + sel) + 1:]
+        return r[:r.index("}")]
+
+    def test_trash_keeps_your_place(self):
+        p = self.page
+        self.assertIn("if(trashed)dropItems(job.gone||job.ids);else{closeViewer();reset()}", p)
+        self.assertIn("function dropItems(ids)", p)
+        self.assertIn("job.gone=keep.concat(trash)", p)  # Suggested junk's Apply drops every decided tile
+        self.assertIn("if(k>=0&&k<items.length)openViewer(k);else closeViewer()", p)  # the large view moves on
+
+    def test_after_trash_a_message_with_details(self):
+        p = self.page
+        self.assertIn("if(trashed&&jobInDialog())closeModal();", p)
+        self.assertIn("else if(trashed)detailsToast(job.status)", p)
+        self.assertIn('el("button",null,"Details");b.type="button";b.id="tdetails"', p)
+
+    def test_tile_labels_are_12px_short_and_whole(self):
+        for sel in (".tile .badge{", ".tile .x{", ".flag{"):
+            r = self.rule(sel)
+            self.assertIn("font-size:12px", r, sel)
+            self.assertNotIn("ellipsis", r, sel)
+        for sel in (".tile .x{", ".flag{"):
+            self.assertNotIn("nowrap", self.rule(sel), sel)  # a long one wraps
+        self.assertNotIn("text-overflow:ellipsis}\n/* a small tile", self.page)
+        self.assertIn('el("span","vh",it.bc?"Burst: ":"Burst: shot "),it.bc?`${it.bn} shots`:`${pos} of ${it.bn}`',
+                      self.page)
+
+    def test_an_unplayable_video_is_not_guessed_hevc(self):
+        p = self.page
+        self.assertNotIn("HEVC, most likely", p)
+        self.assertIn('d.codec==="hevc"?"This browser can\'t play HEVC video', p)
+        self.assertIn(':"This browser can\'t play this video."}', p)
+        self.assertIn(":noPlay(d))};", p)
 
 
 class PlainWordsTest(unittest.TestCase):

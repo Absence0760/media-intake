@@ -91,8 +91,9 @@ without one" (`/api/facets` gives `drive`, the mount or null).
   X button give way to a compact **×N** button on the cover (it opens and
   closes the stack, and is named "Burst: N shots, open stack" for screen
   readers) and an open stack's other shots show their badge as "×N"; on a
-  wider tile the full labels stay, shortening with an ellipsis rather than
-  covering the checkbox. At phone width the burst help above the grid is one
+  wider tile the labels stay. Tile labels (the badge, the stack button, the
+  flags) are 12 px and short, and never cut short: one that doesn't fit wraps
+  onto a second line, clear of the checkbox. At phone width the burst help above the grid is one
   line ("Burst stacks: tap ×N to open one." on a touch screen, "Bursts are
   stacked; X opens one." with a keyboard) with a **more** link for the whole
   text (open / closed remembered per browser).
@@ -128,7 +129,9 @@ without one" (`/api/facets` gives `drive`, the mount or null).
   made on first open, starting within seconds while it is converted
   ("Video proxies" below; `media-intake proxies` makes them ahead of time). When the browser still can't
   decode it (no proxy could be made, or another codec), the thumbnail shows
-  large with **Open in the system player**, which
+  large with "This browser can't play this video." (it names HEVC only when
+  ffprobe read the video as HEVC: `/api/item` gives the codec) and
+  **Open in the system player**, which
   runs `xdg-open` on that one file (below; `xdg-open` comes from Fedora's
   `xdg-utils`, which `media-intake doctor` lists as optional).
   At phone width the photo takes most of the screen with the info pane
@@ -347,10 +350,10 @@ else the file time. Project and source fall back to where the file sits
 
 Shots of one burst (one camera, a moment apart) show as one stack, the same
 look and keys as the review page ([review-ui.md](review-ui.md)): the cover
-(the burst's first shot) with a stacked edge, a count badge ("Burst: 4
-shots") and a **Show all 4 (X)** button. **X** or `x` on a focused shot, or
+(the burst's first shot) with a stacked edge, a count badge ("4 shots", read
+out as "Burst: 4 shots") and a **Show all 4 (X)** button. **X** or `x` on a focused shot, or
 the button, opens the stack (every shot follows the cover, each with a badge
-giving its place, "Burst: shot 2 of 3", and the shots sharing a coloured ring)
+giving its place, "2 of 3", read out as "Burst: shot 2 of 3", and the shots sharing a coloured ring)
 or closes it, and focus goes back to the cover either way. A line
 above the grid says what a stack is and how actions behave. At phone width
 the cover shows a compact **×N** button instead ("Close" while the stack is
@@ -806,9 +809,20 @@ one that has started:
   "Trash running… Show" button brings it back. When it ends the title says
   "Done" or "Finished with problems", the status line (`role=status`, read
   out) says how it ended ("Done: 2 files trashed.", "Done: 1 file erased
-  everywhere."), and the button becomes **Close**. If the dialog was hidden,
-  the end shows as a message instead ("Done: 2 files trashed."), or an alert
-  with **Details** when it finished with problems or crashed. A page opened (or
+  everywhere."), and the button becomes **Close**. A Trash that went well
+  closes its dialog by itself: the end shows as a message ("Done: 2 files
+  trashed.") with **Details**, which opens the dialog again on the job's
+  output. If the dialog was hidden, an Erase or Share ends in that message
+  too (without Details), and any job ends in an alert with **Details** when it
+  finished with problems or crashed.
+- After a Trash that went well the trashed tiles leave the grid where they
+  are, with no reload: the grid keeps its place (the first tile in view stays
+  where it was on screen), and a burst that lost its cover takes the next shot
+  as its cover. In the large view on a trashed item, it moves on to the next
+  item (the one before at the end of the list; it closes when nothing is
+  left). In Suggested junk, an Apply that trashed files drops every decided
+  tile (kept and trashed) the same way. An Erase, a Share or a Trash with
+  problems reloads the list as before. A page opened (or
   reloaded) while one runs, from this server or a restarted one, opens the
   dialog on the running job; the files it acts on stay hidden from thumbnails
   and media until it ends.
@@ -1253,7 +1267,9 @@ deleted since the scan. `tests/browser/test_browser_gallery_media_kinds.py`
 does it on the page: a mixed selection by Space, a shift-click range and
 Ctrl-click, Keep by K and by the bar (sidecars and the tiles' "Kept" flags),
 a shift-click after the grid reloads, + tag / − tag, Set event, Rotate (the
-thumbnails made again turned) and Trash on a mixed selection, and the large
+thumbnails made again turned) and Trash on a mixed selection (a message with
+Details, not the Done dialog), Trash in the large view (it moves on to the
+next item and the tile leaves the grid with no reload of the list), and the large
 view playing an .mp4 and a .MOV and rotating a video, and a HEIC without
 pillow-heif showing its thumbnail as "a small preview" and why (never "can't
 show" over it), or "No preview" when it has no thumbnail.

@@ -3170,8 +3170,11 @@ class Handler(R.Handler):
                     t.startswith(WHO_PREFIXES) for t in it["tags"]) else []
             except OSError:
                 appear = []
+            # the video's codec as ffprobe read it (proxy_state caches it on the item), so the page names HEVC
+            # only when it is HEVC
+            codec = it.get("vcodec") if it["media"] == "video" else None
             with app.lock:
-                self.json(200, dict(app.detail(i, appear), conv=conv))
+                self.json(200, dict(app.detail(i, appear), conv=conv, codec=codec))
         elif m := re.fullmatch(r"/([tmp])/([0-9]{1,9})", path):
             i = int(m.group(2))
             if not app.servable(i):
@@ -3695,10 +3698,11 @@ body.marqing,body.marqing *{user-select:none;-webkit-user-select:none}
 .tile.stack{box-shadow:4px 4px 0 -1px var(--bg),4px 4px 0 0 var(--mut),8px 8px 0 -1px var(--bg),8px 8px 0 0 var(--mut)}
 .tile.stack.cur{box-shadow:inset 0 0 0 3px var(--fg),4px 4px 0 -1px var(--bg),4px 4px 0 0 var(--mut),8px 8px 0 -1px var(--bg),8px 8px 0 0 var(--mut)}
 .tile.inb{box-shadow:0 0 0 2px var(--acc)}  /* the shots of an open stack: one ring colour, one group */
-.tile .badge{position:absolute;right:6px;top:6px;z-index:2;background:var(--acc);color:var(--on-acc);font-size:11px;font-weight:700;border-radius:999px;padding:1px 8px;white-space:nowrap}
-.tile .x{position:absolute;right:6px;top:28px;z-index:2;font-size:11px;padding:2px 8px;border-radius:6px;border:1px solid var(--line);background:var(--panel);color:var(--fg);cursor:pointer;white-space:nowrap}
-/* on a small tile they shorten (ellipsis) rather than run over the checkbox or out of the tile */
-.tile .badge,.tile .x{max-width:calc(100% - 40px);overflow:hidden;text-overflow:ellipsis}
+/* tile labels: 12 px, short ("3 shots", "2 of 3": "Burst" is read out, not shown), never cut short: a label that
+   doesn't fit wraps, clear of the checkbox */
+.tile .badge{position:absolute;right:6px;top:6px;z-index:2;background:var(--acc);color:var(--on-acc);font-size:12px;font-weight:700;border-radius:999px;padding:1px 8px;white-space:nowrap}
+.tile .x{position:absolute;right:6px;top:30px;z-index:2;font-size:12px;padding:2px 8px;border-radius:6px;border:1px solid var(--line);background:var(--panel);color:var(--fg);cursor:pointer;text-align:right}
+.tile .badge,.tile .x{max-width:calc(100% - 40px)}
 /* a small tile (phone) shows a compact "×N" instead: on the cover a button that opens / closes the stack,
    on an open stack's other shots the badge drawn as "×N" (its full text stays for screen readers) */
 .tile{container:tile/inline-size}
@@ -3718,7 +3722,7 @@ body.marqing,body.marqing *{user-select:none;-webkit-user-select:none}
 .tile:has(.star) .flag{max-width:calc(100% - 88px)}  /* clear of the corner group: the star, then Share */
 @media (hover:hover){.tile .tshare{opacity:0;transition:opacity .1s}.tile:hover .tshare,.tile:focus-within .tshare{opacity:1}}
 @media (forced-colors:active){.tile .tshare{border:1px solid ButtonText}}
-.flag{position:absolute;left:6px;bottom:6px;width:max-content;max-width:calc(100% - 12px);background:rgba(0,0,0,.62);color:#fff;font-size:11px;border-radius:4px;padding:1px 6px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.flag{position:absolute;left:6px;bottom:6px;width:max-content;max-width:calc(100% - 12px);background:rgba(0,0,0,.62);color:#fff;font-size:12px;line-height:1.3;border-radius:4px;padding:1px 6px;overflow-wrap:anywhere}
 #sentinel{height:40px}
 /* bottom action bar: only while something is selected (or the Trash suggestions view's Apply) */
 /* sticky, last in #app: it floats over the grid while scrolling, but takes its own room at the end, so no tile
@@ -4541,14 +4545,17 @@ async function more(){if(loading||done||failed||plugView())return;loading=true;c
   if(g!==gen)stale=true;else{total=j.total;ranked=j.ranked;const start=items.length;items=items.concat(j.items);done=items.length>=total;
    if(!start)$("#list").replaceChildren();render(start);$("#main").removeAttribute("aria-busy");
    const n=plainNote(j.note);setNote(view==="sug"?SUGNOTE+(n?" "+n:""):n);if(!start&&j.junk)renderJunk(j.junk);
-   $("#count").textContent=view==="sug"&&j.junk&&j.junk.unfiltered!==total?fmt(j.junk.unfiltered)+" suggested, "+fmt(total)+" shown with your filters"
-    :fmt(total)+(total===1?" item":" items")+(view==="sug"?" suggested":"");
+   junkSeen=j.junk||null;paintCount();
    if(!items.length){if(simId!==null)setNote("");emptyState(n)}
    if(!start&&sugFocus&&view==="sug"&&items.length){sugFocus=false;const a=document.activeElement;if(!a||a===document.body||a.closest(".nv"))$("#t"+items[0].id).focus({preventScroll:true})}
    document.body.dataset.ready="1"}}
  catch(e){if(g===gen){failed=true;loadError(e)}}finally{loading=false}
  if(stale){more();return}
  if(!done&&$("#sentinel").getBoundingClientRect().top<innerHeight+600)more()}
+// the count over the grid (Suggested junk: how many are suggested in all, when the filters show fewer)
+let junkSeen=null;
+function paintCount(){const jk=view==="sug"?junkSeen:null;$("#count").textContent=jk&&jk.unfiltered!==total?fmt(jk.unfiltered)+" suggested, "+fmt(total)+" shown with your filters"
+ :fmt(total)+(total===1?" item":" items")+(view==="sug"?" suggested":"")}
 function groupKey(it){if(F.dates&&it.dq&&view==="lib")return it.dq;return ranked?(view==="sug"?"Most likely junk first":"Best matches first"):it.mo}
 function render(start){const L=$("#list");let sec=L.lastElementChild,g=sec&&sec.querySelector(".grid"),gk=sec?sec.dataset.k:null;
  for(let n=start;n<items.length;n++){const it=items[n],k=groupKey(it);
@@ -4575,7 +4582,7 @@ function tile(it,n){const t=el("div","tile"),sug=view==="sug";t.id="t"+it.id;t.d
  if(it.m==="video")t.append(el("span","play","▶"));
  if(it.b!=null){t.dataset.burst=it.b;if(openB[it.b])t.classList.add("inb");
   let pos=1;for(let i=n-1;i>=0&&items[i].b===it.b;i--)pos++;
-  const bd=el("span","badge",it.bc?`Burst: ${it.bn} shots`:`Burst: shot ${pos} of ${it.bn}`);bd.dataset.count=it.bn;if(!it.bc)bd.dataset.pos=pos;t.append(bd);
+  const bd=el("span","badge");bd.append(el("span","vh",it.bc?"Burst: ":"Burst: shot "),it.bc?`${it.bn} shots`:`${pos} of ${it.bn}`);bd.dataset.count=it.bn;if(!it.bc)bd.dataset.pos=pos;t.append(bd);
   if(it.bc){const bx=el("button","bx");bx.type="button";bx.tabIndex=-1;paintBx(bx,it);bx.onclick=ev=>{ev.stopPropagation();toggleStack(n)};bd.before(bx);
    const x=el("button","x",stackLabel(it));x.type="button";x.tabIndex=-1;x.onclick=ev=>{ev.stopPropagation();toggleStack(n)};t.append(x);if(!openB[it.b])t.classList.add("stack")}
   else t.hidden=hiddenAt(n)}
@@ -4719,7 +4726,7 @@ function placeToast(){const b=$("#actionbar");let y=24;if(vi<0&&!b.hidden){const
  $("#toast").style.bottom=y+"px"}
 new ResizeObserver(placeToast).observe($("#actionbar"));addEventListener("resize",placeToast);
 addEventListener("scroll",()=>{if(isOn("#toast"))placeToast()},{passive:true});
-function hideToast(){const t=$("#toast");if(t.matches(":hover,:focus-within")){tt=setTimeout(hideToast,1500);return}
+function hideToast(now){const t=$("#toast");if(now!==true&&t.matches(":hover,:focus-within")){tt=setTimeout(hideToast,1500);return}
  t.classList.remove("on");undoTok=null;const b=$("#tundo");if(b)b.remove()}
 // act: {label, fn}, a button before Dismiss (e.g. "Show progress" when a Trash, Erase or Share is running)
 function errorToast(s,act){const t=$("#etoast"),x=el("button",null,"Dismiss"),off=()=>{t.classList.remove("on");t.replaceChildren()};x.type="button";x.setAttribute("aria-label","Dismiss error");
@@ -4854,11 +4861,40 @@ async function poll(since){const me=job;let j;try{j=await api("/api/job?since="+
  if(job.kind==="share"&&j.dest){jobDest=j.dest;job.sid=j.id}  // a Share this server started: its folder, by job
  if(!j.done){job.state="running";job.head=jobWord(job.kind)+" running"+stepText(j);job.status=JOBRUN[job.kind]||"Working… you can close this page, it keeps running.";paintJob();setTimeout(()=>poll(j.next),600);return}
  job.state=j.state==="crashed"?"crashed":j.ok?"done":"failed";[job.head,job.status]=jobEnd(j);
- const seen=jobInDialog();paintJob();shareBits();job.ids.forEach(id=>sel.delete(id));closeViewer();loadFacets();reset();
+ // a Trash that went well ends in a message (its output behind Details), not the dialog, and its tiles go where they
+ // are: the grid keeps its place and the large view moves on (anything else, or a Trash with problems, reloads the list)
+ const trashed=job.kind==="trash"&&job.state==="done";if(trashed&&jobInDialog())closeModal();
+ const seen=jobInDialog();paintJob();shareBits();job.ids.forEach(id=>sel.delete(id));loadFacets();
+ if(trashed)dropItems(job.gone||job.ids);else{closeViewer();reset()}
  const auto=shareReady()&&job.auto;job.auto=false;
  // a Share this click started opens its folder now (the message then says so); one this page re-attached to offers it
- if(!seen&&!auto){if(job.state!=="done")errorToast(job.status,{label:"Details",fn:showJob});else if(shareReady())shareToast(job.status);else toast(job.status)}
+ if(!seen&&!auto){if(job.state!=="done")errorToast(job.status,{label:"Details",fn:showJob});else if(shareReady())shareToast(job.status);else if(trashed)detailsToast(job.status);else toast(job.status)}
  if(auto)openShare(true)}
+// the message for a Trash that went well: what happened, and Details (the job's dialog with its output); it stays 10 s
+function detailsToast(s){toast(s);const b=el("button",null,"Details");b.type="button";b.id="tdetails";b.title="Show what the Trash did";b.onclick=()=>{hideToast(true);showJob()};
+ $("#toast").append(b);clearTimeout(tt);tt=setTimeout(hideToast,10000)}
+/* Items gone (a Trash that went well): their tiles leave the grid where they are, with no reload, so the grid keeps
+   its place: the first tile still in view stays where it was on screen. A burst that lost its cover gets the next
+   shot as cover. The large view on one of them moves on to the next item left (the one before at the end; it closes
+   when none is left); on another item it stays there. */
+function dropItems(ids){const out=new Set(ids.map(String)),gone={has:id=>out.has(String(id))};if(!items.some(i=>gone.has(i.id)))return;
+ const top=parseFloat(getComputedStyle(document.documentElement).getPropertyValue("--hh"))||0;
+ let anchor=null;for(const t of document.querySelectorAll("#list .tile")){if(t.hidden||gone.has(t.id.slice(1)))continue;const r=t.getBoundingClientRect();if(r.height&&r.bottom>top){anchor=[t.id,r.top];break}}
+ const vid=vi>=0?items[vi].id:null,at=vi>=0?items.slice(0,vi).filter(i=>!gone.has(i.id)).length:-1,first=items.findIndex(i=>gone.has(i.id));
+ const left=items.filter(i=>!gone.has(i.id)),n=items.length-left.length;
+ // bursts: the count goes down by the shots gone; one left on its own is no burst any more
+ const lost={};items.forEach(i=>{if(gone.has(i.id)&&i.b!=null)lost[i.b]=(lost[i.b]||0)+1});
+ Object.keys(lost).forEach(b=>{const g=left.filter(i=>String(i.b)===b);if(!g.length)return;const bn=Math.max(g.length,g[0].bn-lost[b]);
+  g.forEach(i=>{i.bn=bn;if(bn<2){i.b=null;i.bc=false}});if(bn>=2&&!g.some(i=>i.bc))g[0].bc=true});
+ if(loading)gen++;  // a page on its way was asked for at the old offset: asked again
+ items=left;total=Math.max(0,total-n);if(junkSeen)junkSeen.unfiltered=Math.max(0,junkSeen.unfiltered-n);cur=-1;last=null;hov=-1;allSel=null;
+ $("#list").replaceChildren();render(0);paintCount();
+ if(anchor){const t=$("#"+anchor[0]);if(t)scrollBy(0,t.getBoundingClientRect().top-anchor[1])}
+ if(!items.length&&done)emptyState("");else if(!done)more();
+ if(vid!==null){if(!gone.has(vid)){const k=items.findIndex(i=>i.id===vid);if(k!==vi)openViewer(k,{keep:true})}
+  else{let k=at;if(k<items.length&&hiddenAt(k))k=stepVis(k,1);if(k>=items.length)k=stepVis(Math.min(at,items.length),-1);
+   if(k>=0&&k<items.length)openViewer(k);else closeViewer()}}
+ else if(vi<0&&!isOn("#modal")){const it=items[Math.min(first,items.length-1)],t=it&&$("#t"+it.id);if(t&&!t.hidden)t.focus({preventScroll:true})}}
 // a job this page didn't start (a reload, another tab, a restarted server): true when one is running and shown
 async function attachJob(){if(job&&job.state==="running"){showJob();return true}let j;try{j=await api("/api/job")}catch(e){return false}if(j.done)return false;
  job={kind:jobKind(j),ids:j.ids||[],log:"",state:"running",head:"",status:""};job.head=jobWord(job.kind)+" running";showJob();poll(0);return true}
@@ -4884,7 +4920,8 @@ $("#sugapply").onclick=()=>{const {keep,trash}=sugMarks();
  confirmBox(`Apply: ${nk} keep, ${nt} trash?`,[nk?`Keep ${plural(nk,"item")}: ${nk===1?"it":"they"} won't be suggested as junk again.`:"",...(nt?[thumbs(trash),names(trash),"Trash: "+trashText(nt)]:[])].filter(Boolean),false,
   async()=>{const j=await api("/api/decide",{keep,trash,confirm:true});keep.concat(trash).forEach(id=>delete dec[id]);
    // a file starred or kept since its mark is skipped by the server (j.trashed: what the job got)
-   const sent=j.trashed||[];if(sent.length){jobDest="";startJob("trash",sent,j.result+"\n")}else{closeModal();toast(j.result);loadFacets();reset()}},nt?"Apply and trash "+plural(nt,"file"):"Apply")};
+   // once it went well, every file decided leaves Suggested junk (kept or trashed) where it is
+   const sent=j.trashed||[];if(sent.length){jobDest="";startJob("trash",sent,j.result+"\n");job.gone=keep.concat(trash)}else{closeModal();toast(j.result);loadFacets();reset()}},nt?"Apply and trash "+plural(nt,"file"):"Apply")};
 // ---------------------------------------------------------------- large view
 function curVideo(){return $("#media video")}
 function stopVideo(){const v=curVideo();if(v){v.pause();v.removeAttribute("src");v.load()}}  // releases the file
@@ -4898,6 +4935,10 @@ function cantPlay(d,why,bare){stopVideo();const M=$("#media");M.replaceChildren(
  const c=el("div","cant");c.append(w);const o=el("button",null,"Open in the system player");o.type="button";
  o.onclick=async()=>{try{toast((await api("/api/open",{ids:[d.id]})).result)}catch(e){errorToast("Refused: "+e.message)}};c.append(o);
  box.append(im,c);M.append(box);const u=$("#unmute");if(u)u.remove();dropConv()}
+// why a video doesn't play: HEVC only when the server read that codec (no H.264 copy could be made of it), else
+// nothing is guessed
+function noPlay(d){return d.codec==="hevc"?"This browser can't play HEVC video, and no copy it can play could be made on this computer."
+ :"This browser can't play this video."}
 // an HEVC video's H.264 copy is being made: say so until it plays (it starts on the first seconds converted)
 function dropConv(){const c=$("#conv");if(c)c.remove()}
 function converting(v){if(v.readyState>=3||curVideo()!==v)return;dropConv();const c=el("div",null,"Converting this video for the browser. It starts in a few seconds.");c.id="conv";c.setAttribute("role","status");
@@ -4918,7 +4959,7 @@ async function openViewer(n,opt){opt=opt||{};if(n<0||n>=items.length)return;if(v
  if(vi!==n)return;
  const v=curVideo();
  if(d.video&&d.src&&v){v.dataset.rot=d.rot;fitMedia();
-  const bad=()=>{if(curVideo()===v)cantPlay(d,d.conv==="waiting"?"Another video is being converted for this browser. Open this one again once that one plays, or open it in the system player.":"This browser can't play this video (HEVC, most likely).")};
+  const bad=()=>{if(curVideo()===v)cantPlay(d,d.conv==="waiting"?"Another video is being converted for this browser. Open this one again once that one plays, or open it in the system player.":noPlay(d))};
   if(d.conv==="converting")converting(v);
   const nopic=()=>{if(curVideo()===v&&v.readyState>=1&&!v.videoWidth)bad()};
   v.addEventListener("error",bad);v.addEventListener("loadedmetadata",nopic);if(v.error)bad();else nopic()}
