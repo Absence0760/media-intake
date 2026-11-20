@@ -12,6 +12,8 @@ proxies.main in-process (a video trashed, erased or flagged mid-make; still_show
 runs App.playable in-process with make_proxy held on an event (who waits for which transcode). MakeProxyTest
 runs make_proxy with Python stand-ins for the commands (a stalled attempt, the deadline, the failure record);
 PlanTest runs proxies.plan with the App stood in for (a recorded failure skipped, or retried).
+ServerSignalTest sends SIGTERM / SIGINT to a real gallery.main converting with a hanging stand-in encoder;
+SweepProxyWorkTest and ScanMissedTest cover the start's work-folder sweep and the scan's missed folders.
 """
 import contextlib, glob, http.client, io, json, os, shutil, stat, subprocess, sys, tempfile, threading, time
 import unittest
@@ -703,7 +705,8 @@ class ProxiesRunTest(unittest.TestCase):
             os.makedirs(d)
         self.made = []
         for target, name, value in ((gallery, "STATE", self.state), (gallery, "private_cache", lambda: None),
-                                    (gallery, "scan_library", lambda: ([], 0))):
+                                    (gallery, "scan_library", lambda: ([], 0)),
+                                    (gallery, "sweep_proxy_work", lambda: 0)):
             p = mock.patch.object(target, name, value)
             p.start()
             self.addCleanup(p.stop)
@@ -1183,6 +1186,12 @@ class StubJob:
     def wrote(self):
         pass
 
+    def running(self, proc):
+        pass
+
+    def working(self, work):
+        pass
+
 
 class MakeProxyTest(unittest.TestCase):
     """gallery.make_proxy in-process with proxy_commands, the codec probe and the remux stood in for (small
@@ -1291,6 +1300,179 @@ class MakeProxyTest(unittest.TestCase):
             self.assertEqual(app.proxy_needed(it, failed=True), self.dst)
             self.assertEqual(app.playable(it), (self.src, "video/quicktime"))
             self.assertIsNone(app.proxy_state(it))
+
+
+# Runs gallery.main with an empty library and one stand-in conversion started once the App exists (argv: the
+# package folder, the clip, the file to write "<encoder pid> <work folder>" to, STAND_IN).
+SIGNAL_DRIVER = r"""
+import os, sys, threading, time
+sys.path.insert(0, sys.argv[1])
+import gallery
+src, ready, stand_in = sys.argv[2:5]
+gallery.proxy_commands = lambda s, work, size=None: [
+    [sys.executable, "-I", "-c", stand_in, os.path.join(work, "out.mp4"), os.devnull, "hang-silent"]]
+gallery.video_info = lambda p: {}
+it = dict(path=src, media="video", mime="video/quicktime", vcodec="hevc", sha="a" * 64, gone=False)
+
+
+class App(gallery.App):
+    def __init__(self, *a, **k):
+        super().__init__(*a, **k)
+        threading.Thread(target=self.go, daemon=True).start()
+
+    def go(self):
+        job, _ = self.playable(it)
+        while job.proc is None:
+            time.sleep(0.05)
+        with open(ready + ".tmp", "w") as f:
+            f.write(f"{job.proc.pid} {job.work}")
+        os.replace(ready + ".tmp", ready)
+
+
+gallery.App = App
+sys.exit(gallery.main(["--port", "0"]))
+"""
+
+
+def gone(pid):
+    try:
+        os.kill(pid, 0)
+    except ProcessLookupError:
+        return True
+    return False
+
+
+class ServerSignalTest(unittest.TestCase):
+    """SIGTERM or SIGINT to a gallery converting a video (a real gallery.main in a child process, a throwaway
+    HOME, a stand-in encoder that hangs) ends that encoder with it and leaves no work folder behind."""
+
+    def setUp(self):
+        self.home = tempfile.mkdtemp(prefix="gallery-signal-")
+        self.addCleanup(shutil.rmtree, self.home, True)
+        self.lib, self.state = os.path.join(self.home, "Pictures"), os.path.join(self.home, "state")
+        os.makedirs(self.lib)
+        self.src = os.path.join(self.home, "clip.MOV")
+        with open(self.src, "wb") as f:
+            f.write(b"an HEVC clip, as far as this test goes")
+        self.env = dict(os.environ, HOME=self.home, MEDIA_INTAKE_STATE=self.state, PHOTO_LIBRARY=self.lib,
+                        MEDIA_REVIEW_NO_VENV="1")
+        self.proxies = os.path.join(self.home, ".cache", "media-intake", "proxies")
+
+    def test_a_signal_ends_the_conversion_and_removes_its_work_folder(self):
+        import signal
+        for sig, code in ((signal.SIGTERM, 143), (signal.SIGINT, 130)):
+            with self.subTest(sig=sig.name):
+                ready = os.path.join(self.home, f"ready-{sig.name}")
+                p = subprocess.Popen([sys.executable, "-I", "-c", SIGNAL_DRIVER, support.PKG, self.src, ready,
+                                      STAND_IN], env=self.env, stdout=subprocess.DEVNULL, stderr=subprocess.PIPE)
+                self.addCleanup(lambda p=p: p.poll() is None and p.kill())
+                deadline = time.monotonic() + 60
+                while not os.path.exists(ready) and p.poll() is None and time.monotonic() < deadline:
+                    time.sleep(0.05)
+                self.assertTrue(os.path.exists(ready), p.stderr.read().decode() if p.poll() is not None else "")
+                with open(ready) as f:
+                    pid, work = f.read().split(" ", 1)
+                pid = int(pid)
+                self.addCleanup(lambda: gone(pid) or os.kill(pid, 9))
+                self.assertFalse(gone(pid))
+                self.assertTrue(os.path.isdir(work))
+                self.assertEqual(os.path.basename(work).split("-")[1], str(p.pid))  # .work-<owner pid>-
+                p.send_signal(sig)
+                self.assertEqual(p.wait(30), code)
+                p.stderr.close()
+                for _ in range(50):  # killed and reaped by the gallery; give the kernel a moment to drop it
+                    if gone(pid):
+                        break
+                    time.sleep(0.1)
+                self.assertTrue(gone(pid), "the encoder outlived the gallery")
+                self.assertEqual([n for n in os.listdir(self.proxies) if n.startswith(".work-")], [])
+
+
+class SweepProxyWorkTest(unittest.TestCase):
+    """sweep_proxy_work: the work folders a killed gallery or proxies run left go, with the encoder still running
+    in one; a live owner's folder, a young folder of an older version, and a process that only reuses a recorded
+    PID are left alone."""
+
+    def setUp(self):
+        import gallery
+        self.g = gallery
+        self.cache = tempfile.mkdtemp(prefix="gallery-sweep-")
+        self.addCleanup(shutil.rmtree, self.cache, True)
+
+    def proc(self, *args, session=True):
+        p = subprocess.Popen([sys.executable, "-I", "-c", "import time; time.sleep(120)", *args],
+                             start_new_session=session)
+        self.addCleanup(lambda: p.poll() is None and (p.kill(), p.wait()))
+        return p
+
+    def work(self, name, child=None):
+        w = os.path.join(self.cache, name)
+        os.makedirs(w, mode=0o700)
+        if child:
+            with open(os.path.join(w, "pid"), "w") as f:
+                f.write(str(child))
+        return w
+
+    def test_sweep(self):
+        dead = subprocess.Popen([sys.executable, "-I", "-c", "pass"])
+        dead.wait()
+        orphan_work = os.path.join(self.cache, f".work-{dead.pid}-orphan")
+        orphan = self.proc(os.path.join(orphan_work, "out.mp4"))  # a hung encoder of a killed gallery
+        self.work(os.path.basename(orphan_work), orphan.pid)
+        bystander = self.proc(session=False)  # its PID is recorded, but it isn't converting there
+        stale = self.work(f".work-{dead.pid}-stale", bystander.pid)
+        mine = self.work(f".work-{os.getpid()}-reused")  # a dead owner's PID that this process has now
+        live_owner = self.proc()
+        live = self.work(f".work-{live_owner.pid}-live")
+        young = self.work(".work-legacy1")
+        old = self.work(".work-legacy2")
+        past = time.time() - self.g.PROXY_WORK_LEGACY_AGE - 60
+        os.utime(old, (past, past))
+        keep = os.path.join(self.cache, "b" * 64 + ".mp4")
+        open(keep, "wb").close()
+        self.assertEqual(self.g.sweep_proxy_work(self.cache), 4)
+        self.assertEqual(orphan.wait(10), -9)  # killed
+        self.assertIsNone(bystander.poll())
+        for w in (orphan_work, stale, mine, old):
+            self.assertFalse(os.path.exists(w), w)
+        for w in (live, young, keep):
+            self.assertTrue(os.path.exists(w), w)
+        self.assertEqual(self.g.sweep_proxy_work(os.path.join(self.cache, "missing")), 0)
+
+
+class ScanMissedTest(unittest.TestCase):
+    """scan_library(missed) names what the walk could not see (an unreadable subfolder, a symlinked folder, a
+    broken symlink), so the start's event-name prune is skipped; a dot-folder is never part of the library."""
+
+    def test_missed(self):
+        import gallery
+        tmp = tempfile.mkdtemp(prefix="gallery-scan-missed-")
+        self.addCleanup(shutil.rmtree, tmp, True)
+        lib, state = os.path.join(tmp, "lib"), os.path.join(tmp, "state")
+        for d in ("2026/a", "2026/locked", ".hidden", "elsewhere"):
+            os.makedirs(os.path.join(lib if d != "elsewhere" else tmp, d))
+        os.makedirs(state)
+        os.symlink(os.path.join(tmp, "elsewhere"), os.path.join(lib, "2026", "linked"))
+        os.symlink(os.path.join(tmp, "no-such-drive"), os.path.join(lib, "broken"))
+        locked = os.path.join(lib, "2026", "locked")
+        os.chmod(locked, 0)
+        self.addCleanup(os.chmod, locked, 0o700)
+        with mock.patch.object(gallery, "ROOTS", [lib]), mock.patch.object(gallery, "STATE", state), \
+                mock.patch.object(gallery.intake, "records_handed", lambda: set()):
+            missed = []
+            items, skipped = gallery.scan_library(missed)
+            self.assertEqual((items, skipped), ([], 0))
+            want = {os.path.join(lib, "2026", "linked"), os.path.join(lib, "broken")}
+            if os.geteuid() != 0:  # root reads a 000 folder
+                want.add(locked)
+            self.assertEqual(set(missed), want)
+            os.chmod(locked, 0o700)
+            for x in ("broken", "2026/linked"):
+                os.remove(os.path.join(lib, x))
+            missed = []
+            gallery.scan_library(missed)
+            self.assertEqual(missed, [])
+            self.assertEqual(gallery.scan_library(), ([], 0))  # without the list: as before
 
 
 class PlanTest(unittest.TestCase):

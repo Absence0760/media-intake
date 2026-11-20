@@ -326,8 +326,13 @@ page's own handlers and fails when the list leaves one out.
   (Undo of a Set event) brings it back with its default name: set it again.
   An event emptied while no gallery ran (a CLI `erase` or `trash`) loses its
   name when the gallery next starts, but only when every library folder is
-  there and no file was left out as flagged (an unmounted drive's events
-  aren't gone); until then it would show the old name if made again.
+  there, no file was left out as flagged (an unmounted drive's events
+  aren't gone), and the scan saw every folder: a subfolder it could not
+  read, a symlinked subfolder or a broken symlink in the library keeps every
+  name (the start line says how many it could not read). Dot-folders are
+  never part of the library (the gallery never shows them), so an event
+  whose only files are in one counts as emptied. Until then it would show
+  the old name if made again.
 - **Places**: your own named places (My places), each with how many items
   carry it; a click shows them (the My place filter). The large view's
   **Add a place here…** (only on an item with GPS) names a new one at that
@@ -977,7 +982,8 @@ Only names the gallery writes are touched (`<sha256>.jpg`,
 `<sha256>-r<0|90|180|270>.jpg`, `<sha256>.mp4`, `<sha256>.failed`), and only
 regular files: a symlink under one of those names is never followed or
 removed (the summary counts it), and a folder in the cache path that is a symlink is not entered.
-Temporary files and the proxy work folders (`proxies/.work-*`) are left alone.
+Temporary files and the proxy work folders (`proxies/.work-*`) are left alone
+(the gallery and `media-intake proxies` sweep stale ones at start, below).
 Originals and sidecars are only read. Output is counts and sizes, never file
 names. The real run holds the library lock (docs/intake.md, "One writer at a
 time"); `--dry-run` writes nothing and doesn't. With the gallery open, a
@@ -1090,7 +1096,19 @@ and serves that instead; every other video is served as it is.
   transcode whose video goes into a Trash or Erase job stops (its process
   ends, its stream to the page ends, nothing of it is kept), and one finished
   just after its video was trashed or erased is deleted. Stopping the
-  gallery (the page's button) stops its transcode too.
+  gallery (the page's button, Ctrl-C, or SIGTERM from `kill` or systemd)
+  stops its transcode too: the encoder runs in a process group of its own,
+  which the gallery kills, and its work folder is removed before the gallery
+  exits (130 on Ctrl-C, 143 on SIGTERM). `media-intake proxies` does the
+  same on SIGTERM.
+- **Left-over work folders.** Each work folder is named
+  `.work-<pid>-<random>` after the gallery or `proxies` run that made it,
+  and holds the encoder's PID in `pid`. If that process was killed outright
+  (SIGKILL, a crash, a power cut), the next gallery or `proxies` start
+  removes the folder, first killing an encoder still converting there (its
+  PID is checked against its command line, which names the folder, never
+  matched by name). A folder whose owner still runs is left alone; one from
+  an older version (no PID in its name) goes once it is two hours old.
 - **When it fails** (every command failed or stalled, or an hour passed),
   the original is served as before and the page says the browser can't play
   it, with **Open in the system player**. The failure is recorded as
