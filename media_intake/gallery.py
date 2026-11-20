@@ -3883,7 +3883,14 @@ body.marqing,body.marqing *{user-select:none;-webkit-user-select:none}
 .fixlist{margin:4px 0 8px;padding-left:1.2em;max-height:9em;overflow:auto;overflow-wrap:anywhere}
 #seln,#sugn{font-weight:650;font-size:14px;margin-right:4px;white-space:nowrap}
 /* the selection bar is one row: Keep, Trash, Erase, More… (the rest, in a popup above it) and Clear */
-#selgrp{flex-wrap:nowrap;position:relative}#selgrp #seln{min-width:0;flex:0 1 auto;white-space:normal}
+/* the count goes on a line of its own first when the row has no room; the buttons stay one row down to 360 px */
+#selgrp{justify-content:center}#selgrp .sm{display:none}
+/* a narrow bar (a phone, or 800 px beside the sidebar): no key hints; narrower still, More… and Clear as ⋯ and ✕
+   (their names stay "More…" and "Clear selection") and tighter buttons, so the five stay one row at 360 px */
+#actionbar{container-type:inline-size}
+@container (max-width:560px){#actionbar kbd,#actionbar .sep{display:none}}
+@container (max-width:400px){#selgrp .lg{display:none}#selgrp .sm{display:inline}.selbtns{gap:4px}#actionbar .selbtns .btn{padding:0 6px}}
+.selbtns{display:flex;flex-wrap:wrap;gap:6px;align-items:center;justify-content:center;position:relative;max-width:100%}
 #selmore{position:absolute;bottom:calc(100% + 12px);right:0;z-index:13;display:flex;flex-direction:column;align-items:stretch;gap:4px;min-width:200px;padding:6px;background:var(--panel);border:1px solid var(--line);border-radius:10px;box-shadow:var(--shadow)}
 #selmore .btn{justify-content:flex-start;border-color:transparent}
 .sep{width:1px;height:22px;background:var(--line)}
@@ -4048,11 +4055,12 @@ dl.dt dd{margin:0;word-break:break-word}
  #chips,#evbar,#whobar,#junkbar{padding:10px 12px 0}#note,#helpb{padding:0 12px}
  main{padding:4px 12px 40px}
  .grid{gap:4px}
- #actionbar{margin:0 8px;bottom:8px;padding:8px;gap:6px}
+ #actionbar{margin:0 4px;bottom:8px;padding:8px 4px;gap:6px}
  #actionbar .btn{padding:0 9px}
  #actionbar kbd,#actionbar .sep{display:none}
  #seln{white-space:normal}
  #selmore{right:-8px}
+ .mthumbs img{width:96px;height:96px}
 }
 /* ---------------------------------------------------------------- touch targets: 44 px on a phone or a touch screen */
 @media (max-width:760px),(pointer:coarse){
@@ -4075,7 +4083,7 @@ dl.dt dd{margin:0;word-break:break-word}
  .link::after{content:"";position:absolute;inset:-11px -8px}
  .link{position:relative;z-index:3}  /* its hit area over the month heading below */
  #helpb{margin-top:12px}  /* room for "more"'s hit area under the header */
- #hgone{width:44px;height:44px;padding:0}
+ #hgone{position:relative;z-index:3;margin-left:16px}#hgone::after{content:"";position:absolute;inset:-13px -12px}  /* a 44 px tap that keeps the line one line */
  .tile .dec .btn{height:44px}
  .arrow{width:44px}
  /* Erase sits apart from Keep and Trash, so a slip of the thumb doesn't land on it */
@@ -4170,14 +4178,14 @@ dl.dt dd{margin:0;word-break:break-word}
  <main id="main" aria-busy="true"><div id="list"><div class="state" role="status"><p><span class="spin" aria-hidden="true"></span>Loading your library…</p></div></div><div id="sentinel"></div><div id="plugin" hidden></div></main>
  <div id="actionbar" hidden>
   <div class="grp" id="selgrp" role="toolbar" aria-label="Selection actions" hidden><span id="seln"></span>
-   <button type="button" class="btn keep" id="bkeep">Keep <kbd>K</kbd></button><button type="button" class="btn trash" id="btrash">Trash <kbd>T</kbd></button><button type="button" class="btn erase" id="berase">Erase <kbd>E</kbd></button>
+   <span class="selbtns"><button type="button" class="btn keep" id="bkeep">Keep <kbd>K</kbd></button><button type="button" class="btn trash" id="btrash">Trash <kbd>T</kbd></button><button type="button" class="btn erase" id="berase">Erase <kbd>E</kbd></button>
    <span class="sep"></span>
-   <button type="button" class="btn" id="bmore" aria-expanded="false" aria-controls="selmore">More…</button>
+   <button type="button" class="btn" id="bmore" aria-label="More…" aria-expanded="false" aria-controls="selmore"><span class="lg">More…</span><span class="sm" aria-hidden="true">⋯</span></button>
    <div id="selmore" role="group" aria-label="More actions" hidden>
     <button type="button" class="btn" id="bfav" title="Star the selection as favorites (F toggles)">★ Favorite <kbd>F</kbd></button><button type="button" class="btn" id="bunfav" title="Take the selection out of Favorites">☆ Unfavorite</button>
     <button type="button" class="btn" id="btag">+ tag</button><button type="button" class="btn" id="buntag">− tag</button><button type="button" class="btn" id="bevent">Set event…</button><button type="button" class="btn" id="bfixdate" hidden>Fix date…</button><button type="button" class="btn" id="brot">Rotate ⟳</button><button type="button" class="btn" id="bshare">Share</button>
    </div>
-   <button type="button" class="btn" id="bnone" aria-label="Clear selection (Esc)">Clear <kbd>Esc</kbd></button>
+   <button type="button" class="btn" id="bnone" aria-label="Clear selection (Esc)"><span class="lg">Clear</span><span class="sm" aria-hidden="true">✕</span> <kbd>Esc</kbd></button></span>
   </div>
   <div class="grp" id="suggrp" role="group" aria-label="Decisions" hidden><span id="sugn"></span><span class="note" style="margin:0">Mark Keep or Trash on each, then Apply<span class="kbonly"> (keys: K, T, arrows)</span></span><button type="button" class="btn" id="bmarkall" title="Mark every tile shown Trash (a tile marked Keep keeps its mark); nothing changes until Apply">Mark all shown as Trash</button><button type="button" class="btn" id="bclearm" title="Take every Keep and Trash mark off (asks first)">Clear marks</button><button type="button" class="btn primary" id="sugapply">Apply…</button></div>
  </div>

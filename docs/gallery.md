@@ -122,8 +122,11 @@ without one" (`/api/facets` gives `drive`, the mount or null).
   rows, the size slider, a chip's ×, the tile checkbox (a 22 px box in a 44 px
   hit area), the ×N button and text links (a larger hit area around them).
   The selection bar's **Erase** sits apart from Keep and Trash.
-- **Selection bar**: one row: the count, **Keep**, **Trash**, **Erase**,
-  **More…** and **Clear** (Esc). **More…** opens the other actions above the bar
+- **Selection bar**: **Keep**, **Trash**, **Erase**, **More…** and **Clear**
+  (Esc) on one row, down to a 360 px phone, with the count beside them or on a
+  line above when there is no room. A narrow bar drops the key hints, and a
+  phone's shows More… and Clear as ⋯ and ✕ (still named "More…" and "Clear
+  selection" for screen readers). **More…** opens the other actions above the bar
   (Favorite, Unfavorite, + tag, − tag, Set event…, Fix date… in Dates to check,
   Rotate, Share): Up / Down move through them, Esc closes it and gives focus
   back to More…, picking one or clicking elsewhere closes it. A Keep from the

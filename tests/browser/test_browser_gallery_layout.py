@@ -191,10 +191,16 @@ class GalleryLayoutBrowserTest(LayoutCase):
         seln, box = page.locator("#seln").bounding_box(), page.locator("#actionbar").bounding_box()
         self.assertLessEqual(seln["x"] + seln["width"], box["x"] + box["width"] + 1, f"{what}: the label runs out of the bar")
         self.assertGreaterEqual(seln["x"], box["x"] - 1, f"{what}: the label runs out of the bar")
+        # Keep, Trash, Erase, More… and Clear stay one row (the count may take a line above them)
+        tops = {round(page.locator(f"#{b}").bounding_box()["y"]) for b in ("bkeep", "btrash", "berase", "bmore", "bnone")}
+        self.assertEqual(len(tops), 1, f"{what}: the selection bar's buttons wrap")
         self.assert_last_row_above_bar(page, f"{what}, Select all")
 
     def test_phone_width(self):
         self.check_size(PHONE, "390 px phone", "bx")
+
+    def test_small_phone_width(self):
+        self.check_size(dict(PHONE, viewport={"width": 360, "height": 740}), "360 px phone", "bx")
 
     def test_just_above_the_phone_breakpoint(self):
         self.check_size(NARROW, "800 px", "x")

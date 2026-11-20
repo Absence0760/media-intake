@@ -191,6 +191,7 @@ class GalleryGridBrowserTest(B.BrowserCase):
         self.assert_target(self.tile(page, "lone.jpg").get_by_role("button", name="Share lone.jpg"), "a tile's Share")
         self.assert_target(self.tile(page, COVER).locator(".bx"), "the ×N button")
         self.assert_target(page.locator("#hmore"), "the burst help's more")
+        self.assert_target(page.locator("#hgone"), "the burst help's ×")
         # a tap beside the 22 px box, inside the hit area, still ticks it
         w = self.tile(page, "lone.jpg").locator(".ckw")
         box = w.bounding_box()

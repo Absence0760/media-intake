@@ -124,9 +124,9 @@ class GalleryMediaKindsBrowserTest(B.BrowserCase):
         for n in ("a.jpg", "v.mp4"):
             self.assertNotIn("Owner|keep", G.tags_of(self.path[n])[0], n)
             B.expect(self.tile(page, n).locator(".flag")).to_have_text("Tagged as junk")  # not kept yet
-        B.expect(bar).to_contain_text("2 selected")  # the selection stays for the next action
-        page.keyboard.press("Escape")
-        B.expect(bar).to_be_hidden()
+        B.expect(bar).to_be_hidden()  # a Keep that went through clears the selection
+        for n in ("b.png", "w.MOV"):
+            B.expect(self.box(page, n)).not_to_be_checked()
         # the whole grid by a shift-click range, a Ctrl-click on a tile takes one out and puts it back
         self.select_all_by_range(page)
         self.tile(page, "v.mp4").click(modifiers=["Control"])

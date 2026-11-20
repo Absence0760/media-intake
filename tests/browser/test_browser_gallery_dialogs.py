@@ -484,6 +484,7 @@ class GalleryDialogsBrowserTest(B.BrowserCase):
             page.keyboard.press("k")
         B.expect(page.locator("#toast")).to_contain_text("Kept 1. It won't be suggested as junk again.")
         scan("keep message")
+        self.box(page, "a.jpg").click()  # Keep cleared the selection: the same two again
         self.box(page, "b.jpg").click()
         for key, title in (("t", "Trash 2 files?"), ("e", "Erase 2 files everywhere?")):
             page.keyboard.press(key)
@@ -516,6 +517,9 @@ class GalleryDialogsBrowserTest(B.BrowserCase):
         with page.expect_response(lambda r: r.url.endswith("/api/keep")):
             self.bar(page).get_by_role("button", name="Keep").tap()
         B.expect(toast).to_have_class(re.compile(r"\bon\b"))
+        B.expect(bar).to_be_hidden()  # Keep cleared the selection; a new one brings the bar back under the message
+        self.box(page, "a.jpg").tap()
+        B.expect(bar).to_be_visible()
         t, b = toast.bounding_box(), bar.bounding_box()
         self.assertLessEqual(t["y"] + t["height"], b["y"], (t, b))  # the whole message above the bar's top
         B.expect(toast.get_by_role("button", name="Undo")).to_be_visible()
