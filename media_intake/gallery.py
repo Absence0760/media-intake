@@ -4877,7 +4877,10 @@ function detailsToast(s){toast(s);const b=el("button",null,"Details");b.type="bu
    its place: the first tile still in view stays where it was on screen. A burst that lost its cover gets the next
    shot as cover. The large view on one of them moves on to the next item left (the one before at the end; it closes
    when none is left); on another item it stays there. */
-function dropItems(ids){const out=new Set(ids.map(String)),gone={has:id=>out.has(String(id))};if(!items.some(i=>gone.has(i.id)))return;
+function dropItems(ids){const out=new Set(ids.map(String)),gone={has:id=>out.has(String(id))};
+ // none of them loaded here (a Trash from another page, or files beyond what was scrolled to): the count is unknown, so reload
+ if(!items.some(i=>gone.has(i.id))){closeViewer();reset();return}
+ [...sel].forEach(id=>{if(gone.has(id))sel.delete(id)});
  const top=parseFloat(getComputedStyle(document.documentElement).getPropertyValue("--hh"))||0;
  let anchor=null;for(const t of document.querySelectorAll("#list .tile")){if(t.hidden||gone.has(t.id.slice(1)))continue;const r=t.getBoundingClientRect();if(r.height&&r.bottom>top){anchor=[t.id,r.top];break}}
  const vid=vi>=0?items[vi].id:null,at=vi>=0?items.slice(0,vi).filter(i=>!gone.has(i.id)).length:-1,first=items.findIndex(i=>gone.has(i.id));
@@ -4920,7 +4923,8 @@ $("#sugapply").onclick=()=>{const {keep,trash}=sugMarks();
  confirmBox(`Apply: ${nk} keep, ${nt} trash?`,[nk?`Keep ${plural(nk,"item")}: ${nk===1?"it":"they"} won't be suggested as junk again.`:"",...(nt?[thumbs(trash),names(trash),"Trash: "+trashText(nt)]:[])].filter(Boolean),false,
   async()=>{const j=await api("/api/decide",{keep,trash,confirm:true});keep.concat(trash).forEach(id=>delete dec[id]);
    // a file starred or kept since its mark is skipped by the server (j.trashed: what the job got)
-   // once it went well, every file decided leaves Suggested junk (kept or trashed) where it is
+   // once it went well, every file decided leaves Suggested junk where it is: kept, trashed, or skipped by the
+   // server because it was starred or kept since its mark (never suggested again either way)
    const sent=j.trashed||[];if(sent.length){jobDest="";startJob("trash",sent,j.result+"\n");job.gone=keep.concat(trash)}else{closeModal();toast(j.result);loadFacets();reset()}},nt?"Apply and trash "+plural(nt,"file"):"Apply")};
 // ---------------------------------------------------------------- large view
 function curVideo(){return $("#media video")}

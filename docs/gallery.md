@@ -821,7 +821,8 @@ one that has started:
   as its cover. In the large view on a trashed item, it moves on to the next
   item (the one before at the end of the list; it closes when nothing is
   left). In Suggested junk, an Apply that trashed files drops every decided
-  tile (kept and trashed) the same way. An Erase, a Share or a Trash with
+  tile (kept and trashed) the same way. When none of the trashed items is
+  loaded on the page (a Trash from another tab), the list reloads. An Erase, a Share or a Trash with
   problems reloads the list as before. A page opened (or
   reloaded) while one runs, from this server or a restarted one, opens the
   dialog on the running job; the files it acts on stay hidden from thumbnails
