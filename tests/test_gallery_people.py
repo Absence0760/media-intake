@@ -323,7 +323,8 @@ class PeopleApiTest(unittest.TestCase):
         G.write_tags(w.ann[0], ["Trips|Spain"])  # the owner's own tag: never touched
         originals = {p: G.sha(p) for p in w.ann + w.like + [w.both]}
         s = self.start(w.env)
-        run, ann, like, bo = self.rec(s, kind="face")["run"], *(w.cluster_of(p) for p in (w.ann[0], w.like[0], w.bo[0]))
+        run = self.rec(s, kind="face")["run"]
+        ann, like, bo = (w.cluster_of(p) for p in (w.ann[0], w.like[0], w.bo[0]))
         for cl, name in ((ann, "Ann"), (like, "ann"), (bo, "Bo")):  # "ann": the existing spelling wins
             self.assertEqual(self.post(s, "name", dict(kind="face", run=run, cluster=cl, name=name))[0], 200)
         fc = s.get("/api/facets")["rec"]["kinds"][0]
