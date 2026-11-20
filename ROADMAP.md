@@ -188,9 +188,11 @@ The goal: someone else can install it on Fedora, import a phone, and trust it.
       photos").
 - [ ] The gallery's search box for the text in photos (`search --text --format machine`
       gives the same lines it parses today).
-- [ ] Local captions: a short description of each photo from the local vision model
+- [x] Local captions: a short description of each photo from the local vision model
       (Ollama, already used by `vlm-trash`), kept in the sidecar as the tool's own field and
-      searchable; off by default, resumable overnight like `vlm-trash --all`.
+      searchable; off by default, resumable overnight like `vlm-trash --all`
+      (`media-intake captions`, found by `search --text`; docs/search.md, "Local captions").
+- [ ] Captions for videos (a few sampled frames, as `vlm-trash` does); photos only today.
 - [x] Video near-duplicates (perceptual video hash) for re-encoded or trimmed copies
       (`videohash.py`; docs/intake.md, Duplicates).
 - [x] Text search quality: prompt ensembles for queries (`--no-ensemble` to compare) and

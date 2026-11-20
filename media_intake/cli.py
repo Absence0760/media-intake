@@ -43,6 +43,7 @@ Library
   index                     build or update the search index (venv)
   search "TEXT"             find photos by a description, --text by words (venv)
   similar FILE              find photos that look like this one (venv)
+  captions --all            describe photos for search --text (venv, opt-in)
   tag-files FILE...         write tags again for library files
   places list|add|tag|...   your own named places (Home, ...) as tags
   check-dates [PATHS]       find files whose date looks wrong; changes nothing
@@ -78,7 +79,7 @@ import config  # noqa: E402
 
 VENV_SCRIPTS = {"index": ("semantic.py", ["index"]), "search": ("semantic.py", ["search"]),
                 "similar": ("semantic.py", ["similar"]), "vlm-trash": ("vlm_trash.py", []),
-                "people": ("people.py", []), "pets": ("pets.py", [])}
+                "captions": ("captions.py", []), "people": ("people.py", []), "pets": ("pets.py", [])}
 # Recognition kinds (recog.py's core): module -> what doctor calls it. Optional: off until setup.sh --recognition.
 RECOGNITION = {"people": "people recognition", "pets": "pets recognition"}
 # Each thing doctor checks, with the Fedora package that provides it: the one source for the
@@ -359,7 +360,7 @@ def _check_ollama(probe, report):
     import label
     model, pinned = label.PINS["ollama"]["model"], label.PINS["ollama"]["digest"]
     if not probe.which("ollama"):
-        report("optional", "ollama not installed (only vlm-trash needs it; https://ollama.com/)")
+        report("optional", "ollama not installed (only vlm-trash and captions need it; https://ollama.com/)")
         return True
     version = (probe.output(["ollama", "--version"]).strip().splitlines() or ["ollama, version unknown"])[-1]
     report("ok", version)
@@ -376,7 +377,7 @@ def _check_ollama(probe, report):
             report("BAD", f"ollama {model} digest {_short(m.get('digest'))}, pinned {_short(pinned)} "
                           "(vlm-trash refuses it; see CONTRIBUTING.md, Pins)")
             return False
-    report("optional", f"ollama {model} not pulled (ollama pull {model}; only vlm-trash needs it)")
+    report("optional", f"ollama {model} not pulled (ollama pull {model}; only vlm-trash and captions need it)")
     return True
 
 
