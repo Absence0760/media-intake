@@ -294,6 +294,18 @@ class PeopleApiTest(unittest.TestCase):
         finally:
             os.close(fd)
         self.assertIn("People|Annie", hier(w.ann[0]))
+        # while a scan holds the store's write lock: 409 busy with plain words, nothing changes, no traceback
+        import sqlite3
+        g = sqlite3.connect(recog.db_path(), timeout=0)
+        try:
+            g.execute("BEGIN IMMEDIATE")
+            code, r = self.post(s, "unname", dict(kind="face", run=run, cluster=ann))
+            self.assertEqual((code, r.get("busy")), (409, True), r)
+            self.assertIn("scan is writing", r.get("error", "") + r.get("result", ""), r)
+        finally:
+            g.rollback()
+            g.close()
+        self.assertIn("People|Annie", hier(w.ann[0]))
         code, r = self.post(s, "unname", dict(kind="face", run=run, cluster=ann))
         self.assertEqual(code, 200, r)
         self.assertNotIn("undo", r)

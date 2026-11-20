@@ -235,6 +235,35 @@ class Store(Base):
         with self.assertRaises(config.ConfigError):
             config.load(cfg)
 
+    def test_a_long_video_leaves_the_store_free_for_the_naming_page(self):
+        """While a video is decoded and its frames detected, another connection (the gallery naming a pet)
+        can write at once: the scan writes a file's rows only after its slow part, and commits each file."""
+        self.world.scene(3, ("ann", None))
+        vid = write(os.path.join(self.vids, "2026/long.mp4"), os.urandom(256))
+        photo = self.photo("2026/2026-11/a.png", self.world.scene(1, ("bo", None)))
+        rgb = np.zeros((100, 200, 3), dtype=np.uint8)
+        rgb[0, 0, 0] = 3
+        wrote = []
+
+        def other_writer():
+            g = sqlite3.connect(recog.db_path(), timeout=0)  # no waiting: locked would raise at once
+            try:
+                g.execute("BEGIN IMMEDIATE")
+                g.execute("INSERT OR REPLACE INTO meta(k, v) VALUES ('probe', '1')")
+                g.commit()
+                wrote.append(True)
+            finally:
+                g.close()
+
+        def frames(p):
+            yield 0.0, rgb
+            other_writer()  # mid-video, after a frame was detected
+            yield 2.5, rgb
+        cnt = self.scan([photo, vid], frames=frames)
+        self.assertEqual(wrote, [True])
+        self.assertEqual((cnt["videos scanned"], cnt["photos scanned"]), (1, 1))
+        self.assertEqual(len(self.det_of(vid)), 2)
+
     def test_video_frames_and_one_frame_rule(self):
         self.world.scene(3, ("ann", None), ("ann2", None))
         vid = write(os.path.join(self.vids, "2026/clip.mp4"), os.urandom(256))

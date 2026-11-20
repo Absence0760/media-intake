@@ -143,14 +143,15 @@ CREATE TABLE IF NOT EXISTS meta(k TEXT PRIMARY KEY, v TEXT);
 """
 
 
-def connect(path=None, threads=False):
-    """The store (created 0700 / 0600 when missing). threads: one connection shared by a server's threads."""
+def connect(path=None, threads=False, timeout=30):
+    """The store (created 0700 / 0600 when missing). threads: one connection shared by a server's threads.
+    timeout: seconds to wait for another writer (a scan commits after every file, so waits are short)."""
     path = path or db_path()
     private_dir(os.path.dirname(path))
     if not os.path.exists(path):
         os.close(os.open(path, os.O_WRONLY | os.O_CREAT, 0o600))
     os.chmod(path, 0o600)
-    c = sqlite3.connect(path, check_same_thread=not threads, timeout=30)
+    c = sqlite3.connect(path, check_same_thread=not threads, timeout=timeout)
     c.row_factory = sqlite3.Row
     try:
         c.executescript(SCHEMA)
@@ -446,23 +447,24 @@ def unit(v):
 def ingest(c, kind, sha, source, detector, embedders):
     """Detect and embed every frame of source (iterable of (t, rgb); t None for a photo) as this content's
     detections of `kind`, replacing earlier ones. Returns (detections, (w, h) of the first frame or None)."""
-    delete_detections(c, "sha=? AND kind=?", (sha, kind))
-    n, size = 0, None
-    for t, rgb in source:
-        H, W = rgb.shape[:2]
+    found, size = [], None
+    for t, rgb in source:  # the slow part (decode, detect, embed) runs before any write: the store stays
+        H, W = rgb.shape[:2]  # free for the gallery's naming page while a long video is worked on
         size = size or (W, H)
         for d in detector.detect(rgb) or ():
             box, score, species = d[0], d[1], d[2]
             crop = d[3] if len(d) > 3 and d[3] is not None else square_crop(rgb, box)
             x, y, w, h = (float(v) for v in box)
-            cur = c.execute("INSERT INTO detections(sha, kind, species, t, x, y, w, h, score) VALUES (?,?,?,?,?,?,?,?,?)",
-                            (sha, kind, species, None if t is None else float(t), x / W, y / H, w / W, h / H,
-                             float(score)))
-            for model, emb in embedders.items():
-                c.execute("INSERT INTO embeddings(det, model, vec) VALUES (?,?,?)",
-                          (cur.lastrowid, model, unit(emb.embed(crop)).tobytes()))
-            n += 1
-    return n, size
+            vecs = [(model, unit(emb.embed(crop)).tobytes()) for model, emb in embedders.items()]
+            found.append(((sha, kind, species, None if t is None else float(t), x / W, y / H, w / W, h / H,
+                           float(score)), vecs))
+    delete_detections(c, "sha=? AND kind=?", (sha, kind))
+    for row, vecs in found:
+        cur = c.execute("INSERT INTO detections(sha, kind, species, t, x, y, w, h, score) VALUES (?,?,?,?,?,?,?,?,?)",
+                        row)
+        for model, vec in vecs:
+            c.execute("INSERT INTO embeddings(det, model, vec) VALUES (?,?,?)", (cur.lastrowid, model, vec))
+    return len(found), size
 
 
 def file_sha(path, size, index):
@@ -559,9 +561,9 @@ def scan(c, spec, paths, engine=None, frames="default", limit=None, log=print, s
         if old and old["sha"] and old["sha"] != sha and not c.execute(
                 "SELECT 1 FROM files WHERE sha=? LIMIT 1", (old["sha"],)).fetchone():
             forget_sha(c, old["sha"], d)  # the file's content changed: its old rows go
+        c.commit()  # each file's rows in one short write: the gallery's naming page never waits on a scan
         eta.done(is_vid, time.monotonic() - t_file if ran else None)  # a copy or skip isn't a timing
         if i % 50 == 0:
-            c.commit()
             log(f"  {i}/{len(todo)}  {eta.line()}")
     c.commit()
     if todo:

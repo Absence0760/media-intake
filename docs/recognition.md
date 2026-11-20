@@ -47,7 +47,10 @@ media-intake people tag               # write People|Ann into the sidecars (--dr
 files how long each kind takes and the time left. Photos and videos are timed
 apart (a video takes many times a photo's time, and the library's photos come
 first), from the last 50 of each; until the first video is done its time is a
-guess and the line says "rough".
+guess and the line says "rough". A scan writes each file's rows in one short
+step after that file's slow part (decoding, detecting), so you can name people
+and pets in the gallery while it runs; if a write still meets a busy store, the
+page says a scan is writing and to try again, and nothing is changed.
 
 Later, after new photos: `scan`, then `cluster`. Faces that join a cluster
 you named are suggested, not named:

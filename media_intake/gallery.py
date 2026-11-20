@@ -882,7 +882,8 @@ WORDS = {
             "pet": {"title": "Pets", "noun": "pet", "not": "Not a pet"},
             "section": "People & Pets", "entry": "Name new faces/pets",
             "off": "people and pets recognition is off (no recognition store): docs/recognition.md",
-            "stale": "The clusters changed since this page loaded (media-intake {command} cluster ran): reload "
+            "store_busy": "A people or pets scan is writing right now; try again in a moment (nothing was changed)",
+        "stale": "The clusters changed since this page loaded (media-intake {command} cluster ran): reload "
                      "the list and try again; nothing was changed"},
 }
 
@@ -1051,6 +1052,7 @@ WHO_PREFIXES = ("People|", "Pets|")  # the tags recog writes for a name you gave
 WHO_KIND = {"People|": "face", "Pets|": "pet"}
 REC_PAGE = 30          # clusters per page of the naming view (paged by cluster number, as social's page was)
 REC_CROPS = 24         # crops shown per cluster, largest first
+REC_WAIT = 8  # seconds a naming action waits for a scan's write before saying it is busy (409)
 REC_IDS_MAX = 5000     # detection ids one POST may name
 REC_PRUNE_EVERY = 60   # seconds between two prunes of the store (refused, trashed, gone files) by the naming view
 
@@ -1085,7 +1087,7 @@ class Rec:
         if self.c is None:
             try:
                 recog.check_location(d)
-                self.c = recog.connect(path, threads=True)
+                self.c = recog.connect(path, threads=True, timeout=REC_WAIT)
                 self.ino = ino
             except (ValueError, OSError, sqlite3.Error):
                 self.c = None
@@ -1117,6 +1119,16 @@ class Rec:
                                 noun=WORDS["rec"][kind]["noun"])
             self.specs[kind] = sp
         return self.specs[kind]
+
+    def rollback(self):
+        """Drop a half-done naming action after the store was locked (sqlite rolls nothing back on its own)."""
+        with self.lock:
+            c = self.conn()
+            if c is not None:
+                try:
+                    c.rollback()
+                except sqlite3.Error:
+                    pass  # nothing open to roll back
 
     def need(self, kind):
         """(Under self.lock.) The connection for a request about kind, or ValueError."""
@@ -2570,7 +2582,13 @@ class App:
         reply carries an Undo token when the core can put it back (name or ignore a cluster that had no name,
         take out)."""
         with self.writing("people and pets"):
-            msg, undo, changed = self.rec.act(self, what, body)
+            try:
+                msg, undo, changed = self.rec.act(self, what, body)
+            except sqlite3.OperationalError as e:
+                self.rec.rollback()
+                if "locked" in str(e) or "busy" in str(e):
+                    raise LockBusy(WORDS["rec"]["store_busy"]) from None
+                raise
             ids = self.reload_paths(changed)
             out = dict(result=msg, ids=ids)
             if undo:
