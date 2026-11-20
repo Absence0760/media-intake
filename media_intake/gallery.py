@@ -106,8 +106,9 @@ TAG_RE = re.compile(r"^[^\x00-\x1f\x7f]{1,64}$")
 DEG = {1: 0, 6: 90, 3: 180, 8: 270}
 ORIENT = {0: 1, 90: 6, 180: 3, 270: 8}
 SUGGEST_MIN = vlm_trash.TRASH_MIN  # Suggested junk's line for a vision-check verdict (suggest-trash's too); the view can go lower
-# Suggested junk's Why (?why=): a vision-check reason (vlm_trash.REASONS, or any other a model wrote), or these two
-WHY_LABEL, WHY_COPY = "label", "copy"
+# Suggested junk's Why (?why=): a vision-check reason (vlm_trash.REASONS, or any other a model wrote), or these three
+WHY_LABEL, WHY_COPY, WHY_BEST = "label", "copy", "not-best"
+BEST_COVER, NOT_BEST = "AI|bestshot/cover", "AI|bestshot/not-best"  # best_shot.py's tags (best_shot.COVER, NOT_BEST)
 OPENER = "xdg-open"  # the desktop's default app (found on PATH): media the browser can't decode, a Share's folder
 RECENT_DAYS = 30  # "Added in the last 30 days": filed into the library in the last N days (inode change time)
 UNDO_KEEP = 50  # the last N undoable actions (Keep, Favorite, my tags, Rotate, Set event) this server can still undo
@@ -219,6 +220,8 @@ def facts(it):
     ai, why = vlm_trash.junk_score(tags)
     it["ai_trash"] = ai
     it["ai_why"] = why or None  # the reason of the most confident trash verdict, if it gave one
+    it["not_best"] = NOT_BEST in tags  # best-shot: another shot of its burst or near-duplicate set is better
+    it["best_cover"] = BEST_COVER in tags  # best-shot's pick: shown first in its burst stack
     it["ai_keep"] = any(t == "Review|vlm-keep" or (t.startswith("AI|vlm/") and "/keep" in t) for t in tags)
     it["kept"] = owner.kept(tags, it.get("pick", ""))  # your Keep (the tile's "Kept"); a favorite is it["fav"]
     it["fav"] = owner.favorite(it.get("rating"))
@@ -987,8 +990,9 @@ WORDS = {
     "ai": {"trash": "Judged junk", "keep": "Judged fine", "none": "Not checked"},
     "score": "Junk score",  # an AI trash verdict's confidence, 0-1
     # Suggested junk's Why (?why=, summary()["r"]): the vision check's reasons (vlm_trash.REASONS), then the
-    # other two reasons a file is suggested; a reason not listed here shows as the model wrote it
-    "why": {**vlm_trash.REASON_WORDS, WHY_LABEL: "Tagged as junk", WHY_COPY: "Copy of a trashed photo"},
+    # other reasons a file is suggested; a reason not listed here shows as the model wrote it
+    "why": {**vlm_trash.REASON_WORDS, WHY_LABEL: "Tagged as junk", WHY_COPY: "Copy of a trashed photo",
+            WHY_BEST: "Not the best shot"},
     # filter sections and their chips
     "filter": {"kind": "Kind", "ym": "When", "project": "Project", "source": "Source", "place": "Place",
                "event": "Event", "label": "Looks like", "mine": "My tag", "review": "Flags", "ai": "Junk check",
@@ -2007,15 +2011,17 @@ class App:
                     dates_checked=(self.dc_report or {}).get("checked"), rec=self.rec.facet(who))
 
     def suggested(self, it, floor=SUGGEST_MIN):
-        """Suggested junk: a copy of something you trashed, a content label's junk flag, or a vision-check trash
-        verdict scoring at least `floor` (the view's Junk score; SUGGEST_MIN unless you lower it). Never a file you
-        kept or starred, one used in a post or one in a protected project, whatever the floor. A file with a person
-        or pet you named (People|, Pets|) is never suggested by a label or the vision check; a copy you trashed
-        still is (a name is no Keep)."""
+        """Suggested junk: a copy of something you trashed, a content label's junk flag, best-shot's "not the best
+        shot" (AI|bestshot/not-best, at any floor: it has no score), or a vision-check trash verdict scoring at
+        least `floor` (the view's Junk score; SUGGEST_MIN unless you lower it). Never a file you kept or starred,
+        one used in a post or one in a protected project, whatever the floor. A file with a person or pet you named
+        (People|, Pets|) is never suggested by a label, best-shot or the vision check; a copy you trashed still is
+        (a name is no Keep)."""
         if it["kept"] or it["fav"] or it["used"] or f"Project|{it['project']}" in PROTECTED or PROTECTED.intersection(it["tags"]):
             return False
-        return it["trashed"] or not it.get("named") and ("Review|maybe-trash" in it["tags"] or
-                                                         (it["ai_trash"] is not None and it["ai_trash"] >= floor))
+        return bool(it["trashed"] or not it.get("named") and (
+            "Review|maybe-trash" in it["tags"] or it.get("not_best")
+            or (it["ai_trash"] is not None and it["ai_trash"] >= floor)))
 
     @staticmethod
     def junk_floor(f):
@@ -2027,7 +2033,7 @@ class App:
         return min(1.0, max(0.0, v)) if not math.isnan(v) else SUGGEST_MIN
 
     def junk_why(self, it, floor):
-        """The Why values an item is suggested for at this floor (a reason, WHY_LABEL, WHY_COPY)."""
+        """The Why values an item is suggested for at this floor (a reason, WHY_LABEL, WHY_COPY, WHY_BEST)."""
         out = set()
         if it["ai_trash"] is not None and it["ai_trash"] >= floor:
             out.add(it["ai_why"] or "other")
@@ -2035,7 +2041,16 @@ class App:
             out.add(WHY_LABEL)
         if it["trashed"]:
             out.add(WHY_COPY)
+        if it.get("not_best"):
+            out.add(WHY_BEST)
         return out
+
+    def junk_rank(self, it):
+        """Suggested junk's order: by Junk score, most confident first (a label's or a copy's 0.5); a shot offered
+        only as "not the best shot" (no score of its own) after every scored one."""
+        only_best = it.get("not_best") and it["ai_trash"] is None and not it["trashed"] \
+            and "Review|maybe-trash" not in it["tags"]
+        return (bool(only_best), -(it["ai_trash"] if it["ai_trash"] is not None else 0.5))
 
     def matches(self, it, f):
         if it["gone"]:
@@ -2173,7 +2188,7 @@ class App:
                 junk = self.junk_summary([i for i in ids if self.live(i)], f)
             ids = [i for i in ids if self.live(i) and self.matches(self.items[i], f)]
             if f.get("view") == "suggest":
-                ids.sort(key=lambda i: -(self.items[i]["ai_trash"] if self.items[i]["ai_trash"] is not None else 0.5))
+                ids.sort(key=lambda i: self.junk_rank(self.items[i]))
                 ranked = True
             dated = self.date_findings() if f.get("dates") else {}
             if f.get("dates"):  # grouped by what check-dates found (its first kind), then by date
@@ -2223,8 +2238,8 @@ class App:
 
     def stacked(self, ids):
         """The timeline with each burst as one run: when two or more of a burst's shots are listed (after the
-        filters), they follow one another in time order at the place of the first one listed, the earliest
-        shot first (the cover). Returns (ids, {id: {b: group, bn: shots listed, bc: cover?, mo: the cover's
+        filters), they follow one another in time order at the place of the first one listed, the cover first:
+        best-shot's pick (AI|bestshot/cover) when it is listed, else the earliest shot. Returns (ids, {id: {b: group, bn: shots listed, bc: cover?, mo: the cover's
         month}}). A burst with one shot listed is a plain tile. Ranked lists (search, Similar, Trash
         suggestions) are never stacked: their order is not time."""
         shots = {}
@@ -2242,7 +2257,7 @@ class App:
             if g in placed:
                 continue
             placed.add(g)
-            ms = sorted(ms, key=lambda j: self.items[j]["burst_pos"])
+            ms = sorted(ms, key=lambda j: (not self.items[j].get("best_cover"), self.items[j]["burst_pos"]))
             out.extend(ms)
             mo = self.items[ms[0]]["date"][:7]
             for k, j in enumerate(ms):
@@ -4036,7 +4051,7 @@ dl.dt dd{margin:0;word-break:break-word}
  .tile .ckw{width:44px;height:44px}
  .tile .star{width:44px;height:44px;right:44px;bottom:0}
  .tile .tshare{width:44px;height:44px;right:0;bottom:0}
- .tile:has(.star) .flag{bottom:50px;max-width:calc(100% - 12px)}  /* a phone tile is too narrow beside two 44 px taps: above them */
+ .tile:has(.star) .flag{bottom:50px;max-width:calc(100% - 12px);display:-webkit-box;-webkit-box-orient:vertical;-webkit-line-clamp:2;line-clamp:2;overflow:hidden}  /* a phone tile is too narrow beside two 44 px taps: above them, at most two lines so it stays inside the tile (the whole text is its title and in the large view) */
  .tile .bx{top:8px;right:8px}
  .tile .bx::after{content:"";position:absolute;inset:-8px}
  .link::after{content:"";position:absolute;inset:-11px -8px}
@@ -4711,7 +4726,7 @@ function tile(it,n){const t=el("div","tile"),sug=view==="sug";t.id="t"+it.id;t.d
   if(it.bc){const bx=el("button","bx");bx.type="button";bx.tabIndex=-1;paintBx(bx,it);bx.onclick=ev=>{ev.stopPropagation();toggleStack(n)};bd.before(bx);
    const x=el("button","x",stackLabel(it));x.type="button";x.tabIndex=-1;x.onclick=ev=>{ev.stopPropagation();toggleStack(n)};t.append(x);if(!openB[it.b])t.classList.add("stack")}
   else t.hidden=hiddenAt(n)}
- const fl=flagsOf(it);if(fl)t.append(el("span","flag",fl));
+ const fl=flagsOf(it);if(fl){const f=el("span","flag",fl);f.title=fl;t.append(f)}
  // the tile's corner group, bottom right: the star, then Share (this one item without selecting it first)
  if(!sug){t.append(starBtn(it));const sh=el("button","tshare");sh.type="button";sh.tabIndex=-1;sh.title=SHARE_TIP;sh.setAttribute("aria-label","Share "+it.n);
   sh.insertAdjacentHTML("beforeend",'<svg class="ic"><use href="#i-share"/></svg>');sh.onclick=ev=>{ev.stopPropagation();askShare([it.id])};t.append(sh)}
@@ -4751,7 +4766,7 @@ function flagsOf(it){const fl=[];if(it.dq)fl.push(it.ds?"Suggested "+it.ds:"No s
 // after an edit: the reply's summaries replace those items and their tiles' flags (kept, ...);
 // the tile, its focus and the selection stay
 function patchTiles(fresh){(fresh||[]).forEach(s=>{const n=items.findIndex(i=>i.id===s.id);if(n<0)return;const o=items[n];items[n]=o.b!=null?Object.assign(s,{b:o.b,bn:o.bn,bc:o.bc,mo:o.mo}):s;const t=$("#t"+s.id);if(!t)return;
-  const old=t.querySelector(".flag"),fl=flagsOf(s);if(old)old.remove();if(fl)t.append(el("span","flag",fl));paintStar(t.querySelector(".star"),s)})}
+  const old=t.querySelector(".flag"),fl=flagsOf(s);if(old)old.remove();if(fl){const f=el("span","flag",fl);f.title=fl;t.append(f)}paintStar(t.querySelector(".star"),s)})}
 /* Favorites (xmp:Rating 5 in the sidecar): the tile's star toggles one item, F and the bar's Favorite / Unfavorite
    the selection; F stars them all unless every one already is a favorite, then it unstars them */
 function paintStar(b,it){if(!b)return;b.setAttribute("aria-pressed",String(!!it.fav));b.textContent=it.fav?"★":"☆";

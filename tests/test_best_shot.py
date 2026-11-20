@@ -245,5 +245,13 @@ class CliTest(unittest.TestCase):
         self.assertNotIn("/l/", out.getvalue(), "counts only, never a path")
 
 
+class ReviewPageWordsTest(unittest.TestCase):
+    def test_not_best_shows_in_plain_words(self):
+        """suggest-trash lists a not-best shot; the review page's Maybe trash tab says why in the gallery's words."""
+        import review_ui
+        self.assertEqual(review_ui.maybe_reasons([best_shot.NOT_BEST, "Label|food"]), ["Not the best shot", "Label|food"])
+        self.assertEqual(review_ui.maybe_reasons([best_shot.COVER]), [])
+
+
 if __name__ == "__main__":
     unittest.main()

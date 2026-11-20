@@ -1222,7 +1222,8 @@ doctor`; CPU, onnxruntime.
   `vlm_trash.TRASH_MIN` (0.70), the same line as the gallery's Suggested junk,
   read through the same `vlm_trash.junk_score`; a lower N lists more, as the
   gallery's Junk score box does, and 0 is its Any score. Also, at any score,
-  files with `Review|maybe-trash` and no VLM keep; never ones you kept (`Owner|not-trash`, `Owner|keep`, the legacy
+  files with `Review|maybe-trash` and no VLM keep, and `best-shot`'s
+  `AI|bestshot/not-best` (the gallery's "Not the best shot"); never ones you kept (`Owner|not-trash`, `Owner|keep`, the legacy
   `Review|not-trash`, digiKam Accepted, a favorite: `xmp:Rating` >= 5), `Used|*` or a protected project's
   `Project|<name>`; plus copies marked `Owner|trash`. They show in the review
   page's "Maybe trash" tab (a verdict as "Junk score 0.90 (blurry)", the

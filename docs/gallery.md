@@ -92,8 +92,11 @@ without one" (`/api/facets` gives `drive`, the mount or null).
   closes the stack, and is named "Burst: N shots, open stack" for screen
   readers) and an open stack's other shots show their badge as "×N"; on a
   wider tile the labels stay. Tile labels (the badge, the stack button, the
-  flags) are 12 px and short, and never cut short: one that doesn't fit wraps
-  onto a second line, clear of the checkbox. At phone width the burst help above the grid is one
+  flags) are 12 px and short, and not cut short: one that doesn't fit wraps
+  onto a second line, clear of the checkbox. The one exception is a phone,
+  where a tile's flags sit above its star and Share in a tile too small for
+  more than two lines: a longer one ends in "…" there so it stays inside the
+  tile, and keeps its whole text as its tooltip and in the large view's tags. At phone width the burst help above the grid is one
   line ("Burst stacks: tap ×N to open one." on a touch screen, "Bursts are
   stacked; X opens one." with a keyboard) with a **more** link for the whole
   text (open / closed remembered per browser).
@@ -356,7 +359,8 @@ else the file time. Project and source fall back to where the file sits
 
 Shots of one burst (one camera, a moment apart) show as one stack, the same
 look and keys as the review page ([review-ui.md](review-ui.md)): the cover
-(the burst's first shot) with a stacked edge, a count badge ("4 shots", read
+(best-shot's pick when `best-shot` has run, "Best shot" below; else the
+burst's first shot) with a stacked edge, a count badge ("4 shots", read
 out as "Burst: 4 shots") and a **Show all 4 (X)** button. **X** or `x` on a focused shot, or
 the button, opens the stack (every shot follows the cover, each with a badge
 giving its place, "2 of 3", read out as "Burst: shot 2 of 3", and the shots sharing a coloured ring)
@@ -392,7 +396,7 @@ with a **more** link ("Layout" above).
   shows it as a plain tile, and the badge counts the shots listed. Ranked
   lists (search results, Find similar, Suggested junk) are never stacked,
   since their order is not time. A burst's shots sit together at the place
-  of the newest one, in time order.
+  of the newest one: the cover first, the others in time order.
 
 ### Best shot
 
@@ -409,15 +413,17 @@ not scored and get no tag.
 It writes one tag per shot, in its own namespace in the sidecar:
 `AI|bestshot/cover` on the best, `AI|bestshot/not-best` on the others. A
 re-run replaces only those tags (a shot no longer in a set loses its tag).
+It reads and writes the sidecars under the library lock ([intake.md](intake.md),
+"One writer at a time"): while another writer holds it, it waits, then refuses
+and changes nothing; `--dry-run` takes no lock.
 Nothing is trashed, moved or deleted: the not-best shots are only offered to
-Suggested junk with the reason **Not the best shot**, for you to Keep or
-Trash. Your decisions win: a shot you kept, trashed, starred or gave a pick
+Suggested junk with the reason **Not the best shot** (at any Junk score: the
+tag has no score; they come after every scored verdict, and the **Why**
+filter lists the reason), for you to Keep or Trash. `suggest-trash` lists
+them by the same rule. The cover leads its burst stack. Your decisions win: a shot you kept, trashed, starred or gave a pick
 label, one with a person or pet you named, one used in a post or in a
 protected project gets no tag (it still counts when choosing the best).
 Eyes open is not measured yet (a later step, with the face detector).
-
-Not yet in the gallery: Suggested junk and the stack's cover don't read the
-tags yet (the next step on ROADMAP 0.2).
 
 ## Favorites
 

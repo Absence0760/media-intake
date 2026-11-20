@@ -406,9 +406,11 @@ def collect_maybe():
 def maybe_reasons(labels):
     """A Maybe trash item's labels as the page shows them: the vision check's verdict tags (AI|vlm/<model>/...,
     Review|vlm-*) folded into one "Junk score 0.90 (blurry)" (docs/words.md, the gallery's own wording); every
-    other label as it is (the page's FLAG / GROUP give it plain words)."""
+    other label as it is (the page's FLAG / GROUP give it plain words), best-shot's AI|bestshot/not-best as
+    "Not the best shot" (its cover tag is no reason and is left out)."""
     score, why = vlm_trash.junk_score(labels)
-    rest = [t for t in labels if not t.startswith(("AI|vlm/", "Review|vlm-"))]
+    rest = [("Not the best shot" if t == "AI|bestshot/not-best" else t) for t in labels
+            if not t.startswith(("AI|vlm/", "Review|vlm-")) and t != "AI|bestshot/cover"]
     if score is None:
         return rest
     word = vlm_trash.REASON_WORDS.get(why or "", (why or "").replace("-", " ")).lower()  # as the gallery's tile

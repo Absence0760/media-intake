@@ -1771,7 +1771,8 @@ def cmd_sweep_erased(a):
              if stats["trash entries"] or stats["drive trash entries"] else "")
           + (f"\n  thumbnails                   {thumbs + gthumbs}" if thumbs + gthumbs else "")
           + (f"\n  recognition rows and crops   {recog_count(rec)}" if recog_count(rec) else "")
-          + (f"\n  text index rows              {txt}" if txt > 0 else "")
+          + (f"\n  text index rows              {txt}" if txt > 0 else
+             "\n  the text index could not be read (check it)" if txt < 0 else "")
           + (f"\n  recent files entries         {recent}" if recent else "")
           + (f"\n  app traces                   {sum(traces.values())}" if sum(traces.values()) else "")
           + (f"\n  backup record entries        {backups}" if backups else "")
@@ -2887,8 +2888,8 @@ def junk_score_arg(v):
 
 def cmd_suggest_trash(a):
     """Library files the VLM called trash with a Junk score of at least --junk-score (vlm_trash.junk_score;
-    vlm_trash.TRASH_MIN by default, the gallery's Suggested junk line), SigLIP's Review|maybe-trash without a VLM keep, or a surviving copy of
-    content you trashed (Owner|trash). Never one you kept (owner.kept: Owner|keep, Owner|not-trash,
+    vlm_trash.TRASH_MIN by default, the gallery's Suggested junk line), SigLIP's Review|maybe-trash without a VLM keep, best-shot's
+    AI|bestshot/not-best (at any score, as the gallery's Suggested junk), or a surviving copy of content you trashed (Owner|trash). Never one you kept (owner.kept: Owner|keep, Owner|not-trash,
     digiKam Accepted, a favorite: xmp:Rating >= 5), one with a person or pet you named (owner.named:
     People|<Name>, Pets|<Name>; unless it is a copy you trashed), Used|* or a protected project's Project| tag."""
     need_exiftool()
@@ -2908,7 +2909,8 @@ def cmd_suggest_trash(a):
         score = vlm_trash.junk_score(tags)[0]
         judged = score is not None and score >= a.junk_score
         vlm_keep = any(t == "Review|vlm-keep" or (t.startswith("AI|vlm/") and "/keep" in t) for t in tags)
-        if not (judged or ("Review|maybe-trash" in tags and not vlm_keep) or owner.TRASH in tags):
+        if not (judged or ("Review|maybe-trash" in tags and not vlm_keep) or BESTSHOT_NOT_BEST in tags
+                or owner.TRASH in tags):
             continue
         if owner.kept(tags, owner.pick_label(row.get("PickLabel")), row.get("Rating")) \
                 or (owner.named(tags) and owner.TRASH not in tags) or protected.intersection(tags) or any(t.startswith("Used|") for t in tags):
@@ -2944,6 +2946,9 @@ SOURCE = {"photo": "phone camera", "video": "phone camera", "gopro": "gopro",
           "screenshot": "screenshot", "screenrec": "screen recording"}
 GOPRO_NAME = re.compile(r"^(G[HXP]\d{6}|GOPR\d{4}|GP\d{6})\.", re.I)
 POST_SLUG = re.compile(r"^(\d{4}-\d\d-\d\d)-[a-z0-9][a-z0-9-]*$")
+
+
+BESTSHOT_NOT_BEST = "AI|bestshot/not-best"  # best_shot.NOT_BEST (it imports this module): suggest-trash lists it
 
 
 def need_exiftool():

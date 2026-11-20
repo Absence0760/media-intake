@@ -130,8 +130,8 @@ The goal: someone else can install it on Fedora, import a phone, and trust it.
       (eyes open where faces are found) as the cover, and offer the rest to Suggested junk
       with the reason "Not the best shot"; never trash on its own. (Done: `media-intake
       best-shot` picks it by sharpness and exposure and writes `AI|bestshot/` tags;
-      docs/gallery.md, "Best shot". Left: Suggested junk and the stack's cover reading those
-      tags in the gallery, and eyes open.)
+      docs/gallery.md, "Best shot"; Suggested junk, `suggest-trash` and the stack's cover
+      read them. Left: eyes open.)
 - [ ] "On this day": a sidebar view of photos and videos taken on today's date in past
       years, grouped by year; hides flagged, trashed and erased items like every view.
 - [ ] Albums: hand-picked collections that cross dates and events (stored in sidecars like

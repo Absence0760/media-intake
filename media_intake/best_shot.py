@@ -24,7 +24,8 @@ favorite), one with a person or pet you named, one used in a post (Used|) or in 
 AI|bestshot/ tag at all, though it still counts when the cover is chosen. Files scan flagged, quarantined,
 erased or held for the records inbox are never read (gallery.scan_library leaves them out).
 
-Writes go through exiftool under the library lock. Output: counts only, never a file name.
+Sidecars are read and written under one hold of the library lock (--dry-run takes none; a busy lock is waited
+for as other CLI writers do, then refused), writes through exiftool. Output: counts only, never a file name.
 """
 import argparse, os, sys
 
@@ -247,17 +248,25 @@ def build_parser(prog="media-intake best-shot"):
     return p
 
 
-def main(argv=None):
-    a = build_parser().parse_args(argv)
-    import gallery  # the library as the gallery reads it: never the state folder or a flagged file
+def survey():
+    """plan() over the library as the gallery reads it: never the state folder or a flagged file."""
+    import gallery
     items, _ = gallery.scan_library()
     index = intake.load(os.path.join(gallery.STATE, "index.json"), {}) or {}
-    changes, c = plan(items, index)
-    if a.dry_run:
+    return plan(items, index)
+
+
+def main(argv=None):
+    a = build_parser().parse_args(argv)
+    if a.dry_run:  # reads only: no lock
+        changes, c = survey()
         print(summary(c, len(changes), dry_run=True))
         return 0
     try:
+        # The sidecars are read and written under one hold, so a Keep or a name given meanwhile is never
+        # overwritten by a plan made before it.
         with library_lock.hold("best_shot.py", wait=library_lock.cli_wait(), out=sys.stderr):
+            changes, c = survey()
             n = write(changes)
     except library_lock.Busy as e:
         print(f"best-shot: refused: {e}", file=sys.stderr)
