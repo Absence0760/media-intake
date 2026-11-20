@@ -176,10 +176,13 @@ The goal: someone else can install it on Fedora, import a phone, and trust it.
       docs/recognition.md, decisions in docs/research-pets.md) and the gallery's naming view.
 - [ ] Pets: date-aware propagation (prefer photos close in date when growing a name, so a
       kitten and the grown cat need fewer merges; docs/research-pets.md).
-- [ ] Search the text in photos: keep the OCR text the sensitive-content scan already reads
-      (screenshots, receipts, signs) in a private local index and let `search` and the
-      gallery find files by what they say; flagged and erased files never indexed, erase
-      and verify-gone cover the index.
+- [x] Search the text in photos: keep the OCR text the sensitive-content scan already reads
+      (screenshots, receipts, signs) in a private local index and let `search` find files by
+      what they say (`search --text`, `index --text` for older photos); flagged and erased
+      files never indexed, erase and verify-gone cover the index (docs/search.md, "Text in
+      photos").
+- [ ] The gallery's search box for the text in photos (`search --text --format machine`
+      gives the same lines it parses today).
 - [ ] Local captions: a short description of each photo from the local vision model
       (Ollama, already used by `vlm-trash`), kept in the sidecar as the tool's own field and
       searchable; off by default, resumable overnight like `vlm-trash --all`.

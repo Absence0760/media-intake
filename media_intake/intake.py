@@ -250,6 +250,14 @@ def recog_forget(shas):
     return recog.forget(shas)
 
 
+# The text index of photos (ocr_index.py: OCR text of clean photos, keyed by sha256, <state>/ocr-text.db): erase,
+# forget, trash and sweep-erased drop their rows (ocr_forget), verify-gone reports any left.
+def ocr_forget(shas):
+    """Drop the text index rows of this content: how many went, or -1 when the store can't be read."""
+    import ocr_index
+    return ocr_index.forget(shas)
+
+
 def recog_count(cnt):
     """What recog_forget or recog.leftovers counted, as one number (an unreadable store is reported apart)."""
     return sum(v for k, v in cnt.items() if k != "store unreadable")
@@ -1638,6 +1646,11 @@ def verify_gone(sig, drive=None, left=None, home=True, names=True):
             found[RECOG_PLACE] += recog_count(rec)
         if rec["store unreadable"]:
             found["recognition store that could not be read (check it, or delete recognition.dir)"] += 1
+        import ocr_index
+        txt = ocr_index.leftovers(sig)
+        if txt:
+            found[ocr_index.PLACE if txt > 0 else "text index that could not be read (check it, or delete "
+                  "ocr-text.db in the state folder)"] += abs(txt)
     gthumbs = sum(p.endswith(".jpg") for p in cached)
     if gthumbs:
         found["gallery thumbnails (~/.cache/media-intake/thumbs)"] += gthumbs
@@ -1731,11 +1744,12 @@ def cmd_sweep_erased(a):
     for p in paths:
         thumbs += thumb_forget(p)
         index.pop(p, None)
-    rec = collections.Counter()
+    rec, txt = collections.Counter(), 0
     if home:
         for s in sig:
             gthumbs += gallery_thumb_forget(s)
         rec = recog_forget(sig)
+        txt = ocr_forget(sig)
     save(os.path.join(STATE, "index.json"), index)
     uris = {u for p in paths for u in file_uris(p)}
     recent = prune_recent(uris, []) if home else 0
@@ -1757,6 +1771,7 @@ def cmd_sweep_erased(a):
              if stats["trash entries"] or stats["drive trash entries"] else "")
           + (f"\n  thumbnails                   {thumbs + gthumbs}" if thumbs + gthumbs else "")
           + (f"\n  recognition rows and crops   {recog_count(rec)}" if recog_count(rec) else "")
+          + (f"\n  text index rows              {txt}" if txt > 0 else "")
           + (f"\n  recent files entries         {recent}" if recent else "")
           + (f"\n  app traces                   {sum(traces.values())}" if sum(traces.values()) else "")
           + (f"\n  backup record entries        {backups}" if backups else "")
@@ -1981,6 +1996,7 @@ def cmd_erase(a):
         index.pop(p, None)
     drive = drive_purge(a.drive, shas, stats) if a.drive else 0
     rec = recog_forget(set(shas))
+    txt = ocr_forget(set(shas))
     # The originals this quarantine's entries are copies of stay: an xcheck `of`, a near chain's `root_of`.
     spare = [v[k] for v in q.values() for k in ("of", "root_of") if isinstance(v.get(k), str)]
     near, near_batch, near_left = near_dups(refs, kept, index, a.batch, spare, stats)
@@ -2057,6 +2073,7 @@ def cmd_erase(a):
                                 "backup records that could not be read (they may keep names until the next backup "
                                 "to that drive)": backups_unread,
                                 "recognition store that could not be read": rec["store unreadable"],
+                                "text index that could not be read": int(txt < 0),
                                 "your places' records that could not be rewritten (places.json keeps the names)":
                                     int(bool(place_err)),
                                 "date records that could not be rewritten (datecheck.json or date-fixes.json "
@@ -2071,6 +2088,7 @@ def cmd_erase(a):
                "freedesktop thumbnails (~/.cache/thumbnails)": thumbs,
                "gallery thumbnails and video proxies (~/.cache/media-intake)": gthumbs,
                RECOG_PLACE: recog_count(rec),
+               "text index of photos (state folder, ocr-text.db)": max(txt, 0),
                "recent files entries (~/.local/share/recently-used.xbel)": recent,
                "Showtime playback positions and log lines (~/.local/state/showtime)":
                    traces["showtime positions"] + traces["showtime log lines"],
@@ -2735,6 +2753,7 @@ def trash_files(files, batch=None, phone=None, dry=False):
                 ph += len(device_remove([src]))
     save(os.path.join(STATE, "index.json"), index)
     rec = recog_forget(gone)
+    txt = ocr_forget(gone)
     _, perr = myplaces.forget_paths(STATE, gone_paths)  # their records in places.json (the tag went with the sidecar)
     if perr:
         print(f"your places' records of the trashed files not dropped: {perr}")
@@ -2745,6 +2764,8 @@ def trash_files(files, batch=None, phone=None, dry=False):
     print(f"trashed {n} files; sidecars {sc}; thumbnails {th}; phone {ph}"
           + (f"; recognition rows and crops {recog_count(rec)}" if recog_count(rec) else "")
           + ("; the recognition store could not be read (check it)" if rec["store unreadable"] else "")
+          + (f"; text index rows {txt}" if txt > 0 else "; the text index could not be read (check it)" if txt < 0
+             else "")
           + (f"; copies left on disk marked Owner|trash {marked}" if marked else "")
           + (f"; copies you kept left alone {spared}" if spared else "")
           + trash_refusals(refused, quarantined))

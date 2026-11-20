@@ -4,7 +4,8 @@ Two tools beside intake, both offline:
 
 - `media_intake/semantic.py` (`media-intake index|search|similar`): find
   library photos and videos by a text query or by example (SigLIP
-  embeddings).
+  embeddings), or, with `--text`, photos by the words written in them
+  (`media_intake/ocr_index.py`; "Text in photos" below).
 - `media_intake/vlm_trash.py` (`media-intake vlm-trash`): a second opinion on
   trash from the local vision model `qwen3-vl:2b` (Ollama, Apache-2.0), as
   tags in the AI's own namespace.
@@ -33,6 +34,8 @@ one line saying the command needs the venv: `run bash setup.sh first`.
   dir). `vlm_trash.py` asks for a fixed JSON shape (verdict, a reason from a
   fixed list, confidence) and writes only tags from that shape; free text from
   the model is discarded. Output is counts only.
+- **The text in photos is kept only for photos the scan flagged nothing in**,
+  in `<state>/ocr-text.db` (0600); below, "Text in photos".
 - Frames sampled from videos go to a 0700 temp dir in `~/.cache/media-intake`
   and are deleted straight after.
 - Originals are never written; only `<file>.<ext>.xmp` sidecars.
@@ -139,6 +142,45 @@ for alternative takes, and after using one, `media-intake mark-used FILE...
 --post <YYYY-MM-DD-slug>` so the next search skips it. A missing
 `Review|child-in-shot` flag means "not checked", not "no child": watch every
 clip before you publish it.
+
+## Text in photos
+
+```
+media-intake search --text "receipt coffee" -n 20 --photos --project NAME --unused-since 30d --clean
+media-intake index --text      # read the words in library photos scanned before this existed
+```
+
+- **Where the text comes from.** The sensitive-content scan
+  (`scan_sensitive.py`, at `media-intake scan`) already reads every photo's
+  text with Tesseract to look for IDs, cards and secret words. For a photo it
+  flagged nothing in, that text (whitespace collapsed, at most 20,000
+  characters) is kept in `<state>/ocr-text.db`, keyed by the photo's sha256.
+  The scan never prints it, and its summary line counts it only
+  (`text_indexed`).
+- **Never kept:** a photo the scan flagged for any reason (`unscanned-*`
+  included), and anything quarantined, erased or trashed (`label.flagged`,
+  `trashed.json`). Content flagged after its text was kept is dropped the next
+  time `search --text` or `index --text` runs, and never shown in between.
+  Videos have no text kept.
+- **Erase covers it.** `erase`, `forget`, `trash` and `sweep-erased --yes`
+  delete the rows of what they remove (by sha256; sqlite's `secure_delete`
+  overwrites the freed space), erase's coverage report counts them, and
+  `verify-gone` fails while a row of erased content is left
+  ([intake.md](intake.md)).
+- **`search --text QUERY`** lists library files (`index.json`, on disk now)
+  whose text holds every word of the query, matched without case from the
+  start of a word (`rec` finds `Receipt`, `ceipt` does not). The score is how
+  often the words appear, best first. It needs no model and no search index;
+  the filters and `--format` are the same as `search`'s, and the machine form
+  is the same `score  path` lines (score to 3 decimals) the gallery parses.
+- **`index --text`** reads library photos (`index.json`) the text index has no
+  row for, as the scan would: refused files are never opened, and a photo
+  whose text trips a sensitive check is not kept. It prints counts only, as
+  one JSON line: `read`, `kept`, `no text`, `sensitive, not kept`,
+  `unreadable`, `refused`. A photo it counts as sensitive was filed before the
+  check that finds it; look at it yourself and `media-intake forget` it if it
+  is private. Needs `tesseract`; a photo already kept is not read again.
+- The gallery's search box does not search the text yet (ROADMAP).
 
 ## VLM trash opinion
 
@@ -317,7 +359,10 @@ against the local Ollama. The progress, summary and output-format cases in
 `test_semantic.py` (`Meter`, `Ui`) fake the encoders and need only numpy; they
 also check that the gallery still parses the machine form. The prompt-ensemble
 cases (`TextEnsemble`) use a fake tokenizer and text model, also numpy only.
-`-p test_calibrate.py` checks `media-intake calibrate`'s precision, recall and threshold
+`-p test_ocr_index.py` covers the text index: what the scan keeps (a fake
+`tesseract` and a stub detector), `search --text`, `index --text`, and erase,
+trash and verify-gone; the real `tesseract` case skips when it isn't
+installed. `-p test_calibrate.py` checks `media-intake calibrate`'s precision, recall and threshold
 sweep on fake scores ([configuration.md](configuration.md), "Calibrating label thresholds").
 
 ## Unverified

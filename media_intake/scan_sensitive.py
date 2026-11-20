@@ -8,8 +8,10 @@ For each file it records reason labels only, such as "nudity", "passport-mrz",
 "unscanned-video", "unscanned-nudity", "unscanned-barcode", "unscanned-type"
 (an extension no detector reads) or "unscanned-error" (a check crashed on that
 file; the rest of the batch is still scanned). "Not checked" is never "clean".
-It never writes or prints any OCR text, barcode contents or image data, so the
-report can be read in an AI assistant session without leaking what the image shows. An assistant must never open the flagged files themselves;
+It never prints any OCR text, barcode contents or image data, and the report holds none, so the
+report can be read in an AI assistant session without leaking what the image shows. The OCR text
+of a photo it flagged nothing in goes only to the private text index (ocr_index.py, 0600), for
+`media-intake search --text`; a flagged photo's text is never kept. An assistant must never open the flagged files themselves;
 you review them in your own image viewer.
 
 Detectors (docs/intake.md has the research and pins):
@@ -35,6 +37,7 @@ from PIL import Image, ImageOps
 if os.path.dirname(os.path.abspath(__file__)) not in sys.path:
     sys.path.append(os.path.dirname(os.path.abspath(__file__)))
 import motion  # noqa: E402
+import ocr_index  # noqa: E402  (stdlib; keeps a clean photo's text for search --text)
 
 try:
     from pillow_heif import register_heif_opener  # optional
@@ -78,7 +81,9 @@ def issuer(d):
             or 2221 <= int(d[:4]) <= 2720 or d[0] == "6")
 
 
-def ocr_flags(im, tmpdir):
+def ocr_flags(im, tmpdir, keep=None):
+    """Reason labels from the image's text. keep (a list), if given, gets the text read, for the private
+    text index; the caller keeps it only when the file is flagged for nothing."""
     if not shutil.which("tesseract"):
         return []  # reported once in the summary ("unavailable"), not per file
     g = ImageOps.exif_transpose(im).convert("L")
@@ -89,6 +94,8 @@ def ocr_flags(im, tmpdir):
                        capture_output=True, text=True, timeout=120)
     os.remove(p)
     text = r.stdout
+    if keep is not None:
+        keep.append(text)
     out = []
     flat = "\n".join(l.replace(" ", "") for l in text.splitlines())
     if MRZ.search(flat):
@@ -288,8 +295,8 @@ def motion_flags(det, path, tmpdir):
             os.remove(clip)
 
 
-def scan_file(det, path, tmpdir):
-    """Reason labels for one file ([] = checked and clean)."""
+def scan_file(det, path, tmpdir, keep=None):
+    """Reason labels for one file ([] = checked and clean). keep: as ocr_flags'."""
     ext = os.path.splitext(path)[1].lower()
     reasons = []
     if ext in IMG:
@@ -310,13 +317,23 @@ def scan_file(det, path, tmpdir):
                     os.remove(jpg)
             reasons += ["unscanned-nudity"] if r is None else r
             reasons += barcode_flags(im)
-            reasons += ocr_flags(im, tmpdir)
+            reasons += ocr_flags(im, tmpdir, keep)
         reasons += motion_flags(det, path, tmpdir)
     elif ext in VID:
         reasons += video_flags(det, path, tmpdir)
     else:
         reasons.append("unscanned-type")  # staged as media, but no detector here reads it
     return reasons
+
+
+def text_row(path, keep):
+    """(sha256, size, text) of a file flagged for nothing, for ocr_index.add."""
+    import hashlib
+    h = hashlib.sha256()
+    with open(path, "rb") as f:
+        for b in iter(lambda: f.read(1 << 20), b""):
+            h.update(b)
+    return h.hexdigest(), os.path.getsize(path), "\n".join(keep)
 
 
 def is_motion(path):
@@ -336,7 +353,7 @@ def main():
     os.makedirs(work, mode=0o700, exist_ok=True)
     tmpdir = tempfile.mkdtemp(dir=work)
     os.chmod(tmpdir, 0o700)
-    flags, n = {}, 0
+    flags, n, texts = {}, 0, []
     files = sorted(os.path.join(r, f) for r, _, fs in os.walk(src) for f in fs)
     if videos_only:
         # Re-check only the videos (motion photos too: their embedded video) and merge into an earlier
@@ -352,14 +369,18 @@ def main():
     try:
         for path in files:
             rel = os.path.relpath(path, src)
+            keep = []
             try:
-                reasons = scan_file(det, path, tmpdir)
+                reasons = scan_file(det, path, tmpdir, keep)
             except Exception:
                 # Fail closed and keep going: one file a check crashes on must not lose the
                 # batch's scan.json (apply refuses without it) nor be filed as clean.
                 reasons = ["unscanned-error"]
             if reasons:
                 flags[rel] = sorted(set(reasons))
+            elif "".join(keep).strip():
+                with contextlib.suppress(OSError):  # unreadable now: it is just not searchable by text
+                    texts.append(text_row(path, keep))
             n += 1
             if n % 100 == 0:
                 print(f"[scan] {n}/{len(files)}", file=sys.stderr, flush=True)
@@ -367,6 +388,12 @@ def main():
         shutil.rmtree(tmpdir, ignore_errors=True)
     with open(out_path, "w") as f:
         json.dump(flags, f, indent=1)
+    try:
+        kept = ocr_index.add(texts)
+    except (OSError, ValueError, ocr_index.sqlite3.Error) as e:
+        kept = 0  # search --text misses these photos; the scan itself is done
+        print(f"[scan] text index not updated: {e}", file=sys.stderr)
+    del texts
     counts = {}
     for rs in flags.values():
         for r in rs:
@@ -378,7 +405,8 @@ def main():
         print(f"[scan] WARNING: {' and '.join(missing)} not checked (not installed): IDs, cards and "
               "2FA codes are not detected. Install: sudo dnf install tesseract tesseract-langpack-eng python3-zxing-cpp",
               file=sys.stderr)
-    print(json.dumps({"scanned": n, "flagged": len(flags), "by_reason": counts, "unavailable": missing}))
+    print(json.dumps({"scanned": n, "flagged": len(flags), "by_reason": counts, "unavailable": missing,
+                      "text_indexed": kept}))
 
 
 if __name__ == "__main__":
