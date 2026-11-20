@@ -199,7 +199,7 @@ class RecordsConfig(unittest.TestCase):
             with self.subTest(root=root), self.assertRaises(config.ConfigError):
                 self.load(f'[records]\nroot = "{root}"\n')
         with self.assertRaises(config.ConfigError):
-            self.load('[records]\ninbox = "x"\n')
+            self.load('[records]\nbox = "x"\n')
 
     def test_overlap_with_media_intake_folders_refused(self):
         """No sweep enters the records folder, so the library, videos, state or a project folder inside it (or

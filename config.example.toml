@@ -51,3 +51,5 @@
 # Your private records folder (documents, finances), kept by another tool. No sweep (erase, forget,
 # sweep-erased, verify-gone) ever hashes or deletes a file in it. $PRIVATE_RECORDS wins over this.
 # root = "~/Documents/Records"   # the default, protected with no config at all
+# inbox = "00 Inbox"             # inside root: `to-records` hands photos of documents there (docs/records.md)
+# archive = "backups/records-*.tar.gpg"   # on the backup drive: `to-records --finish --drive` checks its date

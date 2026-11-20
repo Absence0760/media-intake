@@ -160,6 +160,7 @@ media-intake offload phone-1 --phone <phone folder>   # after a backup: free the
 | `stage`, `plan`, `scan`, `apply` | Copy in, plan (dates, dedupe, folders), detect, file |
 | `quarantine`, `release`, `review` | Decide on what the detectors flagged (quarantine) and the review folder |
 | `erase`, `forget`, `verify-gone`, `sweep-erased`, `wipe-free` | Erase everywhere, check, catch copies on a backup drive that was unplugged at erase time, overwrite the backup drive's free space |
+| `to-records` | Hand photos of documents (IDs, passports, payment cards, receipts) to your records tool's inbox, holding the originals until `--finish` erases them once your records backup holds the copies; never nudity, 2FA codes or secrets ([docs/records.md](docs/records.md)) |
 | `trash`, `suggest-trash`, `not-trash`, `purge-review` | Trash junk, find Suggested junk, Keep a suggestion, empty a review folder (`trash` and `purge-review` delete only with `--yes`; without it, a dry run) |
 | `tag`, `tag-files`, `mark-used`, `find` | Sidecar tags and searching them |
 | `places list/add/rename/remove/suggest/tag` | My places: your own named places (Home, ...) as `Place\|<name>` tags beside the city; kept only in the state folder ([docs/places.md](docs/places.md)) |
@@ -184,7 +185,7 @@ the commands by task, and a mistyped command exits 2 with the nearest real
 one. Details:
 [getting started](docs/getting-started.md), [words used](docs/words.md), [intake](docs/intake.md), [wrong dates](docs/dates.md), [review page](docs/review-ui.md),
 [gallery](docs/gallery.md), [my places](docs/places.md), [search and VLM](docs/search.md), [recognition](docs/recognition.md),
-[drive and folder queue](docs/queue.md), [backup](docs/backup.md), [configuration](docs/configuration.md),
+[drive and folder queue](docs/queue.md), [backup](docs/backup.md), [records inbox](docs/records.md), [configuration](docs/configuration.md),
 [plugins](docs/plugins.md), [releases](docs/release.md).
 
 ## Tested devices

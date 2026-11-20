@@ -252,10 +252,12 @@ def under_state(p):
 
 
 def scan_library():
-    """[item] for every library media file, newest first. Never quarantine/staging/flagged/erased."""
+    """[item] for every library media file, newest first. Never quarantine/staging/flagged/erased, nor a photo
+    handed to the records inbox and still held (intake.records_handed)."""
     index = intake.load(os.path.join(STATE, "index.json"), {}) or {}
     flagged = label.flagged(STATE)
     sizes = set(flagged.values())
+    handed = intake.records_handed()  # photos of documents handed to the records inbox: held, not shown
     items, skipped = [], 0
     seen = set()
     for root in ROOTS:
@@ -278,6 +280,9 @@ def scan_library():
                         or under_state(p) or rp in seen:
                     continue
                 seen.add(rp)
+                if p in handed:
+                    skipped += 1
+                    continue
                 ix = index.get(p) or {}
                 sha = ix.get("sha") if ix.get("size") == st.st_size else None
                 if st.st_size in sizes:
