@@ -115,7 +115,7 @@ class GalleryDialogsBrowserTest(B.BrowserCase):
         self.box(page, "b.jpg").click()
         plus = bar.get_by_role("button", name="+ tag")
         plus.click()
-        B.expect(dlg.get_by_role("heading")).to_have_text("Add a tag of yours to 1 item?")
+        B.expect(dlg.get_by_role("heading")).to_have_text("Add a tag of yours to 1 file?")
         field = dlg.get_by_label("Tag (yours")
         B.expect(field).to_be_focused()
         # suggestions: the field's list holds every tag of mine in the library, never a tool's
@@ -152,7 +152,7 @@ class GalleryDialogsBrowserTest(B.BrowserCase):
         B.expect(page.locator("#toast")).to_contain_text("added 'Trips|Spain' on 1")
         # remove offers the same suggestions
         bar.get_by_role("button", name="− tag").click()
-        B.expect(dlg.get_by_role("heading")).to_have_text("Remove a tag of yours from 1 item?")
+        B.expect(dlg.get_by_role("heading")).to_have_text("Remove a tag of yours from 1 file?")
         field.fill("Trips|Spain")
         with page.expect_response(lambda r: r.url.endswith("/api/tag")) as resp:
             dlg.get_by_role("button", name="Confirm").click()
@@ -397,7 +397,7 @@ class GalleryDialogsBrowserTest(B.BrowserCase):
         # Trash
         self.box(page, "b.jpg").click()
         page.keyboard.press("t")
-        B.expect(dlg.get_by_role("heading")).to_have_text("Trash 1 item?")
+        B.expect(dlg.get_by_role("heading")).to_have_text("Trash 1 file?")
         dlg.get_by_role("button", name="Trash 1 file").click()
         B.expect(dlg).to_have_attribute("data-job", "done")
         B.expect(dlg).to_be_hidden()  # a Trash that went well ends in a message, not the dialog
@@ -476,7 +476,7 @@ class GalleryDialogsBrowserTest(B.BrowserCase):
         B.expect(page.locator("#toast")).to_contain_text("Kept 1. It won't be suggested as junk again.")
         scan("keep message")
         self.box(page, "b.jpg").click()
-        for key, title in (("t", "Trash 2 items?"), ("e", "Erase 2 items everywhere?")):
+        for key, title in (("t", "Trash 2 files?"), ("e", "Erase 2 files everywhere?")):
             page.keyboard.press(key)
             B.expect(dlg.get_by_role("heading")).to_have_text(title)
             B.expect(dlg.locator(".mthumbs img")).to_have_count(2)

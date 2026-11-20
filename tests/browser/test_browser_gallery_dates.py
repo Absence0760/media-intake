@@ -87,7 +87,7 @@ class GalleryDatesBrowserTest(B.BrowserCase):
         B.expect(page.locator("#bfixdate")).to_be_visible()
         page.locator("#bfixdate").click()
         B.expect(page.locator("#modal")).to_have_class("modal on")
-        B.expect(page.locator("#mh")).to_have_text("Fix the date of 1 item?")
+        B.expect(page.locator("#mh")).to_have_text("Fix the date of 1 file?")
         B.expect(page.locator("#fix-suggested")).to_be_checked()
         B.expect(page.locator(".fixlist li")).to_have_text(["GOPR0003.JPG: 2016-01-01 00:01 → 2024-05-12 10:20 suggested"])
         page.locator("#mgo").click()

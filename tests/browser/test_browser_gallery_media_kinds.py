@@ -209,7 +209,7 @@ class GalleryMediaKindsBrowserTest(B.BrowserCase):
         page.keyboard.press("Escape")
         self.select_all_by_range(page)
         bar.get_by_role("button", name="Set event…").click()
-        B.expect(dlg.get_by_role("heading")).to_have_text("Set the event on 4 items?")
+        B.expect(dlg.get_by_role("heading")).to_have_text("Set the event on 4 files?")
         dlg.get_by_label("Event name").fill("beach")
         with page.expect_response(lambda r: r.url.endswith("/api/event/set")) as resp:
             dlg.get_by_role("button", name="Confirm").click()
@@ -246,7 +246,7 @@ class GalleryMediaKindsBrowserTest(B.BrowserCase):
             self.box(page, n).click()
         page.keyboard.press("t")
         dlg = page.locator("[data-dialog=confirm]")
-        B.expect(dlg.get_by_role("heading")).to_have_text("Trash 2 items?")
+        B.expect(dlg.get_by_role("heading")).to_have_text("Trash 2 files?")
         B.expect(dlg).to_contain_text("a.jpg")
         B.expect(dlg).to_contain_text("w.MOV")
         dlg.get_by_role("button", name="Trash 2 files").click()
