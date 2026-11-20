@@ -314,6 +314,10 @@ page's own handlers and fails when the list leaves one out.
     only when nothing else looks like it: beside an event `A b` (another
     tool's `XMP-iptcExt:Event` text), `a-b` stays `a-b`. Every name is put
     on the page as text, never as markup.
+  The display name is also what the Event filter's options and chip, the
+  large view's Event line and the Rename/Merge dialogs show (the slug in the
+  option's tooltip and beside the name in the dialogs); the slug stays the
+  value sent and the one Rename and Merge take.
   - **Rename…** (`POST /api/event/rename`, `{"from": old, "to": new}`): every
     sidecar with `Event|old` gets `Event|new` instead. The new name is a slug
     (lowercase letters, digits, dashes, like `plan --event`) that no event has

@@ -561,7 +561,7 @@ class GalleryBrowserTest(B.BrowserCase):
         B.expect(page.locator("#chips")).to_be_hidden()  # the event is the title and the bar, not a chip too
         evbar = page.get_by_role("toolbar", name="Event", exact=True)
         evbar.get_by_role("button", name="Rename…").click()
-        B.expect(dlg.get_by_role("heading")).to_have_text("Rename the event picnic?")
+        B.expect(dlg.get_by_role("heading")).to_have_text("Rename the event Picnic?")  # its display name; the slug in the text
         field = dlg.get_by_label("New name")
         B.expect(field).to_have_value("picnic")
         field.fill("Not A Slug")  # refused: the dialog stays open with the reason, nothing written
